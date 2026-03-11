@@ -1,5 +1,5 @@
 import { Link } from '@inertiajs/react';
-import { Factory, LayoutGrid, Network, Radio, Settings } from 'lucide-react';
+import { Factory, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
 import AppLogo from '@/components/app-logo';
 import { NavFooter } from '@/components/nav-footer';
 import { NavMain } from '@/components/nav-main';
@@ -39,6 +39,19 @@ const mainNavItems: NavItem[] = [
     },
 ];
 
+const managementNavItems: NavItem[] = [
+    {
+        title: 'Roles',
+        href: '/roles',
+        icon: Shield,
+    },
+    {
+        title: 'Users',
+        href: '/users',
+        icon: Users,
+    },
+];
+
 const footerNavItems: NavItem[] = [
     {
         title: 'Settings',
@@ -64,6 +77,7 @@ export function AppSidebar() {
 
             <SidebarContent>
                 <NavMain items={mainNavItems} />
+                <NavMain items={managementNavItems} label="Management" />
             </SidebarContent>
 
             <SidebarFooter>

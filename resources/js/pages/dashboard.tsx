@@ -1,4 +1,5 @@
 import { Head, Link } from '@inertiajs/react';
+import { lazy, Suspense } from 'react';
 import {
     Activity,
     AlertTriangle,
@@ -6,6 +7,7 @@ import {
     CheckCircle2,
     CloudDownload,
     HardDrive,
+    MapPin,
     Power,
     Radio,
     RefreshCw,
@@ -32,6 +34,18 @@ import AppLayout from '@/layouts/app-layout';
 import { dashboard } from '@/routes';
 import type { BreadcrumbItem } from '@/types';
 
+const LoggerMap = lazy(() => import('@/components/logger-map'));
+
+interface MapLogger {
+    id: number;
+    name: string;
+    status: 'online' | 'offline' | 'warning';
+    location: string;
+    lat: number;
+    lng: number;
+    sensorsCount: number;
+}
+
 interface ActivityLogItem {
     id: number;
     timestamp: string;
@@ -53,6 +67,7 @@ interface DashboardProps {
         activeSensors: number;
     };
     recentActivity: ActivityLogItem[];
+    loggers: MapLogger[];
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -68,7 +83,7 @@ function getLogLevelColor(level: string) {
     }
 }
 
-export default function Dashboard({ stats, recentActivity }: DashboardProps) {
+export default function Dashboard({ stats, recentActivity, loggers }: DashboardProps) {
     const activeAlerts = stats.warningLoggers + stats.offlineLoggers;
 
     return (
@@ -125,6 +140,26 @@ export default function Dashboard({ stats, recentActivity }: DashboardProps) {
                         </CardContent>
                     </Card>
                 </div>
+
+                {/* Logger Map */}
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                            <MapPin className="size-5" />
+                            Logger Distribution Map
+                        </CardTitle>
+                        <CardDescription>Geographic overview of all loggers</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <Suspense fallback={
+                            <div className="flex h-[400px] items-center justify-center rounded-lg border border-dashed text-muted-foreground">
+                                Loading map...
+                            </div>
+                        }>
+                            <LoggerMap loggers={loggers} />
+                        </Suspense>
+                    </CardContent>
+                </Card>
 
                 {/* Middle Row */}
                 <div className="grid gap-4 lg:grid-cols-3">
@@ -257,7 +292,7 @@ export default function Dashboard({ stats, recentActivity }: DashboardProps) {
                                             <Badge
                                                 variant={
                                                     log.status === 'success' ? 'default' :
-                                                    log.status === 'failed' ? 'destructive' : 'secondary'
+                                                        log.status === 'failed' ? 'destructive' : 'secondary'
                                                 }
                                                 className="text-xs"
                                             >

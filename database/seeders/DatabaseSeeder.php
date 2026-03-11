@@ -2,8 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Models\Role;
 use App\Models\User;
-// use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
@@ -13,10 +13,22 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        User::factory()->create([
+        // Seed roles and permissions first
+        $this->call(RolePermissionSeeder::class);
+
+        // Create superadmin user
+        $superadmin = User::factory()->create([
+            'name' => 'Super Admin',
+            'email' => 'superadmin@beacon.cloud',
+        ]);
+        $superadmin->roles()->sync(Role::where('name', 'superadmin')->pluck('id'));
+
+        // Create test user with viewer role
+        $testUser = User::factory()->create([
             'name' => 'Test User',
             'email' => 'test@example.com',
         ]);
+        $testUser->roles()->sync(Role::where('name', 'viewer')->pluck('id'));
 
         $this->call([
             LoggerSeeder::class,

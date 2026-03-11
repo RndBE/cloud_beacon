@@ -14,7 +14,11 @@ class LoggerController extends Controller
 {
     public function index(): Response
     {
-        $loggers = Logger::where('user_id', auth()->id())
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $loggers = $query
             ->withCount('sensors')
             ->orderBy('name')
             ->get()
@@ -42,9 +46,11 @@ class LoggerController extends Controller
 
     public function show(int $id): Response
     {
-        $logger = Logger::where('user_id', auth()->id())
-            ->with(['sensors', 'activityLogs' => fn($q) => $q->latest('created_at')->limit(20)])
-            ->findOrFail($id);
+        $query = Logger::with(['sensors', 'activityLogs' => fn($q) => $q->latest('created_at')->limit(20)]);
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $logger = $query->findOrFail($id);
 
         $loggerData = [
             'id' => $logger->id,
@@ -81,6 +87,12 @@ class LoggerController extends Controller
             'gpsLng' => $logger->gps_lng,
             'gpsAlt' => $logger->gps_alt,
             'deviceIdentifier' => $logger->device_identifier,
+            'intervalRead' => $logger->interval_read ?? 5,
+            'intervalSend' => $logger->interval_send ?? 10,
+            'maxReset' => $logger->max_reset ?? 3,
+            'ministesyEnabled' => (bool) $logger->ministesy_enabled,
+            'ministesyKey' => $logger->ministesy_key,
+            'ministesyInterval' => $logger->ministesy_interval ?? 10,
             'sensors' => $logger->sensors->map(fn($s) => [
                 'id' => $s->id,
                 'name' => $s->name,
@@ -105,6 +117,44 @@ class LoggerController extends Controller
         return Inertia::render('loggers/show', [
             'logger' => $loggerData,
         ]);
+    }
+
+    public function updateConfig(Request $request, int $id)
+    {
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $logger = $query->findOrFail($id);
+
+        $validated = $request->validate([
+            'interval_read' => 'required|integer|min:1|max:1440',
+            'interval_send' => 'required|integer|min:1|max:1440',
+            'max_reset' => 'required|integer|min:0|max:100',
+        ]);
+
+        $logger->update($validated);
+
+        return back()->with('success', 'Device configuration updated successfully.');
+    }
+
+    public function updatePlatform(Request $request, int $id)
+    {
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $logger = $query->findOrFail($id);
+
+        $validated = $request->validate([
+            'ministesy_enabled' => 'required|boolean',
+            'ministesy_key' => 'nullable|string|max:255',
+            'ministesy_interval' => 'required|integer|min:1|max:1440',
+        ]);
+
+        $logger->update($validated);
+
+        return back()->with('success', 'Platform integration updated successfully.');
     }
 
     public function store(Request $request): RedirectResponse
@@ -154,7 +204,11 @@ class LoggerController extends Controller
 
     public function destroy(int $id): RedirectResponse
     {
-        $logger = Logger::where('user_id', auth()->id())->findOrFail($id);
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $logger = $query->findOrFail($id);
 
         // Unmark production device so it can be re-used
         ProductionDevice::where('serial_number', $logger->serial_number)

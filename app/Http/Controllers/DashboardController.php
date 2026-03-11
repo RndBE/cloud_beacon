@@ -12,8 +12,12 @@ class DashboardController extends Controller
 {
     public function index(): Response
     {
-        $userId = auth()->id();
-        $loggers = Logger::where('user_id', $userId)->withCount('sensors')->get();
+        $user = auth()->user();
+        $query = Logger::query();
+        if (!$user->isSuperAdmin()) {
+            $query->where('user_id', $user->id);
+        }
+        $loggers = $query->withCount('sensors')->get();
         $loggerIds = $loggers->pluck('id');
 
         $stats = [
@@ -44,6 +48,15 @@ class DashboardController extends Controller
         return Inertia::render('dashboard', [
             'stats' => $stats,
             'recentActivity' => $recentActivity,
+            'loggers' => $loggers->map(fn(Logger $l) => [
+                'id' => $l->id,
+                'name' => $l->name,
+                'status' => $l->status,
+                'location' => $l->location,
+                'lat' => (float) $l->gps_lat,
+                'lng' => (float) $l->gps_lng,
+                'sensorsCount' => $l->sensors_count,
+            ]),
         ]);
     }
 }

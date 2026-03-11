@@ -10,7 +10,11 @@ class TopologyController extends Controller
 {
     public function index(): Response
     {
-        $loggers = Logger::where('user_id', auth()->id())
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $loggers = $query
             ->withCount('sensors')
             ->orderBy('name')
             ->get()

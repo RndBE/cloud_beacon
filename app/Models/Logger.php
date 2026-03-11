@@ -43,6 +43,12 @@ class Logger extends Model
         'gps_alt',
         'device_identifier',
         'last_connected_at',
+        'interval_read',
+        'interval_send',
+        'max_reset',
+        'ministesy_enabled',
+        'ministesy_key',
+        'ministesy_interval',
     ];
 
     protected function casts(): array
@@ -60,6 +66,11 @@ class Logger extends Model
             'log_file_count' => 'integer',
             'config_backups' => 'integer',
             'sdcard_bytes' => 'integer',
+            'interval_read' => 'integer',
+            'interval_send' => 'integer',
+            'max_reset' => 'integer',
+            'ministesy_enabled' => 'boolean',
+            'ministesy_interval' => 'integer',
         ];
     }
 
