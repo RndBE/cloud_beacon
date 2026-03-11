@@ -78,6 +78,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('users', [UserManagementController::class, 'index'])
         ->middleware('permission:users.view')
         ->name('users.index');
+    Route::post('users', [UserManagementController::class, 'store'])
+        ->middleware('permission:users.create')
+        ->name('users.store');
+    Route::put('users/{id}', [UserManagementController::class, 'update'])
+        ->middleware('permission:users.update')
+        ->name('users.update');
+    Route::delete('users/{id}', [UserManagementController::class, 'destroy'])
+        ->middleware('permission:users.delete')
+        ->name('users.destroy');
     Route::put('users/{id}/roles', [UserManagementController::class, 'updateRoles'])
         ->middleware('permission:users.manage-roles')
         ->name('users.updateRoles');
@@ -87,6 +96,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::put('loggers/{id}/platform', [LoggerController::class, 'updatePlatform'])
         ->name('loggers.updatePlatform');
+
+    // Sensor CRUD (nested under logger)
+    Route::post('loggers/{loggerId}/sensors', [\App\Http\Controllers\SensorController::class, 'store'])
+        ->name('sensors.store');
+    Route::put('loggers/{loggerId}/sensors/{id}', [\App\Http\Controllers\SensorController::class, 'update'])
+        ->name('sensors.update');
+    Route::delete('loggers/{loggerId}/sensors/{id}', [\App\Http\Controllers\SensorController::class, 'destroy'])
+        ->name('sensors.destroy');
 });
 
 // API v1 Routes

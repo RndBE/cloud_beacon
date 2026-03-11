@@ -39,6 +39,9 @@ class RolePermissionSeeder extends Seeder
             ['name' => 'roles.update', 'display_name' => 'Update Roles', 'group' => 'RBAC'],
             ['name' => 'roles.delete', 'display_name' => 'Delete Roles', 'group' => 'RBAC'],
             ['name' => 'users.view', 'display_name' => 'View Users', 'group' => 'RBAC'],
+            ['name' => 'users.create', 'display_name' => 'Create Users', 'group' => 'RBAC'],
+            ['name' => 'users.update', 'display_name' => 'Update Users', 'group' => 'RBAC'],
+            ['name' => 'users.delete', 'display_name' => 'Delete Users', 'group' => 'RBAC'],
             ['name' => 'users.manage-roles', 'display_name' => 'Manage User Roles', 'group' => 'RBAC'],
         ];
 

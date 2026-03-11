@@ -22,6 +22,7 @@ import {
     Network,
     Pencil,
     Plug,
+    Plus,
     Power,
     Radio,
     RefreshCw,
@@ -54,6 +55,16 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -126,6 +137,297 @@ interface LoggerDetail {
 
 interface LoggerShowProps {
     logger: LoggerDetail;
+}
+
+// =============================================================================
+// Sensor CRUD Panel
+// =============================================================================
+
+const SENSOR_TYPES = [
+    { value: 'temperature', label: 'Temperature', defaultUnit: '°C' },
+    { value: 'humidity', label: 'Humidity', defaultUnit: '%' },
+    { value: 'pressure', label: 'Pressure', defaultUnit: 'hPa' },
+    { value: 'water-level', label: 'Water Level', defaultUnit: 'm' },
+    { value: 'flow-rate', label: 'Flow Rate', defaultUnit: 'm³/s' },
+    { value: 'rainfall', label: 'Rainfall', defaultUnit: 'mm' },
+    { value: 'voltage', label: 'Voltage', defaultUnit: 'V' },
+    { value: 'current', label: 'Current', defaultUnit: 'A' },
+] as const;
+
+const EMPTY_FORM = {
+    name: '',
+    type: 'temperature' as string,
+    unit: '°C',
+    status: 'active' as string,
+    min_value: 0,
+    max_value: 100,
+};
+
+function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: SensorItem[] }) {
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [editingSensor, setEditingSensor] = useState<SensorItem | null>(null);
+    const [deletingSensor, setDeletingSensor] = useState<SensorItem | null>(null);
+    const [form, setForm] = useState(EMPTY_FORM);
+    const [processing, setProcessing] = useState(false);
+    const [errors, setErrors] = useState<Record<string, string>>({});
+
+    const openCreate = () => {
+        setEditingSensor(null);
+        setForm(EMPTY_FORM);
+        setErrors({});
+        setDialogOpen(true);
+    };
+
+    const openEdit = (sensor: SensorItem) => {
+        setEditingSensor(sensor);
+        setForm({
+            name: sensor.name,
+            type: sensor.type,
+            unit: sensor.unit,
+            status: sensor.status,
+            min_value: sensor.min,
+            max_value: sensor.max,
+        });
+        setErrors({});
+        setDialogOpen(true);
+    };
+
+    const openDelete = (sensor: SensorItem) => {
+        setDeletingSensor(sensor);
+        setDeleteDialogOpen(true);
+    };
+
+    const handleTypeChange = (type: string) => {
+        const found = SENSOR_TYPES.find(t => t.value === type);
+        setForm(prev => ({
+            ...prev,
+            type,
+            unit: found?.defaultUnit || prev.unit,
+        }));
+    };
+
+    const handleSubmit = () => {
+        setProcessing(true);
+        setErrors({});
+
+        const url = editingSensor
+            ? `/loggers/${loggerId}/sensors/${editingSensor.id}`
+            : `/loggers/${loggerId}/sensors`;
+
+        const method = editingSensor ? 'put' : 'post';
+
+        router[method](url, form, {
+            preserveScroll: true,
+            onSuccess: () => {
+                setDialogOpen(false);
+                setEditingSensor(null);
+                setForm(EMPTY_FORM);
+            },
+            onError: (errs) => setErrors(errs as Record<string, string>),
+            onFinish: () => setProcessing(false),
+        });
+    };
+
+    const handleDelete = () => {
+        if (!deletingSensor) return;
+        setProcessing(true);
+        router.delete(`/loggers/${loggerId}/sensors/${deletingSensor.id}`, {
+            preserveScroll: true,
+            onSuccess: () => {
+                setDeleteDialogOpen(false);
+                setDeletingSensor(null);
+            },
+            onFinish: () => setProcessing(false),
+        });
+    };
+
+    return (
+        <>
+            <Card>
+                <CardHeader>
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> Sensor Channels</CardTitle>
+                            <CardDescription>{sensors.length} channels configured</CardDescription>
+                        </div>
+                        <Button size="sm" className="gap-1.5" onClick={openCreate}>
+                            <Plus className="size-4" />
+                            Add Sensor
+                        </Button>
+                    </div>
+                </CardHeader>
+                <Separator />
+                <CardContent className="p-0">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Channel</TableHead>
+                                <TableHead>Type</TableHead>
+                                <TableHead>Value</TableHead>
+                                <TableHead>Range</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead className="hidden md:table-cell">Last Reading</TableHead>
+                                <TableHead className="w-[100px] text-right">Actions</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {sensors.map((sensor) => (
+                                <TableRow key={sensor.id}>
+                                    <TableCell className="font-medium">{sensor.name}</TableCell>
+                                    <TableCell className="capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</TableCell>
+                                    <TableCell className="font-mono font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></TableCell>
+                                    <TableCell className="font-mono text-xs text-muted-foreground">{sensor.min} – {sensor.max} {sensor.unit}</TableCell>
+                                    <TableCell>
+                                        <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
+                                            {sensor.status}
+                                        </Badge>
+                                    </TableCell>
+                                    <TableCell className="hidden text-xs text-muted-foreground md:table-cell">{sensor.lastReading || '—'}</TableCell>
+                                    <TableCell className="text-right">
+                                        <div className="flex items-center justify-end gap-1">
+                                            <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
+                                                <Pencil className="size-3.5" />
+                                            </Button>
+                                            <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
+                                                <Trash2 className="size-3.5" />
+                                            </Button>
+                                        </div>
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                            {sensors.length === 0 && (
+                                <TableRow>
+                                    <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
+                                        No sensors configured. Click "Add Sensor" to create one.
+                                    </TableCell>
+                                </TableRow>
+                            )}
+                        </TableBody>
+                    </Table>
+                </CardContent>
+            </Card>
+
+            {/* Create / Edit Dialog */}
+            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>{editingSensor ? 'Edit Sensor' : 'Add Sensor'}</DialogTitle>
+                        <DialogDescription>
+                            {editingSensor ? 'Update the sensor channel configuration.' : 'Add a new sensor channel to this logger.'}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-2">
+                        {/* Name */}
+                        <div className="grid gap-2">
+                            <Label htmlFor="sensor-name">Name</Label>
+                            <Input
+                                id="sensor-name"
+                                value={form.name}
+                                onChange={e => setForm({ ...form, name: e.target.value })}
+                                placeholder="e.g. Water Level Sensor"
+                            />
+                            {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                        </div>
+
+                        {/* Type + Unit */}
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="grid gap-2">
+                                <Label htmlFor="sensor-type">Type</Label>
+                                <select
+                                    id="sensor-type"
+                                    value={form.type}
+                                    onChange={e => handleTypeChange(e.target.value)}
+                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                >
+                                    {SENSOR_TYPES.map(t => (
+                                        <option key={t.value} value={t.value}>{t.label}</option>
+                                    ))}
+                                </select>
+                                {errors.type && <p className="text-xs text-red-500">{errors.type}</p>}
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="sensor-unit">Unit</Label>
+                                <Input
+                                    id="sensor-unit"
+                                    value={form.unit}
+                                    onChange={e => setForm({ ...form, unit: e.target.value })}
+                                    placeholder="e.g. °C, m, mm"
+                                />
+                                {errors.unit && <p className="text-xs text-red-500">{errors.unit}</p>}
+                            </div>
+                        </div>
+
+                        {/* Status */}
+                        <div className="grid gap-2">
+                            <Label htmlFor="sensor-status">Status</Label>
+                            <select
+                                id="sensor-status"
+                                value={form.status}
+                                onChange={e => setForm({ ...form, status: e.target.value })}
+                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            >
+                                <option value="active">Active</option>
+                                <option value="inactive">Inactive</option>
+                                <option value="error">Error</option>
+                            </select>
+                            {errors.status && <p className="text-xs text-red-500">{errors.status}</p>}
+                        </div>
+
+                        {/* Min / Max */}
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="grid gap-2">
+                                <Label htmlFor="sensor-min">Min Value</Label>
+                                <Input
+                                    id="sensor-min"
+                                    type="number"
+                                    step="any"
+                                    value={form.min_value}
+                                    onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })}
+                                />
+                                {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="sensor-max">Max Value</Label>
+                                <Input
+                                    id="sensor-max"
+                                    type="number"
+                                    step="any"
+                                    value={form.max_value}
+                                    onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 0 })}
+                                />
+                                {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
+                            </div>
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                        <Button onClick={handleSubmit} disabled={processing}>
+                            {processing ? 'Saving...' : editingSensor ? 'Save Changes' : 'Create Sensor'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Delete Confirmation */}
+            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete Sensor</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Are you sure you want to delete <strong>{deletingSensor?.name}</strong>? This action cannot be undone.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={handleDelete} disabled={processing}>
+                            {processing ? 'Deleting...' : 'Delete Sensor'}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </>
+    );
 }
 
 function getStatusBadgeVariant(status: string): 'default' | 'destructive' | 'secondary' {
@@ -700,46 +1002,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
 
                     {/* ==================== SENSORS ==================== */}
                     <TabsContent value="sensors" className="mt-6">
-                        <Card>
-                            <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> Sensor Channels</CardTitle>
-                                <CardDescription>{logger.sensors.length} channels configured</CardDescription>
-                            </CardHeader>
-                            <Separator />
-                            <CardContent className="p-0">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow>
-                                            <TableHead>Channel</TableHead>
-                                            <TableHead>Type</TableHead>
-                                            <TableHead>Value</TableHead>
-                                            <TableHead>Range</TableHead>
-                                            <TableHead>Status</TableHead>
-                                            <TableHead className="hidden md:table-cell">Last Reading</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {logger.sensors.map((sensor) => (
-                                            <TableRow key={sensor.id}>
-                                                <TableCell className="font-medium">{sensor.name}</TableCell>
-                                                <TableCell className="capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</TableCell>
-                                                <TableCell className="font-mono font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></TableCell>
-                                                <TableCell className="font-mono text-xs text-muted-foreground">{sensor.min} – {sensor.max} {sensor.unit}</TableCell>
-                                                <TableCell>
-                                                    <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
-                                                        {sensor.status}
-                                                    </Badge>
-                                                </TableCell>
-                                                <TableCell className="hidden text-xs text-muted-foreground md:table-cell">{sensor.lastReading || '—'}</TableCell>
-                                            </TableRow>
-                                        ))}
-                                        {logger.sensors.length === 0 && (
-                                            <TableRow><TableCell colSpan={6} className="py-12 text-center text-muted-foreground">No sensors configured.</TableCell></TableRow>
-                                        )}
-                                    </TableBody>
-                                </Table>
-                            </CardContent>
-                        </Card>
+                        <SensorCrudPanel loggerId={logger.id} sensors={logger.sensors} />
                     </TabsContent>
 
                     {/* ==================== SYSTEM ==================== */}

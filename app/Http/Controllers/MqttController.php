@@ -14,11 +14,11 @@ class MqttController extends Controller
      */
     public function requestInfo(Request $request): JsonResponse
     {
-        $request->validate(['serial_number' => 'required|string']);
+        $request->validate(['id_logger' => 'required|string']);
 
-        $serial = $request->input('serial_number');
+        $idLogger = $request->input('id_logger');
         $mqtt = new MqttService();
-        $info = $mqtt->requestInfo($serial);
+        $info = $mqtt->requestInfo($idLogger);
 
         if ($info === null) {
             return response()->json([
@@ -49,7 +49,9 @@ class MqttController extends Controller
         $results = [];
 
         foreach ($loggers as $logger) {
-            $info = $mqtt->requestInfo($logger->serial_number);
+            if (!$logger->device_identifier)
+                continue;
+            $info = $mqtt->requestInfo($logger->device_identifier);
 
             if ($info !== null) {
                 $parsed = MqttService::parseInfoResponse($info);
@@ -62,6 +64,9 @@ class MqttController extends Controller
                         'last_seen_at' => now(),
                     ]
                 ));
+
+                // Update built-in sensor values
+                $logger->syncBuiltInSensors($parsed);
 
                 $results[] = [
                     'id' => $logger->id,

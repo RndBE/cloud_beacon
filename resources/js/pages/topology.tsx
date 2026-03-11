@@ -319,9 +319,9 @@ export default function Topology({ loggers }: TopologyProps) {
                         <div className="h-24 md:h-32" />
 
                         {/* Logger Cards */}
-                        <div className="relative z-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+                        <div className="relative z-10 flex flex-wrap justify-center gap-4">
                             {loggers.map((logger, i) => (
-                                <Link key={logger.id} href={`/loggers/${logger.id}`} className="block">
+                                <Link key={logger.id} href={`/loggers/${logger.id}`} className="block w-36 sm:w-40">
                                     <div
                                         ref={el => { cardRefs.current[i] = el; }}
                                         className={`group relative flex flex-col items-center rounded-xl border-2 bg-card p-4 text-center shadow-md transition-all duration-200 hover:-translate-y-1 hover:shadow-lg ${getStatusBg(logger.status)}`}

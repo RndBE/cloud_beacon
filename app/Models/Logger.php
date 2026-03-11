@@ -88,4 +88,63 @@ class Logger extends Model
     {
         return $this->hasMany(ActivityLog::class);
     }
+
+    /**
+     * Create or update built-in sensor records from MQTT INFO response.
+     *
+     * Built-in sensors: battery (V), temperature (°C), humidity (%).
+     * Uses updateOrCreate keyed on logger_id + type so sensors are created
+     * on first provisioning and updated on every subsequent poll.
+     */
+    public function syncBuiltInSensors(array $mqttData): void
+    {
+        $sensorMap = [
+            'battery' => [
+                'name' => 'Battery',
+                'type' => 'voltage',
+                'unit' => 'V',
+                'field' => 'battery',
+                'min' => 0,
+                'max' => 24,
+            ],
+            'temperature' => [
+                'name' => 'Temperature',
+                'type' => 'temperature',
+                'unit' => '°C',
+                'field' => 'temperature',
+                'min' => -40,
+                'max' => 85,
+            ],
+            'humidity' => [
+                'name' => 'Humidity',
+                'type' => 'humidity',
+                'unit' => '%',
+                'field' => 'humidity',
+                'min' => 0,
+                'max' => 100,
+            ],
+        ];
+
+        foreach ($sensorMap as $key => $config) {
+            $value = $mqttData[$config['field']] ?? null;
+            if ($value === null)
+                continue;
+
+            Sensor::updateOrCreate(
+                [
+                    'logger_id' => $this->id,
+                    'type' => $config['type'],
+                    'name' => $config['name'],
+                ],
+                [
+                    'value' => (float) $value,
+                    'unit' => $config['unit'],
+                    'status' => 'active',
+                    'min_value' => $config['min'],
+                    'max_value' => $config['max'],
+                    'last_reading_at' => now(),
+                ]
+            );
+        }
+    }
 }

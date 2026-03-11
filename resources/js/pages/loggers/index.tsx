@@ -193,25 +193,36 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
     }
 
     // Run provisioning: Step 1 = real MQTT, Steps 2-4 = timer (data already in MQTT response)
-    const runProvisioning = useCallback(async (serial: string) => {
+    const runProvisioning = useCallback(async (idLogger: string) => {
         cancelled.current = false;
+
+        console.log('%c[MQTT] ═══════════════════════════════════════', 'color: #10b981; font-weight: bold');
+        console.log('%c[MQTT] Starting provisioning for id_logger:', 'color: #10b981', idLogger);
 
         // === Step 0: Connect to Logger (real MQTT call) ===
         setStepStatuses(prev => { const n = [...prev]; n[0] = 'running'; return n; });
         setStepProgress(0);
 
+        console.log('%c[MQTT] 📡 Sending request to /api/mqtt/info', 'color: #3b82f6', { id_logger: idLogger });
+
         // Animate progress while MQTT request is in flight
         let mqttDone = false;
         const mqttResultRef: { current: { success: boolean; data?: Record<string, string | number | null>; message?: string } | null } = { current: null };
 
-        const mqttPromise = apiFetch('/api/mqtt/info', { serial_number: serial })
+        const mqttPromise = apiFetch('/api/mqtt/info', { id_logger: idLogger })
             .then(r => r.json())
-            .then((data: { success: boolean; data?: Record<string, string | number | null>; message?: string }) => { mqttResultRef.current = data; mqttDone = true; })
-            .catch(() => { mqttResultRef.current = { success: false, message: 'Network error' }; mqttDone = true; });
+            .then((data: { success: boolean; data?: Record<string, string | number | null>; message?: string }) => {
+                console.log('%c[MQTT] 📩 Response received:', 'color: #3b82f6', data);
+                mqttResultRef.current = data; mqttDone = true;
+            })
+            .catch((err) => {
+                console.error('%c[MQTT] ❌ Network error:', 'color: #ef4444', err);
+                mqttResultRef.current = { success: false, message: 'Network error' }; mqttDone = true;
+            });
 
-        // Animate progress until MQTT returns (max ~8 sec)
+        // Animate progress until MQTT returns (max ~30 sec)
         const start = Date.now();
-        const maxMs = 8000;
+        const maxMs = 30000;
         const progressInterval = setInterval(() => {
             if (cancelled.current || mqttDone) { clearInterval(progressInterval); return; }
             const elapsed = Date.now() - start;
@@ -220,11 +231,13 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
 
         await mqttPromise;
         clearInterval(progressInterval);
+        const elapsed = ((Date.now() - start) / 1000).toFixed(2);
 
-        if (cancelled.current) return;
+        if (cancelled.current) { console.log('%c[MQTT] ⚠️ Cancelled by user', 'color: #f59e0b'); return; }
 
         const result = mqttResultRef.current;
         if (!result || !result.success) {
+            console.error(`%c[MQTT] ❌ Failed after ${elapsed}s:`, 'color: #ef4444', result?.message);
             setStepStatuses(prev => { const n = [...prev]; n[0] = 'error'; return n; });
             setStepProgress(100);
             setErrorMessage(result?.message || 'No response from logger. Device may be offline or unreachable.');
@@ -233,6 +246,8 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
         }
 
         // MQTT success — save data
+        console.log(`%c[MQTT] ✅ Success in ${elapsed}s`, 'color: #10b981; font-weight: bold');
+        console.log('%c[MQTT] 📊 Parsed data:', 'color: #10b981', result.data);
         setMqttData(result.data || null);
         setStepProgress(100);
         setStepStatuses(prev => { const n = [...prev]; n[0] = 'done'; return n; });
@@ -241,17 +256,23 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
         for (let i = 1; i < PROVISION_STEPS.length; i++) {
             if (cancelled.current) return;
 
+            console.log(`%c[MQTT] ⏳ Step ${i + 1}: ${PROVISION_STEPS[i].label}`, 'color: #8b5cf6');
             setStepProgress(0);
             setStepStatuses(prev => { const n = [...prev]; n[i] = 'running'; return n; });
 
             await animateProgress(PROVISION_STEPS[i].durationMs);
 
             if (cancelled.current) return;
+            console.log(`%c[MQTT] ✅ Step ${i + 1}: Done`, 'color: #10b981');
             setStepStatuses(prev => { const n = [...prev]; n[i] = 'done'; return n; });
             setStepProgress(100);
         }
 
-        if (!cancelled.current) setPhase('success');
+        if (!cancelled.current) {
+            console.log('%c[MQTT] 🎉 Provisioning complete!', 'color: #10b981; font-weight: bold');
+            console.log('%c[MQTT] ═══════════════════════════════════════', 'color: #10b981; font-weight: bold');
+            setPhase('success');
+        }
     }, []);
 
     // Check serial → start provisioning
@@ -291,7 +312,7 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
             setProdDevice(data.device);
             setSerialChecking(false);
             setPhase('provisioning');
-            runProvisioning(form.data.serial_number.trim());
+            runProvisioning(data.device.deviceId);
         } catch {
             setSerialError('Koneksi gagal. Silakan coba lagi.');
             setSerialChecking(false);
@@ -321,7 +342,7 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
         setStepProgress(0);
         setErrorMessage('');
         setMqttData(null);
-        runProvisioning(form.data.serial_number.trim());
+        if (prodDevice?.deviceId) runProvisioning(prodDevice.deviceId);
     }
 
     const overallProgress = (() => {
@@ -442,7 +463,7 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
                                                 {isActive && (
                                                     <>
                                                         <p className="mt-0.5 text-xs text-muted-foreground animate-in fade-in slide-in-from-left-2 duration-200">
-                                                            {i === 0 ? `Publishing to sub_${form.data.serial_number}…` : step.description}
+                                                            {i === 0 ? `Publishing to sub_${prodDevice?.deviceId ?? '...'}…` : step.description}
                                                         </p>
                                                         <div className="mt-2">
                                                             <Progress value={stepProgress} className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100" />

@@ -193,11 +193,45 @@ class LoggerController extends Controller
             $validated['last_seen_at'] = now();
         }
 
-        Logger::create($validated);
+        $logger = Logger::create($validated);
+
+        // Create built-in sensors from MQTT data (battery, temperature, humidity)
+        if (!empty($mqttData)) {
+            $logger->syncBuiltInSensors($mqttData);
+        }
 
         // Mark production device as registered
         ProductionDevice::where('serial_number', $validated['serial_number'])
             ->update(['is_registered' => true]);
+
+        // Log initial setup
+        ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'device_registered',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => "Logger \"{$logger->name}\" ({$logger->serial_number}) registered successfully.",
+            'created_at' => now(),
+        ]);
+
+        if (!empty($mqttData)) {
+            $details = collect([
+                'battery' => isset($mqttData['battery']) ? "{$mqttData['battery']}V" : null,
+                'temperature' => isset($mqttData['temperature']) ? "{$mqttData['temperature']}°C" : null,
+                'humidity' => isset($mqttData['humidity']) ? "{$mqttData['humidity']}%" : null,
+                'ip' => $mqttData['ip_address'] ?? null,
+                'gps' => isset($mqttData['gps_lat']) ? "{$mqttData['gps_lat']},{$mqttData['gps_lng']}" : null,
+            ])->filter()->map(fn($v, $k) => "{$k}: {$v}")->implode(', ');
+
+            ActivityLog::create([
+                'logger_id' => $logger->id,
+                'action' => 'mqtt_provisioned',
+                'status' => 'success',
+                'level' => 'info',
+                'message' => "Initial MQTT provisioning completed. Data: {$details}",
+                'created_at' => now(),
+            ]);
+        }
 
         return redirect()->route('loggers.index')->with('success', 'Logger created successfully.');
     }
