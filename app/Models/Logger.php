@@ -8,6 +8,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Logger extends Model
 {
+    /**
+     * Sensor types that are built-in to the logger hardware (not external).
+     * These are read from MQTT INFO and stored on the loggers table directly.
+     */
+    public const BUILTIN_SENSOR_TYPES = ['voltage', 'temperature', 'humidity'];
+
     protected $fillable = [
         'user_id',
         'name',
@@ -87,6 +93,15 @@ class Logger extends Model
     public function activityLogs(): HasMany
     {
         return $this->hasMany(ActivityLog::class);
+    }
+
+    /**
+     * External sensors only (excludes built-in battery/temperature/humidity).
+     */
+    public function externalSensors(): HasMany
+    {
+        return $this->hasMany(Sensor::class)
+            ->whereNotIn('type', self::BUILTIN_SENSOR_TYPES);
     }
 
     /**

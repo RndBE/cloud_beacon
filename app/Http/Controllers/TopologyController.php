@@ -15,7 +15,7 @@ class TopologyController extends Controller
             $query->where('user_id', auth()->id());
         }
         $loggers = $query
-            ->withCount('sensors')
+            ->withCount('externalSensors')
             ->orderBy('name')
             ->get()
             ->map(fn(Logger $logger) => [
@@ -28,7 +28,7 @@ class TopologyController extends Controller
                 'firmwareVersion' => $logger->firmware_version,
                 'model' => $logger->model,
                 'signalStrength' => $logger->signal_strength,
-                'sensorsCount' => $logger->sensors_count,
+                'sensorsCount' => $logger->external_sensors_count,
             ]);
 
         return Inertia::render('topology', [

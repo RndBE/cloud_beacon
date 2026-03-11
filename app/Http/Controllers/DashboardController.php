@@ -17,16 +17,18 @@ class DashboardController extends Controller
         if (!$user->isSuperAdmin()) {
             $query->where('user_id', $user->id);
         }
-        $loggers = $query->withCount('sensors')->get();
+        $loggers = $query->withCount('externalSensors')->get();
         $loggerIds = $loggers->pluck('id');
+
+        $builtinTypes = Logger::BUILTIN_SENSOR_TYPES;
 
         $stats = [
             'totalLoggers' => $loggers->count(),
             'onlineLoggers' => $loggers->where('status', 'online')->count(),
             'offlineLoggers' => $loggers->where('status', 'offline')->count(),
             'warningLoggers' => $loggers->where('status', 'warning')->count(),
-            'totalSensors' => Sensor::whereIn('logger_id', $loggerIds)->count(),
-            'activeSensors' => Sensor::whereIn('logger_id', $loggerIds)->where('status', 'active')->count(),
+            'totalSensors' => Sensor::whereIn('logger_id', $loggerIds)->whereNotIn('type', $builtinTypes)->count(),
+            'activeSensors' => Sensor::whereIn('logger_id', $loggerIds)->whereNotIn('type', $builtinTypes)->where('status', 'active')->count(),
         ];
 
         $recentActivity = ActivityLog::with('logger:id,name')
@@ -55,7 +57,7 @@ class DashboardController extends Controller
                 'location' => $l->location,
                 'lat' => (float) $l->gps_lat,
                 'lng' => (float) $l->gps_lng,
-                'sensorsCount' => $l->sensors_count,
+                'sensorsCount' => $l->external_sensors_count,
             ]),
         ]);
     }

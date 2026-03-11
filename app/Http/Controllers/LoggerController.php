@@ -19,7 +19,7 @@ class LoggerController extends Controller
             $query->where('user_id', auth()->id());
         }
         $loggers = $query
-            ->withCount('sensors')
+            ->withCount('externalSensors')
             ->orderBy('name')
             ->get()
             ->map(fn(Logger $logger) => [
@@ -32,7 +32,7 @@ class LoggerController extends Controller
                 'firmwareVersion' => $logger->firmware_version,
                 'lastSeen' => $logger->last_seen_at?->format('Y-m-d H:i:s'),
                 'lastConnected' => $logger->last_connected_at?->format('Y-m-d H:i:s'),
-                'sensorsCount' => $logger->sensors_count,
+                'sensorsCount' => $logger->external_sensors_count,
                 'battery' => $logger->battery,
                 'temperature' => $logger->temperature,
                 'humidity' => $logger->humidity,
@@ -46,7 +46,7 @@ class LoggerController extends Controller
 
     public function show(int $id): Response
     {
-        $query = Logger::with(['sensors', 'activityLogs' => fn($q) => $q->latest('created_at')->limit(20)]);
+        $query = Logger::with(['externalSensors', 'activityLogs' => fn($q) => $q->latest('created_at')->limit(20)]);
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
         }
@@ -93,7 +93,7 @@ class LoggerController extends Controller
             'ministesyEnabled' => (bool) $logger->ministesy_enabled,
             'ministesyKey' => $logger->ministesy_key,
             'ministesyInterval' => $logger->ministesy_interval ?? 10,
-            'sensors' => $logger->sensors->map(fn($s) => [
+            'sensors' => $logger->externalSensors->map(fn($s) => [
                 'id' => $s->id,
                 'name' => $s->name,
                 'type' => $s->type,
@@ -195,10 +195,8 @@ class LoggerController extends Controller
 
         $logger = Logger::create($validated);
 
-        // Create built-in sensors from MQTT data (battery, temperature, humidity)
-        if (!empty($mqttData)) {
-            $logger->syncBuiltInSensors($mqttData);
-        }
+        // Internal sensor data (battery, temperature, humidity) is stored
+        // directly on the loggers table — no longer synced to sensors table.
 
         // Mark production device as registered
         ProductionDevice::where('serial_number', $validated['serial_number'])

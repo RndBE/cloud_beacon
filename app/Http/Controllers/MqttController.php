@@ -65,8 +65,8 @@ class MqttController extends Controller
                     ]
                 ));
 
-                // Update built-in sensor values
-                $logger->syncBuiltInSensors($parsed);
+                // Internal sensor data (battery, temp, humidity) is stored
+                // directly on the loggers table — no sensor table sync needed.
 
                 $results[] = [
                     'id' => $logger->id,

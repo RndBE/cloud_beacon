@@ -3,6 +3,7 @@ import {
     Activity,
     AlertTriangle,
     ArrowLeft,
+    Battery,
     CheckCircle2,
     ChevronDown,
     ChevronRight,
@@ -12,6 +13,7 @@ import {
     Cpu,
     Database,
     Download,
+    Droplets,
     Eye,
     EyeOff,
     HardDrive,
@@ -131,6 +133,10 @@ interface LoggerDetail {
     ministesyEnabled: boolean;
     ministesyKey: string | null;
     ministesyInterval: number;
+    battery: string | null;
+    temperature: string | null;
+    humidity: string | null;
+    lastConnected: string | null;
     sensors: SensorItem[];
     activityLogs: LogItem[];
 }
@@ -1007,6 +1013,60 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
 
                     {/* ==================== SYSTEM ==================== */}
                     <TabsContent value="system" className="mt-6">
+                        {/* Internal Sensors */}
+                        <Card className="mb-4">
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> Internal Sensors</CardTitle>
+                                <CardDescription>Built-in sensor readings from device hardware</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                    <div className="flex items-center gap-3 rounded-lg border p-4">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10">
+                                            <Battery className="size-5 text-amber-500" />
+                                        </div>
+                                        <div>
+                                            <p className="text-xs text-muted-foreground">Battery</p>
+                                            <p className="text-lg font-bold font-mono">
+                                                {logger.battery ? `${logger.battery}` : '—'}
+                                                {logger.battery && <span className="text-xs font-normal text-muted-foreground ml-1">V</span>}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-3 rounded-lg border p-4">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
+                                            <Thermometer className="size-5 text-red-500" />
+                                        </div>
+                                        <div>
+                                            <p className="text-xs text-muted-foreground">Temperature</p>
+                                            <p className="text-lg font-bold font-mono">
+                                                {logger.temperature ? `${logger.temperature}` : '—'}
+                                                {logger.temperature && <span className="text-xs font-normal text-muted-foreground ml-1">°C</span>}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-3 rounded-lg border p-4">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-500/10">
+                                            <Droplets className="size-5 text-blue-500" />
+                                        </div>
+                                        <div>
+                                            <p className="text-xs text-muted-foreground">Humidity</p>
+                                            <p className="text-lg font-bold font-mono">
+                                                {logger.humidity ? `${logger.humidity}` : '—'}
+                                                {logger.humidity && <span className="text-xs font-normal text-muted-foreground ml-1">%</span>}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                                {logger.lastConnected && (
+                                    <p className="mt-3 text-xs text-muted-foreground flex items-center gap-1">
+                                        <Clock className="size-3" />
+                                        Last updated: {logger.lastConnected}
+                                    </p>
+                                )}
+                            </CardContent>
+                        </Card>
+
                         <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
                                 <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> System Information</CardTitle></CardHeader>
