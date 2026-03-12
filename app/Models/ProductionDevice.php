@@ -11,6 +11,7 @@ class ProductionDevice extends Model
         'device_id',
         'model',
         'hardware_version',
+        'firmware_version',
         'batch_number',
         'production_date',
         'tested_by',

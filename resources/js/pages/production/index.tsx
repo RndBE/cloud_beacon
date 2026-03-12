@@ -55,6 +55,7 @@ interface ProductionDeviceItem {
     deviceId: string | null;
     model: string | null;
     hardwareVersion: string | null;
+    firmwareVersion: string | null;
     batchNumber: string | null;
     productionDate: string | null;
     testedBy: string | null;
@@ -66,6 +67,7 @@ interface ProductionDeviceItem {
 
 interface ProductionPageProps {
     devices: ProductionDeviceItem[];
+    deviceModels: string[];
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -81,7 +83,7 @@ function getQcBadge(status: string) {
     }
 }
 
-export default function ProductionIndex({ devices }: ProductionPageProps) {
+export default function ProductionIndex({ devices, deviceModels }: ProductionPageProps) {
     const [search, setSearch] = useState('');
     const [qcFilter, setQcFilter] = useState<string>('all');
     const [addOpen, setAddOpen] = useState(false);
@@ -94,7 +96,7 @@ export default function ProductionIndex({ devices }: ProductionPageProps) {
         device_id: '',
         model: '',
         hardware_version: '',
-        batch_number: '',
+        firmware_version: '',
         production_date: '',
         tested_by: '',
         qc_status: 'pending',
@@ -111,7 +113,7 @@ export default function ProductionIndex({ devices }: ProductionPageProps) {
                 search === '' ||
                 d.serialNumber.toLowerCase().includes(search.toLowerCase()) ||
                 (d.model && d.model.toLowerCase().includes(search.toLowerCase())) ||
-                (d.batchNumber && d.batchNumber.toLowerCase().includes(search.toLowerCase())) ||
+
                 (d.deviceId && d.deviceId.toLowerCase().includes(search.toLowerCase()));
 
             const matchQc = qcFilter === 'all' || d.qcStatus === qcFilter;
@@ -217,7 +219,7 @@ export default function ProductionIndex({ devices }: ProductionPageProps) {
                                 <div className="relative">
                                     <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <Input
-                                        placeholder="Search serial, model, batch…"
+                                        placeholder="Search serial, model…"
                                         value={search}
                                         onChange={(e) => setSearch(e.target.value)}
                                         className="w-full pl-9 sm:w-[240px]"
@@ -247,7 +249,7 @@ export default function ProductionIndex({ devices }: ProductionPageProps) {
                                         <DialogHeader>
                                             <DialogTitle>Import Devices from CSV</DialogTitle>
                                             <DialogDescription>
-                                                Upload a CSV file with columns: serial_number, device_id, model, hardware_version, batch_number, production_date, tested_by, qc_status, notes
+                                                Upload a CSV file with columns: serial_number, device_id, model, hardware_version, firmware_version, production_date, tested_by, qc_status, notes
                                             </DialogDescription>
                                         </DialogHeader>
                                         <form onSubmit={handleImportSubmit} className="grid gap-4 py-2">
@@ -303,38 +305,45 @@ export default function ProductionIndex({ devices }: ProductionPageProps) {
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="grid gap-2">
                                                     <Label htmlFor="prod_model">Model</Label>
-                                                    <Input id="prod_model" value={form.data.model} onChange={e => form.setData('model', e.target.value)} placeholder="e.g. Beacon Logger Pro X3" />
-                                                </div>
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="hardware_version">Hardware Version</Label>
-                                                    <Input id="hardware_version" value={form.data.hardware_version} onChange={e => form.setData('hardware_version', e.target.value)} placeholder="e.g. v4.0" />
-                                                </div>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="batch_number">Batch Number</Label>
-                                                    <Input id="batch_number" value={form.data.batch_number} onChange={e => form.setData('batch_number', e.target.value)} placeholder="e.g. BATCH-2025-Q1-001" />
-                                                </div>
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="production_date">Production Date</Label>
-                                                    <Input id="production_date" type="date" value={form.data.production_date} onChange={e => form.setData('production_date', e.target.value)} />
-                                                </div>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="tested_by">Tested By</Label>
-                                                    <Input id="tested_by" value={form.data.tested_by} onChange={e => form.setData('tested_by', e.target.value)} placeholder="e.g. QC Team A" />
+                                                    <Select value={form.data.model} onValueChange={v => form.setData('model', v)}>
+                                                        <SelectTrigger id="prod_model" className="w-full"><SelectValue placeholder="Select model" /></SelectTrigger>
+                                                        <SelectContent>
+                                                            {deviceModels.map((m) => (
+                                                                <SelectItem key={m} value={m}>{m}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
                                                 </div>
                                                 <div className="grid gap-2">
                                                     <Label htmlFor="qc_status">QC Status *</Label>
                                                     <Select value={form.data.qc_status} onValueChange={v => form.setData('qc_status', v)}>
-                                                        <SelectTrigger id="qc_status"><SelectValue /></SelectTrigger>
+                                                        <SelectTrigger id="qc_status" className="w-full"><SelectValue /></SelectTrigger>
                                                         <SelectContent>
                                                             <SelectItem value="pending">Pending</SelectItem>
                                                             <SelectItem value="passed">Passed</SelectItem>
                                                             <SelectItem value="failed">Failed</SelectItem>
                                                         </SelectContent>
                                                     </Select>
+                                                </div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="grid gap-2">
+                                                    <Label htmlFor="hardware_version">Hardware Version</Label>
+                                                    <Input id="hardware_version" value={form.data.hardware_version} onChange={e => form.setData('hardware_version', e.target.value)} placeholder="e.g. v4.0" />
+                                                </div>
+                                                <div className="grid gap-2">
+                                                    <Label htmlFor="firmware_version">Firmware Version</Label>
+                                                    <Input id="firmware_version" value={form.data.firmware_version} onChange={e => form.setData('firmware_version', e.target.value)} placeholder="e.g. v1.2.3" />
+                                                </div>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="grid gap-2">
+                                                    <Label htmlFor="production_date">Production Date</Label>
+                                                    <Input id="production_date" type="date" value={form.data.production_date} onChange={e => form.setData('production_date', e.target.value)} />
+                                                </div>
+                                                <div className="grid gap-2">
+                                                    <Label htmlFor="tested_by">Tested By</Label>
+                                                    <Input id="tested_by" value={form.data.tested_by} onChange={e => form.setData('tested_by', e.target.value)} placeholder="e.g. QC Team A" />
                                                 </div>
                                             </div>
                                             <div className="grid gap-2">
@@ -361,7 +370,7 @@ export default function ProductionIndex({ devices }: ProductionPageProps) {
                                     <TableHead>Serial Number</TableHead>
                                     <TableHead className="hidden md:table-cell">Device ID</TableHead>
                                     <TableHead className="hidden lg:table-cell">Model</TableHead>
-                                    <TableHead className="hidden lg:table-cell">Batch</TableHead>
+
                                     <TableHead>QC Status</TableHead>
                                     <TableHead>Registered</TableHead>
                                     <TableHead className="hidden md:table-cell">Production Date</TableHead>
@@ -374,7 +383,7 @@ export default function ProductionIndex({ devices }: ProductionPageProps) {
                                         <TableCell className="font-mono text-sm font-medium">{device.serialNumber}</TableCell>
                                         <TableCell className="hidden text-sm text-muted-foreground md:table-cell">{device.deviceId || '—'}</TableCell>
                                         <TableCell className="hidden text-sm lg:table-cell">{device.model || '—'}</TableCell>
-                                        <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">{device.batchNumber || '—'}</TableCell>
+
                                         <TableCell>{getQcBadge(device.qcStatus)}</TableCell>
                                         <TableCell>
                                             {device.isRegistered ? (

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ActivityLog;
+use App\Models\DeviceModel;
 use App\Models\Logger;
 use App\Models\ProductionDevice;
 use Illuminate\Http\RedirectResponse;
@@ -64,6 +65,9 @@ class LoggerController extends Controller
             'ipAddress' => $logger->ip_address,
             'macAddress' => $logger->mac_address,
             'model' => $logger->model,
+            'modelImage' => $logger->model
+                ? optional(DeviceModel::where('name', $logger->model)->first(), fn($m) => $m->image ? asset('storage/' . $m->image) : null)
+                : null,
             'uptime' => $logger->uptime,
             'cpuUsage' => $logger->cpu_usage,
             'memoryUsage' => $logger->memory_usage,
@@ -193,14 +197,26 @@ class LoggerController extends Controller
             $validated['last_seen_at'] = now();
         }
 
+        // Pull model & firmware_version from production device
+        $productionDevice = ProductionDevice::where('serial_number', $validated['serial_number'])->first();
+        if ($productionDevice) {
+            if ($productionDevice->model && empty($validated['model'])) {
+                $validated['model'] = $productionDevice->model;
+            }
+            if ($productionDevice->firmware_version && empty($validated['firmware_version'])) {
+                $validated['firmware_version'] = $productionDevice->firmware_version;
+            }
+        }
+
         $logger = Logger::create($validated);
 
         // Internal sensor data (battery, temperature, humidity) is stored
         // directly on the loggers table — no longer synced to sensors table.
 
         // Mark production device as registered
-        ProductionDevice::where('serial_number', $validated['serial_number'])
-            ->update(['is_registered' => true]);
+        if ($productionDevice) {
+            $productionDevice->update(['is_registered' => true]);
+        }
 
         // Log initial setup
         ActivityLog::create([

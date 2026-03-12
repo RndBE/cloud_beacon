@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DeviceModelController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\ProductionController;
@@ -50,6 +51,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('production/{id}', [ProductionController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.destroy');
+
+    Route::get('production/models', [DeviceModelController::class, 'index'])
+        ->middleware('permission:production.view')
+        ->name('production.models.index');
+    Route::post('production/models', [DeviceModelController::class, 'store'])
+        ->middleware('permission:production.create')
+        ->name('production.models.store');
+    Route::post('production/models/{id}', [DeviceModelController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.models.update');
+    Route::delete('production/models/{id}', [DeviceModelController::class, 'destroy'])
+        ->middleware('permission:production.delete')
+        ->name('production.models.destroy');
 
     Route::post('api/check-serial', [ProductionController::class, 'checkSerial'])
         ->middleware('permission:production.check-serial')

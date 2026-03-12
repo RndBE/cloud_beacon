@@ -15,6 +15,7 @@ interface TopologyLogger {
     connectionType: string;
     firmwareVersion: string;
     model: string;
+    modelImage: string | null;
     signalStrength: number;
     sensorsCount: number;
 }
@@ -225,9 +226,25 @@ export default function Topology({ loggers }: TopologyProps) {
                     </Button>
                 </div>
 
-                {/* Hint */}
-                <div className="absolute bottom-4 left-4 z-20 rounded-md bg-background/60 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur-sm">
-                    Scroll to zoom · Drag to pan
+                {/* Legend + Hint */}
+                <div className="absolute bottom-4 left-4 z-20 flex flex-col gap-2 rounded-lg border bg-background/80 px-3 py-2.5 text-[11px] shadow-sm backdrop-blur-sm">
+                    <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1.5">
+                            <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="#10b981" strokeWidth="2" /></svg>
+                            <span className="text-muted-foreground">Online</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                            <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="#f59e0b" strokeWidth="2" /></svg>
+                            <span className="text-muted-foreground">Warning</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                            <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="#ef4444" strokeWidth="2" strokeDasharray="6 4" /></svg>
+                            <span className="text-muted-foreground">Offline</span>
+                        </div>
+                    </div>
+                    <div className="border-t pt-1.5 text-[10px] text-muted-foreground/60">
+                        Scroll to zoom · Drag to pan
+                    </div>
                 </div>
 
                 {/* Pannable & Zoomable viewport */}
@@ -331,20 +348,21 @@ export default function Topology({ loggers }: TopologyProps) {
                                             logger.status === 'warning' ? 'bg-amber-500 animate-pulse' : 'bg-red-500'
                                         }`} />
 
-                                        <div className={`flex h-11 w-11 items-center justify-center rounded-lg ${
-                                            logger.status === 'online' ? 'bg-emerald-500/10 text-emerald-500' :
-                                            logger.status === 'warning' ? 'bg-amber-500/10 text-amber-500' : 'bg-red-500/10 text-red-500'
-                                        }`}>
-                                            <Radio className="size-6" />
-                                        </div>
+                                        {logger.modelImage ? (
+                                            <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-lg">
+                                                <img src={logger.modelImage} alt={logger.model} className="h-full w-full object-contain" />
+                                            </div>
+                                        ) : (
+                                            <div className={`flex h-24 w-24 items-center justify-center rounded-lg ${
+                                                logger.status === 'online' ? 'bg-emerald-500/10 text-emerald-500' :
+                                                logger.status === 'warning' ? 'bg-amber-500/10 text-amber-500' : 'bg-red-500/10 text-red-500'
+                                            }`}>
+                                                <Radio className="size-10" />
+                                            </div>
+                                        )}
 
                                         <h3 className="mt-2 text-xs font-semibold leading-tight line-clamp-2">{logger.name}</h3>
                                         <p className="mt-0.5 text-[10px] text-muted-foreground">{logger.model || logger.serialNumber}</p>
-
-                                        <div className="mt-2 flex items-center gap-1 text-[10px] text-muted-foreground">
-                                            {getConnectionIcon(logger.connectionType)}
-                                            <span className="uppercase">{logger.connectionType}</span>
-                                        </div>
 
                                         <Badge variant="outline" className="mt-2 text-[10px] px-1.5 py-0">
                                             {logger.sensorsCount} sensor{logger.sensorsCount !== 1 ? 's' : ''}

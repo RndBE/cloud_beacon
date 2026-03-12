@@ -1,5 +1,6 @@
 import { Head, Link } from '@inertiajs/react';
 import { lazy, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     Activity,
     AlertTriangle,
@@ -85,56 +86,57 @@ function getLogLevelColor(level: string) {
 
 export default function Dashboard({ stats, recentActivity, loggers }: DashboardProps) {
     const activeAlerts = stats.warningLoggers + stats.offlineLoggers;
+    const { t } = useTranslation();
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-            <Head title="Dashboard" />
+            <Head title={t('dashboard.title')} />
             <div className="flex flex-col gap-6 p-4 md:p-6">
                 {/* Stats Row */}
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                     <Card>
-                        <CardContent className="flex items-center gap-4 pt-2">
+                        <CardContent className="flex items-center gap-4 px-4 py-0">
                             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-500/10">
                                 <Radio className="size-6 text-blue-500" />
                             </div>
                             <div className="min-w-0">
-                                <p className="text-sm text-muted-foreground">Total Loggers</p>
+                                <p className="text-sm text-muted-foreground">{t('dashboard.total_loggers')}</p>
                                 <p className="text-2xl font-bold">{stats.totalLoggers}</p>
                             </div>
                         </CardContent>
                     </Card>
 
                     <Card>
-                        <CardContent className="flex items-center gap-4 pt-2">
+                        <CardContent className="flex items-center gap-4 px-4 py-0">
                             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10">
                                 <Wifi className="size-6 text-emerald-500" />
                             </div>
                             <div className="min-w-0">
-                                <p className="text-sm text-muted-foreground">Online</p>
+                                <p className="text-sm text-muted-foreground">{t('dashboard.online')}</p>
                                 <p className="text-2xl font-bold text-emerald-600">{stats.onlineLoggers}</p>
                             </div>
                         </CardContent>
                     </Card>
 
                     <Card>
-                        <CardContent className="flex items-center gap-4 pt-2">
+                        <CardContent className="flex items-center gap-4 px-4 py-0">
                             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-red-500/10">
                                 <AlertTriangle className="size-6 text-red-500" />
                             </div>
                             <div className="min-w-0">
-                                <p className="text-sm text-muted-foreground">Active Alerts</p>
+                                <p className="text-sm text-muted-foreground">{t('dashboard.active_alerts')}</p>
                                 <p className="text-2xl font-bold text-red-600">{activeAlerts}</p>
                             </div>
                         </CardContent>
                     </Card>
 
                     <Card>
-                        <CardContent className="flex items-center gap-4 pt-2">
+                        <CardContent className="flex items-center gap-4 px-4 py-0">
                             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-violet-500/10">
                                 <Activity className="size-6 text-violet-500" />
                             </div>
                             <div className="min-w-0">
-                                <p className="text-sm text-muted-foreground">Active Sensors</p>
+                                <p className="text-sm text-muted-foreground">{t('dashboard.active_sensors')}</p>
                                 <p className="text-2xl font-bold">{stats.activeSensors}<span className="text-sm font-normal text-muted-foreground">/{stats.totalSensors}</span></p>
                             </div>
                         </CardContent>
@@ -148,12 +150,12 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                             <MapPin className="size-5" />
                             Logger Distribution Map
                         </CardTitle>
-                        <CardDescription>Geographic overview of all loggers</CardDescription>
+                        <CardDescription>{t('dashboard.logger_map_desc')}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Suspense fallback={
                             <div className="flex h-[400px] items-center justify-center rounded-lg border border-dashed text-muted-foreground">
-                                Loading map...
+                                {t('dashboard.loading_map')}
                             </div>
                         }>
                             <LoggerMap loggers={loggers} />
@@ -169,7 +171,7 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                 <Server className="size-5" />
                                 Logger Health
                             </CardTitle>
-                            <CardDescription>Connection status overview</CardDescription>
+                            <CardDescription>{t('dashboard.connection_status')}</CardDescription>
                         </CardHeader>
                         <CardContent>
                             <div className="space-y-5">
@@ -213,7 +215,7 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                 <HardDrive className="size-5" />
                                 Quick Actions
                             </CardTitle>
-                            <CardDescription>Batch operations</CardDescription>
+                            <CardDescription>{t('dashboard.batch_operations')}</CardDescription>
                         </CardHeader>
                         <CardContent>
                             <div className="grid gap-3">
@@ -223,15 +225,15 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                 </Button>
                                 <Button variant="outline" className="justify-start gap-2">
                                     <Power className="size-4" />
-                                    Reboot All Devices
+                                    {t('dashboard.reboot_devices')}
                                 </Button>
                                 <Button variant="outline" className="justify-start gap-2">
                                     <Save className="size-4" />
-                                    Backup All Configs
+                                    {t('dashboard.backup_configs')}
                                 </Button>
                                 <Button variant="outline" className="justify-start gap-2">
                                     <CloudDownload className="size-4" />
-                                    Check Firmware Updates
+                                    {t('dashboard.check_firmware')}
                                 </Button>
                             </div>
                         </CardContent>
@@ -247,11 +249,11 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                     <Activity className="size-5" />
                                     Recent Activity
                                 </CardTitle>
-                                <CardDescription>Latest events across all loggers</CardDescription>
+                                <CardDescription>{t('dashboard.latest_events')}</CardDescription>
                             </div>
                             <Link href="/loggers">
                                 <Button variant="ghost" size="sm" className="gap-1">
-                                    View all loggers
+                                    {t('dashboard.view_all_loggers')}
                                     <ArrowRight className="size-4" />
                                 </Button>
                             </Link>
@@ -262,11 +264,11 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead className="w-[180px]">Timestamp</TableHead>
-                                    <TableHead>Device</TableHead>
-                                    <TableHead>Action</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead className="hidden lg:table-cell">Message</TableHead>
+                                    <TableHead className="w-[180px]">{t('dashboard.timestamp')}</TableHead>
+                                    <TableHead>{t('dashboard.device')}</TableHead>
+                                    <TableHead>{t('dashboard.action')}</TableHead>
+                                    <TableHead>{t('dashboard.status')}</TableHead>
+                                    <TableHead className="hidden lg:table-cell">{t('dashboard.message')}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -307,7 +309,7 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                 {recentActivity.length === 0 && (
                                     <TableRow>
                                         <TableCell colSpan={5} className="py-12 text-center text-muted-foreground">
-                                            No recent activity.
+                                            {t('dashboard.no_recent_activity')}
                                         </TableCell>
                                     </TableRow>
                                 )}

@@ -10,6 +10,7 @@ import {
     Users,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -67,6 +68,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 ];
 
 export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
+    const { t } = useTranslation();
     const [addOpen, setAddOpen] = useState(false);
     const [editTarget, setEditTarget] = useState<RoleItem | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<RoleItem | null>(null);
@@ -179,7 +181,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-            <Head title="Role Management" />
+            <Head title={t('roles.title')} />
             <div className="flex flex-col gap-6 p-4 md:p-6">
                 {/* Summary */}
                 <div className="grid gap-3 sm:grid-cols-3">
@@ -189,7 +191,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                         </div>
                         <div>
                             <p className="text-2xl font-bold">{roles.length}</p>
-                            <p className="text-xs text-muted-foreground">Total Roles</p>
+                            <p className="text-xs text-muted-foreground">{t('roles.total_roles')}</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-3 rounded-xl border p-4">
@@ -198,7 +200,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                         </div>
                         <div>
                             <p className="text-2xl font-bold">{allPermissions.length}</p>
-                            <p className="text-xs text-muted-foreground">Total Permissions</p>
+                            <p className="text-xs text-muted-foreground">{t('roles.total_permissions')}</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-3 rounded-xl border p-4">
@@ -209,7 +211,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                             <p className="text-2xl font-bold">
                                 {roles.reduce((sum, r) => sum + r.usersCount, 0)}
                             </p>
-                            <p className="text-xs text-muted-foreground">Assigned Users</p>
+                            <p className="text-xs text-muted-foreground">{t('roles.assigned_users')}</p>
                         </div>
                     </div>
                 </div>
@@ -217,29 +219,29 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                 {/* Roles Grid */}
                 <div className="flex items-center justify-between">
                     <div>
-                        <h2 className="text-lg font-semibold">Roles</h2>
+                        <h2 className="text-lg font-semibold">{t('roles.roles')}</h2>
                         <p className="text-sm text-muted-foreground">
-                            Manage roles and their permissions
+                            {t('roles.manage_roles_desc')}
                         </p>
                     </div>
                     <Dialog open={addOpen} onOpenChange={setAddOpen}>
                         <DialogTrigger asChild>
                             <Button className="gap-1.5">
                                 <Plus className="size-4" />
-                                Add Role
+                                {t('roles.add_role')}
                             </Button>
                         </DialogTrigger>
                         <DialogContent className="sm:max-w-lg">
                             <DialogHeader>
-                                <DialogTitle>Create New Role</DialogTitle>
+                                <DialogTitle>{t('roles.create_new_role')}</DialogTitle>
                                 <DialogDescription>
-                                    Define a new role and assign permissions.
+                                    {t('roles.create_role_desc')}
                                 </DialogDescription>
                             </DialogHeader>
                             <form onSubmit={handleCreate} className="grid gap-4 py-2">
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="grid gap-2">
-                                        <Label htmlFor="name">Slug *</Label>
+                                        <Label htmlFor="name">{t('roles.slug')} *</Label>
                                         <Input
                                             id="name"
                                             value={createForm.data.name}
@@ -255,7 +257,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                         )}
                                     </div>
                                     <div className="grid gap-2">
-                                        <Label htmlFor="display_name">Display Name *</Label>
+                                        <Label htmlFor="display_name">{t('roles.display_name')} *</Label>
                                         <Input
                                             id="display_name"
                                             value={createForm.data.display_name}
@@ -272,7 +274,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                     </div>
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="description">Description</Label>
+                                    <Label htmlFor="description">{t('roles.description')}</Label>
                                     <Textarea
                                         id="description"
                                         value={createForm.data.description}
@@ -284,7 +286,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                     />
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label>Permissions</Label>
+                                    <Label>{t('roles.permissions')}</Label>
                                     <PermissionGrid
                                         selected={createForm.data.permissions}
                                         onChange={(id) =>
@@ -302,10 +304,10 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                         variant="outline"
                                         onClick={() => setAddOpen(false)}
                                     >
-                                        Cancel
+                                        {t('common.cancel')}
                                     </Button>
                                     <Button type="submit" disabled={createForm.processing}>
-                                        {createForm.processing ? 'Creating…' : 'Create Role'}
+                                        {createForm.processing ? t('roles.creating') : t('roles.create_role')}
                                     </Button>
                                 </DialogFooter>
                             </form>
@@ -366,14 +368,14 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                         {role.usersCount} user{role.usersCount !== 1 ? 's' : ''}
                                     </span>
                                     <span>
-                                        {role.name === 'superadmin' ? 'All' : role.permissions.length} permissions
+                                        {role.name === 'superadmin' ? 'All' : role.permissions.length} {t('roles.permissions').toLowerCase()}
                                     </span>
                                 </div>
                                 <div className="flex flex-wrap gap-1">
                                     {role.name === 'superadmin' ? (
                                         <Badge variant="default" className="gap-1 bg-amber-500/80">
                                             <ShieldCheck className="size-3" />
-                                            All Permissions
+                                            {t('roles.all_permissions')}
                                         </Badge>
                                     ) : (
                                         role.permissions.slice(0, 6).map((p) => (
@@ -388,7 +390,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                     )}
                                     {role.name !== 'superadmin' && role.permissions.length > 6 && (
                                         <Badge variant="outline" className="text-[10px]">
-                                            +{role.permissions.length - 6} more
+                                            +{role.permissions.length - 6} {t('roles.more_permissions', { count: role.permissions.length - 6 }).replace(`+${role.permissions.length - 6} `, '')}
                                         </Badge>
                                     )}
                                 </div>
@@ -413,7 +415,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                         </DialogHeader>
                         <form onSubmit={handleEdit} className="grid gap-4 py-2">
                             <div className="grid gap-2">
-                                <Label htmlFor="edit_display_name">Display Name *</Label>
+                                <Label htmlFor="edit_display_name">{t('roles.display_name')} *</Label>
                                 <Input
                                     id="edit_display_name"
                                     value={editForm.data.display_name}
@@ -428,7 +430,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                 )}
                             </div>
                             <div className="grid gap-2">
-                                <Label htmlFor="edit_description">Description</Label>
+                                <Label htmlFor="edit_description">{t('roles.description')}</Label>
                                 <Textarea
                                     id="edit_description"
                                     value={editForm.data.description}
@@ -439,7 +441,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                 />
                             </div>
                             <div className="grid gap-2">
-                                <Label>Permissions</Label>
+                                <Label>{t('roles.permissions')}</Label>
                                 <PermissionGrid
                                     selected={editForm.data.permissions}
                                     onChange={(id) =>
@@ -453,10 +455,10 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                                     variant="outline"
                                     onClick={() => setEditTarget(null)}
                                 >
-                                    Cancel
+                                    {t('common.cancel')}
                                 </Button>
                                 <Button type="submit" disabled={editForm.processing}>
-                                    {editForm.processing ? 'Saving…' : 'Save Changes'}
+                                    {editForm.processing ? t('roles.saving') : t('roles.save_changes')}
                                 </Button>
                             </DialogFooter>
                         </form>
@@ -472,7 +474,7 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                 >
                     <AlertDialogContent>
                         <AlertDialogHeader>
-                            <AlertDialogTitle>Delete Role</AlertDialogTitle>
+                            <AlertDialogTitle>{t('roles.delete_role')}</AlertDialogTitle>
                             <AlertDialogDescription>
                                 Are you sure you want to delete{' '}
                                 <strong>{deleteTarget?.displayName}</strong>? This action cannot be
@@ -480,12 +482,12 @@ export default function RolesIndex({ roles, allPermissions }: RolesPageProps) {
                             </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
                             <AlertDialogAction
                                 onClick={handleDelete}
                                 className="bg-red-600 hover:bg-red-700"
                             >
-                                Delete Role
+                                {t('roles.delete_role')}
                             </AlertDialogAction>
                         </AlertDialogFooter>
                     </AlertDialogContent>

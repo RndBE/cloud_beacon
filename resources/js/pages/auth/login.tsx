@@ -1,5 +1,6 @@
 import { Form, Head } from '@inertiajs/react';
 import { Mail, LockKeyhole } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import InputError from '@/components/input-error';
 import PasswordInput from '@/components/password-input';
 import TextLink from '@/components/text-link';
@@ -24,12 +25,14 @@ export default function Login({
     canResetPassword,
     canRegister,
 }: Props) {
+    const { t } = useTranslation();
+
     return (
         <AuthLayout
-            title="Welcome back"
-            description="Sign in to your Beacon Logger Cloud account"
+            title={t('auth.welcome_back')}
+            description={t('auth.sign_in_description')}
         >
-            <Head title="Log in" />
+            <Head title={t('auth.sign_in')} />
 
             {status && (
                 <div className="mb-4 rounded-lg bg-emerald-50 px-4 py-3 text-center text-sm font-medium text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400">
@@ -47,9 +50,9 @@ export default function Login({
                         <div className="grid gap-4">
                             {/* Email */}
                             <div className="grid gap-2">
-                                <Label htmlFor="email">Email address</Label>
+                                <Label htmlFor="email">{t('auth.email_address')}</Label>
                                 <div className="relative">
-                                    <Mail className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                                    <Mail className="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <Input
                                         id="email"
                                         type="email"
@@ -68,19 +71,19 @@ export default function Login({
                             {/* Password */}
                             <div className="grid gap-2">
                                 <div className="flex items-center">
-                                    <Label htmlFor="password">Password</Label>
+                                    <Label htmlFor="password">{t('auth.password')}</Label>
                                     {canResetPassword && (
                                         <TextLink
                                             href={request()}
                                             className="ml-auto text-xs"
                                             tabIndex={5}
                                         >
-                                            Forgot password?
+                                            {t('auth.forgot_password')}
                                         </TextLink>
                                     )}
                                 </div>
                                 <div className="relative">
-                                    <LockKeyhole className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                                    <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <PasswordInput
                                         id="password"
                                         name="password"
@@ -102,7 +105,7 @@ export default function Login({
                                     tabIndex={3}
                                 />
                                 <Label htmlFor="remember" className="text-sm font-normal">
-                                    Remember me
+                                    {t('auth.remember_me')}
                                 </Label>
                             </div>
 
@@ -116,15 +119,15 @@ export default function Login({
                                 data-test="login-button"
                             >
                                 {processing && <Spinner />}
-                                Sign in
+                                {t('auth.sign_in')}
                             </Button>
                         </div>
 
                         {canRegister && (
                             <div className="text-center text-sm text-muted-foreground">
-                                Don't have an account?{' '}
+                                {t('auth.no_account')}{' '}
                                 <TextLink href={register()} tabIndex={5}>
-                                    Create account
+                                    {t('auth.create_account')}
                                 </TextLink>
                             </div>
                         )}

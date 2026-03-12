@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DeviceModel;
 use App\Models\ProductionDevice;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -20,6 +21,7 @@ class ProductionController extends Controller
                 'deviceId' => $d->device_id,
                 'model' => $d->model,
                 'hardwareVersion' => $d->hardware_version,
+                'firmwareVersion' => $d->firmware_version,
                 'batchNumber' => $d->batch_number,
                 'productionDate' => $d->production_date?->format('Y-m-d'),
                 'testedBy' => $d->tested_by,
@@ -29,8 +31,11 @@ class ProductionController extends Controller
                 'createdAt' => $d->created_at?->format('Y-m-d H:i'),
             ]);
 
+        $deviceModels = DeviceModel::orderBy('name')->pluck('name');
+
         return Inertia::render('production/index', [
             'devices' => $devices,
+            'deviceModels' => $deviceModels,
         ]);
     }
 
@@ -41,6 +46,7 @@ class ProductionController extends Controller
             'device_id' => 'nullable|string|max:255',
             'model' => 'nullable|string|max:255',
             'hardware_version' => 'nullable|string|max:50',
+            'firmware_version' => 'nullable|string|max:50',
             'batch_number' => 'nullable|string|max:100',
             'production_date' => 'nullable|date',
             'tested_by' => 'nullable|string|max:255',

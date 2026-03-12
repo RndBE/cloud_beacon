@@ -1,5 +1,7 @@
 import { Link, usePage } from '@inertiajs/react';
+import { useTranslation } from 'react-i18next';
 import AppLogoIcon from '@/components/app-logo-icon';
+import { LanguageSwitcher } from '@/components/language-switcher';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { home } from '@/routes';
 import type { AuthLayoutProps } from '@/types';
@@ -11,9 +13,10 @@ export default function AuthSplitLayout({
     description,
 }: AuthLayoutProps) {
     const { name } = usePage().props;
+    const { t } = useTranslation();
 
     return (
-        <div className="relative grid min-h-dvh flex-col items-center justify-center lg:max-w-none lg:grid-cols-[1fr_1.1fr] lg:px-0">
+        <div className="relative grid min-h-dvh flex-col items-center justify-center lg:max-w-none lg:grid-cols-[2fr_1fr] lg:px-0">
             {/* Left Panel — Modern IoT Illustration */}
             <div className="auth-gradient-panel hidden h-full flex-col justify-between p-10 text-gray-900 lg:flex">
                 {/* Background grid pattern */}
@@ -24,14 +27,9 @@ export default function AuthSplitLayout({
                 <div className="auth-mesh auth-mesh-2" />
                 <div className="auth-mesh auth-mesh-3" />
 
-                {/* Top: Logo + App Name */}
-                <div className="auth-brand-enter relative z-20 flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-900/5 ring-1 ring-gray-900/10 backdrop-blur-md">
-                        <AppLogoIcon className="size-6 fill-current text-gray-900" />
-                    </div>
-                    <span className="text-lg font-semibold tracking-tight">
-                        {(name as string) || 'Beacon Logger Cloud'}
-                    </span>
+                {/* Top: Logo */}
+                <div className="auth-brand-enter relative z-20">
+                    <AppLogoIcon className="h-10 w-auto object-contain" />
                 </div>
 
                 {/* Center: IoT Network Illustration */}
@@ -122,17 +120,17 @@ export default function AuthSplitLayout({
                         <div className="auth-glass-card auth-float-card-1">
                             <div className="flex items-center gap-2 text-red-600">
                                 <Zap className="size-3.5" />
-                                <span className="text-[11px] font-medium uppercase tracking-wider opacity-70">Active</span>
+                                <span className="text-[11px] font-medium uppercase tracking-wider opacity-70">{t('auth.active')}</span>
                             </div>
                             <div className="mt-1 flex items-baseline gap-1">
                                 <span className="text-xl font-bold tabular-nums text-gray-900">24</span>
-                                <span className="text-[10px] text-gray-500">devices</span>
+                                <span className="text-[10px] text-gray-500">{t('auth.devices')}</span>
                             </div>
                         </div>
                         <div className="auth-glass-card auth-float-card-2">
                             <div className="flex items-center gap-2 text-rose-600">
                                 <BarChart3 className="size-3.5" />
-                                <span className="text-[11px] font-medium uppercase tracking-wider opacity-70">Uptime</span>
+                                <span className="text-[11px] font-medium uppercase tracking-wider opacity-70">{t('auth.uptime')}</span>
                             </div>
                             <div className="mt-1 flex items-baseline gap-1">
                                 <span className="text-xl font-bold tabular-nums text-gray-900">99.8</span>
@@ -142,7 +140,7 @@ export default function AuthSplitLayout({
                         <div className="auth-glass-card auth-float-card-3">
                             <div className="flex items-center gap-2 text-amber-600">
                                 <ArrowUpRight className="size-3.5" />
-                                <span className="text-[11px] font-medium uppercase tracking-wider opacity-70">Data</span>
+                                <span className="text-[11px] font-medium uppercase tracking-wider opacity-70">{t('auth.data')}</span>
                             </div>
                             <div className="mt-1 flex items-baseline gap-1">
                                 <span className="text-xl font-bold tabular-nums text-gray-900">1.2</span>
@@ -154,10 +152,10 @@ export default function AuthSplitLayout({
                     {/* Tagline */}
                     <div className="space-y-3 text-center">
                         <h2 className="bg-gradient-to-r from-red-700 via-red-600 to-gray-900 bg-clip-text text-2xl font-bold tracking-tight text-transparent">
-                            Cloud Configurator
+                            {t('auth.cloud_configurator')}
                         </h2>
                         <p className="mx-auto max-w-sm text-sm leading-relaxed text-gray-500">
-                            Configure, monitor, and manage your Beacon Logger devices from anywhere with real-time telemetry.
+                            {t('auth.cloud_tagline')}
                         </p>
                     </div>
                 </div>
@@ -176,9 +174,12 @@ export default function AuthSplitLayout({
                         href={home()}
                         className="relative z-20 flex items-center justify-center gap-2 lg:hidden"
                     >
-                        <AppLogoIcon className="h-10 fill-current text-foreground sm:h-12" />
+                        <AppLogoIcon className="h-10 object-contain sm:h-12" />
                     </Link>
 
+                    <div className="mb-3 flex justify-end">
+                        <LanguageSwitcher variant="compact" />
+                    </div>
                     <Card className="border-0 shadow-xl lg:border lg:shadow-2xl">
                         <CardHeader className="space-y-1 px-8 pt-8 pb-2 text-center">
                             <CardTitle className="text-2xl font-bold tracking-tight">

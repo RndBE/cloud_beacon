@@ -1,5 +1,6 @@
 import { Form, Head } from '@inertiajs/react';
 import { Mail, LockKeyhole, User, ShieldCheck } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import InputError from '@/components/input-error';
 import PasswordInput from '@/components/password-input';
 import TextLink from '@/components/text-link';
@@ -12,12 +13,14 @@ import { login } from '@/routes';
 import { store } from '@/routes/register';
 
 export default function Register() {
+    const { t } = useTranslation();
+
     return (
         <AuthLayout
-            title="Create an account"
-            description="Get started with Beacon Logger Cloud"
+            title={t('auth.create_account_title')}
+            description={t('auth.get_started')}
         >
-            <Head title="Register" />
+            <Head title={t('auth.create_account')} />
             <Form
                 {...store.form()}
                 resetOnSuccess={['password', 'password_confirmation']}
@@ -29,7 +32,7 @@ export default function Register() {
                         <div className="grid gap-4">
                             {/* Name */}
                             <div className="grid gap-2">
-                                <Label htmlFor="name">Full name</Label>
+                                <Label htmlFor="name">{t('auth.full_name')}</Label>
                                 <div className="relative">
                                     <User className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <Input
@@ -51,7 +54,7 @@ export default function Register() {
 
                             {/* Email */}
                             <div className="grid gap-2">
-                                <Label htmlFor="email">Email address</Label>
+                                <Label htmlFor="email">{t('auth.email_address')}</Label>
                                 <div className="relative">
                                     <Mail className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <Input
@@ -70,7 +73,7 @@ export default function Register() {
 
                             {/* Password */}
                             <div className="grid gap-2">
-                                <Label htmlFor="password">Password</Label>
+                                <Label htmlFor="password">{t('auth.password')}</Label>
                                 <div className="relative">
                                     <LockKeyhole className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <PasswordInput
@@ -89,7 +92,7 @@ export default function Register() {
                             {/* Confirm Password */}
                             <div className="grid gap-2">
                                 <Label htmlFor="password_confirmation">
-                                    Confirm password
+                                    {t('auth.confirm_password')}
                                 </Label>
                                 <div className="relative">
                                     <ShieldCheck className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -117,14 +120,14 @@ export default function Register() {
                                 data-test="register-user-button"
                             >
                                 {processing && <Spinner />}
-                                Create account
+                                {t('auth.create_account')}
                             </Button>
                         </div>
 
                         <div className="text-center text-sm text-muted-foreground">
-                            Already have an account?{' '}
+                            {t('auth.already_have_account')}{' '}
                             <TextLink href={login()} tabIndex={6}>
-                                Sign in
+                                {t('auth.sign_in')}
                             </TextLink>
                         </div>
                     </>

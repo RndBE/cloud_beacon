@@ -43,6 +43,7 @@ import {
     Zap,
 } from 'lucide-react';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -113,6 +114,7 @@ interface LoggerDetail {
     ipAddress: string;
     macAddress: string;
     model: string;
+    modelImage: string | null;
     uptime: string;
     cpuUsage: number;
     memoryUsage: number;
@@ -177,6 +179,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
     const [form, setForm] = useState(EMPTY_FORM);
     const [processing, setProcessing] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
+    const { t } = useTranslation();
 
     const openCreate = () => {
         setEditingSensor(null);
@@ -254,12 +257,12 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                 <CardHeader>
                     <div className="flex items-center justify-between">
                         <div>
-                            <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> Sensor Channels</CardTitle>
-                            <CardDescription>{sensors.length} channels configured</CardDescription>
+                            <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> {t('loggerDetail.sensor_channels')}</CardTitle>
+                            <CardDescription>{t('loggerDetail.channels_configured', { count: sensors.length })}</CardDescription>
                         </div>
                         <Button size="sm" className="gap-1.5" onClick={openCreate}>
                             <Plus className="size-4" />
-                            Add Sensor
+                            {t('loggerDetail.add_sensor')}
                         </Button>
                     </div>
                 </CardHeader>
@@ -268,13 +271,13 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead>Channel</TableHead>
-                                <TableHead>Type</TableHead>
-                                <TableHead>Value</TableHead>
-                                <TableHead>Range</TableHead>
-                                <TableHead>Status</TableHead>
-                                <TableHead className="hidden md:table-cell">Last Reading</TableHead>
-                                <TableHead className="w-[100px] text-right">Actions</TableHead>
+                                <TableHead>{t('loggerDetail.channel')}</TableHead>
+                                <TableHead>{t('loggerDetail.type')}</TableHead>
+                                <TableHead>{t('loggerDetail.value')}</TableHead>
+                                <TableHead>{t('loggerDetail.range')}</TableHead>
+                                <TableHead>{t('loggerDetail.status')}</TableHead>
+                                <TableHead className="hidden md:table-cell">{t('loggerDetail.last_reading')}</TableHead>
+                                <TableHead className="w-[100px] text-right">{t('loggerDetail.actions')}</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -305,7 +308,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                             {sensors.length === 0 && (
                                 <TableRow>
                                     <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
-                                        No sensors configured. Click "Add Sensor" to create one.
+                                        {t('loggerDetail.no_sensors_hint')}
                                     </TableCell>
                                 </TableRow>
                             )}
@@ -318,15 +321,15 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                 <DialogContent className="sm:max-w-md">
                     <DialogHeader>
-                        <DialogTitle>{editingSensor ? 'Edit Sensor' : 'Add Sensor'}</DialogTitle>
+                        <DialogTitle>{editingSensor ? t('loggerDetail.edit_sensor') : t('loggerDetail.add_sensor')}</DialogTitle>
                         <DialogDescription>
-                            {editingSensor ? 'Update the sensor channel configuration.' : 'Add a new sensor channel to this logger.'}
+                            {editingSensor ? t('loggerDetail.edit_sensor_desc') : t('loggerDetail.add_sensor_desc')}
                         </DialogDescription>
                     </DialogHeader>
                     <div className="grid gap-4 py-2">
                         {/* Name */}
                         <div className="grid gap-2">
-                            <Label htmlFor="sensor-name">Name</Label>
+                            <Label htmlFor="sensor-name">{t('loggerDetail.sensor_name')}</Label>
                             <Input
                                 id="sensor-name"
                                 value={form.name}
@@ -339,7 +342,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                         {/* Type + Unit */}
                         <div className="grid grid-cols-2 gap-3">
                             <div className="grid gap-2">
-                                <Label htmlFor="sensor-type">Type</Label>
+                                <Label htmlFor="sensor-type">{t('loggerDetail.type')}</Label>
                                 <select
                                     id="sensor-type"
                                     value={form.type}
@@ -353,7 +356,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                                 {errors.type && <p className="text-xs text-red-500">{errors.type}</p>}
                             </div>
                             <div className="grid gap-2">
-                                <Label htmlFor="sensor-unit">Unit</Label>
+                                <Label htmlFor="sensor-unit">{t('loggerDetail.sensor_unit')}</Label>
                                 <Input
                                     id="sensor-unit"
                                     value={form.unit}
@@ -366,16 +369,16 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
 
                         {/* Status */}
                         <div className="grid gap-2">
-                            <Label htmlFor="sensor-status">Status</Label>
+                            <Label htmlFor="sensor-status">{t('loggerDetail.status')}</Label>
                             <select
                                 id="sensor-status"
                                 value={form.status}
                                 onChange={e => setForm({ ...form, status: e.target.value })}
                                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             >
-                                <option value="active">Active</option>
-                                <option value="inactive">Inactive</option>
-                                <option value="error">Error</option>
+                                <option value="active">{t('loggerDetail.active')}</option>
+                                <option value="inactive">{t('loggerDetail.inactive')}</option>
+                                <option value="error">{t('loggerDetail.error')}</option>
                             </select>
                             {errors.status && <p className="text-xs text-red-500">{errors.status}</p>}
                         </div>
@@ -383,7 +386,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                         {/* Min / Max */}
                         <div className="grid grid-cols-2 gap-3">
                             <div className="grid gap-2">
-                                <Label htmlFor="sensor-min">Min Value</Label>
+                                <Label htmlFor="sensor-min">{t('loggerDetail.min_value')}</Label>
                                 <Input
                                     id="sensor-min"
                                     type="number"
@@ -394,7 +397,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                                 {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
                             </div>
                             <div className="grid gap-2">
-                                <Label htmlFor="sensor-max">Max Value</Label>
+                                <Label htmlFor="sensor-max">{t('loggerDetail.max_value')}</Label>
                                 <Input
                                     id="sensor-max"
                                     type="number"
@@ -407,9 +410,9 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                         </div>
                     </div>
                     <DialogFooter>
-                        <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                        <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
                         <Button onClick={handleSubmit} disabled={processing}>
-                            {processing ? 'Saving...' : editingSensor ? 'Save Changes' : 'Create Sensor'}
+                            {processing ? t('loggerDetail.saving_dots') : editingSensor ? t('loggerDetail.save_changes') : t('loggerDetail.create_sensor')}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
@@ -419,15 +422,15 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
             <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>Delete Sensor</AlertDialogTitle>
+                        <AlertDialogTitle>{t('loggerDetail.delete_sensor')}</AlertDialogTitle>
                         <AlertDialogDescription>
                             Are you sure you want to delete <strong>{deletingSensor?.name}</strong>? This action cannot be undone.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
                         <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={handleDelete} disabled={processing}>
-                            {processing ? 'Deleting...' : 'Delete Sensor'}
+                            {processing ? t('loggerDetail.deleting') : t('loggerDetail.delete_sensor')}
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
@@ -469,6 +472,7 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
     });
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
+    const { t } = useTranslation();
 
     const handleSave = () => {
         setSaving(true);
@@ -493,8 +497,8 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
             <CardHeader>
                 <div className="flex items-center justify-between">
                     <div>
-                        <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="size-5" /> Device Configuration</CardTitle>
-                        <CardDescription>Data acquisition and watchdog settings</CardDescription>
+                        <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="size-5" /> {t('loggerDetail.device_configuration')}</CardTitle>
+                        <CardDescription>{t('loggerDetail.data_acquisition_settings')}</CardDescription>
                     </div>
                     {!editing && !disabled && (
                         <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
@@ -508,21 +512,21 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                     <div className="space-y-3">
                         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                             <dt className="text-muted-foreground flex items-center gap-1.5">
-                                <Timer className="size-3.5 text-blue-500" /> Interval Ambil Data
+                                <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_read')}
                             </dt>
-                            <dd className="font-medium">{intervalRead} menit</dd>
+                            <dd className="font-medium">{intervalRead} {t('loggerDetail.minutes')}</dd>
                             <dt className="text-muted-foreground flex items-center gap-1.5">
-                                <Upload className="size-3.5 text-emerald-500" /> Interval Kirim Data
+                                <Upload className="size-3.5 text-emerald-500" /> {t('loggerDetail.interval_send')}
                             </dt>
-                            <dd className="font-medium">{intervalSend} menit</dd>
+                            <dd className="font-medium">{intervalSend} {t('loggerDetail.minutes')}</dd>
                             <dt className="text-muted-foreground flex items-center gap-1.5">
-                                <RotateCcw className="size-3.5 text-amber-500" /> Max Reset (Watchdog)
+                                <RotateCcw className="size-3.5 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
                             </dt>
-                            <dd className="font-medium">{maxReset} kali</dd>
+                            <dd className="font-medium">{maxReset} {t('loggerDetail.times')}</dd>
                         </dl>
                         {saved && (
                             <span className="flex items-center gap-1 text-sm text-emerald-600">
-                                <CheckCircle2 className="size-4" /> Configuration saved!
+                                <CheckCircle2 className="size-4" /> {t('loggerDetail.config_saved')}
                             </span>
                         )}
                     </div>
@@ -532,7 +536,7 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                             <div className="space-y-2">
                                 <label className="text-sm font-medium flex items-center gap-1.5">
                                     <Timer className="size-4 text-blue-500" />
-                                    Interval Ambil Data
+                                    {t('loggerDetail.interval_read')}
                                 </label>
                                 <div className="flex items-center gap-2">
                                     <input
@@ -543,13 +547,13 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                                         onChange={(e) => setValues({ ...values, interval_read: parseInt(e.target.value) || 1 })}
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     />
-                                    <span className="text-sm text-muted-foreground whitespace-nowrap">menit</span>
+                                    <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
                                 </div>
                             </div>
                             <div className="space-y-2">
                                 <label className="text-sm font-medium flex items-center gap-1.5">
                                     <Upload className="size-4 text-emerald-500" />
-                                    Interval Kirim Data
+                                    {t('loggerDetail.interval_send')}
                                 </label>
                                 <div className="flex items-center gap-2">
                                     <input
@@ -560,13 +564,13 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                                         onChange={(e) => setValues({ ...values, interval_send: parseInt(e.target.value) || 1 })}
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     />
-                                    <span className="text-sm text-muted-foreground whitespace-nowrap">menit</span>
+                                    <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
                                 </div>
                             </div>
                             <div className="space-y-2">
                                 <label className="text-sm font-medium flex items-center gap-1.5">
                                     <RotateCcw className="size-4 text-amber-500" />
-                                    Max Reset (Watchdog)
+                                    {t('loggerDetail.max_reset_watchdog')}
                                 </label>
                                 <div className="flex items-center gap-2">
                                     <input
@@ -577,18 +581,18 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                                         onChange={(e) => setValues({ ...values, max_reset: parseInt(e.target.value) || 0 })}
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     />
-                                    <span className="text-sm text-muted-foreground whitespace-nowrap">kali</span>
+                                    <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.times')}</span>
                                 </div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
                             <Button onClick={handleSave} disabled={saving} size="sm" className="gap-2">
                                 <Save className="size-4" />
-                                {saving ? 'Saving...' : 'Save'}
+                                {saving ? t('loggerDetail.saving_dots') : t('common.save')}
                             </Button>
                             <Button onClick={handleCancel} variant="outline" size="sm" className="gap-2">
                                 <XCircle className="size-4" />
-                                Cancel
+                                {t('common.cancel')}
                             </Button>
                         </div>
                     </div>
@@ -616,6 +620,7 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
     const [saved, setSaved] = useState(false);
     const [showDisableDialog, setShowDisableDialog] = useState(false);
     const [showSaveDialog, setShowSaveDialog] = useState(false);
+    const { t } = useTranslation();
 
     const isDirty = values.ministesy_enabled !== ministesyEnabled
         || values.ministesy_key !== (ministesyKey || '')
@@ -683,8 +688,8 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
     return (
         <Card className="mt-4">
             <CardHeader>
-                <CardTitle className="flex items-center gap-2"><Link2 className="size-5" /> Platform Integration</CardTitle>
-                <CardDescription>Send telemetry data to external platforms</CardDescription>
+                <CardTitle className="flex items-center gap-2"><Link2 className="size-5" /> {t('loggerDetail.platform_integration')}</CardTitle>
+                <CardDescription>{t('loggerDetail.send_telemetry_desc')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
                 {/* Mini STESY Platform */}
@@ -696,7 +701,7 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                         </div>
                         <div className="flex-1">
                             <p className="text-sm font-semibold">Mini STESY</p>
-                            <p className="text-xs text-muted-foreground">Telemetry data relay platform</p>
+                            <p className="text-xs text-muted-foreground">{t('loggerDetail.telemetry_relay')}</p>
                         </div>
                         {!editing && ministesyEnabled && !disabled && (
                             <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
@@ -724,17 +729,17 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                                 <>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                                         <dt className="text-muted-foreground flex items-center gap-1.5">
-                                            <Key className="size-3.5 text-violet-500" /> Encryption Key
+                                            <Key className="size-3.5 text-violet-500" /> {t('loggerDetail.encryption_key')}
                                         </dt>
                                         <dd className="font-mono text-xs">{maskedKey}</dd>
                                         <dt className="text-muted-foreground flex items-center gap-1.5">
-                                            <Timer className="size-3.5 text-blue-500" /> Interval Kirim Data
+                                            <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_send')}
                                         </dt>
-                                        <dd className="font-medium">{ministesyInterval} menit</dd>
+                                        <dd className="font-medium">{ministesyInterval} {t('loggerDetail.minutes')}</dd>
                                     </dl>
                                     {saved && (
                                         <span className="flex items-center gap-1 text-sm text-emerald-600">
-                                            <CheckCircle2 className="size-4" /> Saved!
+                                            <CheckCircle2 className="size-4" /> {t('loggerDetail.saved')}
                                         </span>
                                     )}
                                 </>
@@ -744,14 +749,14 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                                         <div className="space-y-1.5">
                                             <label className="text-sm font-medium flex items-center gap-1.5">
                                                 <Key className="size-4 text-violet-500" />
-                                                Encryption Key
+                                                {t('loggerDetail.encryption_key')}
                                             </label>
                                             <div className="relative">
                                                 <input
                                                     type={showKey ? 'text' : 'password'}
                                                     value={values.ministesy_key}
                                                     onChange={(e) => setValues({ ...values, ministesy_key: e.target.value })}
-                                                    placeholder="Enter encryption key"
+                                                    placeholder={t('loggerDetail.enter_encryption_key')}
                                                     className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 pr-9 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
                                                 <button
@@ -766,7 +771,7 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                                         <div className="space-y-1.5">
                                             <label className="text-sm font-medium flex items-center gap-1.5">
                                                 <Timer className="size-4 text-blue-500" />
-                                                Interval Kirim Data
+                                                {t('loggerDetail.interval_send')}
                                             </label>
                                             <div className="flex items-center gap-2">
                                                 <input
@@ -777,18 +782,18 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                                                     onChange={(e) => setValues({ ...values, ministesy_interval: parseInt(e.target.value) || 1 })}
                                                     className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
-                                                <span className="text-sm text-muted-foreground whitespace-nowrap">menit</span>
+                                                <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
                                             </div>
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <Button onClick={handleSave} disabled={saving} size="sm" className="gap-2">
                                             <Save className="size-4" />
-                                            {saving ? 'Saving...' : 'Save'}
+                                            {saving ? t('loggerDetail.saving_dots') : t('common.save')}
                                         </Button>
                                         <Button onClick={handleCancel} variant="outline" size="sm" className="gap-2">
                                             <XCircle className="size-4" />
-                                            Cancel
+                                            {t('common.cancel')}
                                         </Button>
                                     </div>
                                 </>
@@ -804,14 +809,14 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
             <AlertDialog open={showDisableDialog} onOpenChange={setShowDisableDialog}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>Disable Mini STESY?</AlertDialogTitle>
+                        <AlertDialogTitle>{t('loggerDetail.disable_ministesy')}</AlertDialogTitle>
                         <AlertDialogDescription>
-                            Logger will stop sending telemetry data to Mini STESY platform. You can re-enable it anytime.
+                            {t('loggerDetail.disable_ministesy_desc')}
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction variant="destructive" onClick={confirmDisable}>Disable</AlertDialogAction>
+                        <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                        <AlertDialogAction variant="destructive" onClick={confirmDisable}>{t('loggerDetail.disable')}</AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -820,14 +825,14 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
             <AlertDialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>Save Configuration?</AlertDialogTitle>
+                        <AlertDialogTitle>{t('loggerDetail.save_configuration')}</AlertDialogTitle>
                         <AlertDialogDescription>
-                            Platform integration settings will be updated and applied immediately.
+                            {t('loggerDetail.save_config_desc')}
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={confirmSave}>Save</AlertDialogAction>
+                        <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                        <AlertDialogAction onClick={confirmSave}>{t('common.save')}</AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -837,10 +842,11 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
 
 export default function LoggerShow({ logger }: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+    const { t } = useTranslation();
 
     const breadcrumbs: BreadcrumbItem[] = [
-        { title: 'Dashboard', href: '/dashboard' },
-        { title: 'Loggers', href: '/loggers' },
+        { title: t('nav.dashboard'), href: '/dashboard' },
+        { title: t('nav.loggers'), href: '/loggers' },
         { title: logger.name, href: `/loggers/${logger.id}` },
     ];
 
@@ -851,19 +857,25 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                 {/* Back link */}
                 <Link href="/loggers" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors w-fit">
                     <ArrowLeft className="size-4" />
-                    Back to loggers
+                    {t('loggerDetail.back_to_loggers')}
                 </Link>
 
                 {/* Device Header */}
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex items-start gap-4">
-                        <div className={`mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${logger.status === 'online' ? 'bg-emerald-500/10' :
-                            logger.status === 'warning' ? 'bg-amber-500/10' : 'bg-red-500/10'
-                            }`}>
-                            <Radio className={`size-6 ${logger.status === 'online' ? 'text-emerald-500' :
-                                logger.status === 'warning' ? 'text-amber-500' : 'text-red-500'
-                                }`} />
-                        </div>
+                        {logger.modelImage ? (
+                            <div className="mt-1 flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-muted">
+                                <img src={logger.modelImage} alt={logger.model} className="h-full w-full object-contain" />
+                            </div>
+                        ) : (
+                            <div className={`mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${logger.status === 'online' ? 'bg-emerald-500/10' :
+                                logger.status === 'warning' ? 'bg-amber-500/10' : 'bg-red-500/10'
+                                }`}>
+                                <Radio className={`size-6 ${logger.status === 'online' ? 'text-emerald-500' :
+                                    logger.status === 'warning' ? 'text-amber-500' : 'text-red-500'
+                                    }`} />
+                            </div>
+                        )}
                         <div>
                             <div className="flex items-center gap-3">
                                 <h1 className="text-xl font-bold">{logger.name}</h1>
@@ -895,19 +907,19 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                     <div className="flex flex-wrap gap-2">
                         <Button variant="outline" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
                             <Plug className="size-4" />
-                            Connect
+                            {t('loggerDetail.connect')}
                         </Button>
                         <Button variant="outline" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
                             <RefreshCw className="size-4" />
-                            Sync
+                            {t('loggerDetail.sync')}
                         </Button>
                         <Button variant="outline" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
                             <Save className="size-4" />
-                            Save Config
+                            {t('loggerDetail.save_config')}
                         </Button>
                         <Button variant="destructive" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
                             <Power className="size-4" />
-                            Reboot
+                            {t('loggerDetail.reboot')}
                         </Button>
                         <Button
                             variant="outline"
@@ -916,7 +928,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                             onClick={() => setShowDeleteDialog(true)}
                         >
                             <Trash2 className="size-4" />
-                            Delete
+                            {t('common.delete')}
                         </Button>
                     </div>
                 </div>
@@ -926,58 +938,58 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                 {/* Tabs */}
                 <Tabs defaultValue="overview" className="w-full">
                     <TabsList className="w-full justify-start overflow-x-auto overflow-y-hidden h-auto">
-                        <TabsTrigger value="overview" className="gap-1.5"><Activity className="size-3.5" />Overview</TabsTrigger>
-                        <TabsTrigger value="sensors" className="gap-1.5"><Thermometer className="size-3.5" />Sensors</TabsTrigger>
-                        <TabsTrigger value="system" className="gap-1.5"><Cpu className="size-3.5" />System</TabsTrigger>
-                        <TabsTrigger value="maintenance" className="gap-1.5"><Settings className="size-3.5" />Maintenance</TabsTrigger>
-                        <TabsTrigger value="logs" className="gap-1.5"><Terminal className="size-3.5" />Logs</TabsTrigger>
-                        <TabsTrigger value="api" className="gap-1.5"><Code2 className="size-3.5" />API</TabsTrigger>
+                        <TabsTrigger value="overview" className="gap-1.5"><Activity className="size-3.5" />{t('loggerDetail.tab_overview')}</TabsTrigger>
+                        <TabsTrigger value="sensors" className="gap-1.5"><Thermometer className="size-3.5" />{t('loggerDetail.tab_sensors')}</TabsTrigger>
+                        <TabsTrigger value="system" className="gap-1.5"><Cpu className="size-3.5" />{t('loggerDetail.tab_system')}</TabsTrigger>
+                        <TabsTrigger value="maintenance" className="gap-1.5"><Settings className="size-3.5" />{t('loggerDetail.tab_maintenance')}</TabsTrigger>
+                        <TabsTrigger value="logs" className="gap-1.5"><Terminal className="size-3.5" />{t('loggerDetail.tab_logs')}</TabsTrigger>
+                        <TabsTrigger value="api" className="gap-1.5"><Code2 className="size-3.5" />{t('loggerDetail.tab_api')}</TabsTrigger>
                     </TabsList>
 
                     {/* ==================== OVERVIEW ==================== */}
                     <TabsContent value="overview" className="mt-6">
                         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                            <InfoCard icon={Wifi} label="Connection" value={logger.connectionType.toUpperCase()} color="blue" />
-                            <InfoCard icon={Signal} label="Signal Strength" value={`${logger.signalStrength}%`} color="emerald" />
-                            <InfoCard icon={Clock} label="Uptime" value={logger.uptime || '—'} color="violet" />
-                            <InfoCard icon={Activity} label="Active Sensors" value={`${logger.sensors.filter(s => s.status === 'active').length}/${logger.sensors.length}`} color="amber" />
+                            <InfoCard icon={Wifi} label={t('loggerDetail.connection')} value={logger.connectionType.toUpperCase()} color="blue" />
+                            <InfoCard icon={Signal} label={t('loggerDetail.signal_strength')} value={`${logger.signalStrength}%`} color="emerald" />
+                            <InfoCard icon={Clock} label={t('loggerDetail.uptime')} value={logger.uptime || '—'} color="violet" />
+                            <InfoCard icon={Activity} label={t('loggerDetail.active_sensors')} value={`${logger.sensors.filter(s => s.status === 'active').length}/${logger.sensors.length}`} color="amber" />
                         </div>
 
                         <div className="mt-4 grid gap-4 lg:grid-cols-2">
                             <Card>
-                                <CardHeader><CardTitle>Device Info</CardTitle></CardHeader>
+                                <CardHeader><CardTitle>{t('loggerDetail.device_info')}</CardTitle></CardHeader>
                                 <CardContent>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">Model</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.model')}</dt>
                                         <dd className="font-medium">{logger.model || '—'}</dd>
-                                        <dt className="text-muted-foreground">Serial Number</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.serial_number')}</dt>
                                         <dd className="font-mono text-xs">{logger.serialNumber}</dd>
-                                        <dt className="text-muted-foreground">Firmware</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.firmware')}</dt>
                                         <dd className="font-mono text-xs">{logger.firmwareVersion || '—'}</dd>
-                                        <dt className="text-muted-foreground">IP Address</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.ip_address')}</dt>
                                         <dd className="font-mono text-xs">{logger.ipAddress || '—'}</dd>
-                                        <dt className="text-muted-foreground">MAC Address</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.mac_address')}</dt>
                                         <dd className="font-mono text-xs">{logger.macAddress || '—'}</dd>
-                                        <dt className="text-muted-foreground">Last Seen</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.last_seen')}</dt>
                                         <dd className="text-xs">{logger.lastSeen || '—'}</dd>
                                     </dl>
                                 </CardContent>
                             </Card>
                             <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><Network className="size-5" /> Network Configuration</CardTitle></CardHeader>
+                                <CardHeader><CardTitle className="flex items-center gap-2"><Network className="size-5" /> {t('loggerDetail.network_config')}</CardTitle></CardHeader>
                                 <CardContent>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">Connection Type</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.connection_type')}</dt>
                                         <dd className="font-medium uppercase">{logger.connectionType}</dd>
-                                        <dt className="text-muted-foreground">IP Address</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.ip_address')}</dt>
                                         <dd className="font-mono text-xs">{logger.ipAddress || '—'}</dd>
-                                        <dt className="text-muted-foreground">Subnet Mask</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.subnet_mask')}</dt>
                                         <dd className="font-mono text-xs">{logger.subnet || '—'}</dd>
-                                        <dt className="text-muted-foreground">Gateway</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.gateway')}</dt>
                                         <dd className="font-mono text-xs">{logger.gateway || '—'}</dd>
-                                        <dt className="text-muted-foreground">DNS Server</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.dns_server')}</dt>
                                         <dd className="font-mono text-xs">{logger.dns || '—'}</dd>
-                                        <dt className="text-muted-foreground">MAC Address</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.mac_address')}</dt>
                                         <dd className="font-mono text-xs">{logger.macAddress || '—'}</dd>
                                     </dl>
                                 </CardContent>
@@ -986,8 +998,8 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
 
                         <Card className="mt-4">
                             <CardHeader>
-                                <CardTitle>Sensor Summary</CardTitle>
-                                <CardDescription>Latest readings from all channels</CardDescription>
+                                <CardTitle>{t('loggerDetail.sensor_summary')}</CardTitle>
+                                <CardDescription>{t('loggerDetail.latest_readings')}</CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -1000,7 +1012,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                             </div>
                                         </div>
                                     ))}
-                                    {logger.sensors.length === 0 && <p className="text-sm text-muted-foreground col-span-full">No sensors configured.</p>}
+                                    {logger.sensors.length === 0 && <p className="text-sm text-muted-foreground col-span-full">{t('loggerDetail.no_sensors_configured')}</p>}
                                 </div>
                             </CardContent>
                         </Card>
@@ -1016,8 +1028,8 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                         {/* Internal Sensors */}
                         <Card className="mb-4">
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> Internal Sensors</CardTitle>
-                                <CardDescription>Built-in sensor readings from device hardware</CardDescription>
+                                <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> {t('loggerDetail.internal_sensors')}</CardTitle>
+                                <CardDescription>{t('loggerDetail.internal_sensors_desc')}</CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3 sm:grid-cols-3">
@@ -1026,7 +1038,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                             <Battery className="size-5 text-amber-500" />
                                         </div>
                                         <div>
-                                            <p className="text-xs text-muted-foreground">Battery</p>
+                                            <p className="text-xs text-muted-foreground">{t('loggerDetail.battery')}</p>
                                             <p className="text-lg font-bold font-mono">
                                                 {logger.battery ? `${logger.battery}` : '—'}
                                                 {logger.battery && <span className="text-xs font-normal text-muted-foreground ml-1">V</span>}
@@ -1038,7 +1050,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                             <Thermometer className="size-5 text-red-500" />
                                         </div>
                                         <div>
-                                            <p className="text-xs text-muted-foreground">Temperature</p>
+                                            <p className="text-xs text-muted-foreground">{t('loggerDetail.temperature')}</p>
                                             <p className="text-lg font-bold font-mono">
                                                 {logger.temperature ? `${logger.temperature}` : '—'}
                                                 {logger.temperature && <span className="text-xs font-normal text-muted-foreground ml-1">°C</span>}
@@ -1050,7 +1062,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                             <Droplets className="size-5 text-blue-500" />
                                         </div>
                                         <div>
-                                            <p className="text-xs text-muted-foreground">Humidity</p>
+                                            <p className="text-xs text-muted-foreground">{t('loggerDetail.humidity')}</p>
                                             <p className="text-lg font-bold font-mono">
                                                 {logger.humidity ? `${logger.humidity}` : '—'}
                                                 {logger.humidity && <span className="text-xs font-normal text-muted-foreground ml-1">%</span>}
@@ -1069,34 +1081,34 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
 
                         <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> System Information</CardTitle></CardHeader>
+                                <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> {t('loggerDetail.system_information')}</CardTitle></CardHeader>
                                 <CardContent>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">Model</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.model')}</dt>
                                         <dd className="font-medium">{logger.model || '—'}</dd>
-                                        <dt className="text-muted-foreground">Serial Number</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.serial_number')}</dt>
                                         <dd className="font-mono text-xs">{logger.serialNumber}</dd>
-                                        <dt className="text-muted-foreground">Device ID</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.device_id')}</dt>
                                         <dd className="font-mono text-xs">{logger.id}</dd>
-                                        <dt className="text-muted-foreground">Firmware</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.firmware')}</dt>
                                         <dd className="font-mono text-xs">{logger.firmwareVersion || '—'}</dd>
-                                        <dt className="text-muted-foreground">Uptime</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.uptime')}</dt>
                                         <dd className="font-medium">{logger.uptime || '—'}</dd>
-                                        <dt className="text-muted-foreground">Location</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.location')}</dt>
                                         <dd>{logger.location || '—'}</dd>
                                     </dl>
                                 </CardContent>
                             </Card>
                             <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-5" /> Storage Overview</CardTitle></CardHeader>
+                                <CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-5" /> {t('loggerDetail.storage_overview')}</CardTitle></CardHeader>
                                 <CardContent className="space-y-5">
-                                    <ResourceBar label="Disk Usage" value={logger.storageUsage} max={logger.storageTotal} unit="GB" />
+                                    <ResourceBar label={t('loggerDetail.disk_usage')} value={logger.storageUsage} max={logger.storageTotal} unit="GB" />
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">Log Files</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.log_files')}</dt>
                                         <dd className="font-medium">{logger.logFileCount.toLocaleString()}</dd>
-                                        <dt className="text-muted-foreground">Config Backups</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.config_backups')}</dt>
                                         <dd className="font-medium">{logger.configBackups}</dd>
-                                        <dt className="text-muted-foreground">Last Backup</dt>
+                                        <dt className="text-muted-foreground">{t('loggerDetail.last_backup')}</dt>
                                         <dd className="text-xs">{logger.lastConfigBackup || '—'}</dd>
                                     </dl>
                                 </CardContent>
@@ -1117,17 +1129,17 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                             disabled={logger.status === 'offline'}
                         />
                         <Card className="mt-4">
-                            <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="size-5" /> Storage Management</CardTitle></CardHeader>
+                            <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="size-5" /> {t('loggerDetail.storage_management')}</CardTitle></CardHeader>
                             <CardContent>
                                 <div className="flex flex-wrap gap-3">
                                     <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                        <Trash2 className="size-4" /> Clean Old Logs
+                                        <Trash2 className="size-4" /> {t('loggerDetail.clean_old_logs')}
                                     </Button>
                                     <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                        <Download className="size-4" /> Export Log Files
+                                        <Download className="size-4" /> {t('loggerDetail.export_log_files')}
                                     </Button>
                                     <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                        <Save className="size-4" /> Backup Configuration
+                                        <Save className="size-4" /> {t('loggerDetail.backup_configuration')}
                                     </Button>
                                 </div>
                             </CardContent>
@@ -1139,40 +1151,40 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                         <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
                                 <CardHeader>
-                                    <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Firmware</CardTitle>
+                                    <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> {t('loggerDetail.firmware')}</CardTitle>
                                     <CardDescription>Current: {logger.firmwareVersion || '—'}</CardDescription>
                                 </CardHeader>
                                 <CardContent>
                                     <div className="grid gap-3">
                                         <div className="flex items-center justify-between rounded-lg border p-3">
                                             <div>
-                                                <p className="text-sm font-medium">Current Firmware</p>
+                                                <p className="text-sm font-medium">{t('loggerDetail.current_firmware')}</p>
                                                 <p className="font-mono text-xs text-muted-foreground">{logger.firmwareVersion || '—'}</p>
                                             </div>
-                                            <Badge variant="default">Up to date</Badge>
+                                            <Badge variant="default">{t('loggerDetail.up_to_date')}</Badge>
                                         </div>
                                         <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                            <Upload className="size-4" /> Upload Firmware
+                                            <Upload className="size-4" /> {t('loggerDetail.upload_firmware')}
                                         </Button>
                                     </div>
                                 </CardContent>
                             </Card>
                             <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><HardDrive className="size-5" /> Device Actions</CardTitle></CardHeader>
+                                <CardHeader><CardTitle className="flex items-center gap-2"><HardDrive className="size-5" /> {t('loggerDetail.device_actions')}</CardTitle></CardHeader>
                                 <CardContent>
                                     <div className="grid gap-3">
                                         <Button variant="outline" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <Power className="size-4" /> Schedule Reboot
+                                            <Power className="size-4" /> {t('loggerDetail.schedule_reboot')}
                                         </Button>
                                         <Button variant="outline" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <Download className="size-4" /> Export Configuration
+                                            <Download className="size-4" /> {t('loggerDetail.export_configuration')}
                                         </Button>
                                         <Button variant="outline" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <Upload className="size-4" /> Import Configuration
+                                            <Upload className="size-4" /> {t('loggerDetail.import_configuration')}
                                         </Button>
                                         <Separator />
                                         <Button variant="destructive" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <RotateCcw className="size-4" /> Factory Reset
+                                            <RotateCcw className="size-4" /> {t('loggerDetail.factory_reset')}
                                         </Button>
                                     </div>
                                 </CardContent>
@@ -1184,19 +1196,19 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                     <TabsContent value="logs" className="mt-6">
                         <Card>
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><Terminal className="size-5" /> Activity Logs</CardTitle>
-                                <CardDescription>{logger.activityLogs.length} log entries</CardDescription>
+                                <CardTitle className="flex items-center gap-2"><Terminal className="size-5" /> {t('loggerDetail.activity_logs')}</CardTitle>
+                                <CardDescription>{t('loggerDetail.log_entries', { count: logger.activityLogs.length })}</CardDescription>
                             </CardHeader>
                             <Separator />
                             <CardContent className="p-0">
                                 <Table>
                                     <TableHeader>
                                         <TableRow>
-                                            <TableHead className="w-[180px]">Timestamp</TableHead>
-                                            <TableHead>Level</TableHead>
-                                            <TableHead>Action</TableHead>
-                                            <TableHead>Status</TableHead>
-                                            <TableHead className="hidden md:table-cell">Message</TableHead>
+                                            <TableHead className="w-[180px]">{t('loggerDetail.timestamp')}</TableHead>
+                                            <TableHead>{t('loggerDetail.level')}</TableHead>
+                                            <TableHead>{t('loggerDetail.action')}</TableHead>
+                                            <TableHead>{t('loggerDetail.status')}</TableHead>
+                                            <TableHead className="hidden md:table-cell">{t('loggerDetail.message')}</TableHead>
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
@@ -1216,7 +1228,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                             </TableRow>
                                         ))}
                                         {logger.activityLogs.length === 0 && (
-                                            <TableRow><TableCell colSpan={5} className="py-12 text-center text-muted-foreground">No logs found.</TableCell></TableRow>
+                                            <TableRow><TableCell colSpan={5} className="py-12 text-center text-muted-foreground">{t('loggerDetail.no_logs_found')}</TableCell></TableRow>
                                         )}
                                     </TableBody>
                                 </Table>
@@ -1234,19 +1246,19 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                 <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
                     <AlertDialogContent>
                         <AlertDialogHeader>
-                            <AlertDialogTitle>Delete Logger</AlertDialogTitle>
+                            <AlertDialogTitle>{t('loggerDetail.delete_logger')}</AlertDialogTitle>
                             <AlertDialogDescription>
                                 Are you sure you want to delete <strong>{logger.name}</strong> ({logger.serialNumber})?
                                 This will also delete all associated sensors and activity logs. This action cannot be undone.
                             </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
                             <AlertDialogAction
                                 className="bg-red-600 hover:bg-red-700"
                                 onClick={() => router.delete(`/loggers/${logger.id}`)}
                             >
-                                Delete Logger
+                                {t('loggerDetail.delete_logger')}
                             </AlertDialogAction>
                         </AlertDialogFooter>
                     </AlertDialogContent>

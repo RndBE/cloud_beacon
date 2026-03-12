@@ -22,6 +22,7 @@ class UserManagementController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
+                'instansi' => $user->instansi,
                 'createdAt' => $user->created_at?->format('Y-m-d H:i'),
                 'roles' => $user->roles->map(fn($r) => [
                     'id' => $r->id,
@@ -47,6 +48,7 @@ class UserManagementController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255|unique:users',
+            'instansi' => 'nullable|string|max:255',
             'password' => ['required', 'confirmed', Password::defaults()],
             'roles' => 'array',
             'roles.*' => 'exists:roles,id',
@@ -55,6 +57,7 @@ class UserManagementController extends Controller
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
+            'instansi' => $validated['instansi'] ?? null,
             'password' => Hash::make($validated['password']),
         ]);
 
@@ -72,6 +75,7 @@ class UserManagementController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255|unique:users,email,' . $user->id,
+            'instansi' => 'nullable|string|max:255',
             'password' => ['nullable', 'confirmed', Password::defaults()],
             'roles' => 'array',
             'roles.*' => 'exists:roles,id',
@@ -80,6 +84,7 @@ class UserManagementController extends Controller
         $user->update([
             'name' => $validated['name'],
             'email' => $validated['email'],
+            'instansi' => $validated['instansi'] ?? null,
         ]);
 
         if (!empty($validated['password'])) {

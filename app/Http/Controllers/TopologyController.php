@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DeviceModel;
 use App\Models\Logger;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -14,6 +15,11 @@ class TopologyController extends Controller
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
         }
+        // Build a model name → image URL map
+        $modelImages = DeviceModel::whereNotNull('image')
+            ->pluck('image', 'name')
+            ->mapWithKeys(fn($path, $name) => [$name => asset('storage/' . $path)]);
+
         $loggers = $query
             ->withCount('externalSensors')
             ->orderBy('name')
@@ -27,6 +33,7 @@ class TopologyController extends Controller
                 'connectionType' => $logger->connection_type,
                 'firmwareVersion' => $logger->firmware_version,
                 'model' => $logger->model,
+                'modelImage' => $logger->model ? ($modelImages[$logger->model] ?? null) : null,
                 'signalStrength' => $logger->signal_strength,
                 'sensorsCount' => $logger->external_sensors_count,
             ]);

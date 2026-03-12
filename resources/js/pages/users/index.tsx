@@ -12,6 +12,7 @@ import {
     Users as UsersIcon,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -59,6 +60,7 @@ interface UserItem {
     id: number;
     name: string;
     email: string;
+    instansi: string | null;
     createdAt: string | null;
     roles: RoleItem[];
 }
@@ -78,6 +80,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 ];
 
 export default function UsersIndex({ users, allRoles }: UsersPageProps) {
+    const { t } = useTranslation();
     const { flash } = usePage<{ flash: { success?: string; error?: string } }>().props;
     const [search, setSearch] = useState('');
     const [addOpen, setAddOpen] = useState(false);
@@ -100,6 +103,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
     const createForm = useForm({
         name: '',
         email: '',
+        instansi: '',
         password: '',
         password_confirmation: '',
         roles: [] as number[],
@@ -108,6 +112,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
     const editForm = useForm({
         name: '',
         email: '',
+        instansi: '',
         password: '',
         password_confirmation: '',
         roles: [] as number[],
@@ -120,6 +125,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
             (u) =>
                 u.name.toLowerCase().includes(q) ||
                 u.email.toLowerCase().includes(q) ||
+                (u.instansi && u.instansi.toLowerCase().includes(q)) ||
                 u.roles.some((r) => r.displayName.toLowerCase().includes(q)),
         );
     }, [users, search]);
@@ -140,6 +146,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
         editForm.setData({
             name: user.name,
             email: user.email,
+            instansi: user.instansi || '',
             password: '',
             password_confirmation: '',
             roles: user.roles.map((r) => r.id),
@@ -221,7 +228,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-            <Head title="User Management" />
+            <Head title={t('users.title')} />
             <div className="flex flex-col gap-6 p-4 md:p-6">
                 {/* Flash Message */}
                 {flashMsg && (
@@ -250,7 +257,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                         </div>
                         <div>
                             <p className="text-2xl font-bold">{totalUsers}</p>
-                            <p className="text-xs text-muted-foreground">Total Users</p>
+                            <p className="text-xs text-muted-foreground">{t('users.total_users')}</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-3 rounded-xl border p-4">
@@ -259,7 +266,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                         </div>
                         <div>
                             <p className="text-2xl font-bold">{usersWithRoles}</p>
-                            <p className="text-xs text-muted-foreground">Users with Roles</p>
+                            <p className="text-xs text-muted-foreground">{t('users.users_with_roles')}</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-3 rounded-xl border p-4">
@@ -268,7 +275,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                         </div>
                         <div>
                             <p className="text-2xl font-bold">{superadminCount}</p>
-                            <p className="text-xs text-muted-foreground">Super Admins</p>
+                            <p className="text-xs text-muted-foreground">{t('users.super_admins')}</p>
                         </div>
                     </div>
                 </div>
@@ -283,14 +290,14 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                     User Management
                                 </CardTitle>
                                 <CardDescription>
-                                    {filtered.length} of {users.length} users
+                                    {t('users.of_users', { filtered: filtered.length, total: users.length })}
                                 </CardDescription>
                             </div>
                             <div className="flex gap-2">
                                 <div className="relative">
                                     <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                                     <Input
-                                        placeholder="Search name, email, role…"
+                                        placeholder={t('users.search_placeholder')}
                                         value={search}
                                         onChange={(e) => setSearch(e.target.value)}
                                         className="w-full pl-9 sm:w-[240px]"
@@ -303,35 +310,35 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                     <DialogTrigger asChild>
                                         <Button className="gap-1.5">
                                             <Plus className="size-4" />
-                                            Add User
+                                            {t('users.add_user')}
                                         </Button>
                                     </DialogTrigger>
                                     <DialogContent className="sm:max-w-lg">
                                         <DialogHeader>
                                             <DialogTitle className="flex items-center gap-2">
                                                 <UserPlus className="size-5" />
-                                                Create New User
+                                                {t('users.create_new_user')}
                                             </DialogTitle>
                                             <DialogDescription>
-                                                Add a new user account and assign roles.
+                                                {t('users.create_user_desc')}
                                             </DialogDescription>
                                         </DialogHeader>
                                         <form onSubmit={handleCreate} className="grid gap-4 py-2">
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="grid gap-2">
-                                                    <Label htmlFor="create_name">Name *</Label>
+                                                    <Label htmlFor="create_name">{t('users.name')} *</Label>
                                                     <Input
                                                         id="create_name"
                                                         value={createForm.data.name}
                                                         onChange={(e) => createForm.setData('name', e.target.value)}
-                                                        placeholder="Full name"
+                                                        placeholder={t('users.full_name')}
                                                     />
                                                     {createForm.errors.name && (
                                                         <p className="text-xs text-red-500">{createForm.errors.name}</p>
                                                     )}
                                                 </div>
                                                 <div className="grid gap-2">
-                                                    <Label htmlFor="create_email">Email *</Label>
+                                                    <Label htmlFor="create_email">{t('users.email')} *</Label>
                                                     <Input
                                                         id="create_email"
                                                         type="email"
@@ -344,33 +351,45 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                                     )}
                                                 </div>
                                             </div>
+                                            <div className="grid gap-2">
+                                                <Label htmlFor="create_instansi">{t('users.instansi')}</Label>
+                                                <Input
+                                                    id="create_instansi"
+                                                    value={createForm.data.instansi}
+                                                    onChange={(e) => createForm.setData('instansi', e.target.value)}
+                                                    placeholder={t('users.instansi_placeholder')}
+                                                />
+                                                {createForm.errors.instansi && (
+                                                    <p className="text-xs text-red-500">{createForm.errors.instansi}</p>
+                                                )}
+                                            </div>
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="grid gap-2">
-                                                    <Label htmlFor="create_password">Password *</Label>
+                                                    <Label htmlFor="create_password">{t('users.password')} *</Label>
                                                     <Input
                                                         id="create_password"
                                                         type="password"
                                                         value={createForm.data.password}
                                                         onChange={(e) => createForm.setData('password', e.target.value)}
-                                                        placeholder="Min 8 characters"
+                                                        placeholder={t('users.min_8_chars')}
                                                     />
                                                     {createForm.errors.password && (
                                                         <p className="text-xs text-red-500">{createForm.errors.password}</p>
                                                     )}
                                                 </div>
                                                 <div className="grid gap-2">
-                                                    <Label htmlFor="create_password_confirmation">Confirm Password *</Label>
+                                                    <Label htmlFor="create_password_confirmation">{t('users.confirm_password')} *</Label>
                                                     <Input
                                                         id="create_password_confirmation"
                                                         type="password"
                                                         value={createForm.data.password_confirmation}
                                                         onChange={(e) => createForm.setData('password_confirmation', e.target.value)}
-                                                        placeholder="Confirm password"
+                                                        placeholder={t('users.confirm_password_placeholder')}
                                                     />
                                                 </div>
                                             </div>
                                             <div className="grid gap-2">
-                                                <Label>Assign Roles</Label>
+                                                <Label>{t('users.assign_roles')}</Label>
                                                 <RolePicker
                                                     selected={createForm.data.roles}
                                                     onChange={(id) => toggleRole(createForm.data, createForm.setData, id)}
@@ -406,11 +425,12 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>Name</TableHead>
-                                    <TableHead>Email</TableHead>
-                                    <TableHead>Roles</TableHead>
-                                    <TableHead className="hidden md:table-cell">Joined</TableHead>
-                                    <TableHead className="w-[100px]">Actions</TableHead>
+                                    <TableHead>{t('users.name')}</TableHead>
+                                    <TableHead>{t('users.email')}</TableHead>
+                                    <TableHead>{t('users.instansi')}</TableHead>
+                                    <TableHead>{t('users.roles')}</TableHead>
+                                    <TableHead className="hidden md:table-cell">{t('users.joined')}</TableHead>
+                                    <TableHead className="w-[100px]">{t('users.actions')}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -420,11 +440,14 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                         <TableCell className="text-sm text-muted-foreground">
                                             {user.email}
                                         </TableCell>
+                                        <TableCell className="text-sm text-muted-foreground">
+                                            {user.instansi || '—'}
+                                        </TableCell>
                                         <TableCell>
                                             <div className="flex flex-wrap gap-1">
                                                 {user.roles.length === 0 ? (
                                                     <Badge variant="outline" className="text-xs text-muted-foreground">
-                                                        No role
+                                                        {t('users.no_role')}
                                                     </Badge>
                                                 ) : (
                                                     user.roles.map((r) => (
@@ -471,7 +494,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                             colSpan={5}
                                             className="py-12 text-center text-muted-foreground"
                                         >
-                                            No users found.
+                                            {t('users.no_users_found')}
                                         </TableCell>
                                     </TableRow>
                                 )}
@@ -503,7 +526,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                         <form onSubmit={handleEdit} className="grid gap-4 py-2">
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="grid gap-2">
-                                    <Label htmlFor="edit_name">Name *</Label>
+                                    <Label htmlFor="edit_name">{t('users.name')} *</Label>
                                     <Input
                                         id="edit_name"
                                         value={editForm.data.name}
@@ -514,7 +537,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                     )}
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="edit_email">Email *</Label>
+                                    <Label htmlFor="edit_email">{t('users.email')} *</Label>
                                     <Input
                                         id="edit_email"
                                         type="email"
@@ -526,33 +549,45 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                     )}
                                 </div>
                             </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="edit_instansi">{t('users.instansi')}</Label>
+                                <Input
+                                    id="edit_instansi"
+                                    value={editForm.data.instansi}
+                                    onChange={(e) => editForm.setData('instansi', e.target.value)}
+                                    placeholder={t('users.instansi_placeholder')}
+                                />
+                                {editForm.errors.instansi && (
+                                    <p className="text-xs text-red-500">{editForm.errors.instansi}</p>
+                                )}
+                            </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="grid gap-2">
-                                    <Label htmlFor="edit_password">New Password</Label>
+                                    <Label htmlFor="edit_password">{t('users.new_password')}</Label>
                                     <Input
                                         id="edit_password"
                                         type="password"
                                         value={editForm.data.password}
                                         onChange={(e) => editForm.setData('password', e.target.value)}
-                                        placeholder="Leave empty to keep"
+                                        placeholder={t('users.leave_empty')}
                                     />
                                     {editForm.errors.password && (
                                         <p className="text-xs text-red-500">{editForm.errors.password}</p>
                                     )}
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="edit_password_confirmation">Confirm Password</Label>
+                                    <Label htmlFor="edit_password_confirmation">{t('users.confirm_password')}</Label>
                                     <Input
                                         id="edit_password_confirmation"
                                         type="password"
                                         value={editForm.data.password_confirmation}
                                         onChange={(e) => editForm.setData('password_confirmation', e.target.value)}
-                                        placeholder="Confirm new password"
+                                        placeholder={t('users.confirm_new_password')}
                                     />
                                 </div>
                             </div>
                             <div className="grid gap-2">
-                                <Label>Assign Roles</Label>
+                                <Label>{t('users.assign_roles')}</Label>
                                 <RolePicker
                                     selected={editForm.data.roles}
                                     onChange={(id) => toggleRole(editForm.data, editForm.setData, id)}
@@ -564,16 +599,16 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                     variant="outline"
                                     onClick={() => setEditTarget(null)}
                                 >
-                                    Cancel
+                                    {t('common.cancel')}
                                 </Button>
                                 <Button type="submit" disabled={editForm.processing}>
                                     {editForm.processing ? (
                                         <>
                                             <Loader2 className="mr-2 size-4 animate-spin" />
-                                            Saving…
+                                            {t('users.saving')}
                                         </>
                                     ) : (
-                                        'Save Changes'
+                                        t('users.save_changes')
                                     )}
                                 </Button>
                             </DialogFooter>
@@ -590,7 +625,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                 >
                     <AlertDialogContent>
                         <AlertDialogHeader>
-                            <AlertDialogTitle>Delete User</AlertDialogTitle>
+                            <AlertDialogTitle>{t('users.delete_user')}</AlertDialogTitle>
                             <AlertDialogDescription>
                                 Are you sure you want to delete{' '}
                                 <strong>{deleteTarget?.name}</strong> ({deleteTarget?.email})?
@@ -598,12 +633,12 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                             </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
                             <AlertDialogAction
                                 onClick={handleDelete}
                                 className="bg-red-600 hover:bg-red-700"
                             >
-                                Delete User
+                                {t('users.delete_user')}
                             </AlertDialogAction>
                         </AlertDialogFooter>
                     </AlertDialogContent>
