@@ -74,6 +74,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('api/mqtt/poll', [MqttController::class, 'pollAll'])
         ->middleware('permission:mqtt.poll')
         ->name('api.mqtt.poll');
+    Route::post('api/mqtt/sensors/get', [MqttController::class, 'getSensorsConfig'])
+        ->name('api.mqtt.sensors.get');
+    Route::post('api/mqtt/sensors/set', [MqttController::class, 'setSensorConfig'])
+        ->name('api.mqtt.sensors.set');
+    Route::post('api/mqtt/sensors/del', [MqttController::class, 'deleteSensorConfig'])
+        ->name('api.mqtt.sensors.del');
 
     // RBAC Management
     Route::get('roles', [RoleController::class, 'index'])

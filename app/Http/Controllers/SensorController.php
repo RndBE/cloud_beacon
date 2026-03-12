@@ -33,6 +33,19 @@ class SensorController extends Controller
             'status' => 'required|string|in:active,inactive,error',
             'min_value' => 'required|numeric',
             'max_value' => 'required|numeric|gte:min_value',
+            // Protocol fields (optional — only for protocol-configured sensors)
+            'connection_type' => 'nullable|string|in:rs485,rs232,analog',
+            'modbus_slave_id' => 'nullable|integer|min:1|max:247',
+            'device_name' => 'nullable|string|max:50',
+            'function_code' => 'nullable|integer|in:1,2,3,4',
+            'register_address' => 'nullable|integer|min:0|max:65535',
+            'quantity' => 'nullable|integer|min:1|max:125',
+            'scale_factor' => 'nullable|numeric',
+            'channel' => 'nullable|integer|min:0|max:15',
+            'port' => 'nullable|integer|min:1|max:4',
+            'lcd_enabled' => 'nullable|boolean',
+            'log_enabled' => 'nullable|boolean',
+            'send_enabled' => 'nullable|boolean',
         ];
     }
 

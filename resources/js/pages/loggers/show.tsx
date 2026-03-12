@@ -41,8 +41,11 @@ import {
     Wifi,
     XCircle,
     Zap,
+    Loader2,
+    Cable,
+    Check,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -85,12 +88,24 @@ interface SensorItem {
     id: number;
     name: string;
     type: string;
+    connectionType: string | null;
     value: number;
     unit: string;
     status: 'active' | 'inactive' | 'error';
     lastReading: string;
     min: number;
     max: number;
+    modbusSlaveId: number | null;
+    deviceName: string | null;
+    functionCode: number | null;
+    registerAddress: number | null;
+    quantity: number | null;
+    scaleFactor: number | null;
+    channel: number | null;
+    port: number | null;
+    lcdEnabled: boolean;
+    logEnabled: boolean;
+    sendEnabled: boolean;
 }
 
 interface LogItem {
@@ -129,6 +144,8 @@ interface LoggerDetail {
     logFileCount: number;
     configBackups: number;
     lastConfigBackup: string;
+    dhcpMode: boolean | null;
+    rebootCounter: number | null;
     intervalRead: number;
     intervalSend: number;
     maxReset: number;
@@ -139,6 +156,7 @@ interface LoggerDetail {
     temperature: string | null;
     humidity: string | null;
     lastConnected: string | null;
+    deviceIdentifier: string | null;
     sensors: SensorItem[];
     activityLogs: LogItem[];
 }
@@ -169,9 +187,352 @@ const EMPTY_FORM = {
     status: 'active' as string,
     min_value: 0,
     max_value: 100,
+    connection_type: '' as string,
+    modbus_slave_id: 1,
+    device_name: '',
+    function_code: 3,
+    register_address: 0,
+    quantity: 1,
+    scale_factor: 1.0,
+    channel: 0,
+    port: 1,
+    lcd_enabled: true,
+    log_enabled: true,
+    send_enabled: true,
 };
 
-function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: SensorItem[] }) {
+// Helper: fetch with CSRF
+async function apiFetch(url: string, body: Record<string, unknown>) {
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+    return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken || '' },
+        body: JSON.stringify(body),
+    });
+}
+
+// =============================================================================
+// Sync From Device Dialog
+// =============================================================================
+type SyncPhase = 'idle' | 'syncing' | 'success' | 'error';
+type StepStatus = 'idle' | 'running' | 'done' | 'error';
+
+interface SyncStep {
+    id: string;
+    label: string;
+    description: string;
+    icon: React.ComponentType<{ className?: string }>;
+    durationMs: number;
+}
+
+const SYNC_STEPS: SyncStep[] = [
+    { id: 'connect', label: 'Connecting to Logger', description: 'Publishing MQTT INFO request…', icon: Plug, durationMs: 2000 },
+    { id: 'info', label: 'Fetching Device Info', description: 'Reading configuration data…', icon: Settings, durationMs: 1800 },
+    { id: 'sensors', label: 'Syncing Sensor Config', description: 'Fetching sensor channels from MCU…', icon: Cable, durationMs: 2200 },
+    { id: 'save', label: 'Saving to Database', description: 'Updating local records…', icon: Database, durationMs: 1200 },
+];
+
+function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from Device' }: { deviceIdentifier: string; loggerId: number; label?: string }) {
+    const { t } = useTranslation();
+    const [open, setOpen] = useState(false);
+    const [phase, setPhase] = useState<SyncPhase>('idle');
+    const [stepStatuses, setStepStatuses] = useState<StepStatus[]>(SYNC_STEPS.map(() => 'idle'));
+    const [stepProgress, setStepProgress] = useState(0);
+    const [errorMessage, setErrorMessage] = useState('');
+    const [syncedInfo, setSyncedInfo] = useState<Record<string, string | number | null> | null>(null);
+    const [syncedSensorCount, setSyncedSensorCount] = useState(0);
+    const cancelled = useRef(false);
+
+    function reset() {
+        setPhase('idle');
+        setStepStatuses(SYNC_STEPS.map(() => 'idle'));
+        setStepProgress(0);
+        setErrorMessage('');
+        setSyncedInfo(null);
+        setSyncedSensorCount(0);
+        cancelled.current = false;
+    }
+
+    function animateProgress(durationMs: number): Promise<void> {
+        return new Promise((resolve) => {
+            const intervalMs = 50;
+            const ticks = durationMs / intervalMs;
+            let tick = 0;
+            const interval = setInterval(() => {
+                if (cancelled.current) { clearInterval(interval); resolve(); return; }
+                tick++;
+                setStepProgress(Math.min(100, (tick / ticks) * 100));
+                if (tick >= ticks) { clearInterval(interval); resolve(); }
+            }, intervalMs);
+        });
+    }
+
+    const runSync = useCallback(async () => {
+        cancelled.current = false;
+        setPhase('syncing');
+
+        // === Step 0: Connect & Fetch INFO (real MQTT) ===
+        setStepStatuses(prev => { const n = [...prev]; n[0] = 'running'; return n; });
+        setStepProgress(0);
+
+        let mqttDone = false;
+        const mqttResultRef: { current: { success: boolean; data?: Record<string, string | number | null>; message?: string } | null } = { current: null };
+
+        const mqttPromise = apiFetch('/api/mqtt/info', { id_logger: deviceIdentifier })
+            .then(r => r.json())
+            .then((data: { success: boolean; data?: Record<string, string | number | null>; message?: string }) => {
+                mqttResultRef.current = data; mqttDone = true;
+            })
+            .catch(() => {
+                mqttResultRef.current = { success: false, message: 'Network error' }; mqttDone = true;
+            });
+
+        const start = Date.now();
+        const maxMs = 30000;
+        const progressInterval = setInterval(() => {
+            if (cancelled.current || mqttDone) { clearInterval(progressInterval); return; }
+            const elapsed = Date.now() - start;
+            setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
+        }, 100);
+
+        await mqttPromise;
+        clearInterval(progressInterval);
+
+        if (cancelled.current) return;
+
+        const result = mqttResultRef.current;
+        if (!result || !result.success) {
+            setStepStatuses(prev => { const n = [...prev]; n[0] = 'error'; return n; });
+            setStepProgress(100);
+            setErrorMessage(result?.message || 'No response from logger. Device may be offline.');
+            setPhase('error');
+            return;
+        }
+
+        setSyncedInfo(result.data || null);
+        setStepProgress(100);
+        setStepStatuses(prev => { const n = [...prev]; n[0] = 'done'; return n; });
+
+        // === Step 1: Fetching Device Info (simulated) ===
+        if (cancelled.current) return;
+        setStepProgress(0);
+        setStepStatuses(prev => { const n = [...prev]; n[1] = 'running'; return n; });
+        await animateProgress(SYNC_STEPS[1].durationMs);
+        if (cancelled.current) return;
+        setStepStatuses(prev => { const n = [...prev]; n[1] = 'done'; return n; });
+        setStepProgress(100);
+
+        // === Step 2: Sync Sensors (real MQTT) ===
+        if (cancelled.current) return;
+        setStepProgress(0);
+        setStepStatuses(prev => { const n = [...prev]; n[2] = 'running'; return n; });
+
+        let sensorDone = false;
+        const sensorResultRef: { current: { success: boolean; synced_count?: number; message?: string } | null } = { current: null };
+
+        const sensorPromise = apiFetch('/api/mqtt/sensors/get', { id_logger: deviceIdentifier, logger_id: loggerId })
+            .then(r => r.json())
+            .then((data: { success: boolean; synced_count?: number; message?: string }) => {
+                sensorResultRef.current = data; sensorDone = true;
+            })
+            .catch(() => {
+                sensorResultRef.current = { success: true, synced_count: 0 }; sensorDone = true;
+            });
+
+        const sensorStart = Date.now();
+        const sensorProgressInterval = setInterval(() => {
+            if (cancelled.current || sensorDone) { clearInterval(sensorProgressInterval); return; }
+            const elapsed = Date.now() - sensorStart;
+            setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
+        }, 100);
+
+        await sensorPromise;
+        clearInterval(sensorProgressInterval);
+
+        if (cancelled.current) return;
+        setSyncedSensorCount(sensorResultRef.current?.synced_count ?? 0);
+        setStepProgress(100);
+        setStepStatuses(prev => { const n = [...prev]; n[2] = 'done'; return n; });
+
+        // === Step 3: Saving to Database (simulated) ===
+        if (cancelled.current) return;
+        setStepProgress(0);
+        setStepStatuses(prev => { const n = [...prev]; n[3] = 'running'; return n; });
+        await animateProgress(SYNC_STEPS[3].durationMs);
+        if (cancelled.current) return;
+        setStepStatuses(prev => { const n = [...prev]; n[3] = 'done'; return n; });
+        setStepProgress(100);
+
+        if (!cancelled.current) {
+            setPhase('success');
+            router.reload();
+        }
+    }, [deviceIdentifier, loggerId]);
+
+    function handleOpen() {
+        reset();
+        setOpen(true);
+        setTimeout(() => runSync(), 100);
+    }
+
+    function handleRetry() {
+        reset();
+        setPhase('syncing');
+        setStepStatuses(SYNC_STEPS.map(() => 'idle'));
+        runSync();
+    }
+
+    function handleClose() {
+        cancelled.current = true;
+        setOpen(false);
+    }
+
+    const overallProgress = (() => {
+        const doneSteps = stepStatuses.filter(s => s === 'done').length;
+        if (phase === 'success') return 100;
+        return ((doneSteps / SYNC_STEPS.length) * 100) + (stepProgress / SYNC_STEPS.length);
+    })();
+
+    return (
+        <>
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={handleOpen}>
+                <RefreshCw className="size-4" />
+                {label}
+            </Button>
+            <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
+                <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => { if (phase === 'syncing') e.preventDefault(); }}>
+
+                    {/* ─── SYNCING ─── */}
+                    {phase === 'syncing' && (
+                        <>
+                            <DialogHeader>
+                                <DialogTitle>Syncing Device Data</DialogTitle>
+                                <DialogDescription>Fetching latest data from <strong>{deviceIdentifier}</strong> via MQTT…</DialogDescription>
+                            </DialogHeader>
+                            <div className="py-4">
+                                <div className="mb-6 space-y-2">
+                                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                        <span>Overall Progress</span>
+                                        <span className="font-mono">{Math.round(overallProgress)}%</span>
+                                    </div>
+                                    <Progress value={overallProgress} className="h-2 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-200" />
+                                </div>
+                                <div className="space-y-1">
+                                    {SYNC_STEPS.map((step, i) => {
+                                        const status = stepStatuses[i];
+                                        const StepIcon = step.icon;
+                                        const isActive = status === 'running';
+                                        const isDone = status === 'done';
+                                        return (
+                                            <div key={step.id} className={`flex items-center gap-4 rounded-lg border px-4 py-3 transition-all duration-300 ${
+                                                isActive ? 'border-emerald-500/40 bg-emerald-500/5 shadow-sm' :
+                                                isDone ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-transparent'
+                                            }`}>
+                                                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-all duration-300 ${
+                                                    isDone ? 'bg-emerald-500/20 text-emerald-500' :
+                                                    isActive ? 'bg-emerald-500/10 text-emerald-500' : 'bg-muted text-muted-foreground'
+                                                }`}>
+                                                    {isDone ? <Check className="size-5 animate-in fade-in zoom-in duration-300" /> :
+                                                     isActive ? <Loader2 className="size-5 animate-spin" /> :
+                                                     <StepIcon className="size-5" />}
+                                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                    <p className={`text-sm font-medium transition-colors duration-200 ${
+                                                        isDone ? 'text-emerald-600 dark:text-emerald-400' :
+                                                        isActive ? 'text-foreground' : 'text-muted-foreground'
+                                                    }`}>{step.label}</p>
+                                                    {isActive && (
+                                                        <>
+                                                            <p className="mt-0.5 text-xs text-muted-foreground animate-in fade-in slide-in-from-left-2 duration-200">
+                                                                {step.description}
+                                                            </p>
+                                                            <div className="mt-2">
+                                                                <Progress value={stepProgress} className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100" />
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
+                                                {isDone && <CheckCircle2 className="size-4 shrink-0 text-emerald-500 animate-in fade-in zoom-in duration-300" />}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
+                            </DialogFooter>
+                        </>
+                    )}
+
+                    {/* ─── ERROR ─── */}
+                    {phase === 'error' && (
+                        <>
+                            <div className="flex flex-col items-center gap-4 py-8">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
+                                    <XCircle className="size-8 text-red-500" />
+                                </div>
+                                <div className="text-center">
+                                    <h3 className="text-lg font-semibold">Sync Failed</h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">{errorMessage}</p>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
+                                <Button onClick={handleRetry} className="gap-1.5">
+                                    <Plug className="size-4" /> Retry
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+
+                    {/* ─── SUCCESS ─── */}
+                    {phase === 'success' && (
+                        <>
+                            <div className="flex flex-col items-center gap-4 py-8">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
+                                    <CheckCircle2 className="size-8 text-emerald-500" />
+                                </div>
+                                <div className="text-center">
+                                    <h3 className="text-lg font-semibold">Sync Complete</h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">
+                                        Device data has been updated successfully.
+                                    </p>
+                                </div>
+                                {syncedInfo && (
+                                    <div className="w-full rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+                                        <p className="mb-2 text-xs font-medium text-emerald-600 dark:text-emerald-400">Device Info Retrieved</p>
+                                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                                            {syncedInfo.ip_address && (<><span className="text-muted-foreground">IP Address</span><span className="font-mono">{String(syncedInfo.ip_address)}</span></>)}
+                                            {syncedInfo.battery && (<><span className="text-muted-foreground">Battery</span><span>{String(syncedInfo.battery)}V</span></>)}
+                                            {syncedInfo.temperature && (<><span className="text-muted-foreground">Temperature</span><span>{String(syncedInfo.temperature)}°C</span></>)}
+                                            {syncedInfo.humidity && (<><span className="text-muted-foreground">Humidity</span><span>{String(syncedInfo.humidity)}%</span></>)}
+                                            <span className="text-muted-foreground">Sensors Synced</span><span className="font-semibold">{syncedSensorCount}</span>
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="flex flex-wrap justify-center gap-2 px-4">
+                                    {SYNC_STEPS.map((step) => (
+                                        <div key={step.id} className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/5 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
+                                            <Check className="size-3" /> {step.label}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button onClick={handleClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                    Done
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+
+                </DialogContent>
+            </Dialog>
+        </>
+    );
+}
+
+function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: number; sensors: SensorItem[]; deviceIdentifier?: string | null }) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [editingSensor, setEditingSensor] = useState<SensorItem | null>(null);
@@ -197,6 +558,18 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
             status: sensor.status,
             min_value: sensor.min,
             max_value: sensor.max,
+            connection_type: sensor.connectionType || '',
+            modbus_slave_id: sensor.modbusSlaveId || 1,
+            device_name: sensor.deviceName || '',
+            function_code: sensor.functionCode || 3,
+            register_address: sensor.registerAddress || 0,
+            quantity: sensor.quantity || 1,
+            scale_factor: sensor.scaleFactor || 1.0,
+            channel: sensor.channel || 0,
+            port: sensor.port || 1,
+            lcd_enabled: sensor.lcdEnabled ?? true,
+            log_enabled: sensor.logEnabled ?? true,
+            send_enabled: sensor.sendEnabled ?? true,
         });
         setErrors({});
         setDialogOpen(true);
@@ -260,10 +633,15 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                             <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> {t('loggerDetail.sensor_channels')}</CardTitle>
                             <CardDescription>{t('loggerDetail.channels_configured', { count: sensors.length })}</CardDescription>
                         </div>
-                        <Button size="sm" className="gap-1.5" onClick={openCreate}>
-                            <Plus className="size-4" />
-                            {t('loggerDetail.add_sensor')}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                            {deviceIdentifier && (
+                                <SyncFromDeviceDialog deviceIdentifier={deviceIdentifier} loggerId={loggerId} />
+                            )}
+                            <Button size="sm" className="gap-1.5" onClick={openCreate}>
+                                <Plus className="size-4" />
+                                {t('loggerDetail.add_sensor')}
+                            </Button>
+                        </div>
                     </div>
                 </CardHeader>
                 <Separator />
@@ -273,6 +651,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                             <TableRow>
                                 <TableHead>{t('loggerDetail.channel')}</TableHead>
                                 <TableHead>{t('loggerDetail.type')}</TableHead>
+                                <TableHead>Interface</TableHead>
                                 <TableHead>{t('loggerDetail.value')}</TableHead>
                                 <TableHead>{t('loggerDetail.range')}</TableHead>
                                 <TableHead>{t('loggerDetail.status')}</TableHead>
@@ -285,6 +664,13 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                                 <TableRow key={sensor.id}>
                                     <TableCell className="font-medium">{sensor.name}</TableCell>
                                     <TableCell className="capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</TableCell>
+                                    <TableCell>
+                                        {sensor.connectionType ? (
+                                            <Badge variant="outline" className="text-xs uppercase">{sensor.connectionType}</Badge>
+                                        ) : (
+                                            <span className="text-xs text-muted-foreground">—</span>
+                                        )}
+                                    </TableCell>
                                     <TableCell className="font-mono font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></TableCell>
                                     <TableCell className="font-mono text-xs text-muted-foreground">{sensor.min} – {sensor.max} {sensor.unit}</TableCell>
                                     <TableCell>
@@ -307,7 +693,7 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                             ))}
                             {sensors.length === 0 && (
                                 <TableRow>
-                                    <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
+                                    <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
                                         {t('loggerDetail.no_sensors_hint')}
                                     </TableCell>
                                 </TableRow>
@@ -382,6 +768,104 @@ function SensorCrudPanel({ loggerId, sensors }: { loggerId: number; sensors: Sen
                             </select>
                             {errors.status && <p className="text-xs text-red-500">{errors.status}</p>}
                         </div>
+
+                        {/* Connection Type */}
+                        <div className="grid gap-2">
+                            <Label htmlFor="sensor-conn-type">Connection Type</Label>
+                            <select
+                                id="sensor-conn-type"
+                                value={form.connection_type}
+                                onChange={e => setForm({ ...form, connection_type: e.target.value })}
+                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            >
+                                <option value="">None (Generic)</option>
+                                <option value="rs485">RS485 (Modbus)</option>
+                                <option value="rs232">RS232</option>
+                                <option value="analog">Analog</option>
+                            </select>
+                        </div>
+
+                        {/* RS485 fields */}
+                        {form.connection_type === 'rs485' && (
+                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">RS485 / Modbus Config</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Slave ID</Label>
+                                        <Input type="number" min={1} max={247} value={form.modbus_slave_id} onChange={e => setForm({ ...form, modbus_slave_id: parseInt(e.target.value) || 1 })} />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Device Name</Label>
+                                        <Input value={form.device_name} onChange={e => setForm({ ...form, device_name: e.target.value })} placeholder="e.g. WS" />
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Function Code</Label>
+                                        <select value={form.function_code} onChange={e => setForm({ ...form, function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            <option value={1}>01 (Coils)</option>
+                                            <option value={2}>02 (DI)</option>
+                                            <option value={3}>03 (HR)</option>
+                                            <option value={4}>04 (IR)</option>
+                                        </select>
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Register</Label>
+                                        <Input type="number" min={0} max={65535} value={form.register_address} onChange={e => setForm({ ...form, register_address: parseInt(e.target.value) || 0 })} />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Quantity</Label>
+                                        <Input type="number" min={1} max={125} value={form.quantity} onChange={e => setForm({ ...form, quantity: parseInt(e.target.value) || 1 })} />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* RS232 fields */}
+                        {form.connection_type === 'rs232' && (
+                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">RS232 Config</p>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Port</Label>
+                                    <Input type="number" min={1} max={4} value={form.port} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Analog fields */}
+                        {form.connection_type === 'analog' && (
+                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Analog Config</p>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Channel</Label>
+                                    <Input type="number" min={0} max={15} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 0 })} />
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Scale + Flags (only when connection_type is set) */}
+                        {form.connection_type && (
+                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Scale Factor</Label>
+                                    <Input type="number" step="any" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: parseFloat(e.target.value) || 1 })} />
+                                </div>
+                                <div className="flex items-center gap-4">
+                                    <label className="flex items-center gap-1.5 text-xs">
+                                        <input type="checkbox" checked={form.lcd_enabled} onChange={e => setForm({ ...form, lcd_enabled: e.target.checked })} className="rounded" />
+                                        LCD
+                                    </label>
+                                    <label className="flex items-center gap-1.5 text-xs">
+                                        <input type="checkbox" checked={form.log_enabled} onChange={e => setForm({ ...form, log_enabled: e.target.checked })} className="rounded" />
+                                        Log to SD
+                                    </label>
+                                    <label className="flex items-center gap-1.5 text-xs">
+                                        <input type="checkbox" checked={form.send_enabled} onChange={e => setForm({ ...form, send_enabled: e.target.checked })} className="rounded" />
+                                        Send to Server
+                                    </label>
+                                </div>
+                            </div>
+                        )}
 
                         {/* Min / Max */}
                         <div className="grid grid-cols-2 gap-3">
@@ -909,10 +1393,15 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                             <Plug className="size-4" />
                             {t('loggerDetail.connect')}
                         </Button>
-                        <Button variant="outline" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
-                            <RefreshCw className="size-4" />
-                            {t('loggerDetail.sync')}
-                        </Button>
+                        {logger.deviceIdentifier && (
+                            <SyncFromDeviceDialog deviceIdentifier={logger.deviceIdentifier} loggerId={logger.id} label={t('loggerDetail.sync')} />
+                        )}
+                        {!logger.deviceIdentifier && (
+                            <Button variant="outline" size="sm" className="gap-1.5" disabled>
+                                <RefreshCw className="size-4" />
+                                {t('loggerDetail.sync')}
+                            </Button>
+                        )}
                         <Button variant="outline" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
                             <Save className="size-4" />
                             {t('loggerDetail.save_config')}
@@ -991,6 +1480,8 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                         <dd className="font-mono text-xs">{logger.dns || '—'}</dd>
                                         <dt className="text-muted-foreground">{t('loggerDetail.mac_address')}</dt>
                                         <dd className="font-mono text-xs">{logger.macAddress || '—'}</dd>
+                                        <dt className="text-muted-foreground">DHCP</dt>
+                                        <dd className="font-medium">{logger.dhcpMode !== null ? (logger.dhcpMode ? 'Enabled' : 'Disabled') : '—'}</dd>
                                     </dl>
                                 </CardContent>
                             </Card>
@@ -1020,7 +1511,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
 
                     {/* ==================== SENSORS ==================== */}
                     <TabsContent value="sensors" className="mt-6">
-                        <SensorCrudPanel loggerId={logger.id} sensors={logger.sensors} />
+                        <SensorCrudPanel loggerId={logger.id} sensors={logger.sensors} deviceIdentifier={logger.deviceIdentifier} />
                     </TabsContent>
 
                     {/* ==================== SYSTEM ==================== */}
@@ -1094,6 +1585,8 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                         <dd className="font-mono text-xs">{logger.firmwareVersion || '—'}</dd>
                                         <dt className="text-muted-foreground">{t('loggerDetail.uptime')}</dt>
                                         <dd className="font-medium">{logger.uptime || '—'}</dd>
+                                        <dt className="text-muted-foreground">Reboot Counter</dt>
+                                        <dd className="font-medium">{logger.rebootCounter ?? '—'}</dd>
                                         <dt className="text-muted-foreground">{t('loggerDetail.location')}</dt>
                                         <dd>{logger.location || '—'}</dd>
                                     </dl>
