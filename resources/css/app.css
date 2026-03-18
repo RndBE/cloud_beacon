@@ -152,6 +152,55 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   DASHBOARD — Apple-style Glassmorphism
+   ═══════════════════════════════════════════════════════════════ */
+
+.dashboard-glass-bg {
+    position: relative;
+}
+
+/* Glass card — Apple "vibrancy" material style */
+.glass-card {
+    background: oklch(1 0 0 / 0.72) !important;
+    backdrop-filter: blur(20px) saturate(1.8);
+    -webkit-backdrop-filter: blur(20px) saturate(1.8);
+    border: 0.5px solid oklch(0 0 0 / 0.06) !important;
+    box-shadow: 0 0.5px 1px oklch(0 0 0 / 0.04), 0 1px 3px oklch(0 0 0 / 0.03);
+    transition: box-shadow 0.2s ease;
+}
+
+.dark .glass-card {
+    background: oklch(0.18 0 0 / 0.65) !important;
+    border: 0.5px solid oklch(1 0 0 / 0.06) !important;
+    box-shadow: 0 0.5px 1px oklch(0 0 0 / 0.2), 0 1px 3px oklch(0 0 0 / 0.15);
+}
+
+.glass-card:hover {
+    box-shadow: 0 1px 2px oklch(0 0 0 / 0.06), 0 2px 8px oklch(0 0 0 / 0.05);
+}
+
+.dark .glass-card:hover {
+    box-shadow: 0 1px 2px oklch(0 0 0 / 0.25), 0 2px 8px oklch(0 0 0 / 0.2);
+}
+
+/* Subtle entrance */
+@keyframes glass-fade-in {
+    0%   { opacity: 0; transform: translateY(6px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+.glass-animate-in {
+    animation: glass-fade-in 0.35s ease-out both;
+}
+.glass-delay-1 { animation-delay: 0.03s; }
+.glass-delay-2 { animation-delay: 0.06s; }
+.glass-delay-3 { animation-delay: 0.09s; }
+.glass-delay-4 { animation-delay: 0.12s; }
+.glass-delay-5 { animation-delay: 0.18s; }
+.glass-delay-6 { animation-delay: 0.21s; }
+.glass-delay-7 { animation-delay: 0.24s; }
+
+/* ═══════════════════════════════════════════════════════════════
    AUTH PAGE — Modern IoT Network Illustration
    ═══════════════════════════════════════════════════════════════ */
 

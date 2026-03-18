@@ -118,6 +118,45 @@ class ProductionController extends Controller
     }
 
     /**
+     * Public API: Lookup production device by serial number (QR scan from mobile app).
+     *
+     * POST /api/v1/production/lookup
+     * Body: { "serial_number": "BL-001" }
+     *
+     * No authentication required — designed for offline mobile app.
+     */
+    public function lookupSerial(Request $request)
+    {
+        $request->validate(['serial_number' => 'required|string|max:255']);
+
+        $device = ProductionDevice::where('serial_number', $request->serial_number)->first();
+
+        if (!$device) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Serial number tidak ditemukan dalam database produksi.',
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'serial_number'    => $device->serial_number,
+                'device_id'        => $device->device_id,
+                'model'            => $device->model,
+                'hardware_version' => $device->hardware_version,
+                'firmware_version' => $device->firmware_version,
+                'batch_number'     => $device->batch_number,
+                'production_date'  => $device->production_date?->format('Y-m-d'),
+                'tested_by'        => $device->tested_by,
+                'qc_status'        => $device->qc_status,
+                'is_registered'    => $device->is_registered,
+                'notes'            => $device->notes,
+            ],
+        ]);
+    }
+
+    /**
      * API: Check if serial number exists in production registry
      */
     public function checkSerial(Request $request)

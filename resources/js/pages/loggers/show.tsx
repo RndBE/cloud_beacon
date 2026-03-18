@@ -3,6 +3,7 @@ import {
     Activity,
     AlertTriangle,
     ArrowLeft,
+    ArrowUpDown,
     Battery,
     CheckCircle2,
     ChevronDown,
@@ -118,7 +119,7 @@ interface LogItem {
 }
 
 interface LoggerDetail {
-    id: number;
+    id: string;
     name: string;
     serialNumber: string;
     location: string;
@@ -152,6 +153,9 @@ interface LoggerDetail {
     ministesyEnabled: boolean;
     ministesyKey: string | null;
     ministesyInterval: number;
+    ftpHost: string | null;
+    ftpPort: number;
+    ftpUser: string | null;
     battery: string | null;
     temperature: string | null;
     humidity: string | null;
@@ -211,10 +215,21 @@ async function apiFetch(url: string, body: Record<string, unknown>) {
     });
 }
 
+function formatUptime(raw: string | number | null | undefined): string {
+    if (raw === null || raw === undefined || raw === '' || raw === '—') return '—';
+    const totalMinutes = typeof raw === 'string' ? parseInt(raw, 10) : raw;
+    if (isNaN(totalMinutes)) return String(raw);
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `${days} hari ${hours} jam ${minutes} menit`;
+    return `${hours} jam ${minutes} menit`;
+}
+
 // =============================================================================
 // Sync From Device Dialog
 // =============================================================================
-type SyncPhase = 'idle' | 'syncing' | 'success' | 'error';
+type SyncPhase = 'idle' | 'syncing' | 'review' | 'applying' | 'success' | 'error';
 type StepStatus = 'idle' | 'running' | 'done' | 'error';
 
 interface SyncStep {
@@ -229,10 +244,45 @@ const SYNC_STEPS: SyncStep[] = [
     { id: 'connect', label: 'Connecting to Logger', description: 'Publishing MQTT INFO request…', icon: Plug, durationMs: 2000 },
     { id: 'info', label: 'Fetching Device Info', description: 'Reading configuration data…', icon: Settings, durationMs: 1800 },
     { id: 'sensors', label: 'Syncing Sensor Config', description: 'Fetching sensor channels from MCU…', icon: Cable, durationMs: 2200 },
-    { id: 'save', label: 'Saving to Database', description: 'Updating local records…', icon: Database, durationMs: 1200 },
 ];
 
-function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from Device' }: { deviceIdentifier: string; loggerId: number; label?: string }) {
+interface SyncDiffItem {
+    name: string;
+    connection_type: string;
+    device_name?: string | null;
+    unit?: string;
+    value?: number | null;
+    type?: string;
+    modbus_slave_id?: number | null;
+    port?: number | null;
+    channel?: number | null;
+    db_id?: number;
+}
+
+interface SyncDiffChanged {
+    sensor: SyncDiffItem;
+    db_id: number;
+    db_name: string;
+    changes: Record<string, { old: string | number | null; new: string | number | null }>;
+}
+
+interface SyncDiff {
+    added: SyncDiffItem[];
+    removed: SyncDiffItem[];
+    changed: SyncDiffChanged[];
+    unchanged: { sensor: SyncDiffItem; db_id: number }[];
+}
+
+interface SyncSummary {
+    added_count: number;
+    removed_count: number;
+    changed_count: number;
+    unchanged_count: number;
+    total_device: number;
+    total_db: number;
+}
+
+function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from Device' }: { deviceIdentifier: string; loggerId: string; label?: string }) {
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const [phase, setPhase] = useState<SyncPhase>('idle');
@@ -240,7 +290,9 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
     const [stepProgress, setStepProgress] = useState(0);
     const [errorMessage, setErrorMessage] = useState('');
     const [syncedInfo, setSyncedInfo] = useState<Record<string, string | number | null> | null>(null);
-    const [syncedSensorCount, setSyncedSensorCount] = useState(0);
+    const [diff, setDiff] = useState<SyncDiff | null>(null);
+    const [diffSummary, setDiffSummary] = useState<SyncSummary | null>(null);
+    const [applyResult, setApplyResult] = useState<string[]>([]);
     const cancelled = useRef(false);
 
     function reset() {
@@ -249,7 +301,9 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
         setStepProgress(0);
         setErrorMessage('');
         setSyncedInfo(null);
-        setSyncedSensorCount(0);
+        setDiff(null);
+        setDiffSummary(null);
+        setApplyResult([]);
         cancelled.current = false;
     }
 
@@ -322,21 +376,22 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
         setStepStatuses(prev => { const n = [...prev]; n[1] = 'done'; return n; });
         setStepProgress(100);
 
-        // === Step 2: Sync Sensors (real MQTT) ===
+        // === Step 2: Fetch Sensors Preview (real MQTT → returns diff) ===
         if (cancelled.current) return;
         setStepProgress(0);
         setStepStatuses(prev => { const n = [...prev]; n[2] = 'running'; return n; });
 
         let sensorDone = false;
-        const sensorResultRef: { current: { success: boolean; synced_count?: number; message?: string } | null } = { current: null };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sensorResultRef: { current: any } = { current: null };
 
         const sensorPromise = apiFetch('/api/mqtt/sensors/get', { id_logger: deviceIdentifier, logger_id: loggerId })
             .then(r => r.json())
-            .then((data: { success: boolean; synced_count?: number; message?: string }) => {
+            .then((data) => {
                 sensorResultRef.current = data; sensorDone = true;
             })
             .catch(() => {
-                sensorResultRef.current = { success: true, synced_count: 0 }; sensorDone = true;
+                sensorResultRef.current = { success: false, message: 'Failed to fetch sensors' }; sensorDone = true;
             });
 
         const sensorStart = Date.now();
@@ -350,24 +405,55 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
         clearInterval(sensorProgressInterval);
 
         if (cancelled.current) return;
-        setSyncedSensorCount(sensorResultRef.current?.synced_count ?? 0);
         setStepProgress(100);
         setStepStatuses(prev => { const n = [...prev]; n[2] = 'done'; return n; });
 
-        // === Step 3: Saving to Database (simulated) ===
-        if (cancelled.current) return;
-        setStepProgress(0);
-        setStepStatuses(prev => { const n = [...prev]; n[3] = 'running'; return n; });
-        await animateProgress(SYNC_STEPS[3].durationMs);
-        if (cancelled.current) return;
-        setStepStatuses(prev => { const n = [...prev]; n[3] = 'done'; return n; });
-        setStepProgress(100);
+        const sensorResult = sensorResultRef.current;
+        if (!sensorResult?.success) {
+            setErrorMessage(sensorResult?.message || 'Failed to fetch sensor config');
+            setPhase('error');
+            return;
+        }
 
-        if (!cancelled.current) {
+        // Store the diff for review
+        const fetchedDiff = sensorResult.diff as SyncDiff;
+        const fetchedSummary = sensorResult.summary as SyncSummary;
+        setDiff(fetchedDiff);
+        setDiffSummary(fetchedSummary);
+
+        // If no changes at all, auto-apply (no confirmation needed)
+        if (fetchedSummary.added_count === 0 && fetchedSummary.removed_count === 0 && fetchedSummary.changed_count === 0) {
+            setApplyResult(['No changes detected — sensors are already in sync.']);
             setPhase('success');
             router.reload();
+            return;
         }
+
+        // Show review phase
+        setPhase('review');
+
     }, [deviceIdentifier, loggerId]);
+
+    const handleConfirmSync = useCallback(async () => {
+        if (!diff) return;
+        setPhase('applying');
+
+        try {
+            const res = await apiFetch('/api/mqtt/sensors/confirm', { logger_id: loggerId, diff });
+            const data = await res.json();
+            if (data.success) {
+                setApplyResult(data.changes_applied || []);
+                setPhase('success');
+                router.reload();
+            } else {
+                setErrorMessage(data.message || 'Failed to apply changes');
+                setPhase('error');
+            }
+        } catch {
+            setErrorMessage('Network error while applying changes');
+            setPhase('error');
+        }
+    }, [diff, loggerId]);
 
     function handleOpen() {
         reset();
@@ -393,6 +479,8 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
         return ((doneSteps / SYNC_STEPS.length) * 100) + (stepProgress / SYNC_STEPS.length);
     })();
 
+    const hasChanges = diffSummary && (diffSummary.added_count > 0 || diffSummary.removed_count > 0 || diffSummary.changed_count > 0);
+
     return (
         <>
             <Button size="sm" variant="outline" className="gap-1.5" onClick={handleOpen}>
@@ -400,7 +488,7 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                 {label}
             </Button>
             <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
-                <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => { if (phase === 'syncing') e.preventDefault(); }}>
+                <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto" onInteractOutside={(e) => { if (phase === 'syncing' || phase === 'applying') e.preventDefault(); }}>
 
                     {/* ─── SYNCING ─── */}
                     {phase === 'syncing' && (
@@ -464,6 +552,122 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                         </>
                     )}
 
+                    {/* ─── REVIEW DIFF ─── */}
+                    {phase === 'review' && diff && diffSummary && (
+                        <>
+                            <DialogHeader>
+                                <DialogTitle>Review Sensor Changes</DialogTitle>
+                                <DialogDescription>
+                                    Found differences between device and database. Review before applying.
+                                </DialogDescription>
+                            </DialogHeader>
+                            <div className="py-4 space-y-4">
+                                {/* Summary badges */}
+                                <div className="flex flex-wrap gap-2">
+                                    {diffSummary.added_count > 0 && (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                                            <Plus className="size-3" /> {diffSummary.added_count} New
+                                        </span>
+                                    )}
+                                    {diffSummary.changed_count > 0 && (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-600 dark:text-amber-400">
+                                            <ArrowUpDown className="size-3" /> {diffSummary.changed_count} Changed
+                                        </span>
+                                    )}
+                                    {diffSummary.removed_count > 0 && (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-3 py-1 text-xs font-medium text-red-600 dark:text-red-400">
+                                            <Trash2 className="size-3" /> {diffSummary.removed_count} Removed
+                                        </span>
+                                    )}
+                                    {diffSummary.unchanged_count > 0 && (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
+                                            <Check className="size-3" /> {diffSummary.unchanged_count} Unchanged
+                                        </span>
+                                    )}
+                                </div>
+
+                                {/* Added sensors */}
+                                {diff.added.length > 0 && (
+                                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+                                        <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                                            <Plus className="size-3.5" /> New Sensors (will be added)
+                                        </p>
+                                        <div className="space-y-1.5">
+                                            {diff.added.map((s, i) => (
+                                                <div key={i} className="flex items-center justify-between rounded bg-background/50 px-3 py-1.5 text-xs">
+                                                    <span className="font-medium">{s.name}</span>
+                                                    <span className="text-muted-foreground">{s.connection_type.toUpperCase()} · {s.unit}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Changed sensors */}
+                                {diff.changed.length > 0 && (
+                                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                                        <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                            <ArrowUpDown className="size-3.5" /> Changed Sensors (will be updated)
+                                        </p>
+                                        <div className="space-y-2">
+                                            {diff.changed.map((item, i) => (
+                                                <div key={i} className="rounded bg-background/50 px-3 py-2 text-xs">
+                                                    <span className="font-medium">{item.db_name}</span>
+                                                    <div className="mt-1 space-y-0.5">
+                                                        {Object.entries(item.changes).map(([key, val]) => (
+                                                            <div key={key} className="flex items-center gap-2 text-muted-foreground">
+                                                                <span className="w-20 shrink-0 capitalize">{key}:</span>
+                                                                <span className="line-through text-red-500">{String(val.old ?? '—')}</span>
+                                                                <span>→</span>
+                                                                <span className="text-emerald-600 dark:text-emerald-400">{String(val.new ?? '—')}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Removed sensors */}
+                                {diff.removed.length > 0 && (
+                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                                        <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-red-600 dark:text-red-400">
+                                            <Trash2 className="size-3.5" /> Missing from Device (will be removed)
+                                        </p>
+                                        <div className="space-y-1.5">
+                                            {diff.removed.map((s, i) => (
+                                                <div key={i} className="flex items-center justify-between rounded bg-background/50 px-3 py-1.5 text-xs">
+                                                    <span className="font-medium">{s.name}</span>
+                                                    <span className="text-muted-foreground">{s.connection_type.toUpperCase()} · {s.unit}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                            <DialogFooter className="gap-2 sm:gap-0">
+                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
+                                <Button onClick={handleConfirmSync} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                    <Check className="size-4" /> Apply Changes
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+
+                    {/* ─── APPLYING ─── */}
+                    {phase === 'applying' && (
+                        <>
+                            <DialogHeader>
+                                <DialogTitle>Applying Changes…</DialogTitle>
+                                <DialogDescription>Saving sensor changes to database…</DialogDescription>
+                            </DialogHeader>
+                            <div className="flex justify-center py-8">
+                                <Loader2 className="size-10 animate-spin text-emerald-500" />
+                            </div>
+                        </>
+                    )}
+
                     {/* ─── ERROR ─── */}
                     {phase === 'error' && (
                         <>
@@ -495,7 +699,7 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                                 <div className="text-center">
                                     <h3 className="text-lg font-semibold">Sync Complete</h3>
                                     <p className="mt-1 text-sm text-muted-foreground">
-                                        Device data has been updated successfully.
+                                        {hasChanges ? 'Changes have been applied successfully.' : 'Sensors are already in sync.'}
                                     </p>
                                 </div>
                                 {syncedInfo && (
@@ -506,17 +710,22 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                                             {syncedInfo.battery && (<><span className="text-muted-foreground">Battery</span><span>{String(syncedInfo.battery)}V</span></>)}
                                             {syncedInfo.temperature && (<><span className="text-muted-foreground">Temperature</span><span>{String(syncedInfo.temperature)}°C</span></>)}
                                             {syncedInfo.humidity && (<><span className="text-muted-foreground">Humidity</span><span>{String(syncedInfo.humidity)}%</span></>)}
-                                            <span className="text-muted-foreground">Sensors Synced</span><span className="font-semibold">{syncedSensorCount}</span>
                                         </div>
                                     </div>
                                 )}
-                                <div className="flex flex-wrap justify-center gap-2 px-4">
-                                    {SYNC_STEPS.map((step) => (
-                                        <div key={step.id} className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/5 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
-                                            <Check className="size-3" /> {step.label}
+                                {applyResult.length > 0 && (
+                                    <div className="w-full rounded-lg border border-muted bg-muted/30 p-3">
+                                        <p className="mb-2 text-xs font-medium text-foreground">Changes Applied</p>
+                                        <div className="space-y-1 text-xs text-muted-foreground">
+                                            {applyResult.map((log, i) => (
+                                                <p key={i} className="flex items-start gap-1.5">
+                                                    <Check className="size-3 mt-0.5 shrink-0 text-emerald-500" />
+                                                    {log}
+                                                </p>
+                                            ))}
                                         </div>
-                                    ))}
-                                </div>
+                                    </div>
+                                )}
                             </div>
                             <DialogFooter>
                                 <Button onClick={handleClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
@@ -532,7 +741,220 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
     );
 }
 
-function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: number; sensors: SensorItem[]; deviceIdentifier?: string | null }) {
+// =============================================================================
+// Reboot Dialog
+// =============================================================================
+type RebootPhase = 'confirm' | 'sending' | 'waiting' | 'success' | 'error';
+
+function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string; disabled?: boolean }) {
+    const { t } = useTranslation();
+    const [open, setOpen] = useState(false);
+    const [phase, setPhase] = useState<RebootPhase>('confirm');
+    const [errorMessage, setErrorMessage] = useState('');
+    const [elapsed, setElapsed] = useState(0);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    function reset() {
+        setPhase('confirm');
+        setErrorMessage('');
+        setElapsed(0);
+        if (timerRef.current) clearInterval(timerRef.current);
+    }
+
+    function handleClose() {
+        reset();
+        setOpen(false);
+    }
+
+    async function handleReboot() {
+        setPhase('sending');
+        setElapsed(0);
+
+        // Start elapsed timer
+        const start = Date.now();
+        timerRef.current = setInterval(() => {
+            setElapsed(Math.floor((Date.now() - start) / 1000));
+        }, 1000);
+
+        // After 2s show "waiting" phase (device is rebooting)
+        setTimeout(() => {
+            setPhase((prev) => prev === 'sending' ? 'waiting' : prev);
+        }, 2000);
+
+        try {
+            const res = await apiFetch('/api/mqtt/reboot', { id_logger: deviceIdentifier });
+            const data = await res.json();
+
+            if (timerRef.current) clearInterval(timerRef.current);
+
+            if (data.success) {
+                setPhase('success');
+                // Reload page after 2s to reflect updated data
+                setTimeout(() => {
+                    router.reload();
+                }, 2000);
+            } else {
+                setErrorMessage(data.message || 'Reboot failed');
+                setPhase('error');
+            }
+        } catch {
+            if (timerRef.current) clearInterval(timerRef.current);
+            setErrorMessage('Network error — could not reach server');
+            setPhase('error');
+        }
+    }
+
+    function formatElapsed(seconds: number) {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    return (
+        <>
+            <Button
+                variant="destructive"
+                size="sm"
+                className="gap-1.5"
+                disabled={disabled}
+                onClick={() => { reset(); setOpen(true); }}
+            >
+                <Power className="size-4" />
+                {t('loggerDetail.reboot')}
+            </Button>
+            <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
+                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (phase === 'sending' || phase === 'waiting') e.preventDefault(); }}>
+
+                    {/* ── Confirmation ── */}
+                    {phase === 'confirm' && (
+                        <>
+                            <DialogHeader>
+                                <DialogTitle className="flex items-center gap-2 text-red-500">
+                                    <AlertTriangle className="size-5" />
+                                    Reboot Logger
+                                </DialogTitle>
+                                <DialogDescription> 
+                                    Device akan restart dan sementara offline. Lanjutkan?
+                                </DialogDescription>
+                            </DialogHeader>
+                            <DialogFooter className="gap-2 sm:gap-0">
+                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
+                                <Button variant="destructive" onClick={handleReboot} className="gap-1.5">
+                                    <Power className="size-4" />
+                                    Reboot Sekarang
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+
+                    {/* ── Sending / Waiting ── */}
+                    {(phase === 'sending' || phase === 'waiting') && (
+                        <div className="flex flex-col items-center gap-6 py-8">
+                            {/* Animated icon */}
+                            <div className="relative">
+                                <div className={`flex h-20 w-20 items-center justify-center rounded-full ${
+                                    phase === 'sending'
+                                        ? 'bg-amber-500/10'
+                                        : 'bg-blue-500/10 animate-pulse'
+                                }`}>
+                                    {phase === 'sending' ? (
+                                        <Loader2 className="size-10 animate-spin text-amber-500" />
+                                    ) : (
+                                        <Power className="size-10 text-blue-500 animate-pulse" />
+                                    )}
+                                </div>
+                                {/* Ripple effect */}
+                                {phase === 'waiting' && (
+                                    <>
+                                        <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
+                                        <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
+                                    </>
+                                )}
+                            </div>
+
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">
+                                    {phase === 'sending' ? 'Mengirim Perintah Reboot...' : 'Menunggu Logger Restart...'}
+                                </h3>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    {phase === 'sending'
+                                        ? 'Mengirim perintah ke device...'
+                                        : 'Menunggu device booting kembali...'}
+                                </p>
+                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">
+                                    {formatElapsed(elapsed)}
+                                </p>
+                            </div>
+
+                            {/* Steps indicator */}
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className={`flex items-center gap-3 text-sm ${phase === 'sending' ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                    {phase === 'sending' ? (
+                                        <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" />
+                                    ) : (
+                                        <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    )}
+                                    <span>Mengirim perintah ke Logger</span>
+                                </div>
+                                <div className={`flex items-center gap-3 text-sm ${phase === 'waiting' ? 'text-foreground' : 'text-muted-foreground/50'}`}>
+                                    {phase === 'waiting' ? (
+                                        <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" />
+                                    ) : (
+                                        <div className="size-4 rounded-full border-2 border-muted shrink-0" />
+                                    )}
+                                    <span>Menunggu balasan</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ── Success ── */}
+                    {phase === 'success' && (
+                        <div className="flex flex-col items-center gap-4 py-8">
+                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
+                                <CheckCircle2 className="size-8 text-emerald-500" />
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">Reboot Berhasil!</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    Device telah restart dan kembali online dalam <strong>{formatElapsed(elapsed)}</strong>
+                                </p>
+                            </div>
+                            <DialogFooter>
+                                <Button onClick={handleClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                    Done
+                                </Button>
+                            </DialogFooter>
+                        </div>
+                    )}
+
+                    {/* ── Error ── */}
+                    {phase === 'error' && (
+                        <>
+                            <div className="flex flex-col items-center gap-4 py-8">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
+                                    <XCircle className="size-8 text-red-500" />
+                                </div>
+                                <div className="text-center">
+                                    <h3 className="text-lg font-semibold">Reboot Gagal</h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">{errorMessage}</p>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
+                                <Button variant="destructive" onClick={() => { reset(); handleReboot(); }} className="gap-1.5">
+                                    <Power className="size-4" /> Coba Lagi
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+                </DialogContent>
+            </Dialog>
+        </>
+    );
+}
+
+function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: string; sensors: SensorItem[]; deviceIdentifier?: string | null }) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [editingSensor, setEditingSensor] = useState<SensorItem | null>(null);
@@ -941,12 +1363,13 @@ function getLogLevelColor(level: string) {
     }
 }
 
-function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disabled }: {
-    loggerId: number;
+function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disabled, deviceIdentifier }: {
+    loggerId: string;
     intervalRead: number;
     intervalSend: number;
     maxReset: number;
     disabled: boolean;
+    deviceIdentifier?: string | null;
 }) {
     const [editing, setEditing] = useState(false);
     const [values, setValues] = useState({
@@ -955,21 +1378,126 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
         max_reset: maxReset,
     });
     const [saving, setSaving] = useState(false);
-    const [saved, setSaved] = useState(false);
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [dialogPhase, setDialogPhase] = useState<'sending' | 'waiting' | 'success' | 'error'>('sending');
+    const [errorMsg, setErrorMsg] = useState('');
+    const [elapsed, setElapsed] = useState(0);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    // GET modal state
+    const [getDialogOpen, setGetDialogOpen] = useState(false);
+    const [getPhase, setGetPhase] = useState<'sending' | 'waiting' | 'success' | 'error'>('sending');
+    const [getError, setGetError] = useState('');
+    const [getElapsed, setGetElapsed] = useState(0);
+    const getTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const { t } = useTranslation();
 
-    const handleSave = () => {
+    function stopTimer() {
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    }
+
+    function formatElapsed(seconds: number) {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    const handleSave = async () => {
         setSaving(true);
-        router.put(`/loggers/${loggerId}/config`, values, {
-            preserveScroll: true,
-            onSuccess: () => {
-                setSaved(true);
-                setEditing(false);
-                setTimeout(() => setSaved(false), 2000);
-            },
-            onFinish: () => setSaving(false),
-        });
+
+        if (deviceIdentifier) {
+            setDialogPhase('sending');
+            setErrorMsg('');
+            setElapsed(0);
+            setDialogOpen(true);
+
+            const start = Date.now();
+            timerRef.current = setInterval(() => {
+                setElapsed(Math.floor((Date.now() - start) / 1000));
+            }, 1000);
+
+            setTimeout(() => {
+                setDialogPhase(prev => prev === 'sending' ? 'waiting' : prev);
+            }, 1500);
+
+            try {
+                const res = await apiFetch('/api/mqtt/interval', {
+                    id_logger: deviceIdentifier,
+                    interval_send: values.interval_send,
+                    interval_read: values.interval_read,
+                    max_reset: values.max_reset,
+                });
+                const data = await res.json();
+                stopTimer();
+
+                if (data.success) {
+                    setDialogPhase('success');
+                    setEditing(false);
+                    setTimeout(() => { setDialogOpen(false); router.reload(); }, 2000);
+                } else {
+                    setErrorMsg(data.message || 'Gagal mengirim konfigurasi');
+                    setDialogPhase('error');
+                }
+            } catch {
+                stopTimer();
+                setErrorMsg('Network error — tidak dapat terhubung ke server');
+                setDialogPhase('error');
+            } finally {
+                setSaving(false);
+            }
+        } else {
+            router.put(`/loggers/${loggerId}/config`, values, {
+                preserveScroll: true,
+                onSuccess: () => { setEditing(false); },
+                onFinish: () => setSaving(false),
+            });
+        }
     };
+
+    function handleRetry() { stopTimer(); handleSave(); }
+
+    function handleDialogClose() { stopTimer(); setDialogOpen(false); setSaving(false); }
+
+    // ── GET handler ──
+    function stopGetTimer() {
+        if (getTimerRef.current) { clearInterval(getTimerRef.current); getTimerRef.current = null; }
+    }
+
+    async function handleGetInterval() {
+        if (!deviceIdentifier) return;
+        setGetPhase('sending');
+        setGetError('');
+        setGetElapsed(0);
+        setGetDialogOpen(true);
+
+        const start = Date.now();
+        getTimerRef.current = setInterval(() => {
+            setGetElapsed(Math.floor((Date.now() - start) / 1000));
+        }, 1000);
+
+        setTimeout(() => {
+            setGetPhase(prev => prev === 'sending' ? 'waiting' : prev);
+        }, 1500);
+
+        try {
+            const res = await apiFetch('/api/mqtt/interval/get', { id_logger: deviceIdentifier });
+            const data = await res.json();
+            stopGetTimer();
+
+            if (data.success && data.data) {
+                setGetPhase('success');
+                setTimeout(() => { setGetDialogOpen(false); router.reload(); }, 2000);
+            } else {
+                setGetError(data.message || 'Gagal membaca konfigurasi');
+                setGetPhase('error');
+            }
+        } catch {
+            stopGetTimer();
+            setGetError('Network error — tidak dapat terhubung ke server');
+            setGetPhase('error');
+        }
+    }
+
+    function handleGetDialogClose() { stopGetTimer(); setGetDialogOpen(false); }
 
     const handleCancel = () => {
         setValues({ interval_read: intervalRead, interval_send: intervalSend, max_reset: maxReset });
@@ -982,112 +1510,245 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                 <div className="flex items-center justify-between">
                     <div>
                         <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="size-5" /> {t('loggerDetail.device_configuration')}</CardTitle>
-                        <CardDescription>{t('loggerDetail.data_acquisition_settings')}</CardDescription>
                     </div>
-                    {!editing && !disabled && (
-                        <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
-                            <Pencil className="size-4" />
-                        </Button>
-                    )}
+                    <div className="flex items-center gap-1">
+                        {!editing && !disabled && deviceIdentifier && (
+                            <Button variant="ghost" size="icon" onClick={handleGetInterval} className="size-8" title="Sync dari device">
+                                <RefreshCw className="size-4" />
+                            </Button>
+                        )}
+                        {!editing && !disabled && (
+                            <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
+                                <Pencil className="size-4" />
+                            </Button>
+                        )}
+                    </div>
                 </div>
             </CardHeader>
             <CardContent>
                 {!editing ? (
-                    <div className="space-y-3">
-                        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                            <dt className="text-muted-foreground flex items-center gap-1.5">
-                                <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_read')}
-                            </dt>
-                            <dd className="font-medium">{intervalRead} {t('loggerDetail.minutes')}</dd>
-                            <dt className="text-muted-foreground flex items-center gap-1.5">
-                                <Upload className="size-3.5 text-emerald-500" /> {t('loggerDetail.interval_send')}
-                            </dt>
-                            <dd className="font-medium">{intervalSend} {t('loggerDetail.minutes')}</dd>
-                            <dt className="text-muted-foreground flex items-center gap-1.5">
-                                <RotateCcw className="size-3.5 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
-                            </dt>
-                            <dd className="font-medium">{maxReset} {t('loggerDetail.times')}</dd>
-                        </dl>
-                        {saved && (
-                            <span className="flex items-center gap-1 text-sm text-emerald-600">
-                                <CheckCircle2 className="size-4" /> {t('loggerDetail.config_saved')}
-                            </span>
-                        )}
-                    </div>
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                        <dt className="text-muted-foreground flex items-center gap-1.5">
+                            <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_read')}
+                        </dt>
+                        <dd className="font-medium">{intervalRead} {t('loggerDetail.minutes')}</dd>
+                        <dt className="text-muted-foreground flex items-center gap-1.5">
+                            <Upload className="size-3.5 text-emerald-500" /> {t('loggerDetail.interval_send')}
+                        </dt>
+                        <dd className="font-medium">{intervalSend} {t('loggerDetail.minutes')}</dd>
+                        <dt className="text-muted-foreground flex items-center gap-1.5">
+                            <RotateCcw className="size-3.5 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
+                        </dt>
+                        <dd className="font-medium">{maxReset} {t('loggerDetail.times')}</dd>
+                    </dl>
                 ) : (
                     <div className="space-y-4">
                         <div className="grid gap-4 sm:grid-cols-3">
                             <div className="space-y-2">
                                 <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Timer className="size-4 text-blue-500" />
-                                    {t('loggerDetail.interval_read')}
+                                    <Timer className="size-4 text-blue-500" /> {t('loggerDetail.interval_read')}
                                 </label>
                                 <div className="flex items-center gap-2">
-                                    <input
-                                        type="number"
-                                        min={1}
-                                        max={1440}
-                                        value={values.interval_read}
+                                    <input type="number" min={1} max={1440} value={values.interval_read}
                                         onChange={(e) => setValues({ ...values, interval_read: parseInt(e.target.value) || 1 })}
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    />
+                                        disabled={saving} />
                                     <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
                                 </div>
                             </div>
                             <div className="space-y-2">
                                 <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Upload className="size-4 text-emerald-500" />
-                                    {t('loggerDetail.interval_send')}
+                                    <Upload className="size-4 text-emerald-500" /> {t('loggerDetail.interval_send')}
                                 </label>
                                 <div className="flex items-center gap-2">
-                                    <input
-                                        type="number"
-                                        min={1}
-                                        max={1440}
-                                        value={values.interval_send}
+                                    <input type="number" min={1} max={1440} value={values.interval_send}
                                         onChange={(e) => setValues({ ...values, interval_send: parseInt(e.target.value) || 1 })}
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    />
+                                        disabled={saving} />
                                     <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
                                 </div>
                             </div>
                             <div className="space-y-2">
                                 <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <RotateCcw className="size-4 text-amber-500" />
-                                    {t('loggerDetail.max_reset_watchdog')}
+                                    <RotateCcw className="size-4 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
                                 </label>
                                 <div className="flex items-center gap-2">
-                                    <input
-                                        type="number"
-                                        min={0}
-                                        max={100}
-                                        value={values.max_reset}
+                                    <input type="number" min={0} max={100} value={values.max_reset}
                                         onChange={(e) => setValues({ ...values, max_reset: parseInt(e.target.value) || 0 })}
                                         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    />
+                                        disabled={saving} />
                                     <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.times')}</span>
                                 </div>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
                             <Button onClick={handleSave} disabled={saving} size="sm" className="gap-2">
-                                <Save className="size-4" />
+                                {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                                 {saving ? t('loggerDetail.saving_dots') : t('common.save')}
                             </Button>
-                            <Button onClick={handleCancel} variant="outline" size="sm" className="gap-2">
-                                <XCircle className="size-4" />
-                                {t('common.cancel')}
+                            <Button onClick={handleCancel} variant="outline" size="sm" className="gap-2" disabled={saving}>
+                                <XCircle className="size-4" /> {t('common.cancel')}
                             </Button>
+                            {deviceIdentifier && <span className="text-[10px] text-muted-foreground ml-auto">via MQTT</span>}
                         </div>
                     </div>
                 )}
             </CardContent>
+
+            {/* ══════ MQTT Save Modal ══════ */}
+            <Dialog open={dialogOpen} onOpenChange={(v) => { if (!v && dialogPhase !== 'sending' && dialogPhase !== 'waiting') handleDialogClose(); }}>
+                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (dialogPhase === 'sending' || dialogPhase === 'waiting') e.preventDefault(); }}>
+                    {(dialogPhase === 'sending' || dialogPhase === 'waiting') && (
+                        <div className="flex flex-col items-center gap-6 py-8">
+                            <div className="relative">
+                                <div className={`flex h-20 w-20 items-center justify-center rounded-full ${dialogPhase === 'sending' ? 'bg-amber-500/10' : 'bg-blue-500/10 animate-pulse'}`}>
+                                    {dialogPhase === 'sending'
+                                        ? <Loader2 className="size-10 animate-spin text-amber-500" />
+                                        : <SlidersHorizontal className="size-10 text-blue-500 animate-pulse" />}
+                                </div>
+                                {dialogPhase === 'waiting' && (
+                                    <>
+                                        <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
+                                        <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
+                                    </>
+                                )}
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">
+                                    {dialogPhase === 'sending' ? 'Mengirim Konfigurasi...' : 'Menunggu Respons Device...'}
+                                </h3>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    {dialogPhase === 'sending' ? 'Mengirim perintah INTERVAL SET ke device...' : 'Menunggu konfirmasi dari device...'}
+                                </p>
+                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(elapsed)}</p>
+                            </div>
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className={`flex items-center gap-3 text-sm ${dialogPhase === 'sending' ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                    {dialogPhase === 'sending' ? <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" /> : <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />}
+                                    <span>Mengirim INTERVAL SET</span>
+                                </div>
+                                <div className={`flex items-center gap-3 text-sm ${dialogPhase === 'waiting' ? 'text-foreground' : 'text-muted-foreground/50'}`}>
+                                    {dialogPhase === 'waiting' ? <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" /> : <div className="size-4 rounded-full border-2 border-muted shrink-0" />}
+                                    <span>Menunggu INTERVAL OK</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {dialogPhase === 'success' && (
+                        <div className="flex flex-col items-center gap-4 py-8">
+                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
+                                <CheckCircle2 className="size-8 text-emerald-500" />
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">Konfigurasi Berhasil!</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">Device mengkonfirmasi perubahan dalam <strong>{formatElapsed(elapsed)}</strong></p>
+                            </div>
+                            <DialogFooter>
+                                <Button onClick={handleDialogClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">Done</Button>
+                            </DialogFooter>
+                        </div>
+                    )}
+                    {dialogPhase === 'error' && (
+                        <>
+                            <div className="flex flex-col items-center gap-4 py-8">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
+                                    <XCircle className="size-8 text-red-500" />
+                                </div>
+                                <div className="text-center">
+                                    <h3 className="text-lg font-semibold">Gagal Mengirim Konfigurasi</h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">{errorMsg}</p>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
+                                <Button onClick={handleRetry} className="gap-1.5"><SlidersHorizontal className="size-4" /> Coba Lagi</Button>
+                            </DialogFooter>
+                        </>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            {/* ══════ MQTT GET Modal ══════ */}
+            <Dialog open={getDialogOpen} onOpenChange={(v) => { if (!v && getPhase !== 'sending' && getPhase !== 'waiting') handleGetDialogClose(); }}>
+                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (getPhase === 'sending' || getPhase === 'waiting') e.preventDefault(); }}>
+                    {(getPhase === 'sending' || getPhase === 'waiting') && (
+                        <div className="flex flex-col items-center gap-6 py-8">
+                            <div className="relative">
+                                <div className={`flex h-20 w-20 items-center justify-center rounded-full ${getPhase === 'sending' ? 'bg-amber-500/10' : 'bg-blue-500/10 animate-pulse'}`}>
+                                    {getPhase === 'sending'
+                                        ? <Loader2 className="size-10 animate-spin text-amber-500" />
+                                        : <RefreshCw className="size-10 text-blue-500 animate-spin" style={{ animationDuration: '2s' }} />}
+                                </div>
+                                {getPhase === 'waiting' && (
+                                    <>
+                                        <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
+                                        <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
+                                    </>
+                                )}
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">
+                                    {getPhase === 'sending' ? 'Meminta Konfigurasi...' : 'Menunggu Respons Device...'}
+                                </h3>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    {getPhase === 'sending' ? 'Mengirim perintah INTERVAL GET ke device...' : 'Menunggu data dari device...'}
+                                </p>
+                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(getElapsed)}</p>
+                            </div>
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className={`flex items-center gap-3 text-sm ${getPhase === 'sending' ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                    {getPhase === 'sending' ? <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" /> : <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />}
+                                    <span>Mengirim INTERVAL GET</span>
+                                </div>
+                                <div className={`flex items-center gap-3 text-sm ${getPhase === 'waiting' ? 'text-foreground' : 'text-muted-foreground/50'}`}>
+                                    {getPhase === 'waiting' ? <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" /> : <div className="size-4 rounded-full border-2 border-muted shrink-0" />}
+                                    <span>Menerima data interval</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {getPhase === 'success' && (
+                        <div className="flex flex-col items-center gap-4 py-8">
+                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
+                                <CheckCircle2 className="size-8 text-emerald-500" />
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">Sync Berhasil!</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">Data interval berhasil diambil dari device dalam <strong>{formatElapsed(getElapsed)}</strong></p>
+                            </div>
+                            <DialogFooter>
+                                <Button onClick={handleGetDialogClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">Done</Button>
+                            </DialogFooter>
+                        </div>
+                    )}
+                    {getPhase === 'error' && (
+                        <>
+                            <div className="flex flex-col items-center gap-4 py-8">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
+                                    <XCircle className="size-8 text-red-500" />
+                                </div>
+                                <div className="text-center">
+                                    <h3 className="text-lg font-semibold">Gagal Membaca Konfigurasi</h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">{getError}</p>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button variant="outline" onClick={handleGetDialogClose}>{t('common.cancel')}</Button>
+                                <Button onClick={() => { stopGetTimer(); handleGetInterval(); }} className="gap-1.5"><RefreshCw className="size-4" /> Coba Lagi</Button>
+                            </DialogFooter>
+                        </>
+                    )}
+                </DialogContent>
+            </Dialog>
         </Card>
     );
 }
 
+
+
+
 function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, ministesyInterval, disabled }: {
-    loggerId: number;
+    loggerId: string;
     ministesyEnabled: boolean;
     ministesyKey: string | null;
     ministesyInterval: number;
@@ -1173,7 +1834,7 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
         <Card className="mt-4">
             <CardHeader>
                 <CardTitle className="flex items-center gap-2"><Link2 className="size-5" /> {t('loggerDetail.platform_integration')}</CardTitle>
-                <CardDescription>{t('loggerDetail.send_telemetry_desc')}</CardDescription>
+
             </CardHeader>
             <CardContent className="space-y-3">
                 {/* Mini STESY Platform */}
@@ -1324,6 +1985,713 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
     );
 }
 
+// =============================================================================
+// FTP Configuration Card
+// =============================================================================
+type FtpPhase = 'idle' | 'setting' | 'set_ok' | 'testing' | 'test_ok' | 'success' | 'error';
+
+function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, initialUser }: {
+    deviceIdentifier: string;
+    disabled?: boolean;
+    initialHost?: string | null;
+    initialPort?: number;
+    initialUser?: string | null;
+}) {
+    const { t } = useTranslation();
+    const [ftpHost, setFtpHost] = useState(initialHost || '');
+    const [ftpPort, setFtpPort] = useState(initialPort || 21);
+    const [ftpUser, setFtpUser] = useState(initialUser || '');
+    const [ftpPass, setFtpPass] = useState('');
+    const [showPass, setShowPass] = useState(false);
+    const [editing, setEditing] = useState(false);
+    const [configured, setConfigured] = useState(!!initialHost);
+
+    // Stepper dialog
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [phase, setPhase] = useState<FtpPhase>('idle');
+    const [errorMsg, setErrorMsg] = useState('');
+    const [errorStep, setErrorStep] = useState<'set' | 'test'>('set');
+    const [elapsed, setElapsed] = useState(0);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // File browser
+    const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+    const [months, setMonths] = useState<string[]>([]);
+    const [files, setFiles] = useState<string[]>([]);
+    const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+    const [browseView, setBrowseView] = useState<'months' | 'files'>('months');
+    const [loadingFiles, setLoadingFiles] = useState(false);
+    const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
+
+    function startTimer() {
+        const start = Date.now();
+        setElapsed(0);
+        stopTimer();
+        timerRef.current = setInterval(() => {
+            setElapsed(Math.floor((Date.now() - start) / 1000));
+        }, 1000);
+    }
+
+    function stopTimer() {
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    }
+
+    function formatElapsed(seconds: number) {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    // Step 1: Kirim — SET FTP credentials
+    async function handleSet() {
+        if (!ftpHost || !ftpUser || !ftpPass) return;
+
+        setPhase('setting');
+        setErrorMsg('');
+        setDialogOpen(true);
+        startTimer();
+
+        try {
+            const res = await apiFetch('/api/mqtt/ftp/set', {
+                id_logger: deviceIdentifier,
+                host: ftpHost,
+                port: ftpPort,
+                username: ftpUser,
+                password: ftpPass,
+            });
+            const data = await res.json();
+            stopTimer();
+
+            if (data.success) {
+                setPhase('set_ok');
+            } else {
+                setErrorMsg(data.message || 'Gagal mengirim konfigurasi FTP');
+                setErrorStep('set');
+                setPhase('error');
+            }
+        } catch {
+            stopTimer();
+            setErrorMsg('Network error — tidak dapat terhubung ke server');
+            setErrorStep('set');
+            setPhase('error');
+        }
+    }
+
+    // Step 2: Test Koneksi — TES FTP
+    async function handleTest() {
+        setPhase('testing');
+        startTimer();
+
+        try {
+            const res = await apiFetch('/api/mqtt/ftp/test', {
+                id_logger: deviceIdentifier,
+            });
+            const data = await res.json();
+            stopTimer();
+
+            if (data.success) {
+                setPhase('test_ok');
+            } else {
+                setErrorMsg(data.message || 'FTP test gagal');
+                setErrorStep('test');
+                setPhase('error');
+            }
+        } catch {
+            stopTimer();
+            setErrorMsg('Network error — tidak dapat terhubung ke server');
+            setErrorStep('test');
+            setPhase('error');
+        }
+    }
+
+    // Step 3: Simpan — confirm and close
+    function handleSave() {
+        setPhase('success');
+        setEditing(false);
+        setConfigured(true);
+    }
+
+    function handleRetry() {
+        if (errorStep === 'set') {
+            handleSet();
+        } else {
+            handleTest();
+        }
+    }
+
+    function handleDialogClose() {
+        stopTimer();
+        setDialogOpen(false);
+        setPhase('idle');
+    }
+
+    // File browser — load months
+    async function handleBrowseFiles() {
+        setLoadingFiles(true);
+        setFileBrowserOpen(true);
+        setMonths([]);
+        setFiles([]);
+        setSelectedMonth(null);
+        setBrowseView('months');
+
+        try {
+            const res = await apiFetch('/api/mqtt/ftp/read', { id_logger: deviceIdentifier });
+            const data = await res.json();
+
+            if (data.success && Array.isArray(data.months)) {
+                setMonths(data.months);
+            } else {
+                setMonths([]);
+            }
+        } catch {
+            setMonths([]);
+        } finally {
+            setLoadingFiles(false);
+        }
+    }
+
+    // File browser — load files for a selected month
+    async function handleSelectMonth(monthStr: string) {
+        setSelectedMonth(monthStr);
+        setBrowseView('files');
+        setLoadingFiles(true);
+        setFiles([]);
+
+        // Parse "2026-03" → year=2026, month=3
+        const [yearStr, monthNum] = monthStr.split('-');
+        const year = parseInt(yearStr);
+        const month = parseInt(monthNum);
+
+        try {
+            const res = await apiFetch('/api/mqtt/ftp/read', {
+                id_logger: deviceIdentifier,
+                year,
+                month,
+            });
+            const data = await res.json();
+
+            if (data.success && Array.isArray(data.files)) {
+                setFiles(data.files);
+            } else {
+                setFiles([]);
+            }
+        } catch {
+            setFiles([]);
+        } finally {
+            setLoadingFiles(false);
+        }
+    }
+
+    function handleBackToMonths() {
+        setBrowseView('months');
+        setSelectedMonth(null);
+        setFiles([]);
+    }
+
+    function formatMonth(monthStr: string) {
+        const [yearStr, monthNum] = monthStr.split('-');
+        const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+        return `${monthNames[parseInt(monthNum) - 1]} ${yearStr}`;
+    }
+
+    async function handleGetFile(filename: string) {
+        setDownloadingFile(filename);
+        try {
+            // Step 1: Tell logger to upload file to FTP server
+            const getRes = await apiFetch('/api/mqtt/ftp/get', {
+                id_logger: deviceIdentifier,
+                filename,
+            });
+            const getData = await getRes.json();
+
+            if (!getData.success) {
+                alert(`Gagal: ${getData.message || 'Logger tidak merespons'}`);
+                return;
+            }
+
+            // Step 2: Download from FTP server to browser
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/api/mqtt/ftp/download';
+            form.style.display = 'none';
+
+            const fields = { id_logger: deviceIdentifier, filename, _token: csrfToken };
+            for (const [key, value] of Object.entries(fields)) {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = key;
+                input.value = value;
+                form.appendChild(input);
+            }
+
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+        } catch {
+            alert('Network error — tidak dapat terhubung ke server');
+        } finally {
+            setDownloadingFile(null);
+        }
+    }
+
+    const hasCredentials = ftpHost && ftpUser && ftpPass;
+
+    return (
+        <Card className="mt-4">
+            <CardHeader>
+                <div className="flex items-center justify-between">
+                    <div>
+                        <CardTitle className="flex items-center gap-2"><Upload className="size-5" /> Konfigurasi FTP</CardTitle>
+                        <CardDescription className="mt-1">Atur pengiriman data logger ke server FTP</CardDescription>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        {!editing && !disabled && (
+                            <Button variant="ghost" size="icon" onClick={handleBrowseFiles} className="size-8" title="Browse Files">
+                                <HardDrive className="size-4" />
+                            </Button>
+                        )}
+                        {!editing && !disabled && (
+                            <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
+                                <Pencil className="size-4" />
+                            </Button>
+                        )}
+                    </div>
+                </div>
+            </CardHeader>
+            <CardContent>
+                {!editing ? (
+                    configured ? (
+                        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
+                            <div className="flex items-center gap-2 mb-3">
+                                <CheckCircle2 className="size-4 text-emerald-500" />
+                                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">FTP Terkonfigurasi</span>
+                            </div>
+                            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                                <dt className="text-muted-foreground">Host</dt>
+                                <dd className="font-mono text-xs">{ftpHost}:{ftpPort}</dd>
+                                <dt className="text-muted-foreground">Username</dt>
+                                <dd className="font-mono text-xs">{ftpUser}</dd>
+                            </dl>
+                        </div>
+                    ) : (
+                        <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+                            <Upload className="mx-auto size-8 text-muted-foreground/40" />
+                            <p className="mt-2 text-sm text-muted-foreground">Konfigurasi FTP belum diatur</p>
+                            <Button variant="outline" size="sm" className="mt-3 gap-1.5" onClick={() => setEditing(true)} disabled={disabled}>
+                                <Settings className="size-4" /> Konfigurasi FTP
+                            </Button>
+                        </div>
+                    )
+                ) : (
+                    <div className="space-y-4">
+                        <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex items-center gap-1.5">
+                                    <Network className="size-4 text-blue-500" /> Host FTP
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ftpHost}
+                                    onChange={(e) => setFtpHost(e.target.value)}
+                                    placeholder="103.82.241.100"
+                                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex items-center gap-1.5">
+                                    <Plug className="size-4 text-amber-500" /> Port
+                                </label>
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={65535}
+                                    value={ftpPort}
+                                    onChange={(e) => setFtpPort(parseInt(e.target.value) || 21)}
+                                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                />
+                            </div>
+                        </div>
+                        <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex items-center gap-1.5">
+                                    <Key className="size-4 text-emerald-500" /> Username
+                                </label>
+                                <input
+                                    type="text"
+                                    value={ftpUser}
+                                    onChange={(e) => setFtpUser(e.target.value)}
+                                    placeholder="logger_30069"
+                                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex items-center gap-1.5">
+                                    <Key className="size-4 text-rose-500" /> Password
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        type={showPass ? 'text' : 'password'}
+                                        value={ftpPass}
+                                        onChange={(e) => setFtpPass(e.target.value)}
+                                        placeholder="••••••••"
+                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 pr-9 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPass(!showPass)}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                    >
+                                        {showPass ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                onClick={handleSet}
+                                disabled={!hasCredentials}
+                                size="sm"
+                                className="gap-2"
+                            >
+                                <Upload className="size-4" /> Kirim ke Device
+                            </Button>
+                            <Button onClick={() => setEditing(false)} variant="outline" size="sm" className="gap-2">
+                                <XCircle className="size-4" /> {t('common.cancel')}
+                            </Button>
+                            <span className="text-[10px] text-muted-foreground ml-auto">via MQTT</span>
+                        </div>
+                    </div>
+                )}
+            </CardContent>
+
+            {/* ══════ FTP Stepper Dialog ══════ */}
+            <Dialog open={dialogOpen} onOpenChange={(v) => { if (!v && phase !== 'setting' && phase !== 'testing') handleDialogClose(); }}>
+                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (phase === 'setting' || phase === 'testing') e.preventDefault(); }}>
+
+                    {/* ─── Phase: Setting (sending SET) ─── */}
+                    {phase === 'setting' && (
+                        <div className="flex flex-col items-center gap-6 py-8">
+                            <div className="relative">
+                                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-amber-500/10">
+                                    <Loader2 className="size-10 animate-spin text-amber-500" />
+                                </div>
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">Mengirim Konfigurasi FTP...</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">Mengirim kredensial FTP ke device...</p>
+                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(elapsed)}</p>
+                            </div>
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className="flex items-center gap-3 text-sm text-foreground">
+                                    <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" />
+                                    <span>FTP SET — Kirim kredensial</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
+                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
+                                    <span>FTP TES — Tes koneksi upload</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
+                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
+                                    <span>Simpan konfigurasi</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ─── Phase: SET OK → prompt user to Test ─── */}
+                    {phase === 'set_ok' && (
+                        <div className="flex flex-col items-center gap-6 py-8">
+                            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-300">
+                                <CheckCircle2 className="size-10 text-emerald-500" />
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">Kredensial FTP Terkirim!</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    Konfigurasi berhasil dikirim ke device dalam <strong>{formatElapsed(elapsed)}</strong>.
+                                    <br />Lanjutkan dengan tes koneksi untuk memastikan FTP berfungsi.
+                                </p>
+                            </div>
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    <span>FTP SET — Kirim kredensial</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-foreground font-medium">
+                                    <div className="size-4 rounded-full border-2 border-blue-500 shrink-0" />
+                                    <span>FTP TES — Tes koneksi upload</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
+                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
+                                    <span>Simpan konfigurasi</span>
+                                </div>
+                            </div>
+                            <DialogFooter className="gap-2 sm:gap-0">
+                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
+                                <Button onClick={handleTest} className="gap-1.5 bg-blue-600 hover:bg-blue-700">
+                                    <Radio className="size-4" /> Test Koneksi
+                                </Button>
+                            </DialogFooter>
+                        </div>
+                    )}
+
+                    {/* ─── Phase: Testing (sending TES) ─── */}
+                    {phase === 'testing' && (
+                        <div className="flex flex-col items-center gap-6 py-8">
+                            <div className="relative">
+                                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-blue-500/10 animate-pulse">
+                                    <Upload className="size-10 text-blue-500 animate-pulse" />
+                                </div>
+                                <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
+                                <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">Menguji Koneksi FTP...</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">Logger sedang tes upload ke server FTP...</p>
+                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(elapsed)}</p>
+                            </div>
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    <span>FTP SET — Kirim kredensial</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-foreground">
+                                    <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" />
+                                    <span>FTP TES — Tes koneksi upload</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
+                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
+                                    <span>Simpan konfigurasi</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ─── Phase: TES OK → prompt user to Save ─── */}
+                    {phase === 'test_ok' && (
+                        <div className="flex flex-col items-center gap-6 py-8">
+                            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-300">
+                                <CheckCircle2 className="size-10 text-emerald-500" />
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">Koneksi FTP Berhasil!</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    Logger berhasil terhubung ke <strong>{ftpHost}:{ftpPort}</strong> dalam <strong>{formatElapsed(elapsed)}</strong>.
+                                    <br />Simpan konfigurasi ini?
+                                </p>
+                            </div>
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    <span>FTP SET — Kirim kredensial</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    <span>FTP TES — Tes koneksi upload</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-foreground font-medium">
+                                    <div className="size-4 rounded-full border-2 border-emerald-500 shrink-0" />
+                                    <span>Simpan konfigurasi</span>
+                                </div>
+                            </div>
+                            <DialogFooter className="gap-2 sm:gap-0">
+                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
+                                <Button onClick={handleSave} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                    <Save className="size-4" /> Simpan
+                                </Button>
+                            </DialogFooter>
+                        </div>
+                    )}
+
+                    {/* ─── Phase: Success (saved) ─── */}
+                    {phase === 'success' && (
+                        <div className="flex flex-col items-center gap-4 py-8">
+                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
+                                <CheckCircle2 className="size-8 text-emerald-500" />
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-lg font-semibold">FTP Berhasil Disimpan!</h3>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    Konfigurasi FTP ke <strong>{ftpHost}:{ftpPort}</strong> telah tersimpan
+                                </p>
+                            </div>
+                            <div className="w-full max-w-xs space-y-2">
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    <span>FTP SET — Kirim kredensial</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    <span>FTP TES — Tes koneksi upload</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                    <span>Simpan konfigurasi</span>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button onClick={handleDialogClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">Done</Button>
+                            </DialogFooter>
+                        </div>
+                    )}
+
+                    {/* ─── Phase: Error ─── */}
+                    {phase === 'error' && (
+                        <>
+                            <div className="flex flex-col items-center gap-4 py-8">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
+                                    <XCircle className="size-8 text-red-500" />
+                                </div>
+                                <div className="text-center">
+                                    <h3 className="text-lg font-semibold">
+                                        {errorStep === 'set' ? 'Gagal Mengirim Konfigurasi' : 'Tes Koneksi FTP Gagal'}
+                                    </h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">{errorMsg}</p>
+                                </div>
+                                <div className="w-full max-w-xs space-y-2">
+                                    <div className={`flex items-center gap-3 text-sm ${errorStep === 'set' ? 'text-red-500' : 'text-muted-foreground'}`}>
+                                        {errorStep === 'set'
+                                            ? <XCircle className="size-4 text-red-500 shrink-0" />
+                                            : <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />}
+                                        <span>FTP SET — Kirim kredensial</span>
+                                    </div>
+                                    <div className={`flex items-center gap-3 text-sm ${errorStep === 'test' ? 'text-red-500' : 'text-muted-foreground/50'}`}>
+                                        {errorStep === 'test'
+                                            ? <XCircle className="size-4 text-red-500 shrink-0" />
+                                            : <div className="size-4 rounded-full border-2 border-muted shrink-0" />}
+                                        <span>FTP TES — Tes koneksi upload</span>
+                                    </div>
+                                    <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
+                                        <div className="size-4 rounded-full border-2 border-muted shrink-0" />
+                                        <span>Simpan konfigurasi</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
+                                <Button onClick={handleRetry} className="gap-1.5">
+                                    <RefreshCw className="size-4" /> Coba Lagi
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            {/* ══════ FTP File Browser Dialog ══════ */}
+            <Dialog open={fileBrowserOpen} onOpenChange={setFileBrowserOpen}>
+                <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <HardDrive className="size-5" /> FTP File Browser
+                        </DialogTitle>
+                        <DialogDescription>
+                            {browseView === 'months'
+                                ? 'Pilih bulan untuk melihat daftar file'
+                                : `File CSV — ${selectedMonth ? formatMonth(selectedMonth) : ''}`
+                            }
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="py-2">
+                        {loadingFiles ? (
+                            <div className="flex flex-col items-center gap-3 py-8">
+                                <Loader2 className="size-8 animate-spin text-muted-foreground" />
+                                <p className="text-sm text-muted-foreground">
+                                    {browseView === 'months' ? 'Memuat daftar bulan...' : 'Memuat daftar file...'}
+                                </p>
+                            </div>
+                        ) : browseView === 'months' ? (
+                            /* ─── Months View ─── */
+                            months.length === 0 ? (
+                                <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+                                    <HardDrive className="mx-auto size-8 text-muted-foreground/40" />
+                                    <p className="mt-2 text-sm text-muted-foreground">Tidak ada data ditemukan</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-1">
+                                    <div className="px-3 py-1.5 text-xs text-muted-foreground font-medium">
+                                        {months.length} bulan tersedia
+                                    </div>
+                                    <div className="max-h-[50vh] overflow-y-auto space-y-0.5">
+                                        {months.map((month) => (
+                                            <button
+                                                key={month}
+                                                onClick={() => handleSelectMonth(month)}
+                                                className="flex w-full items-center justify-between rounded-md border px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors text-left"
+                                            >
+                                                <div className="flex items-center gap-2.5">
+                                                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
+                                                        <Clock className="size-4 text-blue-500" />
+                                                    </div>
+                                                    <span className="font-medium">{formatMonth(month)}</span>
+                                                </div>
+                                                <ChevronRight className="size-4 text-muted-foreground" />
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )
+                        ) : (
+                            /* ─── Files View ─── */
+                            <>
+                                <button
+                                    onClick={handleBackToMonths}
+                                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
+                                >
+                                    <ArrowLeft className="size-4" />
+                                    <span>Kembali ke daftar bulan</span>
+                                </button>
+                                {files.length === 0 ? (
+                                    <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+                                        <HardDrive className="mx-auto size-8 text-muted-foreground/40" />
+                                        <p className="mt-2 text-sm text-muted-foreground">Tidak ada file ditemukan</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-1">
+                                        <div className="px-3 py-1.5 text-xs text-muted-foreground font-medium">
+                                            {files.length} file ditemukan
+                                        </div>
+                                        <div className="max-h-[50vh] overflow-y-auto space-y-0.5">
+                                            {files.map((file) => (
+                                                <div key={file} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-muted/50 transition-colors">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <Database className="size-4 text-blue-500 shrink-0" />
+                                                        <span className="truncate font-mono text-xs">{file}</span>
+                                                    </div>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="size-7 shrink-0"
+                                                        disabled={downloadingFile === file}
+                                                        onClick={() => handleGetFile(file)}
+                                                        title={`Download ${file}`}
+                                                    >
+                                                        {downloadingFile === file
+                                                            ? <Loader2 className="size-3.5 animate-spin" />
+                                                            : <Download className="size-3.5" />}
+                                                    </Button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setFileBrowserOpen(false)}>Tutup</Button>
+                        {!loadingFiles && (
+                            <Button variant="outline" onClick={browseView === 'months' ? handleBrowseFiles : () => selectedMonth && handleSelectMonth(selectedMonth)} className="gap-1.5">
+                                <RefreshCw className="size-4" /> Refresh
+                            </Button>
+                        )}
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </Card>
+    );
+}
+
 export default function LoggerShow({ logger }: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const { t } = useTranslation();
@@ -1389,10 +2757,6 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
-                            <Plug className="size-4" />
-                            {t('loggerDetail.connect')}
-                        </Button>
                         {logger.deviceIdentifier && (
                             <SyncFromDeviceDialog deviceIdentifier={logger.deviceIdentifier} loggerId={logger.id} label={t('loggerDetail.sync')} />
                         )}
@@ -1402,14 +2766,14 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                 {t('loggerDetail.sync')}
                             </Button>
                         )}
-                        <Button variant="outline" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
-                            <Save className="size-4" />
-                            {t('loggerDetail.save_config')}
-                        </Button>
-                        <Button variant="destructive" size="sm" className="gap-1.5" disabled={logger.status === 'offline'}>
-                            <Power className="size-4" />
-                            {t('loggerDetail.reboot')}
-                        </Button>
+                        {logger.deviceIdentifier ? (
+                            <RebootDialog deviceIdentifier={logger.deviceIdentifier} disabled={logger.status === 'offline'} />
+                        ) : (
+                            <Button variant="destructive" size="sm" className="gap-1.5" disabled>
+                                <Power className="size-4" />
+                                {t('loggerDetail.reboot')}
+                            </Button>
+                        )}
                         <Button
                             variant="outline"
                             size="sm"
@@ -1427,12 +2791,12 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                 {/* Tabs */}
                 <Tabs defaultValue="overview" className="w-full">
                     <TabsList className="w-full justify-start overflow-x-auto overflow-y-hidden h-auto">
-                        <TabsTrigger value="overview" className="gap-1.5"><Activity className="size-3.5" />{t('loggerDetail.tab_overview')}</TabsTrigger>
-                        <TabsTrigger value="sensors" className="gap-1.5"><Thermometer className="size-3.5" />{t('loggerDetail.tab_sensors')}</TabsTrigger>
-                        <TabsTrigger value="system" className="gap-1.5"><Cpu className="size-3.5" />{t('loggerDetail.tab_system')}</TabsTrigger>
-                        <TabsTrigger value="maintenance" className="gap-1.5"><Settings className="size-3.5" />{t('loggerDetail.tab_maintenance')}</TabsTrigger>
-                        <TabsTrigger value="logs" className="gap-1.5"><Terminal className="size-3.5" />{t('loggerDetail.tab_logs')}</TabsTrigger>
-                        <TabsTrigger value="api" className="gap-1.5"><Code2 className="size-3.5" />{t('loggerDetail.tab_api')}</TabsTrigger>
+                        <TabsTrigger value="overview" className="gap-1.5 cursor-pointer"><Activity className="size-3.5" />{t('loggerDetail.tab_overview')}</TabsTrigger>
+                        <TabsTrigger value="sensors" className="gap-1.5 cursor-pointer"><Thermometer className="size-3.5" />{t('loggerDetail.tab_sensors')}</TabsTrigger>
+                        <TabsTrigger value="system" className="gap-1.5 cursor-pointer"><Cpu className="size-3.5" />{t('loggerDetail.tab_system')}</TabsTrigger>
+                        <TabsTrigger value="maintenance" className="gap-1.5 cursor-pointer"><Settings className="size-3.5" />{t('loggerDetail.tab_maintenance')}</TabsTrigger>
+                        <TabsTrigger value="logs" className="gap-1.5 cursor-pointer"><Terminal className="size-3.5" />{t('loggerDetail.tab_logs')}</TabsTrigger>
+                        <TabsTrigger value="api" className="gap-1.5 cursor-pointer"><Code2 className="size-3.5" />{t('loggerDetail.tab_api')}</TabsTrigger>
                     </TabsList>
 
                     {/* ==================== OVERVIEW ==================== */}
@@ -1440,13 +2804,13 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                             <InfoCard icon={Wifi} label={t('loggerDetail.connection')} value={logger.connectionType.toUpperCase()} color="blue" />
                             <InfoCard icon={Signal} label={t('loggerDetail.signal_strength')} value={`${logger.signalStrength}%`} color="emerald" />
-                            <InfoCard icon={Clock} label={t('loggerDetail.uptime')} value={logger.uptime || '—'} color="violet" />
+                            <InfoCard icon={Clock} label={t('loggerDetail.uptime')} value={formatUptime(logger.uptime)} color="violet" />
                             <InfoCard icon={Activity} label={t('loggerDetail.active_sensors')} value={`${logger.sensors.filter(s => s.status === 'active').length}/${logger.sensors.length}`} color="amber" />
                         </div>
 
                         <div className="mt-4 grid gap-4 lg:grid-cols-2">
                             <Card>
-                                <CardHeader><CardTitle>{t('loggerDetail.device_info')}</CardTitle></CardHeader>
+                                <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> {t('loggerDetail.device_info')}</CardTitle></CardHeader>
                                 <CardContent>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                                         <dt className="text-muted-foreground">{t('loggerDetail.model')}</dt>
@@ -1520,7 +2884,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                         <Card className="mb-4">
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> {t('loggerDetail.internal_sensors')}</CardTitle>
-                                <CardDescription>{t('loggerDetail.internal_sensors_desc')}</CardDescription>
+
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3 sm:grid-cols-3">
@@ -1580,11 +2944,11 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                         <dt className="text-muted-foreground">{t('loggerDetail.serial_number')}</dt>
                                         <dd className="font-mono text-xs">{logger.serialNumber}</dd>
                                         <dt className="text-muted-foreground">{t('loggerDetail.device_id')}</dt>
-                                        <dd className="font-mono text-xs">{logger.id}</dd>
+                                        <dd className="font-mono text-xs">{logger.deviceIdentifier || '—'}</dd>
                                         <dt className="text-muted-foreground">{t('loggerDetail.firmware')}</dt>
                                         <dd className="font-mono text-xs">{logger.firmwareVersion || '—'}</dd>
                                         <dt className="text-muted-foreground">{t('loggerDetail.uptime')}</dt>
-                                        <dd className="font-medium">{logger.uptime || '—'}</dd>
+                                        <dd className="font-medium">{formatUptime(logger.uptime)}</dd>
                                         <dt className="text-muted-foreground">Reboot Counter</dt>
                                         <dd className="font-medium">{logger.rebootCounter ?? '—'}</dd>
                                         <dt className="text-muted-foreground">{t('loggerDetail.location')}</dt>
@@ -1595,7 +2959,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                             <Card>
                                 <CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-5" /> {t('loggerDetail.storage_overview')}</CardTitle></CardHeader>
                                 <CardContent className="space-y-5">
-                                    <ResourceBar label={t('loggerDetail.disk_usage')} value={logger.storageUsage} max={logger.storageTotal} unit="GB" />
+                                    <ResourceBar label={t('loggerDetail.disk_usage')} value={logger.storageUsage} max={logger.storageTotal} unit="MB" />
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                                         <dt className="text-muted-foreground">{t('loggerDetail.log_files')}</dt>
                                         <dd className="font-medium">{logger.logFileCount.toLocaleString()}</dd>
@@ -1613,6 +2977,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                             intervalSend={logger.intervalSend}
                             maxReset={logger.maxReset}
                             disabled={logger.status === 'offline'}
+                            deviceIdentifier={logger.deviceIdentifier}
                         />
                         <PlatformIntegrationCard
                             loggerId={logger.id}
@@ -1621,6 +2986,15 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                             ministesyInterval={logger.ministesyInterval}
                             disabled={logger.status === 'offline'}
                         />
+                        {logger.deviceIdentifier && (
+                            <FtpConfigCard
+                                deviceIdentifier={logger.deviceIdentifier}
+                                disabled={logger.status === 'offline'}
+                                initialHost={logger.ftpHost}
+                                initialPort={logger.ftpPort}
+                                initialUser={logger.ftpUser}
+                            />
+                        )}
                         <Card className="mt-4">
                             <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="size-5" /> {t('loggerDetail.storage_management')}</CardTitle></CardHeader>
                             <CardContent>
@@ -1817,7 +3191,7 @@ interface ApiEndpoint {
     responseExample: string;
 }
 
-function ApiDocumentation({ loggerId, loggerName }: { loggerId: number; loggerName: string }) {
+function ApiDocumentation({ loggerId, loggerName }: { loggerId: string; loggerName: string }) {
     const [expandedEndpoint, setExpandedEndpoint] = useState<number | null>(null);
     const [copiedUrl, setCopiedUrl] = useState(false);
 

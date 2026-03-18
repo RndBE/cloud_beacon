@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\DeviceModel;
 use App\Models\Logger;
+use App\Services\IdHasher;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -21,11 +22,12 @@ class TopologyController extends Controller
             ->mapWithKeys(fn($path, $name) => [$name => asset('storage/' . $path)]);
 
         $loggers = $query
+            ->with('externalSensors')
             ->withCount('externalSensors')
             ->orderBy('name')
             ->get()
             ->map(fn(Logger $logger) => [
-                'id' => $logger->id,
+                'id' => IdHasher::encode($logger->id),
                 'name' => $logger->name,
                 'serialNumber' => $logger->serial_number,
                 'location' => $logger->location,
@@ -36,6 +38,15 @@ class TopologyController extends Controller
                 'modelImage' => $logger->model ? ($modelImages[$logger->model] ?? null) : null,
                 'signalStrength' => $logger->signal_strength,
                 'sensorsCount' => $logger->external_sensors_count,
+                'sensors' => $logger->externalSensors->map(fn($s) => [
+                    'id' => $s->id,
+                    'name' => $s->name,
+                    'type' => $s->type,
+                    'connectionType' => $s->connection_type,
+                    'value' => $s->value,
+                    'unit' => $s->unit,
+                    'status' => $s->status,
+                ]),
             ]);
 
         return Inertia::render('topology', [

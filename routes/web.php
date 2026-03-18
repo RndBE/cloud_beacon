@@ -80,6 +80,40 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.sensors.set');
     Route::post('api/mqtt/sensors/del', [MqttController::class, 'deleteSensorConfig'])
         ->name('api.mqtt.sensors.del');
+    Route::post('api/mqtt/sensors/confirm', [MqttController::class, 'confirmSensorSync'])
+        ->name('api.mqtt.sensors.confirm');
+    Route::post('api/mqtt/reboot', [MqttController::class, 'reboot'])
+        ->name('api.mqtt.reboot');
+    Route::post('api/mqtt/interval', [MqttController::class, 'setInterval'])
+        ->name('api.mqtt.interval');
+    Route::post('api/mqtt/interval/get', [MqttController::class, 'getInterval'])
+        ->name('api.mqtt.interval.get');
+    Route::post('api/mqtt/ftp/set', [MqttController::class, 'setFtp'])
+        ->name('api.mqtt.ftp.set');
+    Route::post('api/mqtt/ftp/test', [MqttController::class, 'testFtp'])
+        ->name('api.mqtt.ftp.test');
+    Route::post('api/mqtt/ftp/read', [MqttController::class, 'readFtpFiles'])
+        ->name('api.mqtt.ftp.read');
+    Route::post('api/mqtt/ftp/get', [MqttController::class, 'getFtpFile'])
+        ->name('api.mqtt.ftp.get');
+    Route::post('api/mqtt/ftp/download', [MqttController::class, 'downloadFtpFile'])
+        ->name('api.mqtt.ftp.download');
+
+    // TEMPORARY: Compare GET vs GET_ALL sensor formats
+    Route::get('api/mqtt/sensors/compare/{id_logger}', function (string $id_logger) {
+        $mqtt = new \App\Services\MqttService();
+
+        // Call GET first
+        $getResult = $mqtt->requestSensorsGet($id_logger);
+
+        // Then call GET_ALL
+        $getAllResult = $mqtt->requestSensorsGetAll($id_logger);
+
+        return response()->json([
+            'GET' => $getResult,
+            'GET_ALL' => $getAllResult,
+        ], 200, [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    })->name('api.mqtt.sensors.compare');
 
     // RBAC Management
     Route::get('roles', [RoleController::class, 'index'])
@@ -133,6 +167,10 @@ Route::prefix('api/v1')->group(function () {
     Route::get('loggers/{id}/logs', [\App\Http\Controllers\Api\LoggerApiController::class, 'logs']);
     Route::post('loggers/{id}/command', [\App\Http\Controllers\Api\LoggerApiController::class, 'sendCommand']);
     Route::post('loggers/{id}/sensors/data', [\App\Http\Controllers\Api\LoggerApiController::class, 'pushSensorData']);
+
+    // Mobile App — Production device lookup (QR scan)
+    Route::post('production/lookup', [ProductionController::class, 'lookupSerial'])
+        ->name('api.v1.production.lookup');
 });
 
 require __DIR__ . '/settings.php';

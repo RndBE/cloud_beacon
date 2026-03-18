@@ -59,6 +59,10 @@ class Logger extends Model
         'ministesy_enabled',
         'ministesy_key',
         'ministesy_interval',
+        'ftp_host',
+        'ftp_port',
+        'ftp_user',
+        'ftp_pass',
     ];
 
     protected function casts(): array
@@ -84,6 +88,7 @@ class Logger extends Model
             'max_reset' => 'integer',
             'ministesy_enabled' => 'boolean',
             'ministesy_interval' => 'integer',
+            'ftp_port' => 'integer',
         ];
     }
 
@@ -108,7 +113,12 @@ class Logger extends Model
     public function externalSensors(): HasMany
     {
         return $this->hasMany(Sensor::class)
-            ->whereNotIn('type', self::BUILTIN_SENSOR_TYPES);
+            ->where(function ($query) {
+                // Include all sensors that have a connection_type (protocol sensors)
+                // OR exclude built-in types (battery/temp/humidity logger readings)
+                $query->whereNotNull('connection_type')
+                      ->orWhereNotIn('type', self::BUILTIN_SENSOR_TYPES);
+            });
     }
 
     /**

@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Logger;
 use App\Models\Sensor;
+use App\Services\IdHasher;
+use App\Services\MqttService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 
@@ -12,13 +14,16 @@ class SensorController extends Controller
     /**
      * Resolve the logger, enforcing ownership for non-super-admins.
      */
-    private function resolveLogger(int $loggerId): Logger
+    private function resolveLogger(string $hash): Logger
     {
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
         $query = Logger::query();
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
         }
-        return $query->findOrFail($loggerId);
+        return $query->findOrFail($id);
     }
 
     /**
@@ -49,36 +54,120 @@ class SensorController extends Controller
         ];
     }
 
-    public function store(Request $request, int $loggerId): RedirectResponse
+    /**
+     * Build and send MQTT SENSORS SET command to the logger.
+     */
+    private function sendMqttSet(Logger $logger, array $data): ?array
     {
-        $logger = $this->resolveLogger($loggerId);
+        if (!$logger->device_identifier || empty($data['connection_type'])) {
+            return null;
+        }
 
+        $connType = $data['connection_type'];
+        $sEntry = [
+            $data['name'],
+            (float) ($data['scale_factor'] ?? 1.0),
+            $data['unit'],
+            ($data['lcd_enabled'] ?? true) ? 1 : 0,
+            ($data['log_enabled'] ?? true) ? 1 : 0,
+            ($data['send_enabled'] ?? true) ? 1 : 0,
+        ];
+
+        $payload = ['SENSORS' => ['cmd' => 'SET', 'type' => $connType]];
+
+        if ($connType === 'rs485') {
+            $payload['SENSORS']['d'] = [[
+                'cfg' => [
+                    (int) ($data['modbus_slave_id'] ?? 1),
+                    $data['device_name'] ?? '',
+                    (int) ($data['function_code'] ?? 3),
+                    (int) ($data['register_address'] ?? 0),
+                    (int) ($data['quantity'] ?? 1),
+                ],
+                's' => [$sEntry],
+            ]];
+        } elseif ($connType === 'rs232') {
+            $payload['SENSORS']['p'] = (int) ($data['port'] ?? 1);
+            $payload['SENSORS']['s'] = $sEntry;
+        } elseif ($connType === 'analog') {
+            $payload['SENSORS']['ch'] = (int) ($data['channel'] ?? 0);
+            $payload['SENSORS']['s'] = $sEntry;
+        }
+
+        $mqtt = new MqttService();
+        return $mqtt->sendSensorSet($logger->device_identifier, $payload);
+    }
+
+    /**
+     * Send MQTT SENSORS DEL command to the logger.
+     */
+    private function sendMqttDel(Logger $logger, Sensor $sensor): ?array
+    {
+        if (!$logger->device_identifier || !$sensor->connection_type) {
+            return null;
+        }
+
+        $identifier = match ($sensor->connection_type) {
+            'rs485' => $sensor->modbus_slave_id,
+            'rs232' => $sensor->port,
+            'analog' => $sensor->channel,
+            default => 0,
+        };
+
+        $mqtt = new MqttService();
+        return $mqtt->sendSensorDel($logger->device_identifier, $sensor->connection_type, (int) $identifier);
+    }
+
+    public function store(Request $request, string $loggerHash): RedirectResponse
+    {
+        $logger = $this->resolveLogger($loggerHash);
         $validated = $request->validate($this->rules());
         $validated['logger_id'] = $logger->id;
+
+        // Send MQTT SET to device first (if it has connection_type)
+        if (!empty($validated['connection_type'])) {
+            $result = $this->sendMqttSet($logger, $validated);
+            if ($result && !$result['success']) {
+                return back()->withErrors(['mqtt' => $result['message']])->withInput();
+            }
+        }
 
         Sensor::create($validated);
 
         return back()->with('success', 'Sensor created successfully.');
     }
 
-    public function update(Request $request, int $loggerId, int $id): RedirectResponse
+    public function update(Request $request, string $loggerHash, int $id): RedirectResponse
     {
-        $logger = $this->resolveLogger($loggerId);
-
+        $logger = $this->resolveLogger($loggerHash);
         $sensor = Sensor::where('logger_id', $logger->id)->findOrFail($id);
-
         $validated = $request->validate($this->rules());
+
+        // Send MQTT SET to device (if it has connection_type)
+        if (!empty($validated['connection_type'])) {
+            $result = $this->sendMqttSet($logger, $validated);
+            if ($result && !$result['success']) {
+                return back()->withErrors(['mqtt' => $result['message']])->withInput();
+            }
+        }
 
         $sensor->update($validated);
 
         return back()->with('success', 'Sensor updated successfully.');
     }
 
-    public function destroy(int $loggerId, int $id): RedirectResponse
+    public function destroy(string $loggerHash, int $id): RedirectResponse
     {
-        $logger = $this->resolveLogger($loggerId);
-
+        $logger = $this->resolveLogger($loggerHash);
         $sensor = Sensor::where('logger_id', $logger->id)->findOrFail($id);
+
+        // Send MQTT DEL to device (if it has connection_type)
+        if ($sensor->connection_type) {
+            $result = $this->sendMqttDel($logger, $sensor);
+            if ($result && !$result['success']) {
+                return back()->withErrors(['mqtt' => $result['message']]);
+            }
+        }
 
         $sensor->delete();
 

@@ -59,7 +59,7 @@ import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
 interface LoggerItem {
-    id: number;
+    id: string;
     name: string;
     serialNumber: string;
     location: string;

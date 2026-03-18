@@ -6,6 +6,9 @@ use App\Models\ActivityLog;
 use App\Models\DeviceModel;
 use App\Models\Logger;
 use App\Models\ProductionDevice;
+use App\Models\Sensor;
+use App\Services\IdHasher;
+use App\Services\MqttService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -24,7 +27,7 @@ class LoggerController extends Controller
             ->orderBy('name')
             ->get()
             ->map(fn(Logger $logger) => [
-                'id' => $logger->id,
+                'id' => IdHasher::encode($logger->id),
                 'name' => $logger->name,
                 'serialNumber' => $logger->serial_number,
                 'location' => $logger->location,
@@ -45,8 +48,11 @@ class LoggerController extends Controller
         ]);
     }
 
-    public function show(int $id): Response
+    public function show(string $hash): Response
     {
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
         $query = Logger::with(['externalSensors', 'activityLogs' => fn($q) => $q->latest('created_at')->limit(20)]);
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
@@ -54,7 +60,7 @@ class LoggerController extends Controller
         $logger = $query->findOrFail($id);
 
         $loggerData = [
-            'id' => $logger->id,
+            'id' => IdHasher::encode($logger->id),
             'name' => $logger->name,
             'serialNumber' => $logger->serial_number,
             'location' => $logger->location,
@@ -72,8 +78,8 @@ class LoggerController extends Controller
             'cpuUsage' => $logger->cpu_usage,
             'memoryUsage' => $logger->memory_usage,
             'memoryTotal' => $logger->memory_total,
-            'storageUsage' => $logger->storage_usage,
-            'storageTotal' => $logger->storage_total,
+            'storageUsage' => round(($logger->sdcard_used ?? $logger->storage_usage ?? 0) / 1024, 2),
+            'storageTotal' => round(($logger->sdcard_total ?? $logger->storage_total ?? 0) / 1024, 2),
             'signalStrength' => $logger->signal_strength,
             'dataUsage' => $logger->data_usage,
             'gateway' => $logger->gateway,
@@ -101,6 +107,9 @@ class LoggerController extends Controller
             'ministesyEnabled' => (bool) $logger->ministesy_enabled,
             'ministesyKey' => $logger->ministesy_key,
             'ministesyInterval' => $logger->ministesy_interval ?? 10,
+            'ftpHost' => $logger->ftp_host,
+            'ftpPort' => $logger->ftp_port ?? 21,
+            'ftpUser' => $logger->ftp_user,
             'sensors' => $logger->externalSensors->map(fn($s) => [
                 'id' => $s->id,
                 'name' => $s->name,
@@ -139,8 +148,11 @@ class LoggerController extends Controller
         ]);
     }
 
-    public function updateConfig(Request $request, int $id)
+    public function updateConfig(Request $request, string $hash)
     {
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
         $query = Logger::query();
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
@@ -158,8 +170,11 @@ class LoggerController extends Controller
         return back()->with('success', 'Device configuration updated successfully.');
     }
 
-    public function updatePlatform(Request $request, int $id)
+    public function updatePlatform(Request $request, string $hash)
     {
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
         $query = Logger::query();
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
@@ -192,7 +207,7 @@ class LoggerController extends Controller
 
         $validated['user_id'] = auth()->id();
         $validated['status'] = !empty($mqttData) ? 'online' : 'offline';
-        $validated['connection_type'] = 'ethernet';
+        $validated['connection_type'] = 'ethernet'; // default, will be overridden by MQTT data
         $validated['memory_total'] = 512;
         $validated['storage_total'] = 4;
 
@@ -220,12 +235,14 @@ class LoggerController extends Controller
                 'interval_read'     => $mqttData['interval_read'] ?? null,
                 'interval_send'     => $mqttData['interval_send'] ?? null,
                 'max_reset'         => $mqttData['max_reset'] ?? null,
+                'connection_type'   => $mqttData['connection_type'] ?? null,
+                'signal_strength'   => $mqttData['signal_strength'] ?? null,
             ], fn($v) => $v !== null));
             $validated['last_connected_at'] = now();
             $validated['last_seen_at'] = now();
         }
 
-        // Pull model & firmware_version from production device
+        // Pull model, firmware_version, device_identifier from production device
         $productionDevice = ProductionDevice::where('serial_number', $validated['serial_number'])->first();
         if ($productionDevice) {
             if ($productionDevice->model && empty($validated['model'])) {
@@ -234,9 +251,66 @@ class LoggerController extends Controller
             if ($productionDevice->firmware_version && empty($validated['firmware_version'])) {
                 $validated['firmware_version'] = $productionDevice->firmware_version;
             }
+            // device_identifier always comes from production DB
+            if ($productionDevice->device_id) {
+                $validated['device_identifier'] = $productionDevice->device_id;
+            }
         }
 
         $logger = Logger::create($validated);
+
+        // Fetch and sync external sensors via SENSORS GET + GET_ALL
+        if (!empty($validated['device_identifier'])) {
+            try {
+                $mqtt = new MqttService();
+                $sensorConfig = $mqtt->requestSensorsGet($validated['device_identifier']);
+
+                if ($sensorConfig && is_array($sensorConfig)) {
+                    $parsedSensors = MqttService::parseSensorsResponse($sensorConfig);
+
+                    // Merge values from GET_ALL
+                    $getAllResult = $mqtt->requestSensorsGetAll($validated['device_identifier']);
+                    if (is_array($getAllResult) && !isset($getAllResult['_error'])) {
+                        $parsedSensors = MqttService::mergeValuesFromGetAll($parsedSensors, $getAllResult);
+                    }
+
+                    foreach ($parsedSensors as $ds) {
+                        $uniqueKey = [
+                            'logger_id' => $logger->id,
+                            'connection_type' => $ds['connection_type'],
+                            'name' => $ds['name'],
+                        ];
+
+                        if ($ds['connection_type'] === 'rs485') {
+                            $uniqueKey['modbus_slave_id'] = $ds['modbus_slave_id'] ?? null;
+                        } elseif ($ds['connection_type'] === 'rs232') {
+                            $uniqueKey['port'] = $ds['port'] ?? 1;
+                        } elseif ($ds['connection_type'] === 'analog') {
+                            $uniqueKey['channel'] = $ds['channel'] ?? 0;
+                        }
+
+                        Sensor::updateOrCreate($uniqueKey, [
+                            'type' => $this->guessSensorType($ds['name'], $ds['unit'] ?? ''),
+                            'device_name' => $ds['device_name'] ?? null,
+                            'unit' => $ds['unit'] ?? '',
+                            'value' => $ds['value'] ?? 0,
+                            'scale_factor' => $ds['scale_factor'] ?? null,
+                            'function_code' => $ds['function_code'] ?? null,
+                            'register_address' => $ds['register_address'] ?? null,
+                            'quantity' => $ds['quantity'] ?? null,
+                            'lcd_enabled' => $ds['lcd_enabled'] ?? false,
+                            'log_enabled' => $ds['log_enabled'] ?? false,
+                            'send_enabled' => $ds['send_enabled'] ?? false,
+                            'status' => 'active',
+                        ]);
+                    }
+                    \Log::info('[PROVISIONING] Synced ' . count($parsedSensors) . ' sensors for logger #' . $logger->id);
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('[PROVISIONING] Failed to sync sensors: ' . $e->getMessage());
+                // Non-fatal — logger is already created, sensor sync can be done later via Sync button
+            }
+        }
 
         // Internal sensor data (battery, temperature, humidity) is stored
         // directly on the loggers table — no longer synced to sensors table.
@@ -278,8 +352,11 @@ class LoggerController extends Controller
         return redirect()->route('loggers.index')->with('success', 'Logger created successfully.');
     }
 
-    public function destroy(int $id): RedirectResponse
+    public function destroy(string $hash): RedirectResponse
     {
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
         $query = Logger::query();
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
@@ -293,5 +370,25 @@ class LoggerController extends Controller
         $logger->delete();
 
         return redirect()->route('loggers.index')->with('success', 'Logger deleted successfully.');
+    }
+
+    /**
+     * Best-effort type inference from sensor name/unit.
+     */
+    private function guessSensorType(string $name, string $unit): string
+    {
+        $name = strtolower($name);
+        $unit = strtolower($unit);
+
+        if (str_contains($name, 'temp') || $unit === '°c' || $unit === 'c') return 'temperature';
+        if (str_contains($name, 'hum') || $unit === '%rh') return 'humidity';
+        if (str_contains($name, 'press') || $unit === 'hpa') return 'pressure';
+        if (str_contains($name, 'water') || str_contains($name, 'level')) return 'water-level';
+        if (str_contains($name, 'flow')) return 'flow-rate';
+        if (str_contains($name, 'rain')) return 'rainfall';
+        if (str_contains($name, 'volt') || $unit === 'v') return 'voltage';
+        if (str_contains($name, 'current') || $unit === 'a') return 'current';
+
+        return 'pressure'; // safe default
     }
 }
