@@ -22,9 +22,9 @@ export default defineConfig({
         }),
     ],
     server: {
-        host: '192.168.12.44',
+        host: '127.0.0.1',
         hmr: {
-            host: '192.168.12.44',
+            host: '127.0.0.1',
         },
     },
     esbuild: {

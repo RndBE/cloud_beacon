@@ -302,8 +302,17 @@ class MqttService
         }
 
         // Analog — ch: channel
-        //           s: [name, scale, offset, unit, lcd, log, send]  (7 elements)
-        foreach ($raw['analog'] ?? [] as $device) {
+        // New protocol: s: [[name, min_value, max_value, unit, map_lcd, map_sd, map_server]]
+        //   s[0] = parameter name
+        //   s[1] = batas bawah (lower bound / min)
+        //   s[2] = batas atas  (upper bound / max)
+        //   s[3] = satuan (unit)
+        //   s[4] = map lcd
+        //   s[5] = map sd
+        //   s[6] = map server
+        // Device may send key as 'analog' or 'ANALOG'
+        $analogDevices = $raw['analog'] ?? $raw['ANALOG'] ?? [];
+        foreach ($analogDevices as $device) {
             $channel = $device['ch'] ?? 0;
 
             foreach ($device['s'] ?? [] as $s) {
@@ -311,9 +320,12 @@ class MqttService
                     'connection_type' => 'analog',
                     'name'            => $s[0] ?? 'Unknown',
                     'device_name'     => null,
-                    'scale_factor'    => $s[1] ?? 1,
-                    'offset'          => $s[2] ?? 0,
-                    'unit'            => is_string($s[3]) ? $s[3] : '',
+                    'min_value'       => isset($s[1]) ? (float) $s[1] : 0,   // batas bawah
+                    'max_value'       => isset($s[2]) ? (float) $s[2] : 100, // batas atas
+                    // Repurpose these columns to store min/max for compatibility
+                    'scale_factor'    => isset($s[1]) ? (float) $s[1] : 0,
+                    'offset'          => isset($s[2]) ? (float) $s[2] : 100,
+                    'unit'            => is_string($s[3] ?? null) ? $s[3] : '',
                     'lcd_enabled'     => (bool) ($s[4] ?? false),
                     'log_enabled'     => (bool) ($s[5] ?? false),
                     'send_enabled'    => (bool) ($s[6] ?? false),
@@ -612,8 +624,18 @@ class MqttService
 
                 try {
                     $data = json_decode($message, true);
-                    if ($data && isset($data['FTP']['cmd']) && $data['FTP']['cmd'] === 'GET') {
-                        if (($data['FTP']['status'] ?? '') === 'OK') {
+                    if (!$data) return;
+
+                    // Skip streaming progress messages: {"FTP UPLOAD":"BEGIN"}, {"PROSESS":"25%"}, {"FTP UPLOAD":"END"}
+                    if (isset($data['FTP UPLOAD']) || isset($data['PROSESS'])) {
+                        Log::info("[MQTT] 📊 [FTP GET] Progress: {$message}");
+                        return;
+                    }
+
+                    // Final response: {"FTP":{"status":"OK"}} or {"FTP":{"status":"ERR","msg":"..."}}
+                    // Device does NOT include "cmd":"GET" in the final response.
+                    if (isset($data['FTP']['status'])) {
+                        if ($data['FTP']['status'] === 'OK') {
                             $result = ['success' => true, 'message' => "File {$filename} berhasil diambil", 'filename' => $data['FTP']['f'] ?? $filename];
                             Log::info("[MQTT] ✅ [FTP GET] OK — file: {$filename}");
                         } else {

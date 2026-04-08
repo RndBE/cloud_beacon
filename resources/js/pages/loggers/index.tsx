@@ -1,5 +1,6 @@
-import { Head, Link, router, useForm } from '@inertiajs/react';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
 import {
+    AlertTriangle,
     Check,
     CheckCircle2,
     Cable,
@@ -16,6 +17,7 @@ import {
     Trash2,
     Wifi,
     WifiOff,
+    X,
     XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -84,12 +86,12 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Loggers', href: '/loggers' },
 ];
 
-function getStatusBadgeVariant(status: string): 'default' | 'destructive' | 'secondary' {
+function getStatusBadgeClass(status: string): string {
     switch (status) {
-        case 'online': return 'default';
-        case 'offline': return 'destructive';
-        case 'warning': return 'secondary';
-        default: return 'secondary';
+        case 'online':  return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20';
+        case 'offline': return 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30 hover:bg-red-500/20';
+        case 'warning': return 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/20';
+        default:        return 'bg-muted text-muted-foreground';
     }
 }
 
@@ -574,11 +576,19 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export default function LoggerList({ loggers }: LoggerListProps) {
     const { t } = useTranslation();
+    const { flash } = usePage<{ flash: { success?: string; error?: string; warning?: string } }>().props;
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<string>('all');
     const [addDialogOpen, setAddDialogOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<LoggerItem | null>(null);
     const [polling, setPolling] = useState(false);
+    const [warningMsg, setWarningMsg] = useState<string | null>(null);
+    const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (flash?.warning) setWarningMsg(flash.warning);
+        if (flash?.success) setSuccessMsg(flash.success);
+    }, [flash]);
 
     // Manual MQTT poll — triggered by user clicking Refresh button
     const pollNow = () => {
@@ -626,6 +636,33 @@ export default function LoggerList({ loggers }: LoggerListProps) {
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={t('loggers.title')} />
             <div className="flex flex-col gap-6 p-4 md:p-6">
+
+                {/* Success banner */}
+                {successMsg && (
+                    <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-400">
+                        <div className="flex items-center gap-2">
+                            <CheckCircle2 className="size-4 shrink-0" />
+                            <span>{successMsg}</span>
+                        </div>
+                        <button onClick={() => setSuccessMsg(null)} className="ml-4 shrink-0 text-emerald-600 hover:text-emerald-800">
+                            <X className="size-4" />
+                        </button>
+                    </div>
+                )}
+
+                {/* Warning banner */}
+                {warningMsg && (
+                    <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+                        <div className="flex items-center gap-2">
+                            <AlertTriangle className="size-4 shrink-0" />
+                            <span>{warningMsg}</span>
+                        </div>
+                        <button onClick={() => setWarningMsg(null)} className="ml-4 shrink-0 text-amber-600 hover:text-amber-800">
+                            <X className="size-4" />
+                        </button>
+                    </div>
+                )}
+
                 {/* Summary Cards */}
                 <div className="grid gap-3 sm:grid-cols-3">
                     <button
@@ -730,7 +767,7 @@ export default function LoggerList({ loggers }: LoggerListProps) {
                                             </span>
                                         </TableCell>
                                         <TableCell>
-                                            <Badge variant={getStatusBadgeVariant(logger.status)} className="capitalize">{logger.status}</Badge>
+                                            <Badge variant="outline" className={`capitalize ${getStatusBadgeClass(logger.status)}`}>{logger.status}</Badge>
                                         </TableCell>
                                         <TableCell className="hidden text-sm capitalize sm:table-cell">{logger.connectionType}</TableCell>
                                         <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">

@@ -20,6 +20,7 @@ class DeviceModelController extends Controller
                 'id' => $m->id,
                 'name' => $m->name,
                 'description' => $m->description,
+                'channelCount' => $m->channel_count,
                 'image' => $m->image ? asset('storage/' . $m->image) : null,
                 'createdAt' => $m->created_at?->format('Y-m-d H:i'),
             ]);
@@ -34,6 +35,7 @@ class DeviceModelController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255|unique:device_models',
             'description' => 'nullable|string|max:1000',
+            'channel_count' => 'required|integer|min:0|max:255',
             'image' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:8192',
         ]);
 
@@ -45,6 +47,7 @@ class DeviceModelController extends Controller
         DeviceModel::create([
             'name' => $validated['name'],
             'description' => $validated['description'] ?? null,
+            'channel_count' => $validated['channel_count'],
             'image' => $path,
         ]);
 
@@ -59,6 +62,7 @@ class DeviceModelController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255|unique:device_models,name,' . $model->id,
             'description' => 'nullable|string|max:1000',
+            'channel_count' => 'required|integer|min:0|max:255',
             'image' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:8192',
         ]);
 
@@ -72,6 +76,7 @@ class DeviceModelController extends Controller
 
         $model->name = $validated['name'];
         $model->description = $validated['description'] ?? null;
+        $model->channel_count = $validated['channel_count'];
         $model->save();
 
         return redirect()->route('production.models.index')

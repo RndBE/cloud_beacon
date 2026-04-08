@@ -5,10 +5,12 @@ namespace App\Http\Controllers;
 use App\Models\ActivityLog;
 use App\Models\DeviceModel;
 use App\Models\Logger;
+use App\Models\MqttLogger;
 use App\Models\ProductionDevice;
 use App\Models\Sensor;
 use App\Services\IdHasher;
 use App\Services\MqttService;
+use App\Services\SshService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -195,12 +197,32 @@ class LoggerController extends Controller
     public function store(Request $request): RedirectResponse
     {
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
+            'name'          => 'required|string|max:255',
             'serial_number' => 'required|string|max:255|unique:loggers',
-            'location' => 'nullable|string|max:255',
+            'location'      => 'nullable|string|max:255',
             // MQTT data passed from frontend provisioning
-            'mqtt_data' => 'nullable|array',
+            'mqtt_data'     => 'nullable|array',
         ]);
+
+        // ── Pre-check: idlogger already exists in MQTT server DB? ─────────────
+        // We check AFTER validation but BEFORE creating the logger, using serial_number
+        // to look up device_identifier from production devices.
+        $mqttDbWarning = null;
+        $deviceIdentifierForDb2 = null;
+        try {
+            $prodDeviceCheck = \App\Models\ProductionDevice::where('serial_number', $validated['serial_number'])->first();
+            if ($prodDeviceCheck && $prodDeviceCheck->device_id) {
+                $deviceIdentifierForDb2 = $prodDeviceCheck->device_id;
+                $existingCount = MqttLogger::where('idlogger', $deviceIdentifierForDb2)->count();
+                if ($existingCount > 0) {
+                    $mqttDbWarning = 'Device ID "' . $deviceIdentifierForDb2 . '" sudah terdaftar '
+                        . 'di MQTT Server DB (' . $existingCount . ' entri). '
+                        . 'Entri lama akan diganti dengan konfigurasi baru.';
+                }
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('[MQTT-DB] Pre-check failed: ' . $e->getMessage());
+        }
 
         $mqttData = $validated['mqtt_data'] ?? [];
         unset($validated['mqtt_data']);
@@ -349,7 +371,62 @@ class LoggerController extends Controller
             ]);
         }
 
-        return redirect()->route('loggers.index')->with('success', 'Logger created successfully.');
+        // ── Sync to MQTT server DB (t_logger) + SSH service restart ──────────
+        // idlogger = device_identifier (e.g. "10091")
+        // user     = serial_number (as identifier label)
+        $mqttDbSyncFailed = false;
+        $deviceId = $logger->device_identifier;
+
+        if ($deviceId) {
+            try {
+                $pushUrl = rtrim(config('app.url'), '/') . '/api/v1/device/push';
+
+                // Delete any existing entries for this device_id to prevent duplicates
+                MqttLogger::where('idlogger', $deviceId)->delete();
+
+                // Fresh insert
+                MqttLogger::create([
+                    'idlogger'     => $deviceId,
+                    'url_input'    => $pushUrl,
+                    'user'         => $logger->serial_number,
+                    'content_type' => 'application/json',
+                ]);
+
+                \Log::info('[MQTT-DB] Registered device_id="' . $deviceId . '" serial="' . $logger->serial_number . '" → ' . $pushUrl);
+
+                // ── SSH: Restart remote service so it picks up the new t_logger entry ──
+                $serviceName = config('ssh.mqtt_service', 'mosquitto');
+                $ssh = new SshService();
+                $sshResult = $ssh->restartService($serviceName);
+
+                if ($sshResult['success']) {
+                    \Log::info('[SSH] Service "' . $serviceName . '" restarted successfully after logger registration.');
+                } else {
+                    \Log::warning('[SSH] Service "' . $serviceName . '" restart returned: ' . $sshResult['output']);
+                }
+
+            } catch (\Throwable $e) {
+                $mqttDbSyncFailed = true;
+                \Log::error('[MQTT-DB] Failed to sync t_logger: ' . $e->getMessage());
+            }
+        } else {
+            \Log::warning('[MQTT-DB] Skipped t_logger sync — logger "' . $logger->serial_number . '" has no device_identifier yet.');
+        }
+
+        // Build final flash message
+        $successMsg = 'Logger berhasil dibuat.';
+
+        if ($mqttDbWarning) {
+            session()->flash('warning', $mqttDbWarning);
+        }
+
+        if ($mqttDbSyncFailed) {
+            session()->flash('warning', 'Logger berhasil dibuat di database utama, '
+                . 'namun gagal mendaftarkan ke MQTT Server DB. '
+                . 'Silakan cek koneksi ke database kedua.');
+        }
+
+        return redirect()->route('loggers.index')->with('success', $successMsg);
     }
 
     public function destroy(string $hash): RedirectResponse
@@ -366,6 +443,16 @@ class LoggerController extends Controller
         // Unmark production device so it can be re-used
         ProductionDevice::where('serial_number', $logger->serial_number)
             ->update(['is_registered' => false]);
+
+        // ── Remove from MQTT server DB (t_logger) ──────────────────────────────
+        if ($logger->device_identifier) {
+            try {
+                MqttLogger::where('idlogger', $logger->device_identifier)->delete();
+                \Log::info('[MQTT-DB] Removed device_id="' . $logger->device_identifier . '" from t_logger.');
+            } catch (\Throwable $e) {
+                \Log::warning('[MQTT-DB] Failed to remove from t_logger: ' . $e->getMessage());
+            }
+        }
 
         $logger->delete();
 

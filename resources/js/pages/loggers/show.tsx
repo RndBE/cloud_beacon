@@ -1261,59 +1261,78 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                 <div className="grid gap-1.5">
                                     <Label className="text-xs">Channel</Label>
                                     <Input type="number" min={0} max={15} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 0 })} />
+                                    <p className="text-[10px] text-muted-foreground">Channel sesuai jumlah yang dikonfigurasi di Production Models</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Batas Bawah (Min)</Label>
+                                        <Input type="number" step="any" value={form.min_value} onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })} placeholder="0" />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Batas Atas (Max)</Label>
+                                        <Input type="number" step="any" value={form.max_value} onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 100 })} placeholder="100" />
+                                    </div>
                                 </div>
                             </div>
                         )}
 
-                        {/* Scale + Flags (only when connection_type is set) */}
-                        {form.connection_type && (
+                        {/* Scale Factor — only for RS485 / RS232 */}
+                        {(form.connection_type === 'rs485' || form.connection_type === 'rs232') && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
                                 <div className="grid gap-1.5">
                                     <Label className="text-xs">Scale Factor</Label>
                                     <Input type="number" step="any" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: parseFloat(e.target.value) || 1 })} />
                                 </div>
+                            </div>
+                        )}
+
+                        {/* Flags: Map LCD / Map SD / Map Server (for all protocol types) */}
+                        {form.connection_type && (
+                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
                                 <div className="flex items-center gap-4">
                                     <label className="flex items-center gap-1.5 text-xs">
                                         <input type="checkbox" checked={form.lcd_enabled} onChange={e => setForm({ ...form, lcd_enabled: e.target.checked })} className="rounded" />
-                                        LCD
+                                        Map LCD
                                     </label>
                                     <label className="flex items-center gap-1.5 text-xs">
                                         <input type="checkbox" checked={form.log_enabled} onChange={e => setForm({ ...form, log_enabled: e.target.checked })} className="rounded" />
-                                        Log to SD
+                                        Map SD Card
                                     </label>
                                     <label className="flex items-center gap-1.5 text-xs">
                                         <input type="checkbox" checked={form.send_enabled} onChange={e => setForm({ ...form, send_enabled: e.target.checked })} className="rounded" />
-                                        Send to Server
+                                        Map Server
                                     </label>
                                 </div>
                             </div>
                         )}
 
-                        {/* Min / Max */}
-                        <div className="grid grid-cols-2 gap-3">
-                            <div className="grid gap-2">
-                                <Label htmlFor="sensor-min">{t('loggerDetail.min_value')}</Label>
-                                <Input
-                                    id="sensor-min"
-                                    type="number"
-                                    step="any"
-                                    value={form.min_value}
-                                    onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })}
-                                />
-                                {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
+                        {/* Min / Max — only for RS485 / RS232 (analog uses its own in the Analog Config block) */}
+                        {(form.connection_type === 'rs485' || form.connection_type === 'rs232') && (
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="sensor-min">{t('loggerDetail.min_value')}</Label>
+                                    <Input
+                                        id="sensor-min"
+                                        type="number"
+                                        step="any"
+                                        value={form.min_value}
+                                        onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })}
+                                    />
+                                    {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="sensor-max">{t('loggerDetail.max_value')}</Label>
+                                    <Input
+                                        id="sensor-max"
+                                        type="number"
+                                        step="any"
+                                        value={form.max_value}
+                                        onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 0 })}
+                                    />
+                                    {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
+                                </div>
                             </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="sensor-max">{t('loggerDetail.max_value')}</Label>
-                                <Input
-                                    id="sensor-max"
-                                    type="number"
-                                    step="any"
-                                    value={form.max_value}
-                                    onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 0 })}
-                                />
-                                {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
-                            </div>
-                        </div>
+                        )}
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
@@ -1345,12 +1364,12 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
     );
 }
 
-function getStatusBadgeVariant(status: string): 'default' | 'destructive' | 'secondary' {
+function getStatusBadgeClass(status: string): string {
     switch (status) {
-        case 'online': return 'default';
-        case 'offline': return 'destructive';
-        case 'warning': return 'secondary';
-        default: return 'secondary';
+        case 'online':  return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20';
+        case 'offline': return 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30 hover:bg-red-500/20';
+        case 'warning': return 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/20';
+        default:        return 'bg-muted text-muted-foreground';
     }
 }
 
@@ -2246,13 +2265,8 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
                         <CardDescription className="mt-1">Atur pengiriman data logger ke server FTP</CardDescription>
                     </div>
                     <div className="flex items-center gap-1">
-                        {!editing && !disabled && (
-                            <Button variant="ghost" size="icon" onClick={handleBrowseFiles} className="size-8" title="Browse Files">
-                                <HardDrive className="size-4" />
-                            </Button>
-                        )}
-                        {!editing && !disabled && (
-                            <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
+                        {!editing && (
+                            <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8" title="Edit konfigurasi FTP">
                                 <Pencil className="size-4" />
                             </Button>
                         )}
@@ -2263,9 +2277,21 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
                 {!editing ? (
                     configured ? (
                         <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
-                            <div className="flex items-center gap-2 mb-3">
-                                <CheckCircle2 className="size-4 text-emerald-500" />
-                                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">FTP Terkonfigurasi</span>
+                            <div className="flex items-start justify-between gap-2 mb-3">
+                                <div className="flex items-center gap-2">
+                                    <CheckCircle2 className="size-4 text-emerald-500" />
+                                    <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">FTP Terkonfigurasi</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                    {!disabled && (
+                                        <Button variant="ghost" size="icon" className="size-7" onClick={handleBrowseFiles} title="Browse Files">
+                                            <HardDrive className="size-3.5" />
+                                        </Button>
+                                    )}
+                                    <Button variant="ghost" size="icon" className="size-7" onClick={() => setEditing(true)} title="Edit Konfigurasi">
+                                        <Pencil className="size-3.5" />
+                                    </Button>
+                                </div>
                             </div>
                             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                                 <dt className="text-muted-foreground">Host</dt>
@@ -2350,16 +2376,19 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
                         <div className="flex items-center gap-2">
                             <Button
                                 onClick={handleSet}
-                                disabled={!hasCredentials}
+                                disabled={!hasCredentials || disabled}
                                 size="sm"
                                 className="gap-2"
+                                title={disabled ? 'Device offline — tidak bisa mengirim' : ''}
                             >
                                 <Upload className="size-4" /> Kirim ke Device
                             </Button>
                             <Button onClick={() => setEditing(false)} variant="outline" size="sm" className="gap-2">
                                 <XCircle className="size-4" /> {t('common.cancel')}
                             </Button>
-                            <span className="text-[10px] text-muted-foreground ml-auto">via MQTT</span>
+                            <span className="text-[10px] text-muted-foreground ml-auto">
+                                {disabled ? '⚠️ Device offline' : 'via MQTT'}
+                            </span>
                         </div>
                     </div>
                 )}
@@ -2731,7 +2760,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                         <div>
                             <div className="flex items-center gap-3">
                                 <h1 className="text-xl font-bold">{logger.name}</h1>
-                                <Badge variant={getStatusBadgeVariant(logger.status)} className="capitalize">
+                                <Badge variant="outline" className={`capitalize ${getStatusBadgeClass(logger.status)}`}>
                                     {logger.status}
                                 </Badge>
                             </div>

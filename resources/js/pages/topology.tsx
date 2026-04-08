@@ -401,11 +401,16 @@ export default function Topology({ loggers }: TopologyProps) {
                                             strokeDasharray={(isOffline || isGeneric) ? '6 4' : 'none'}
                                             className={(!isOffline && !isGeneric) ? 'topology-line-pulse' : ''}
                                         />
-                                        {!isOffline && !isGeneric && (
-                                            <circle r="3" fill={color} opacity={0.9}>
-                                                <animateMotion dur={`${2 + i * 0.3}s`} repeatCount="indefinite" path={path} />
-                                            </circle>
-                                        )}
+                                        {!isOffline && !isGeneric && (() => {
+                                            // Reverse path: dot travels from logger (x2,y2) → cloud (x1,y1)
+                                            const midY = line.y1 + (line.y2 - line.y1) * 0.5;
+                                            const reversePath = `M ${line.x2} ${line.y2} C ${line.x2} ${midY}, ${line.x1} ${midY}, ${line.x1} ${line.y1}`;
+                                            return (
+                                                <circle r="3" fill={color} opacity={0.9}>
+                                                    <animateMotion dur={`${2 + i * 0.3}s`} repeatCount="indefinite" path={reversePath} />
+                                                </circle>
+                                            );
+                                        })()}
                                     </g>
                                 );
                             })}

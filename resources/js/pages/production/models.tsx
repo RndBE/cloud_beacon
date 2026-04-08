@@ -3,6 +3,7 @@ import {
     Box,
     Edit2,
     ImagePlus,
+    Layers,
     Loader2,
     Package,
     Plus,
@@ -42,6 +43,7 @@ interface DeviceModelItem {
     id: number;
     name: string;
     description: string | null;
+    channelCount: number;
     image: string | null;
     createdAt: string | null;
 }
@@ -80,15 +82,17 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
         }
     }, [flash]);
 
-    const createForm = useForm<{ name: string; description: string; image: File | null }>({
+    const createForm = useForm<{ name: string; description: string; channel_count: number; image: File | null }>({
         name: '',
         description: '',
+        channel_count: 0,
         image: null,
     });
 
-    const editForm = useForm<{ name: string; description: string; image: File | null }>({
+    const editForm = useForm<{ name: string; description: string; channel_count: number; image: File | null }>({
         name: '',
         description: '',
+        channel_count: 0,
         image: null,
     });
 
@@ -120,6 +124,7 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
         editForm.setData({
             name: model.name,
             description: model.description || '',
+            channel_count: model.channelCount,
             image: null,
         });
         editForm.clearErrors();
@@ -246,7 +251,13 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                     </div>
                                 </div>
                                 <CardContent className="p-4">
-                                    <h3 className="font-semibold">{model.name}</h3>
+                                    <div className="flex items-start justify-between gap-2">
+                                        <h3 className="font-semibold">{model.name}</h3>
+                                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                                            <Layers className="size-3" />
+                                            {model.channelCount} ch
+                                        </span>
+                                    </div>
                                     {model.description && (
                                         <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{model.description}</p>
                                     )}
@@ -298,6 +309,19 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                     placeholder={t('models.name_placeholder')}
                                 />
                                 {createForm.errors.name && <p className="text-xs text-red-500">{createForm.errors.name}</p>}
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="add_channels">Jumlah Channel *</Label>
+                                <Input
+                                    id="add_channels"
+                                    type="number"
+                                    min={0}
+                                    max={255}
+                                    value={createForm.data.channel_count}
+                                    onChange={(e) => createForm.setData('channel_count', parseInt(e.target.value) || 0)}
+                                    placeholder="e.g. 8"
+                                />
+                                {createForm.errors.channel_count && <p className="text-xs text-red-500">{createForm.errors.channel_count}</p>}
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="add_desc">{t('models.description_label')}</Label>
@@ -362,6 +386,18 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                     onChange={(e) => editForm.setData('name', e.target.value)}
                                 />
                                 {editForm.errors.name && <p className="text-xs text-red-500">{editForm.errors.name}</p>}
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="edit_channels">Jumlah Channel *</Label>
+                                <Input
+                                    id="edit_channels"
+                                    type="number"
+                                    min={0}
+                                    max={255}
+                                    value={editForm.data.channel_count}
+                                    onChange={(e) => editForm.setData('channel_count', parseInt(e.target.value) || 0)}
+                                />
+                                {editForm.errors.channel_count && <p className="text-xs text-red-500">{editForm.errors.channel_count}</p>}
                             </div>
                             <div className="grid gap-2">
                                 <Label htmlFor="edit_desc">{t('models.description_label')}</Label>

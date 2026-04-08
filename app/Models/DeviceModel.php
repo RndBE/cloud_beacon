@@ -9,6 +9,7 @@ class DeviceModel extends Model
     protected $fillable = [
         'name',
         'description',
+        'channel_count',
         'image',
     ];
 }

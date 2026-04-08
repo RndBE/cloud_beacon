@@ -63,14 +63,16 @@ class Logger extends Model
         'ftp_port',
         'ftp_user',
         'ftp_pass',
+        'last_data_received_at',
     ];
 
     protected function casts(): array
     {
         return [
-            'last_seen_at' => 'datetime',
-            'last_config_backup_at' => 'datetime',
-            'last_connected_at' => 'datetime',
+            'last_seen_at'           => 'datetime',
+            'last_config_backup_at'  => 'datetime',
+            'last_connected_at'      => 'datetime',
+            'last_data_received_at'  => 'datetime',
             'cpu_usage' => 'integer',
             'memory_usage' => 'integer',
             'memory_total' => 'integer',
@@ -105,6 +107,11 @@ class Logger extends Model
     public function activityLogs(): HasMany
     {
         return $this->hasMany(ActivityLog::class);
+    }
+
+    public function sensorLogs(): HasMany
+    {
+        return $this->hasMany(SensorLog::class);
     }
 
     /**
