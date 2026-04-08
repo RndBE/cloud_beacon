@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ForwardToIntegrations;
 use App\Models\Logger;
 use App\Models\Sensor;
 use App\Models\SensorLog;
@@ -189,6 +190,10 @@ class DeviceDataController extends Controller
             'matched'      => $matched,
             'unmatched'    => $unmatched,
         ]);
+
+        // --- 8. Dispatch forwarding job (async, database queue) ---
+        // Logger gets 200 OK immediately; forwarding runs in background.
+        ForwardToIntegrations::dispatch($logger, $request->all())->onQueue('default');
 
         return response()->json([
             'success'     => true,

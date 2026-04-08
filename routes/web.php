@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceModelController;
+use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\ProductionController;
@@ -158,6 +159,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('sensors.update');
     Route::delete('loggers/{loggerId}/sensors/{id}', [\App\Http\Controllers\SensorController::class, 'destroy'])
         ->name('sensors.destroy');
+
+    // Platform Integration CRUD (nested under logger)
+    Route::post('loggers/{id}/integrations', [IntegrationController::class, 'store'])
+        ->name('integrations.store');
+    Route::put('loggers/{id}/integrations/{iid}', [IntegrationController::class, 'update'])
+        ->name('integrations.update');
+    Route::delete('loggers/{id}/integrations/{iid}', [IntegrationController::class, 'destroy'])
+        ->name('integrations.destroy');
+    Route::patch('loggers/{id}/integrations/{iid}/toggle', [IntegrationController::class, 'toggle'])
+        ->name('integrations.toggle');
 });
 
 // API v1 Routes

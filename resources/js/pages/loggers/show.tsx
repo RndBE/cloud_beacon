@@ -45,6 +45,9 @@ import {
     Loader2,
     Cable,
     Check,
+    Globe,
+    ShieldCheck,
+    AlertCircle,
 } from 'lucide-react';
 import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -118,6 +121,21 @@ interface LogItem {
     message: string;
 }
 
+type AuthType = 'none' | 'api_key' | 'bearer' | 'basic' | 'custom_header';
+
+interface Integration {
+    id: number;
+    name: string;
+    endpointUrl: string;
+    authType: AuthType;
+    authConfig: Record<string, string>;
+    intervalMinutes: number;
+    isEnabled: boolean;
+    lastForwardedAt: string | null;
+    lastStatus: 'success' | 'error' | null;
+    lastError: string | null;
+}
+
 interface LoggerDetail {
     id: string;
     name: string;
@@ -163,6 +181,7 @@ interface LoggerDetail {
     deviceIdentifier: string | null;
     sensors: SensorItem[];
     activityLogs: LogItem[];
+    integrations: Integration[];
 }
 
 interface LoggerShowProps {
@@ -1763,19 +1782,292 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
     );
 }
 
+// =============================================================================
+// Helper: Toggle Switch
+// =============================================================================
+function ToggleSwitch({ checked, onChange, disabled }: { checked: boolean; onChange: () => void; disabled?: boolean }) {
+    return (
+        <button
+            type="button"
+            role="switch"
+            aria-checked={checked}
+            onClick={onChange}
+            disabled={disabled}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-primary' : 'bg-input'}`}
+        >
+            <span className={`pointer-events-none inline-block size-5 rounded-full bg-background shadow-lg ring-0 transition-transform duration-200 ease-in-out ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
+        </button>
+    );
+}
 
+// =============================================================================
+// Add/Edit Integration Modal
+// =============================================================================
+const AUTH_TYPE_LABELS: Record<string, string> = {
+    none: 'Tidak ada',
+    api_key: 'API Key',
+    bearer: 'Bearer Token',
+    basic: 'Basic Auth',
+    custom_header: 'Custom Header',
+};
 
+const EMPTY_INTEGRATION_FORM = {
+    name: '',
+    endpoint_url: '',
+    auth_type: 'none' as AuthType,
+    auth_config: {} as Record<string, string>,
+    interval_minutes: 10,
+    is_enabled: true,
+};
 
-function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, ministesyInterval, disabled }: {
+function IntegrationFormModal({ open, onClose, loggerId, integration }: {
+    open: boolean;
+    onClose: () => void;
+    loggerId: string;
+    integration?: Integration | null;
+}) {
+    const isEdit = !!integration;
+    const [form, setForm] = useState({ ...EMPTY_INTEGRATION_FORM });
+    const [saving, setSaving] = useState(false);
+    const prevOpen = useRef(false);
+
+    if (open && !prevOpen.current) {
+        if (integration) {
+            setForm({
+                name: integration.name,
+                endpoint_url: integration.endpointUrl,
+                auth_type: integration.authType,
+                auth_config: { ...integration.authConfig },
+                interval_minutes: integration.intervalMinutes,
+                is_enabled: integration.isEnabled,
+            });
+        } else {
+            setForm({ ...EMPTY_INTEGRATION_FORM });
+        }
+    }
+    prevOpen.current = open;
+
+    const setAuthCfg = (key: string, value: string) => setForm(f => ({ ...f, auth_config: { ...f.auth_config, [key]: value } }));
+
+    const handleSubmit = () => {
+        setSaving(true);
+        const payload = { name: form.name, endpoint_url: form.endpoint_url, auth_type: form.auth_type, auth_config: form.auth_config, interval_minutes: form.interval_minutes, is_enabled: form.is_enabled };
+        if (isEdit) {
+            router.put(`/loggers/${loggerId}/integrations/${integration!.id}`, payload, {
+                preserveScroll: true, onSuccess: () => onClose(), onFinish: () => setSaving(false),
+            });
+        } else {
+            router.post(`/loggers/${loggerId}/integrations`, payload, {
+                preserveScroll: true, onSuccess: () => onClose(), onFinish: () => setSaving(false),
+            });
+        }
+    };
+
+    const inputCls = "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    const inputXsCls = "flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+    return (
+        <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+            <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <Globe className="size-5 text-blue-500" />
+                        {isEdit ? 'Edit Platform' : 'Tambah Platform Baru'}
+                    </DialogTitle>
+                    <DialogDescription>Konfigurasi endpoint dan autentikasi platform tujuan pengiriman data.</DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-4 py-2">
+                    <div className="space-y-1.5">
+                        <Label htmlFor="int-name">Nama Platform</Label>
+                        <input id="int-name" type="text" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                            placeholder="Contoh: BMKG Pusat, SiPuji BBWS" className={inputCls} />
+                    </div>
+                    <div className="space-y-1.5">
+                        <Label htmlFor="int-url">Endpoint URL</Label>
+                        <input id="int-url" type="url" value={form.endpoint_url} onChange={e => setForm(f => ({ ...f, endpoint_url: e.target.value }))}
+                            placeholder="https://platform.example.com/api/data" className={inputCls + " font-mono"} />
+                    </div>
+                    <div className="space-y-1.5">
+                        <Label htmlFor="int-auth">Autentikasi</Label>
+                        <select id="int-auth" value={form.auth_type} onChange={e => setForm(f => ({ ...f, auth_type: e.target.value as AuthType, auth_config: {} }))}
+                            className={inputCls}>
+                            {Object.entries(AUTH_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                        </select>
+                    </div>
+
+                    {form.auth_type === 'api_key' && (
+                        <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-3">
+                            <div className="space-y-1.5"><Label className="text-xs">Nama Header</Label>
+                                <input type="text" value={form.auth_config.header ?? 'X-API-Key'} onChange={e => setAuthCfg('header', e.target.value)} placeholder="X-API-Key" className={inputXsCls} /></div>
+                            <div className="space-y-1.5"><Label className="text-xs">Nilai / Key</Label>
+                                <input type="text" value={form.auth_config.value ?? ''} onChange={e => setAuthCfg('value', e.target.value)} placeholder="abc123..." className={inputXsCls} /></div>
+                        </div>
+                    )}
+                    {form.auth_type === 'bearer' && (
+                        <div className="rounded-lg border bg-muted/30 p-3 space-y-1.5">
+                            <Label className="text-xs">Bearer Token</Label>
+                            <input type="text" value={form.auth_config.value ?? ''} onChange={e => setAuthCfg('value', e.target.value)} placeholder="eyJhbGciOiJ..." className={inputXsCls} />
+                        </div>
+                    )}
+                    {form.auth_type === 'basic' && (
+                        <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-3">
+                            <div className="space-y-1.5"><Label className="text-xs">Username</Label>
+                                <input type="text" value={form.auth_config.username ?? ''} onChange={e => setAuthCfg('username', e.target.value)} className={inputXsCls} /></div>
+                            <div className="space-y-1.5"><Label className="text-xs">Password</Label>
+                                <input type="password" value={form.auth_config.password ?? ''} onChange={e => setAuthCfg('password', e.target.value)} className={inputXsCls} /></div>
+                        </div>
+                    )}
+                    {form.auth_type === 'custom_header' && (
+                        <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-3">
+                            <div className="space-y-1.5"><Label className="text-xs">Nama Header</Label>
+                                <input type="text" value={form.auth_config.header ?? ''} onChange={e => setAuthCfg('header', e.target.value)} placeholder="X-Custom-Header" className={inputXsCls} /></div>
+                            <div className="space-y-1.5"><Label className="text-xs">Nilai Header</Label>
+                                <input type="text" value={form.auth_config.value ?? ''} onChange={e => setAuthCfg('value', e.target.value)} className={inputXsCls} /></div>
+                        </div>
+                    )}
+
+                    <div className="space-y-1.5">
+                        <Label htmlFor="int-interval" className="flex items-center gap-1.5">
+                            <Timer className="size-3.5 text-blue-500" /> Interval Kirim
+                        </Label>
+                        <div className="flex items-center gap-2">
+                            <input id="int-interval" type="number" min={1} max={1440} value={form.interval_minutes}
+                                onChange={e => setForm(f => ({ ...f, interval_minutes: parseInt(e.target.value) || 1 }))}
+                                className="flex h-9 w-32 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                            <span className="text-sm text-muted-foreground">menit</span>
+                        </div>
+                    </div>
+                </div>
+
+                <DialogFooter>
+                    <Button variant="outline" onClick={onClose} disabled={saving}>Batal</Button>
+                    <Button onClick={handleSubmit} disabled={saving || !form.name || !form.endpoint_url} className="gap-2">
+                        {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                        {saving ? 'Menyimpan...' : isEdit ? 'Simpan Perubahan' : 'Tambah Platform'}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+// =============================================================================
+// Integration Row (single dynamic platform)
+// =============================================================================
+function IntegrationRow({ integration, loggerId, disabled }: {
+    integration: Integration;
+    loggerId: string;
+    disabled: boolean;
+}) {
+    const [toggling, setToggling] = useState(false);
+    const [editOpen, setEditOpen] = useState(false);
+    const [deleteOpen, setDeleteOpen] = useState(false);
+
+    const handleToggle = async () => {
+        setToggling(true);
+        try {
+            await fetch(`/loggers/${loggerId}/integrations/${integration.id}/toggle`, {
+                method: 'PATCH',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '',
+                    'Content-Type': 'application/json',
+                },
+            });
+            router.reload({ only: ['logger'] });
+        } finally {
+            setToggling(false);
+        }
+    };
+
+    const handleDelete = () => {
+        router.delete(`/loggers/${loggerId}/integrations/${integration.id}`, {
+            preserveScroll: true, onFinish: () => setDeleteOpen(false),
+        });
+    };
+
+    const statusBadge = () => {
+        if (!integration.lastForwardedAt) return <span className="text-xs text-muted-foreground">Belum pernah</span>;
+        if (integration.lastStatus === 'error') return (
+            <span className="inline-flex items-center gap-1 text-xs text-red-500 cursor-help" title={integration.lastError ?? ''}>
+                <AlertCircle className="size-3" /> Error
+            </span>
+        );
+        return <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="size-3" /> OK</span>;
+    };
+
+    return (
+        <>
+            <div className="rounded-lg border overflow-hidden">
+                <div className="flex items-center gap-3 p-3">
+                    <div className="flex size-10 items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-950 shrink-0">
+                        <Globe className="size-5 text-violet-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold truncate">{integration.name}</p>
+                        <p className="text-xs text-muted-foreground truncate font-mono">{integration.endpointUrl}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        {statusBadge()}
+                        {!disabled && (
+                            <>
+                                <Button variant="ghost" size="icon" className="size-7" onClick={() => setEditOpen(true)}>
+                                    <Pencil className="size-3.5" />
+                                </Button>
+                                <Button variant="ghost" size="icon" className="size-7 text-red-500 hover:text-red-600" onClick={() => setDeleteOpen(true)}>
+                                    <Trash2 className="size-3.5" />
+                                </Button>
+                            </>
+                        )}
+                        <ToggleSwitch checked={integration.isEnabled} onChange={handleToggle} disabled={disabled || toggling} />
+                    </div>
+                </div>
+                {integration.isEnabled && (
+                    <div className="border-t bg-muted/20 px-3 py-2">
+                        <dl className="grid grid-cols-3 gap-x-4 text-xs">
+                            <div><dt className="text-muted-foreground flex items-center gap-1"><ShieldCheck className="size-3" /> Auth</dt><dd className="font-medium">{AUTH_TYPE_LABELS[integration.authType] ?? integration.authType}</dd></div>
+                            <div><dt className="text-muted-foreground flex items-center gap-1"><Timer className="size-3" /> Interval</dt><dd className="font-medium">{integration.intervalMinutes} menit</dd></div>
+                            <div><dt className="text-muted-foreground flex items-center gap-1"><Clock className="size-3" /> Terakhir kirim</dt><dd className="font-medium">{integration.lastForwardedAt ?? '—'}</dd></div>
+                        </dl>
+                        {integration.lastStatus === 'error' && integration.lastError && (
+                            <p className="mt-1.5 rounded bg-red-50 dark:bg-red-950/30 px-2 py-1 text-xs text-red-600 font-mono break-all">{integration.lastError}</p>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            <IntegrationFormModal open={editOpen} onClose={() => setEditOpen(false)} loggerId={loggerId} integration={integration} />
+
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Hapus Integrasi</AlertDialogTitle>
+                        <AlertDialogDescription>Platform <strong>{integration.name}</strong> akan dihapus dan tidak akan menerima data lagi.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Batal</AlertDialogCancel>
+                        <AlertDialogAction variant="destructive" onClick={handleDelete}>Hapus</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </>
+    );
+}
+
+// =============================================================================
+// PlatformIntegrationCard (main)
+// =============================================================================
+function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, ministesyInterval, disabled, integrations }: {
     loggerId: string;
     ministesyEnabled: boolean;
     ministesyKey: string | null;
     ministesyInterval: number;
     disabled: boolean;
+    integrations: Integration[];
 }) {
     const [showKey, setShowKey] = useState(false);
-    const [editing, setEditing] = useState(false);
-    const [values, setValues] = useState({
+    const [editingStesy, setEditingStesy] = useState(false);
+    const [stesyValues, setStesyValues] = useState({
         ministesy_enabled: ministesyEnabled,
         ministesy_key: ministesyKey || '',
         ministesy_interval: ministesyInterval,
@@ -1784,180 +2076,114 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
     const [saved, setSaved] = useState(false);
     const [showDisableDialog, setShowDisableDialog] = useState(false);
     const [showSaveDialog, setShowSaveDialog] = useState(false);
+    const [addOpen, setAddOpen] = useState(false);
     const { t } = useTranslation();
 
-    const isDirty = values.ministesy_enabled !== ministesyEnabled
-        || values.ministesy_key !== (ministesyKey || '')
-        || values.ministesy_interval !== ministesyInterval;
-
-    const handleToggle = () => {
-        const newEnabled = !values.ministesy_enabled;
-        if (!newEnabled && ministesyEnabled) {
-            // Disabling → show confirmation
-            setShowDisableDialog(true);
-        } else if (newEnabled && !ministesyEnabled) {
-            // First time enabling → open edit mode
-            setValues({ ...values, ministesy_enabled: true });
-            setEditing(true);
-        } else {
-            // Re-enabling with existing config → save immediately
-            const newValues = { ...values, ministesy_enabled: newEnabled };
-            setValues(newValues);
-            doSave(newValues);
-        }
-    };
-
-    const confirmDisable = () => {
-        const newValues = { ...values, ministesy_enabled: false };
-        setValues(newValues);
-        setShowDisableDialog(false);
-        doSave(newValues);
-    };
-
-    const doSave = (data: typeof values) => {
+    const doSaveStesy = (data: typeof stesyValues) => {
         setSaving(true);
         router.put(`/loggers/${loggerId}/platform`, data, {
             preserveScroll: true,
-            onSuccess: () => {
-                setSaved(true);
-                setEditing(false);
-                setTimeout(() => setSaved(false), 2000);
-            },
+            onSuccess: () => { setSaved(true); setEditingStesy(false); setTimeout(() => setSaved(false), 2000); },
             onFinish: () => setSaving(false),
         });
     };
 
-    const handleSave = () => {
-        setShowSaveDialog(true);
-    };
-
-    const confirmSave = () => {
-        setShowSaveDialog(false);
-        doSave(values);
-    };
-
-    const handleCancel = () => {
-        setValues({
-            ministesy_enabled: ministesyEnabled,
-            ministesy_key: ministesyKey || '',
-            ministesy_interval: ministesyInterval,
-        });
-        setEditing(false);
-    };
-
-    const maskedKey = ministesyKey
-        ? ministesyKey.slice(0, 4) + '••••••••' + ministesyKey.slice(-4)
-        : '—';
+    const maskedKey = ministesyKey ? ministesyKey.slice(0, 4) + '••••••••' + ministesyKey.slice(-4) : '—';
 
     return (
         <Card className="mt-4">
             <CardHeader>
-                <CardTitle className="flex items-center gap-2"><Link2 className="size-5" /> {t('loggerDetail.platform_integration')}</CardTitle>
-
+                <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2">
+                        <Link2 className="size-5" /> {t('loggerDetail.platform_integration')}
+                    </CardTitle>
+                    {!disabled && (
+                        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setAddOpen(true)}>
+                            <Plus className="size-4" /> Tambah Platform
+                        </Button>
+                    )}
+                </div>
             </CardHeader>
             <CardContent className="space-y-3">
-                {/* Mini STESY Platform */}
+
+                {/* ── Mini STESY (hardcoded) ── */}
                 <div className="rounded-lg border overflow-hidden">
-                    {/* Platform Header */}
                     <div className="flex items-center gap-3 p-3">
-                        <div className="flex size-10 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950">
+                        <div className="flex size-10 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950 shrink-0">
                             <Radio className="size-5 text-blue-600" />
                         </div>
                         <div className="flex-1">
                             <p className="text-sm font-semibold">Mini STESY</p>
                             <p className="text-xs text-muted-foreground">{t('loggerDetail.telemetry_relay')}</p>
                         </div>
-                        {!editing && ministesyEnabled && !disabled && (
-                            <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
+                        {!editingStesy && stesyValues.ministesy_enabled && !disabled && (
+                            <Button variant="ghost" size="icon" onClick={() => setEditingStesy(true)} className="size-8">
                                 <Pencil className="size-4" />
                             </Button>
                         )}
-                        <label className="flex items-center gap-2 cursor-pointer">
-                            <button
-                                type="button"
-                                role="switch"
-                                aria-checked={values.ministesy_enabled}
-                                onClick={handleToggle}
-                                disabled={disabled}
-                                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${values.ministesy_enabled ? 'bg-primary' : 'bg-input'}`}
-                            >
-                                <span className={`pointer-events-none inline-block size-5 rounded-full bg-background shadow-lg ring-0 transition-transform duration-200 ease-in-out ${values.ministesy_enabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                            </button>
-                        </label>
+                        <ToggleSwitch
+                            checked={stesyValues.ministesy_enabled}
+                            disabled={disabled}
+                            onChange={() => {
+                                const newEnabled = !stesyValues.ministesy_enabled;
+                                if (!newEnabled && ministesyEnabled) {
+                                    setShowDisableDialog(true);
+                                } else if (newEnabled && !ministesyEnabled) {
+                                    setStesyValues(v => ({ ...v, ministesy_enabled: true }));
+                                    setEditingStesy(true);
+                                } else {
+                                    const nv = { ...stesyValues, ministesy_enabled: newEnabled };
+                                    setStesyValues(nv);
+                                    doSaveStesy(nv);
+                                }
+                            }}
+                        />
                     </div>
 
-                    {/* Expanded content when enabled */}
-                    {values.ministesy_enabled && (
+                    {stesyValues.ministesy_enabled && (
                         <div className="border-t bg-muted/30 p-3 space-y-3">
-                            {!editing ? (
+                            {!editingStesy ? (
                                 <>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                                        <dt className="text-muted-foreground flex items-center gap-1.5">
-                                            <Key className="size-3.5 text-violet-500" /> {t('loggerDetail.encryption_key')}
-                                        </dt>
+                                        <dt className="text-muted-foreground flex items-center gap-1.5"><Key className="size-3.5 text-violet-500" /> {t('loggerDetail.encryption_key')}</dt>
                                         <dd className="font-mono text-xs">{maskedKey}</dd>
-                                        <dt className="text-muted-foreground flex items-center gap-1.5">
-                                            <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_send')}
-                                        </dt>
+                                        <dt className="text-muted-foreground flex items-center gap-1.5"><Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_send')}</dt>
                                         <dd className="font-medium">{ministesyInterval} {t('loggerDetail.minutes')}</dd>
                                     </dl>
-                                    {saved && (
-                                        <span className="flex items-center gap-1 text-sm text-emerald-600">
-                                            <CheckCircle2 className="size-4" /> {t('loggerDetail.saved')}
-                                        </span>
-                                    )}
+                                    {saved && <span className="flex items-center gap-1 text-sm text-emerald-600"><CheckCircle2 className="size-4" /> {t('loggerDetail.saved')}</span>}
                                 </>
                             ) : (
                                 <>
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <div className="space-y-1.5">
-                                            <label className="text-sm font-medium flex items-center gap-1.5">
-                                                <Key className="size-4 text-violet-500" />
-                                                {t('loggerDetail.encryption_key')}
-                                            </label>
+                                            <label className="text-sm font-medium flex items-center gap-1.5"><Key className="size-4 text-violet-500" />{t('loggerDetail.encryption_key')}</label>
                                             <div className="relative">
-                                                <input
-                                                    type={showKey ? 'text' : 'password'}
-                                                    value={values.ministesy_key}
-                                                    onChange={(e) => setValues({ ...values, ministesy_key: e.target.value })}
+                                                <input type={showKey ? 'text' : 'password'} value={stesyValues.ministesy_key}
+                                                    onChange={(e) => setStesyValues(v => ({ ...v, ministesy_key: e.target.value }))}
                                                     placeholder={t('loggerDetail.enter_encryption_key')}
-                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 pr-9 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowKey(!showKey)}
-                                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                                                >
+                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 pr-9 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                                                <button type="button" onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                                                     {showKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                                                 </button>
                                             </div>
                                         </div>
                                         <div className="space-y-1.5">
-                                            <label className="text-sm font-medium flex items-center gap-1.5">
-                                                <Timer className="size-4 text-blue-500" />
-                                                {t('loggerDetail.interval_send')}
-                                            </label>
+                                            <label className="text-sm font-medium flex items-center gap-1.5"><Timer className="size-4 text-blue-500" />{t('loggerDetail.interval_send')}</label>
                                             <div className="flex items-center gap-2">
-                                                <input
-                                                    type="number"
-                                                    min={1}
-                                                    max={1440}
-                                                    value={values.ministesy_interval}
-                                                    onChange={(e) => setValues({ ...values, ministesy_interval: parseInt(e.target.value) || 1 })}
-                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
+                                                <input type="number" min={1} max={1440} value={stesyValues.ministesy_interval}
+                                                    onChange={(e) => setStesyValues(v => ({ ...v, ministesy_interval: parseInt(e.target.value) || 1 }))}
+                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
                                                 <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
                                             </div>
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        <Button onClick={handleSave} disabled={saving} size="sm" className="gap-2">
-                                            <Save className="size-4" />
-                                            {saving ? t('loggerDetail.saving_dots') : t('common.save')}
+                                        <Button onClick={() => setShowSaveDialog(true)} disabled={saving} size="sm" className="gap-2">
+                                            <Save className="size-4" /> {saving ? t('loggerDetail.saving_dots') : t('common.save')}
                                         </Button>
-                                        <Button onClick={handleCancel} variant="outline" size="sm" className="gap-2">
-                                            <XCircle className="size-4" />
-                                            {t('common.cancel')}
+                                        <Button onClick={() => { setStesyValues({ ministesy_enabled: ministesyEnabled, ministesy_key: ministesyKey || '', ministesy_interval: ministesyInterval }); setEditingStesy(false); }}
+                                            variant="outline" size="sm" className="gap-2">
+                                            <XCircle className="size-4" /> {t('common.cancel')}
                                         </Button>
                                     </div>
                                 </>
@@ -1966,37 +2192,48 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                     )}
                 </div>
 
-                {/* Future platforms go here as additional bordered rows */}
+                {/* ── Dynamic integrations ── */}
+                {integrations.map(intg => (
+                    <IntegrationRow key={intg.id} integration={intg} loggerId={loggerId} disabled={disabled} />
+                ))}
+
+                {integrations.length === 0 && !disabled && (
+                    <div className="rounded-lg border border-dashed flex flex-col items-center justify-center py-8 text-center gap-2">
+                        <Globe className="size-8 text-muted-foreground/40" />
+                        <p className="text-sm text-muted-foreground">Belum ada platform tambahan.</p>
+                        <Button size="sm" variant="outline" className="gap-1.5 mt-1" onClick={() => setAddOpen(true)}>
+                            <Plus className="size-4" /> Tambah Platform
+                        </Button>
+                    </div>
+                )}
             </CardContent>
 
-            {/* Disable Confirmation */}
+            <IntegrationFormModal open={addOpen} onClose={() => setAddOpen(false)} loggerId={loggerId} />
+
             <AlertDialog open={showDisableDialog} onOpenChange={setShowDisableDialog}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
                         <AlertDialogTitle>{t('loggerDetail.disable_ministesy')}</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            {t('loggerDetail.disable_ministesy_desc')}
-                        </AlertDialogDescription>
+                        <AlertDialogDescription>{t('loggerDetail.disable_ministesy_desc')}</AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                        <AlertDialogAction variant="destructive" onClick={confirmDisable}>{t('loggerDetail.disable')}</AlertDialogAction>
+                        <AlertDialogAction variant="destructive" onClick={() => { const nv = { ...stesyValues, ministesy_enabled: false }; setStesyValues(nv); setShowDisableDialog(false); doSaveStesy(nv); }}>
+                            {t('loggerDetail.disable')}
+                        </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
 
-            {/* Save Confirmation */}
             <AlertDialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
                         <AlertDialogTitle>{t('loggerDetail.save_configuration')}</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            {t('loggerDetail.save_config_desc')}
-                        </AlertDialogDescription>
+                        <AlertDialogDescription>{t('loggerDetail.save_config_desc')}</AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                        <AlertDialogAction onClick={confirmSave}>{t('common.save')}</AlertDialogAction>
+                        <AlertDialogAction onClick={() => { setShowSaveDialog(false); doSaveStesy(stesyValues); }}>{t('common.save')}</AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -3014,6 +3251,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                             ministesyKey={logger.ministesyKey}
                             ministesyInterval={logger.ministesyInterval}
                             disabled={logger.status === 'offline'}
+                            integrations={logger.integrations ?? []}
                         />
                         {logger.deviceIdentifier && (
                             <FtpConfigCard

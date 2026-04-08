@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\ActivityLog;
 use App\Models\DeviceModel;
 use App\Models\Logger;
+use App\Models\LoggerIntegration;
 use App\Models\MqttLogger;
 use App\Models\ProductionDevice;
 use App\Models\Sensor;
@@ -55,7 +56,11 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::with(['externalSensors', 'activityLogs' => fn($q) => $q->latest('created_at')->limit(20)]);
+        $query = Logger::with([
+            'externalSensors',
+            'integrations',
+            'activityLogs' => fn($q) => $q->latest('created_at')->limit(20),
+        ]);
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
         }
@@ -136,12 +141,24 @@ class LoggerController extends Controller
                 'sendEnabled' => $s->send_enabled,
             ]),
             'activityLogs' => $logger->activityLogs->map(fn($l) => [
-                'id' => $l->id,
+                'id'        => $l->id,
                 'timestamp' => $l->created_at?->format('Y-m-d H:i:s'),
-                'action' => $l->action,
-                'status' => $l->status,
-                'level' => $l->level,
-                'message' => $l->message,
+                'action'    => $l->action,
+                'status'    => $l->status,
+                'level'     => $l->level,
+                'message'   => $l->message,
+            ]),
+            'integrations' => $logger->integrations->map(fn(LoggerIntegration $i) => [
+                'id'              => $i->id,
+                'name'           => $i->name,
+                'endpointUrl'    => $i->endpoint_url,
+                'authType'       => $i->auth_type,
+                'authConfig'     => $i->auth_config ?? [],
+                'intervalMinutes' => $i->interval_minutes,
+                'isEnabled'      => $i->is_enabled,
+                'lastForwardedAt' => $i->last_forwarded_at?->format('Y-m-d H:i:s'),
+                'lastStatus'     => $i->last_status,
+                'lastError'      => $i->last_error,
             ]),
         ];
 
