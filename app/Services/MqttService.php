@@ -13,15 +13,17 @@ class MqttService
     private string $username;
     private string $password;
     private int $timeout;
+    private int $ftpTimeout;  // Dedicated timeout for FTP ops (upload bisa lama)
     private string $clientPrefix;
 
     public function __construct()
     {
-        $this->host = config('mqtt.host');
-        $this->port = config('mqtt.port');
-        $this->username = config('mqtt.username');
-        $this->password = config('mqtt.password');
-        $this->timeout = config('mqtt.timeout', 30);
+        $this->host         = config('mqtt.host');
+        $this->port         = config('mqtt.port');
+        $this->username     = config('mqtt.username');
+        $this->password     = config('mqtt.password');
+        $this->timeout      = config('mqtt.timeout', 30);
+        $this->ftpTimeout   = config('mqtt.ftp_timeout', 120);
         $this->clientPrefix = config('mqtt.client_id_prefix', 'cloud_beacon_');
     }
 
@@ -48,6 +50,7 @@ class MqttService
         Log::info("[MQTT] Connecting to {$this->host}:{$this->port} (timeout: {$this->timeout}s)...");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
 
             $connectionSettings = (new ConnectionSettings())
@@ -130,66 +133,66 @@ class MqttService
         // Format 1: Indexed array (protocol spec)
         if (array_is_list($info)) {
             return [
-                'serial_number'     => $info[0]  ?? null,
-                'device_identifier' => $info[1]  ?? null,
-                'mqtt_topic'        => $info[2]  ?? null,
-                'mac_address'       => $info[3]  ?? null,
-                'ip_address'        => $info[4]  ?? null,
-                'subnet'            => $info[5]  ?? null,
-                'gateway'           => $info[6]  ?? null,
-                'dns'               => $info[7]  ?? null,
-                'dhcp_mode'         => isset($info[8]) ? (bool) $info[8] : null,
-                'sdcard_total'      => isset($info[9]) ? (int) $info[9] : null,
-                'sdcard_used'       => isset($info[10]) ? (int) $info[10] : null,
-                'uptime'            => isset($info[11]) ? (int) $info[11] : null,
-                'gps_lat'           => $info[12] ?? null,
-                'gps_lng'           => $info[13] ?? null,
-                'gps_alt'           => $info[14] ?? null,
-                'battery'           => $info[15] ?? null,
-                'temperature'       => $info[16] ?? null,
-                'humidity'          => $info[17] ?? null,
-                'reboot_counter'    => isset($info[18]) ? (int) $info[18] : null,
-                'interval_read'     => isset($info[19]) ? (int) $info[19] : null,
-                'interval_send'     => isset($info[20]) ? (int) $info[20] : null,
-                'max_reset'         => isset($info[21]) ? (int) $info[21] : null,
-                'connection_type'   => isset($info[22]) ? match ((int) $info[22]) {
+                'serial_number' => $info[0] ?? null,
+                'device_identifier' => $info[1] ?? null,
+                'mqtt_topic' => $info[2] ?? null,
+                'mac_address' => $info[3] ?? null,
+                'ip_address' => $info[4] ?? null,
+                'subnet' => $info[5] ?? null,
+                'gateway' => $info[6] ?? null,
+                'dns' => $info[7] ?? null,
+                'dhcp_mode' => isset($info[8]) ? (bool) $info[8] : null,
+                'sdcard_total' => isset($info[9]) ? (int) $info[9] : null,
+                'sdcard_used' => isset($info[10]) ? (int) $info[10] : null,
+                'uptime' => isset($info[11]) ? (int) $info[11] : null,
+                'gps_lat' => $info[12] ?? null,
+                'gps_lng' => $info[13] ?? null,
+                'gps_alt' => $info[14] ?? null,
+                'battery' => $info[15] ?? null,
+                'temperature' => $info[16] ?? null,
+                'humidity' => $info[17] ?? null,
+                'reboot_counter' => isset($info[18]) ? (int) $info[18] : null,
+                'interval_read' => isset($info[19]) ? (int) $info[19] : null,
+                'interval_send' => isset($info[20]) ? (int) $info[20] : null,
+                'max_reset' => isset($info[21]) ? (int) $info[21] : null,
+                'connection_type' => isset($info[22]) ? match ((int) $info[22]) {
                     1 => 'ethernet',
                     2 => 'cellular',
                     3 => 'wifi',
                     default => null,
                 } : null,
-                'signal_strength'   => isset($info[23]) ? (int) $info[23] : null,
+                'signal_strength' => isset($info[23]) ? (int) $info[23] : null,
             ];
         }
 
         // Format 2: Key-value object (legacy / backward compatible)
         $parsed = [
-            'serial_number'     => $info['SN'] ?? null,
+            'serial_number' => $info['SN'] ?? null,
             'device_identifier' => $info['IdAlat'] ?? null,
-            'mqtt_topic'        => $info['topic'] ?? null,
-            'mac_address'       => $info['mac'] ?? null,
-            'ip_address'        => $info['eth'] ?? null,
-            'subnet'            => $info['subnet'] ?? null,
-            'gateway'           => $info['gateway'] ?? null,
-            'dns'               => $info['dns'] ?? null,
-            'dhcp_mode'         => isset($info['dhcp']) ? (bool) $info['dhcp'] : null,
-            'sdcard_total'      => isset($info['sdTotal']) ? (int) $info['sdTotal'] : null,
-            'sdcard_used'       => isset($info['sdUsed']) ? (int) $info['sdUsed'] : null,
-            'uptime'            => $info['uptime'] ?? null,
-            'battery'           => $info['battery'] ?? null,
-            'temperature'       => $info['temp'] ?? null,
-            'humidity'          => $info['hum'] ?? null,
-            'reboot_counter'    => isset($info['reboot']) ? (int) $info['reboot'] : null,
-            'interval_read'     => isset($info['iRead']) ? (int) $info['iRead'] : null,
-            'interval_send'     => isset($info['iSend']) ? (int) $info['iSend'] : null,
-            'max_reset'         => isset($info['wdt']) ? (int) $info['wdt'] : null,
-            'connection_type'   => isset($info['connMode']) ? match ((int) $info['connMode']) {
+            'mqtt_topic' => $info['topic'] ?? null,
+            'mac_address' => $info['mac'] ?? null,
+            'ip_address' => $info['eth'] ?? null,
+            'subnet' => $info['subnet'] ?? null,
+            'gateway' => $info['gateway'] ?? null,
+            'dns' => $info['dns'] ?? null,
+            'dhcp_mode' => isset($info['dhcp']) ? (bool) $info['dhcp'] : null,
+            'sdcard_total' => isset($info['sdTotal']) ? (int) $info['sdTotal'] : null,
+            'sdcard_used' => isset($info['sdUsed']) ? (int) $info['sdUsed'] : null,
+            'uptime' => $info['uptime'] ?? null,
+            'battery' => $info['battery'] ?? null,
+            'temperature' => $info['temp'] ?? null,
+            'humidity' => $info['hum'] ?? null,
+            'reboot_counter' => isset($info['reboot']) ? (int) $info['reboot'] : null,
+            'interval_read' => isset($info['iRead']) ? (int) $info['iRead'] : null,
+            'interval_send' => isset($info['iSend']) ? (int) $info['iSend'] : null,
+            'max_reset' => isset($info['wdt']) ? (int) $info['wdt'] : null,
+            'connection_type' => isset($info['connMode']) ? match ((int) $info['connMode']) {
                 1 => 'ethernet',
                 2 => 'cellular',
                 3 => 'wifi',
                 default => null,
             } : null,
-            'signal_strength'   => isset($info['signal']) ? (int) $info['signal'] : null,
+            'signal_strength' => isset($info['signal']) ? (int) $info['signal'] : null,
         ];
 
         // Parse GPS: "lat,lng,alt"
@@ -257,26 +260,26 @@ class MqttService
         //          s:   [name, scale, unit, lcd, log, send]
         foreach ($raw['rs485'] ?? [] as $device) {
             $cfg = $device['cfg'] ?? [];
-            $slaveId    = $cfg[0] ?? null;
+            $slaveId = $cfg[0] ?? null;
             $deviceName = $cfg[1] ?? null;
-            $funcCode   = $cfg[2] ?? null;
-            $regAddr    = $cfg[3] ?? null;
-            $quantity   = $cfg[4] ?? null;
+            $funcCode = $cfg[2] ?? null;
+            $regAddr = $cfg[3] ?? null;
+            $quantity = $cfg[4] ?? null;
 
             foreach ($device['s'] ?? [] as $s) {
                 $sensors[] = [
-                    'connection_type'  => 'rs485',
-                    'name'             => $s[0] ?? 'Unknown',
-                    'device_name'      => $deviceName,
-                    'scale_factor'     => $s[1] ?? 1,
-                    'unit'             => is_string($s[2]) ? $s[2] : '',
-                    'lcd_enabled'      => (bool) ($s[3] ?? false),
-                    'log_enabled'      => (bool) ($s[4] ?? false),
-                    'send_enabled'     => (bool) ($s[5] ?? false),
-                    'modbus_slave_id'  => $slaveId,
-                    'function_code'    => $funcCode,
+                    'connection_type' => 'rs485',
+                    'name' => $s[0] ?? 'Unknown',
+                    'device_name' => $deviceName,
+                    'scale_factor' => $s[1] ?? 1,
+                    'unit' => is_string($s[2]) ? $s[2] : '',
+                    'lcd_enabled' => (bool) ($s[3] ?? false),
+                    'log_enabled' => (bool) ($s[4] ?? false),
+                    'send_enabled' => (bool) ($s[5] ?? false),
+                    'modbus_slave_id' => $slaveId,
+                    'function_code' => $funcCode,
                     'register_address' => $regAddr,
-                    'quantity'         => $quantity,
+                    'quantity' => $quantity,
                 ];
             }
         }
@@ -289,14 +292,14 @@ class MqttService
             foreach ($device['s'] ?? [] as $s) {
                 $sensors[] = [
                     'connection_type' => 'rs232',
-                    'name'            => $s[0] ?? 'Unknown',
-                    'device_name'     => null,
-                    'scale_factor'    => $s[1] ?? 1,
-                    'unit'            => is_string($s[2]) ? $s[2] : '',
-                    'lcd_enabled'     => (bool) ($s[3] ?? false),
-                    'log_enabled'     => (bool) ($s[4] ?? false),
-                    'send_enabled'    => (bool) ($s[5] ?? false),
-                    'port'            => $port,
+                    'name' => $s[0] ?? 'Unknown',
+                    'device_name' => null,
+                    'scale_factor' => $s[1] ?? 1,
+                    'unit' => is_string($s[2]) ? $s[2] : '',
+                    'lcd_enabled' => (bool) ($s[3] ?? false),
+                    'log_enabled' => (bool) ($s[4] ?? false),
+                    'send_enabled' => (bool) ($s[5] ?? false),
+                    'port' => $port,
                 ];
             }
         }
@@ -318,18 +321,18 @@ class MqttService
             foreach ($device['s'] ?? [] as $s) {
                 $sensors[] = [
                     'connection_type' => 'analog',
-                    'name'            => $s[0] ?? 'Unknown',
-                    'device_name'     => null,
-                    'min_value'       => isset($s[1]) ? (float) $s[1] : 0,   // batas bawah
-                    'max_value'       => isset($s[2]) ? (float) $s[2] : 100, // batas atas
+                    'name' => $s[0] ?? 'Unknown',
+                    'device_name' => null,
+                    'min_value' => isset($s[1]) ? (float) $s[1] : 0,   // batas bawah
+                    'max_value' => isset($s[2]) ? (float) $s[2] : 100, // batas atas
                     // Repurpose these columns to store min/max for compatibility
-                    'scale_factor'    => isset($s[1]) ? (float) $s[1] : 0,
-                    'offset'          => isset($s[2]) ? (float) $s[2] : 100,
-                    'unit'            => is_string($s[3] ?? null) ? $s[3] : '',
-                    'lcd_enabled'     => (bool) ($s[4] ?? false),
-                    'log_enabled'     => (bool) ($s[5] ?? false),
-                    'send_enabled'    => (bool) ($s[6] ?? false),
-                    'channel'         => $channel,
+                    'scale_factor' => isset($s[1]) ? (float) $s[1] : 0,
+                    'offset' => isset($s[2]) ? (float) $s[2] : 100,
+                    'unit' => is_string($s[3] ?? null) ? $s[3] : '',
+                    'lcd_enabled' => (bool) ($s[4] ?? false),
+                    'log_enabled' => (bool) ($s[5] ?? false),
+                    'send_enabled' => (bool) ($s[6] ?? false),
+                    'channel' => $channel,
                 ];
             }
         }
@@ -354,17 +357,19 @@ class MqttService
             // Find matching entry in GET_ALL by connection_type + sensor_type
             foreach ($getAllResult as $entry) {
                 $protocol = strtolower($entry['nama_protocol'] ?? '');
-                if ($protocol !== $sensor['connection_type']) continue;
+                if ($protocol !== $sensor['connection_type'])
+                    continue;
 
                 $sensorType = $entry['sensor_type'] ?? '';
-                if ($sensorType !== $sensor['name']) continue;
+                if ($sensorType !== $sensor['name'])
+                    continue;
 
                 // Match by additional key depending on protocol
                 $matched = match ($sensor['connection_type']) {
-                    'rs485'  => ($entry['slave_id'] ?? null) == ($sensor['modbus_slave_id'] ?? null),
-                    'rs232'  => ($entry['port'] ?? null) == ($sensor['port'] ?? null),
+                    'rs485' => ($entry['slave_id'] ?? null) == ($sensor['modbus_slave_id'] ?? null),
+                    'rs232' => ($entry['port'] ?? null) == ($sensor['port'] ?? null),
                     'analog' => ($entry['channel'] ?? null) == ($sensor['channel'] ?? null),
-                    default  => false,
+                    default => false,
                 };
 
                 if ($matched) {
@@ -463,8 +468,8 @@ class MqttService
      * Send FTP TES command to test FTP connection on the logger.
      *
      * Publishes {"FTP":{"cmd":"TES"}}
-     * Waits for {"FTP":{"status":"OK","cmd":"TES"}}
-     * or {"FTP":{"status":"ERR","msg":"upload failed"}}
+     * Waits for {"FTP":{"status":"OK"}}          ← device does NOT echo cmd in response
+     * or       {"FTP":{"status":"ERR","msg":"upload failed"}}
      *
      * @return array{success: bool, message: string}
      */
@@ -479,12 +484,13 @@ class MqttService
         Log::info("[MQTT] [FTP TES] Sending test command to: {$idLogger}");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
                 ->setPassword($this->password)
-                ->setConnectTimeout($this->timeout)
-                ->setKeepAliveInterval(10);
+                ->setConnectTimeout($this->ftpTimeout)
+                ->setKeepAliveInterval(60); // FTP upload bisa lama, keep-alive lebih panjang
 
             $mqtt->connect($connectionSettings, true);
             Log::info("[MQTT] ✅ Connected");
@@ -501,8 +507,10 @@ class MqttService
 
                 try {
                     $data = json_decode($message, true);
-                    if ($data && isset($data['FTP']['cmd']) && $data['FTP']['cmd'] === 'TES') {
-                        if (($data['FTP']['status'] ?? '') === 'OK') {
+                    if ($data && isset($data['FTP']['status'])) {
+                        // Device kirim {"FTP":{"status":"OK"}} atau {"FTP":{"status":"ERR","msg":"..."}}
+                        // Device TIDAK echo cmd:"TES" di response akhir
+                        if ($data['FTP']['status'] === 'OK') {
                             $result = ['success' => true, 'message' => 'FTP test berhasil'];
                             Log::info("[MQTT] ✅ [FTP TES] OK received");
                         } else {
@@ -523,7 +531,7 @@ class MqttService
             $mqtt->publish($subTopic, $payload, 0);
 
             $startTime = microtime(true);
-            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
+            while ($result === null && (microtime(true) - $startTime) < $this->ftpTimeout) {
                 $mqtt->loopOnce(microtime(true) - $startTime, true);
                 usleep(100_000);
             }
@@ -602,12 +610,13 @@ class MqttService
         Log::info("[MQTT] [FTP GET] Requesting file: {$filename} from: {$idLogger}");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
                 ->setPassword($this->password)
-                ->setConnectTimeout($this->timeout)
-                ->setKeepAliveInterval(10);
+                ->setConnectTimeout($this->ftpTimeout)
+                ->setKeepAliveInterval(60); // FTP download bisa lama
 
             $mqtt->connect($connectionSettings, true);
             Log::info("[MQTT] ✅ Connected");
@@ -624,7 +633,8 @@ class MqttService
 
                 try {
                     $data = json_decode($message, true);
-                    if (!$data) return;
+                    if (!$data)
+                        return;
 
                     // Skip streaming progress messages: {"FTP UPLOAD":"BEGIN"}, {"PROSESS":"25%"}, {"FTP UPLOAD":"END"}
                     if (isset($data['FTP UPLOAD']) || isset($data['PROSESS'])) {
@@ -656,7 +666,7 @@ class MqttService
             $mqtt->publish($subTopic, $payload, 0);
 
             $startTime = microtime(true);
-            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
+            while ($result === null && (microtime(true) - $startTime) < $this->ftpTimeout) {
                 $mqtt->loopOnce(microtime(true) - $startTime, true);
                 usleep(100_000);
             }
@@ -702,6 +712,7 @@ class MqttService
         Log::info("[MQTT] [INTERVAL SET] Sending to: {$idLogger}");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
@@ -789,6 +800,7 @@ class MqttService
         Log::info("[MQTT] [INTERVAL GET] Requesting from: {$idLogger}");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
@@ -882,6 +894,7 @@ class MqttService
         Log::info("[MQTT] [REBOOT] Sending reboot command to: {$idLogger}");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
@@ -949,10 +962,10 @@ class MqttService
             if ($data && isset($data['ERR'])) {
                 return match ($data['ERR']) {
                     'INVALID_PARAM' => 'Parameter tidak valid',
-                    'UNKNOWN_CMD'   => 'Command tidak dikenali oleh perangkat',
-                    'SENSOR_FULL'   => 'Slot sensor di perangkat sudah penuh',
-                    'EEPROM_FAIL'   => 'Gagal menyimpan konfigurasi ke EEPROM',
-                    default         => 'Error: ' . $data['ERR'],
+                    'UNKNOWN_CMD' => 'Command tidak dikenali oleh perangkat',
+                    'SENSOR_FULL' => 'Slot sensor di perangkat sudah penuh',
+                    'EEPROM_FAIL' => 'Gagal menyimpan konfigurasi ke EEPROM',
+                    default => 'Error: ' . $data['ERR'],
                 };
             }
         } catch (\Throwable $e) {
@@ -985,6 +998,7 @@ class MqttService
         Log::info("[MQTT] [{$label}] Starting request for: {$idLogger}");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
@@ -1061,6 +1075,7 @@ class MqttService
         Log::info("[MQTT] [{$label}] Sending command to: {$idLogger}");
 
         try {
+            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
             $mqtt = new MqttClient($this->host, $this->port, $clientId);
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
@@ -1081,14 +1096,27 @@ class MqttService
                     $mqtt->interrupt();
                     return;
                 }
-
-                // Check for OK response (e.g. {"RS485 SET":"OK"})
+                // Check for OK response:
+                //   Format 1 (flat):   {"RS485 SET":"OK"}  {"FTP SET":"OK"}
+                //   Format 2 (nested): {"FTP":{"status":"OK"}}
+                //   Format 3 (error):  {"FTP":{"status":"ERR","msg":"..."}}
                 try {
                     $data = json_decode($message, true);
                     if ($data) {
                         foreach ($data as $key => $value) {
                             if ($value === 'OK') {
                                 $result = ['success' => true, 'message' => "{$key}: OK"];
+                                $mqtt->interrupt();
+                                return;
+                            }
+                            if (is_array($value) && ($value['status'] ?? null) === 'OK') {
+                                $result = ['success' => true, 'message' => "{$key}: OK"];
+                                $mqtt->interrupt();
+                                return;
+                            }
+                            if (is_array($value) && ($value['status'] ?? null) === 'ERR') {
+                                $errMsg = $value['msg'] ?? 'Error dari perangkat';
+                                $result = ['success' => false, 'message' => $errMsg];
                                 $mqtt->interrupt();
                                 return;
                             }

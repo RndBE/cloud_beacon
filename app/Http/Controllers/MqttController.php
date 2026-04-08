@@ -855,7 +855,10 @@ class MqttController extends Controller
         }
 
         $filename = $request->input('filename');
+        // Buat path temporer tapi JANGAN buat filenya dulu (pakai tempnam lalu hapus)
+        // karena beberapa FTP server gagal overwrite file existing
         $tempFile = tempnam(sys_get_temp_dir(), 'ftp_');
+        @unlink($tempFile); // hapus file kosong yg dibuat tempnam, biarkan ftp_get buat sendiri
 
         try {
             // Connect to FTP server
@@ -874,16 +877,68 @@ class MqttController extends Controller
             // Enable passive mode
             ftp_pasv($ftp, true);
 
-            // Download file
-            $downloaded = @ftp_get($ftp, $tempFile, $filename, FTP_BINARY);
+            // Log current FTP directory and root listing for debugging
+            $currentDir = ftp_pwd($ftp);
+            \Log::info("[FTP DOWNLOAD] Connected. CWD = {$currentDir}");
+            $rootList = @ftp_nlist($ftp, '.') ?: [];
+            \Log::info("[FTP DOWNLOAD] Root listing: " . json_encode($rootList));
+
+            // Cek apakah file ada di listing — kalau iya, pakai absolute path dari CWD
+            $foundInRoot = in_array($filename, array_map('basename', $rootList));
+            \Log::info("[FTP DOWNLOAD] '{$filename}' found in root listing: " . ($foundInRoot ? 'YES' : 'NO'));
+
+            // Candidates: root relative, absolute, dan pattern subdirectory
+            $baseName  = pathinfo($filename, PATHINFO_FILENAME);
+            $parts     = explode('-', $baseName);
+            $yearMonth = (count($parts) >= 2) ? "{$parts[0]}-{$parts[1]}" : null;
+
+            $candidates = array_filter([
+                $filename,                                              // "2026-04-08.csv"
+                rtrim($currentDir, '/') . '/' . $filename,            // "/var/.../tes_ftp/2026-04-08.csv"
+                $yearMonth ? "{$yearMonth}/{$filename}" : null,        // "2026-04/2026-04-08.csv"
+            ]);
+
+            $downloaded = false;
+            $triedPath  = null;
+            $lastPhpError = null;
+
+            foreach ($candidates as $candidate) {
+                // Reset passive sebelum tiap transfer (penting!)
+                ftp_pasv($ftp, true);
+
+                \Log::info("[FTP DOWNLOAD] Trying: {$candidate}");
+
+                // Bersihkan tempFile sebelum setiap attempt
+                @unlink($tempFile);
+
+                // Capture PHP FTP error
+                set_error_handler(function ($errno, $errstr) use (&$lastPhpError) {
+                    $lastPhpError = $errstr;
+                });
+                $downloaded = ftp_get($ftp, $tempFile, $candidate, FTP_BINARY);
+                restore_error_handler();
+
+                if ($downloaded && file_exists($tempFile) && filesize($tempFile) > 0) {
+                    $triedPath = $candidate;
+                    \Log::info("[FTP DOWNLOAD] ✅ OK at: {$candidate} (" . filesize($tempFile) . " bytes)");
+                    break;
+                }
+
+                \Log::warning("[FTP DOWNLOAD] ❌ Failed '{$candidate}': " . ($lastPhpError ?? 'unknown error'));
+                $lastPhpError = null;
+            }
+
             ftp_close($ftp);
 
             if (!$downloaded || !file_exists($tempFile) || filesize($tempFile) === 0) {
                 @unlink($tempFile);
-                return response()->json(['success' => false, 'message' => "File '{$filename}' tidak ditemukan di FTP server"], 404);
+                return response()->json([
+                    'success' => false,
+                    'message' => "File '{$filename}' gagal didownload dari FTP. Cek log untuk detail.",
+                ], 404);
             }
 
-            \Log::info("[FTP DOWNLOAD] File '{$filename}' downloaded from {$logger->ftp_host} — " . filesize($tempFile) . " bytes");
+            \Log::info("[FTP DOWNLOAD] ✅ Serving '{$filename}' from path '{$triedPath}' — " . filesize($tempFile) . " bytes");
 
             // Stream to browser as download
             return response()->download($tempFile, $filename, [

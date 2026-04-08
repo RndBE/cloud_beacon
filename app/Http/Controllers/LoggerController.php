@@ -141,24 +141,24 @@ class LoggerController extends Controller
                 'sendEnabled' => $s->send_enabled,
             ]),
             'activityLogs' => $logger->activityLogs->map(fn($l) => [
-                'id'        => $l->id,
+                'id' => $l->id,
                 'timestamp' => $l->created_at?->format('Y-m-d H:i:s'),
-                'action'    => $l->action,
-                'status'    => $l->status,
-                'level'     => $l->level,
-                'message'   => $l->message,
+                'action' => $l->action,
+                'status' => $l->status,
+                'level' => $l->level,
+                'message' => $l->message,
             ]),
             'integrations' => $logger->integrations->map(fn(LoggerIntegration $i) => [
-                'id'              => $i->id,
-                'name'           => $i->name,
-                'endpointUrl'    => $i->endpoint_url,
-                'authType'       => $i->auth_type,
-                'authConfig'     => $i->auth_config ?? [],
+                'id' => $i->id,
+                'name' => $i->name,
+                'endpointUrl' => $i->endpoint_url,
+                'authType' => $i->auth_type,
+                'authConfig' => $i->auth_config ?? [],
                 'intervalMinutes' => $i->interval_minutes,
-                'isEnabled'      => $i->is_enabled,
+                'isEnabled' => $i->is_enabled,
                 'lastForwardedAt' => $i->last_forwarded_at?->format('Y-m-d H:i:s'),
-                'lastStatus'     => $i->last_status,
-                'lastError'      => $i->last_error,
+                'lastStatus' => $i->last_status,
+                'lastError' => $i->last_error,
             ]),
         ];
 
@@ -214,11 +214,11 @@ class LoggerController extends Controller
     public function store(Request $request): RedirectResponse
     {
         $validated = $request->validate([
-            'name'          => 'required|string|max:255',
+            'name' => 'required|string|max:255',
             'serial_number' => 'required|string|max:255|unique:loggers',
-            'location'      => 'nullable|string|max:255',
+            'location' => 'nullable|string|max:255',
             // MQTT data passed from frontend provisioning
-            'mqtt_data'     => 'nullable|array',
+            'mqtt_data' => 'nullable|array',
         ]);
 
         // ── Pre-check: idlogger already exists in MQTT server DB? ─────────────
@@ -254,28 +254,28 @@ class LoggerController extends Controller
         if (!empty($mqttData)) {
             $validated = array_merge($validated, array_filter([
                 'device_identifier' => $mqttData['device_identifier'] ?? null,
-                'mqtt_topic'        => $mqttData['mqtt_topic'] ?? null,
-                'mac_address'       => $mqttData['mac_address'] ?? null,
-                'ip_address'        => $mqttData['ip_address'] ?? null,
-                'subnet'            => $mqttData['subnet'] ?? null,
-                'gateway'           => $mqttData['gateway'] ?? null,
-                'dns'               => $mqttData['dns'] ?? null,
-                'dhcp_mode'         => $mqttData['dhcp_mode'] ?? null,
-                'sdcard_total'      => $mqttData['sdcard_total'] ?? null,
-                'sdcard_used'       => $mqttData['sdcard_used'] ?? null,
-                'uptime'            => $mqttData['uptime'] ?? null,
-                'gps_lat'           => $mqttData['gps_lat'] ?? null,
-                'gps_lng'           => $mqttData['gps_lng'] ?? null,
-                'gps_alt'           => $mqttData['gps_alt'] ?? null,
-                'battery'           => $mqttData['battery'] ?? null,
-                'temperature'       => $mqttData['temperature'] ?? null,
-                'humidity'          => $mqttData['humidity'] ?? null,
-                'reboot_counter'    => $mqttData['reboot_counter'] ?? null,
-                'interval_read'     => $mqttData['interval_read'] ?? null,
-                'interval_send'     => $mqttData['interval_send'] ?? null,
-                'max_reset'         => $mqttData['max_reset'] ?? null,
-                'connection_type'   => $mqttData['connection_type'] ?? null,
-                'signal_strength'   => $mqttData['signal_strength'] ?? null,
+                'mqtt_topic' => $mqttData['mqtt_topic'] ?? null,
+                'mac_address' => $mqttData['mac_address'] ?? null,
+                'ip_address' => $mqttData['ip_address'] ?? null,
+                'subnet' => $mqttData['subnet'] ?? null,
+                'gateway' => $mqttData['gateway'] ?? null,
+                'dns' => $mqttData['dns'] ?? null,
+                'dhcp_mode' => $mqttData['dhcp_mode'] ?? null,
+                'sdcard_total' => $mqttData['sdcard_total'] ?? null,
+                'sdcard_used' => $mqttData['sdcard_used'] ?? null,
+                'uptime' => $mqttData['uptime'] ?? null,
+                'gps_lat' => $mqttData['gps_lat'] ?? null,
+                'gps_lng' => $mqttData['gps_lng'] ?? null,
+                'gps_alt' => $mqttData['gps_alt'] ?? null,
+                'battery' => $mqttData['battery'] ?? null,
+                'temperature' => $mqttData['temperature'] ?? null,
+                'humidity' => $mqttData['humidity'] ?? null,
+                'reboot_counter' => $mqttData['reboot_counter'] ?? null,
+                'interval_read' => $mqttData['interval_read'] ?? null,
+                'interval_send' => $mqttData['interval_send'] ?? null,
+                'max_reset' => $mqttData['max_reset'] ?? null,
+                'connection_type' => $mqttData['connection_type'] ?? null,
+                'signal_strength' => $mqttData['signal_strength'] ?? null,
             ], fn($v) => $v !== null));
             $validated['last_connected_at'] = now();
             $validated['last_seen_at'] = now();
@@ -403,9 +403,9 @@ class LoggerController extends Controller
 
                 // Fresh insert
                 MqttLogger::create([
-                    'idlogger'     => $deviceId,
-                    'url_input'    => $pushUrl,
-                    'user'         => $logger->serial_number,
+                    'idlogger' => $deviceId,
+                    'url_input' => $pushUrl,
+                    'user' => $logger->serial_number,
                     'content_type' => 'application/json',
                 ]);
 
@@ -484,14 +484,22 @@ class LoggerController extends Controller
         $name = strtolower($name);
         $unit = strtolower($unit);
 
-        if (str_contains($name, 'temp') || $unit === '°c' || $unit === 'c') return 'temperature';
-        if (str_contains($name, 'hum') || $unit === '%rh') return 'humidity';
-        if (str_contains($name, 'press') || $unit === 'hpa') return 'pressure';
-        if (str_contains($name, 'water') || str_contains($name, 'level')) return 'water-level';
-        if (str_contains($name, 'flow')) return 'flow-rate';
-        if (str_contains($name, 'rain')) return 'rainfall';
-        if (str_contains($name, 'volt') || $unit === 'v') return 'voltage';
-        if (str_contains($name, 'current') || $unit === 'a') return 'current';
+        if (str_contains($name, 'temp') || $unit === '°c' || $unit === 'c')
+            return 'temperature';
+        if (str_contains($name, 'hum') || $unit === '%rh')
+            return 'humidity';
+        if (str_contains($name, 'press') || $unit === 'hpa')
+            return 'pressure';
+        if (str_contains($name, 'water') || str_contains($name, 'level'))
+            return 'water-level';
+        if (str_contains($name, 'flow'))
+            return 'flow-rate';
+        if (str_contains($name, 'rain'))
+            return 'rainfall';
+        if (str_contains($name, 'volt') || $unit === 'v')
+            return 'voltage';
+        if (str_contains($name, 'current') || $unit === 'a')
+            return 'current';
 
         return 'pressure'; // safe default
     }
