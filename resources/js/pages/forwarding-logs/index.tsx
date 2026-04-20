@@ -3,9 +3,11 @@ import {
     AlertTriangle,
     ArrowUpDown,
     CheckCircle2,
+    ChevronDown,
     ChevronLeft,
     ChevronRight,
     Clock,
+    Code,
     ExternalLink,
     Filter,
     Info,
@@ -65,6 +67,7 @@ interface LogEntry {
         sensor_count: number;
         sensors: string[];
     } | null;
+    rawPayload: Record<string, unknown> | null;
     createdAt: string;
 }
 
@@ -152,6 +155,7 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
     const [localFilters, setLocalFilters] = useState(filters);
     const [detailLog, setDetailLog] = useState<LogEntry | null>(null);
     const [isFiltering, setIsFiltering] = useState(false);
+    const [showRawPayload, setShowRawPayload] = useState(false);
 
     function applyFilters(overrides: Partial<Filters> = {}) {
         const merged = { ...localFilters, ...overrides };
@@ -259,13 +263,13 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                 {/* Filters */}
                 <Card>
                     <CardContent className="px-4 py-3">
-                        <div className="flex flex-wrap items-end gap-3">
-                            <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                        <div className="flex flex-wrap items-center gap-3">
+                            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground border-r pr-3 h-6">
                                 <Filter className="size-4" /> Filter
                             </div>
                             <div className="w-[140px]">
                                 <Select value={localFilters.status} onValueChange={(v) => applyFilters({ status: v })}>
-                                    <SelectTrigger className="h-9 text-xs">
+                                    <SelectTrigger className="h-9 text-sm">
                                         <SelectValue placeholder="Status" />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -276,9 +280,9 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                     </SelectContent>
                                 </Select>
                             </div>
-                            <div className="w-[200px]">
+                            <div className="w-[180px]">
                                 <Select value={localFilters.logger_id || 'all'} onValueChange={(v) => applyFilters({ logger_id: v === 'all' ? '' : v })}>
-                                    <SelectTrigger className="h-9 text-xs">
+                                    <SelectTrigger className="h-9 text-sm">
                                         <SelectValue placeholder="Semua Logger" />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -289,32 +293,34 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                     </SelectContent>
                                 </Select>
                             </div>
-                            <div className="relative w-[160px]">
-                                <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                            <div className="relative w-[180px]">
+                                <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                                 <Input
-                                    className="h-9 pl-8 text-xs"
+                                    className="h-9 pl-9 text-sm"
                                     placeholder="Target name..."
                                     value={localFilters.target}
                                     onChange={(e) => setLocalFilters(p => ({ ...p, target: e.target.value }))}
                                     onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
                                 />
                             </div>
-                            <Input
-                                type="date"
-                                className="h-9 w-[140px] text-xs"
-                                value={localFilters.from}
-                                onChange={(e) => applyFilters({ from: e.target.value })}
-                            />
-                            <span className="text-xs text-muted-foreground">—</span>
-                            <Input
-                                type="date"
-                                className="h-9 w-[140px] text-xs"
-                                value={localFilters.to}
-                                onChange={(e) => applyFilters({ to: e.target.value })}
-                            />
+                            <div className="flex items-center gap-2">
+                                <Input
+                                    type="date"
+                                    className="h-9 w-[130px] text-sm"
+                                    value={localFilters.from}
+                                    onChange={(e) => applyFilters({ from: e.target.value })}
+                                />
+                                <span className="text-muted-foreground">—</span>
+                                <Input
+                                    type="date"
+                                    className="h-9 w-[130px] text-sm"
+                                    value={localFilters.to}
+                                    onChange={(e) => applyFilters({ to: e.target.value })}
+                                />
+                            </div>
                             {hasActiveFilters && (
-                                <Button variant="ghost" size="sm" className="h-9 gap-1 text-xs" onClick={clearFilters}>
-                                    <X className="size-3" /> Clear
+                                <Button variant="ghost" size="sm" className="h-9 gap-1 text-sm ml-auto" onClick={clearFilters}>
+                                    <X className="size-4" /> Clear
                                 </Button>
                             )}
                             {isFiltering && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
@@ -543,6 +549,30 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                                 ))}
                                             </div>
                                         </div>
+                                    </div>
+                                )}
+
+                                {/* Raw JSON Payload */}
+                                {detailLog.rawPayload && (
+                                    <div className="rounded-lg border bg-muted/30">
+                                        <button
+                                            type="button"
+                                            className="flex w-full items-center justify-between p-3 text-xs font-medium hover:bg-muted/50 transition-colors"
+                                            onClick={() => setShowRawPayload(!showRawPayload)}
+                                        >
+                                            <span className="flex items-center gap-1.5">
+                                                <Code className="size-3.5" />
+                                                Raw JSON Payload
+                                            </span>
+                                            <ChevronDown className={`size-4 transition-transform ${showRawPayload ? 'rotate-180' : ''}`} />
+                                        </button>
+                                        {showRawPayload && (
+                                            <div className="border-t px-3 pb-3">
+                                                <pre className="mt-2 max-h-[300px] overflow-auto rounded-md bg-zinc-950 p-3 text-[11px] leading-relaxed text-emerald-400 font-mono">
+                                                    {JSON.stringify(detailLog.rawPayload, null, 2)}
+                                                </pre>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>

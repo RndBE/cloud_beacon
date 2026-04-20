@@ -59,6 +59,7 @@ class ForwardToIntegrations implements ShouldQueue
                     'error_message'   => 'Interval belum tercapai. Berikutnya: '
                         . ($integration->last_forwarded_at?->addMinutes($integration->interval_minutes)?->format('H:i:s') ?? '-'),
                     'payload_summary' => $payloadSummary,
+                    'raw_payload'     => $this->rawPayload,
                     'created_at'      => now(),
                 ]);
 
@@ -111,6 +112,7 @@ class ForwardToIntegrations implements ShouldQueue
                     'http_status'      => $response->status(),
                     'response_time_ms' => $responseTimeMs,
                     'payload_summary'  => $payloadSummary,
+                    'raw_payload'      => $this->rawPayload,
                     'created_at'       => now(),
                 ]);
             } else {
@@ -128,6 +130,7 @@ class ForwardToIntegrations implements ShouldQueue
                     'error_message'    => $error,
                     'response_time_ms' => $responseTimeMs,
                     'payload_summary'  => $payloadSummary,
+                    'raw_payload'      => $this->rawPayload,
                     'created_at'       => now(),
                 ]);
             }
@@ -146,6 +149,7 @@ class ForwardToIntegrations implements ShouldQueue
                 'error_message'    => $error,
                 'response_time_ms' => $responseTimeMs,
                 'payload_summary'  => $payloadSummary,
+                'raw_payload'      => $this->rawPayload,
                 'created_at'       => now(),
             ]);
         }
@@ -179,6 +183,7 @@ class ForwardToIntegrations implements ShouldQueue
                     'status'         => 'skipped',
                     'error_message'  => 'Interval belum tercapai (' . ($intervalMinutes - $minutesSinceLast) . ' menit lagi)',
                     'payload_summary' => $payloadSummary,
+                    'raw_payload'     => $this->rawPayload,
                     'created_at'     => now(),
                 ]);
 
@@ -217,6 +222,7 @@ class ForwardToIntegrations implements ShouldQueue
                     'http_status'      => $response->status(),
                     'response_time_ms' => $responseTimeMs,
                     'payload_summary'  => $payloadSummary,
+                    'raw_payload'      => $this->rawPayload,
                     'created_at'       => now(),
                 ]);
             } else {
@@ -232,6 +238,7 @@ class ForwardToIntegrations implements ShouldQueue
                     'error_message'    => $error,
                     'response_time_ms' => $responseTimeMs,
                     'payload_summary'  => $payloadSummary,
+                    'raw_payload'      => $this->rawPayload,
                     'created_at'       => now(),
                 ]);
             }
@@ -248,6 +255,7 @@ class ForwardToIntegrations implements ShouldQueue
                 'error_message'    => $error,
                 'response_time_ms' => $responseTimeMs,
                 'payload_summary'  => $payloadSummary,
+                'raw_payload'      => $this->rawPayload,
                 'created_at'       => now(),
             ]);
         }

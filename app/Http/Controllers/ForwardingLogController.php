@@ -58,6 +58,7 @@ class ForwardingLogController extends Controller
                 'errorMessage'   => $log->error_message,
                 'responseTimeMs' => $log->response_time_ms,
                 'payloadSummary' => $log->payload_summary,
+                'rawPayload'     => $log->raw_payload,
                 'createdAt'      => $log->created_at?->format('Y-m-d H:i:s'),
             ]);
 

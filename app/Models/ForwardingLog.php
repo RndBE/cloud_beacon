@@ -19,6 +19,7 @@ class ForwardingLog extends Model
         'error_message',
         'response_time_ms',
         'payload_summary',
+        'raw_payload',
         'created_at',
     ];
 
@@ -26,6 +27,7 @@ class ForwardingLog extends Model
     {
         return [
             'payload_summary' => 'array',
+            'raw_payload'     => 'array',
             'created_at'      => 'datetime',
         ];
     }
