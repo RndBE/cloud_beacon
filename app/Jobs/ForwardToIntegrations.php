@@ -206,6 +206,7 @@ class ForwardToIntegrations implements ShouldQueue
                 'X-API-Key' => $logger->ministesy_key,
             ])
                 ->timeout(15)
+                ->withoutVerifying()   // sementara: skip SSL verify (hostname/IP mismatch via /etc/hosts)
                 ->post($endpoint, $this->rawPayload);
 
             $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
