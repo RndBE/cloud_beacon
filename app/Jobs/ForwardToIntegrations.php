@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Models\ForwardingLog;
 use App\Models\Logger;
 use App\Models\LoggerIntegration;
 use Illuminate\Bus\Queueable;
@@ -25,9 +26,11 @@ class ForwardToIntegrations implements ShouldQueue
 
     /**
      * Max seconds this job may run before being killed.
-     * Keeps the queue healthy even if a platform endpoint hangs.
+     * Dinaikkan ke 120s untuk mengakomodasi beberapa integrasi aktif
+     * yang masing-masing butuh hingga 15s HTTP timeout.
+     * Pastikan worker dijalankan dengan --timeout=120.
      */
-    public int $timeout = 60;
+    public int $timeout = 120;
 
     public function __construct(
         private readonly Logger $logger,
@@ -36,6 +39,9 @@ class ForwardToIntegrations implements ShouldQueue
 
     public function handle(): void
     {
+        // Build payload summary for logging
+        $payloadSummary = $this->buildPayloadSummary();
+
         // --- 1. Dynamic integrations (from logger_integrations table) ---
         $integrations = LoggerIntegration::where('logger_id', $this->logger->id)
             ->where('is_enabled', true)
@@ -43,6 +49,19 @@ class ForwardToIntegrations implements ShouldQueue
 
         foreach ($integrations as $integration) {
             if (! $integration->isDueForForwarding()) {
+                // Log skipped entry
+                ForwardingLog::create([
+                    'logger_id'       => $this->logger->id,
+                    'integration_id'  => $integration->id,
+                    'target_name'     => $integration->name,
+                    'target_url'      => $integration->endpoint_url,
+                    'status'          => 'skipped',
+                    'error_message'   => 'Interval belum tercapai. Berikutnya: '
+                        . ($integration->last_forwarded_at?->addMinutes($integration->interval_minutes)?->format('H:i:s') ?? '-'),
+                    'payload_summary' => $payloadSummary,
+                    'created_at'      => now(),
+                ]);
+
                 Log::debug("[Integration] Skip — interval not reached", [
                     'integration' => $integration->name,
                     'next_due'    => $integration->last_forwarded_at?->addMinutes($integration->interval_minutes)->toDateTimeString(),
@@ -50,12 +69,12 @@ class ForwardToIntegrations implements ShouldQueue
                 continue;
             }
 
-            $this->forwardTo($integration);
+            $this->forwardTo($integration, $payloadSummary);
         }
 
         // --- 2. Mini STESY (hardcoded platform, same interval logic) ---
         if ($this->logger->ministesy_enabled && $this->logger->ministesy_key) {
-            $this->forwardMiniStesy();
+            $this->forwardMiniStesy($payloadSummary);
         }
     }
 
@@ -63,30 +82,72 @@ class ForwardToIntegrations implements ShouldQueue
     // Dynamic Integration Forwarding
     // =========================================================================
 
-    private function forwardTo(LoggerIntegration $integration): void
+    private function forwardTo(LoggerIntegration $integration, array $payloadSummary): void
     {
         Log::info("[Integration] Forwarding to: {$integration->name}", [
             'endpoint' => $integration->endpoint_url,
             'logger'   => $this->logger->device_identifier,
         ]);
 
+        $startTime = microtime(true);
+
         try {
             $response = Http::withHeaders($integration->buildAuthHeaders())
                 ->timeout(15)
                 ->post($integration->endpoint_url, $this->rawPayload);
 
+            $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
+
             if ($response->successful()) {
                 Log::info("[Integration] ✅ Success: {$integration->name} ({$response->status()})");
                 $integration->markSuccess();
+
+                ForwardingLog::create([
+                    'logger_id'        => $this->logger->id,
+                    'integration_id'   => $integration->id,
+                    'target_name'      => $integration->name,
+                    'target_url'       => $integration->endpoint_url,
+                    'status'           => 'success',
+                    'http_status'      => $response->status(),
+                    'response_time_ms' => $responseTimeMs,
+                    'payload_summary'  => $payloadSummary,
+                    'created_at'       => now(),
+                ]);
             } else {
                 $error = "HTTP {$response->status()}: " . substr($response->body(), 0, 200);
                 Log::warning("[Integration] ❌ Failed: {$integration->name} — $error");
                 $integration->markError($error);
+
+                ForwardingLog::create([
+                    'logger_id'        => $this->logger->id,
+                    'integration_id'   => $integration->id,
+                    'target_name'      => $integration->name,
+                    'target_url'       => $integration->endpoint_url,
+                    'status'           => 'error',
+                    'http_status'      => $response->status(),
+                    'error_message'    => $error,
+                    'response_time_ms' => $responseTimeMs,
+                    'payload_summary'  => $payloadSummary,
+                    'created_at'       => now(),
+                ]);
             }
         } catch (\Throwable $e) {
+            $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
             $error = $e->getMessage();
             Log::error("[Integration] ❌ Exception: {$integration->name} — $error");
             $integration->markError($error);
+
+            ForwardingLog::create([
+                'logger_id'        => $this->logger->id,
+                'integration_id'   => $integration->id,
+                'target_name'      => $integration->name,
+                'target_url'       => $integration->endpoint_url,
+                'status'           => 'error',
+                'error_message'    => $error,
+                'response_time_ms' => $responseTimeMs,
+                'payload_summary'  => $payloadSummary,
+                'created_at'       => now(),
+            ]);
         }
     }
 
@@ -94,7 +155,7 @@ class ForwardToIntegrations implements ShouldQueue
     // Mini STESY Forwarding (hardcoded platform)
     // =========================================================================
 
-    private function forwardMiniStesy(): void
+    private function forwardMiniStesy(array $payloadSummary): void
     {
         $logger = $this->logger;
 
@@ -102,9 +163,25 @@ class ForwardToIntegrations implements ShouldQueue
         $intervalMinutes = $logger->ministesy_interval ?? 10;
         $lastForwarded   = $logger->ministesy_last_forwarded_at ?? null;
 
+        $endpoint = config('integrations.ministesy_endpoint');
+        if (! $endpoint) {
+            Log::warning('[MiniSTESY] Endpoint not configured (MINISTESY_ENDPOINT not set)');
+            return;
+        }
+
         if ($lastForwarded) {
             $minutesSinceLast = now()->diffInMinutes($lastForwarded);
             if ($minutesSinceLast < $intervalMinutes) {
+                ForwardingLog::create([
+                    'logger_id'      => $logger->id,
+                    'target_name'    => 'Mini STESY',
+                    'target_url'     => $endpoint,
+                    'status'         => 'skipped',
+                    'error_message'  => 'Interval belum tercapai (' . ($intervalMinutes - $minutesSinceLast) . ' menit lagi)',
+                    'payload_summary' => $payloadSummary,
+                    'created_at'     => now(),
+                ]);
+
                 Log::debug("[MiniSTESY] Skip — interval not reached", [
                     'next_due_in' => ($intervalMinutes - $minutesSinceLast) . ' minutes',
                 ]);
@@ -112,16 +189,12 @@ class ForwardToIntegrations implements ShouldQueue
             }
         }
 
-        $endpoint = config('integrations.ministesy_endpoint');
-        if (! $endpoint) {
-            Log::warning('[MiniSTESY] Endpoint not configured (MINISTESY_ENDPOINT not set)');
-            return;
-        }
-
         Log::info('[MiniSTESY] Forwarding data', [
-            'logger' => $logger->device_identifier,
+            'logger'   => $logger->device_identifier,
             'endpoint' => $endpoint,
         ]);
+
+        $startTime = microtime(true);
 
         try {
             $response = Http::withHeaders([
@@ -130,14 +203,82 @@ class ForwardToIntegrations implements ShouldQueue
                 ->timeout(15)
                 ->post($endpoint, $this->rawPayload);
 
+            $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
+
             if ($response->successful()) {
                 Log::info("[MiniSTESY] ✅ Success ({$response->status()})");
                 $logger->update(['ministesy_last_forwarded_at' => now()]);
+
+                ForwardingLog::create([
+                    'logger_id'        => $logger->id,
+                    'target_name'      => 'Mini STESY',
+                    'target_url'       => $endpoint,
+                    'status'           => 'success',
+                    'http_status'      => $response->status(),
+                    'response_time_ms' => $responseTimeMs,
+                    'payload_summary'  => $payloadSummary,
+                    'created_at'       => now(),
+                ]);
             } else {
-                Log::warning("[MiniSTESY] ❌ Failed — HTTP {$response->status()}: " . substr($response->body(), 0, 200));
+                $error = "HTTP {$response->status()}: " . substr($response->body(), 0, 200);
+                Log::warning("[MiniSTESY] ❌ Failed — $error");
+
+                ForwardingLog::create([
+                    'logger_id'        => $logger->id,
+                    'target_name'      => 'Mini STESY',
+                    'target_url'       => $endpoint,
+                    'status'           => 'error',
+                    'http_status'      => $response->status(),
+                    'error_message'    => $error,
+                    'response_time_ms' => $responseTimeMs,
+                    'payload_summary'  => $payloadSummary,
+                    'created_at'       => now(),
+                ]);
             }
         } catch (\Throwable $e) {
-            Log::error('[MiniSTESY] ❌ Exception: ' . $e->getMessage());
+            $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
+            $error = $e->getMessage();
+            Log::error('[MiniSTESY] ❌ Exception: ' . $error);
+
+            ForwardingLog::create([
+                'logger_id'        => $logger->id,
+                'target_name'      => 'Mini STESY',
+                'target_url'       => $endpoint,
+                'status'           => 'error',
+                'error_message'    => $error,
+                'response_time_ms' => $responseTimeMs,
+                'payload_summary'  => $payloadSummary,
+                'created_at'       => now(),
+            ]);
         }
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    /**
+     * Build a compact summary of the payload for logging purposes.
+     * Counts how many sensors have data, extracts key identifiers.
+     */
+    private function buildPayloadSummary(): array
+    {
+        $sensorCount = 0;
+        $sensorNames = [];
+
+        foreach ($this->rawPayload as $key => $value) {
+            if (preg_match('/^sensor\d+$/', $key) && !empty($value) && isset($value['nama'])) {
+                $sensorCount++;
+                $sensorNames[] = $value['nama'];
+            }
+        }
+
+        return [
+            'id_alat'      => $this->rawPayload['id_alat'] ?? null,
+            'jam'          => $this->rawPayload['jam'] ?? null,
+            'hari'         => $this->rawPayload['hari'] ?? null,
+            'sensor_count' => $sensorCount,
+            'sensors'      => $sensorNames,
+        ];
     }
 }

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceModelController;
+use App\Http\Controllers\ForwardingLogController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\MqttController;
@@ -26,6 +27,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('topology', [TopologyController::class, 'index'])
         ->middleware('permission:topology.view')
         ->name('topology');
+
+    Route::get('forwarding-logs', [ForwardingLogController::class, 'index'])
+        ->middleware('permission:loggers.view')
+        ->name('forwarding-logs.index');
 
     Route::get('loggers', [LoggerController::class, 'index'])
         ->middleware('permission:loggers.view')

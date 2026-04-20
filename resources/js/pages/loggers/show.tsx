@@ -236,13 +236,39 @@ async function apiFetch(url: string, body: Record<string, unknown>) {
 
 function formatUptime(raw: string | number | null | undefined): string {
     if (raw === null || raw === undefined || raw === '' || raw === '—') return '—';
-    const totalMinutes = typeof raw === 'string' ? parseInt(raw, 10) : raw;
-    if (isNaN(totalMinutes)) return String(raw);
-    const days = Math.floor(totalMinutes / 1440);
-    const hours = Math.floor((totalMinutes % 1440) / 60);
-    const minutes = totalMinutes % 60;
-    if (days > 0) return `${days} hari ${hours} jam ${minutes} menit`;
-    return `${hours} jam ${minutes} menit`;
+
+    // Format baru dari protocol 26-element: "Xd Yh Zm" (e.g. "5d 20h 7m")
+    if (typeof raw === 'string') {
+        const match = raw.match(/^(\d+)d\s*(\d+)h\s*(\d+)m$/);
+        if (match) {
+            const days    = parseInt(match[1], 10);
+            const hours   = parseInt(match[2], 10);
+            const minutes = parseInt(match[3], 10);
+            if (days > 0)  return `${days} hari ${hours} jam ${minutes} menit`;
+            if (hours > 0) return `${hours} jam ${minutes} menit`;
+            return `${minutes} menit`;
+        }
+        // Format lama: angka dalam string (total menit)
+        const totalMinutes = parseInt(raw, 10);
+        if (!isNaN(totalMinutes)) {
+            const d = Math.floor(totalMinutes / 1440);
+            const h = Math.floor((totalMinutes % 1440) / 60);
+            const m = totalMinutes % 60;
+            if (d > 0)  return `${d} hari ${h} jam ${m} menit`;
+            if (h > 0)  return `${h} jam ${m} menit`;
+            return `${m} menit`;
+        }
+        // Fallback: tampilkan apa adanya
+        return raw;
+    }
+
+    // Format lama: integer total menit
+    const d = Math.floor(raw / 1440);
+    const h = Math.floor((raw % 1440) / 60);
+    const m = raw % 60;
+    if (d > 0)  return `${d} hari ${h} jam ${m} menit`;
+    if (h > 0)  return `${h} jam ${m} menit`;
+    return `${m} menit`;
 }
 
 // =============================================================================

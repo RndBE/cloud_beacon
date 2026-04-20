@@ -1,5 +1,5 @@
 import { Link } from '@inertiajs/react';
-import { Box, Factory, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
+import { ArrowUpDown, Box, Factory, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -48,6 +48,11 @@ export function AppSidebar() {
             title: t('nav.models'),
             href: '/production/models',
             icon: Box,
+        },
+        {
+            title: 'Forwarding Logs',
+            href: '/forwarding-logs',
+            icon: ArrowUpDown,
         },
     ];
 
