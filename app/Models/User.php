@@ -95,10 +95,19 @@ class User extends Authenticatable
 
     public function getAllPermissions(): array
     {
-        if ($this->isSuperAdmin()) {
-            return Permission::pluck('name')->toArray();
+        // Cache in-memory per request to avoid repeated DB queries
+        static $cache = [];
+        $key = 'user_' . $this->id;
+        if (isset($cache[$key])) {
+            return $cache[$key];
         }
 
-        return $this->roles->flatMap->permissions->pluck('name')->unique()->values()->toArray();
+        if ($this->isSuperAdmin()) {
+            $cache[$key] = Permission::pluck('name')->toArray();
+        } else {
+            $cache[$key] = $this->roles->flatMap->permissions->pluck('name')->unique()->values()->toArray();
+        }
+
+        return $cache[$key];
     }
 }

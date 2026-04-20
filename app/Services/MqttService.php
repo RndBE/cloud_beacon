@@ -121,47 +121,75 @@ class MqttService
      * Parse INFO response into structured data for the logger model.
      *
      * Supports two formats:
-     * 1. Indexed array (protocol spec, 24 elements):
-     *    [0]SN [1]DeviceID [2]Topic [3]MAC [4]IP [5]Subnet [6]Gateway [7]DNS
-     *    [8]DHCP [9]SDTotal [10]SDUsed [11]Uptime [12]Lat [13]Lon [14]Alt
-     *    [15]Battery [16]Temp [17]Hum [18]RebootCount [19]iRead [20]iSend [21]WDT
-     *    [22]ConnMode(1=Eth,2=Cell,3=Wifi) [23]SignalStrength(0-100)
+     * 1. Indexed array (protocol spec, 26 elements):
+     *    [0]  SN              — Serial Number
+     *    [1]  DeviceID        — Logger / Device ID
+     *    [2]  Topic           — MQTT Telemetry Topic
+     *    [3]  MAC Address     — Ethernet MAC (empty on BL11 / Cellular)
+     *    [4]  IP Address      — Ethernet IP  (empty on BL11 / Cellular)
+     *    [5]  Subnet Mask     — (empty on BL11 / Cellular)
+     *    [6]  Gateway         — (empty on BL11 / Cellular)
+     *    [7]  DNS Server      — (empty on BL11 / Cellular)
+     *    [8]  DHCP Mode       — int: 0=Static, 1=DHCP
+     *    [9]  SD Total (KB)
+     *    [10] SD Used  (KB)
+     *    [11] Uptime HARI     — days   (int)
+     *    [12] Uptime JAM      — hours  (int)
+     *    [13] Uptime MENIT    — minutes (int)
+     *    [14] GPS Latitude    — float
+     *    [15] GPS Longitude   — float
+     *    [16] GPS Altitude    — float (meter)
+     *    [17] Battery Voltage — float (V)
+     *    [18] Temperature     — float (°C, SHT30)
+     *    [19] Humidity        — float (%, SHT30)
+     *    [20] Reboot Count    — int  (persistent)
+     *    [21] Read Interval   — int  (menit)
+     *    [22] Send Interval   — int  (menit)
+     *    [23] WDT Timeout     — int  (menit)
+     *    [24] Connection Mode — int: 1=Ethernet, 2=Cellular, 3=WiFi
+     *    [25] Signal Strength — int: 0–100%
      * 2. Key-value object (legacy)
      */
     public static function parseInfoResponse(array $info): array
     {
         // Format 1: Indexed array (protocol spec)
         if (array_is_list($info)) {
+            // Uptime dipecah menjadi 3 field terpisah agar tidak overflow pada logger
+            $uptimeDays    = isset($info[11]) ? (int) $info[11] : 0;
+            $uptimeHours   = isset($info[12]) ? (int) $info[12] : 0;
+            $uptimeMinutes = isset($info[13]) ? (int) $info[13] : 0;
+            $uptimeStr     = "{$uptimeDays}d {$uptimeHours}h {$uptimeMinutes}m";
+
             return [
-                'serial_number' => $info[0] ?? null,
+                'serial_number'     => $info[0] ?? null,
                 'device_identifier' => $info[1] ?? null,
-                'mqtt_topic' => $info[2] ?? null,
-                'mac_address' => $info[3] ?? null,
-                'ip_address' => $info[4] ?? null,
-                'subnet' => $info[5] ?? null,
-                'gateway' => $info[6] ?? null,
-                'dns' => $info[7] ?? null,
-                'dhcp_mode' => isset($info[8]) ? (bool) $info[8] : null,
-                'sdcard_total' => isset($info[9]) ? (int) $info[9] : null,
-                'sdcard_used' => isset($info[10]) ? (int) $info[10] : null,
-                'uptime' => isset($info[11]) ? (int) $info[11] : null,
-                'gps_lat' => $info[12] ?? null,
-                'gps_lng' => $info[13] ?? null,
-                'gps_alt' => $info[14] ?? null,
-                'battery' => $info[15] ?? null,
-                'temperature' => $info[16] ?? null,
-                'humidity' => $info[17] ?? null,
-                'reboot_counter' => isset($info[18]) ? (int) $info[18] : null,
-                'interval_read' => isset($info[19]) ? (int) $info[19] : null,
-                'interval_send' => isset($info[20]) ? (int) $info[20] : null,
-                'max_reset' => isset($info[21]) ? (int) $info[21] : null,
-                'connection_type' => isset($info[22]) ? match ((int) $info[22]) {
+                'mqtt_topic'        => $info[2] ?? null,
+                'mac_address'       => $info[3] ?? null,
+                'ip_address'        => $info[4] ?? null,
+                'subnet'            => $info[5] ?? null,
+                'gateway'           => $info[6] ?? null,
+                'dns'               => $info[7] ?? null,
+                'dhcp_mode'         => isset($info[8]) ? (int) $info[8] : null,
+                'sdcard_total'      => isset($info[9])  ? (int) $info[9]  : null,
+                'sdcard_used'       => isset($info[10]) ? (int) $info[10] : null,
+                'uptime'            => $uptimeStr,
+                'gps_lat'           => $info[14] ?? null,
+                'gps_lng'           => $info[15] ?? null,
+                'gps_alt'           => $info[16] ?? null,
+                'battery'           => $info[17] ?? null,
+                'temperature'       => $info[18] ?? null,
+                'humidity'          => $info[19] ?? null,
+                'reboot_counter'    => isset($info[20]) ? (int) $info[20] : null,
+                'interval_read'     => isset($info[21]) ? (int) $info[21] : null,
+                'interval_send'     => isset($info[22]) ? (int) $info[22] : null,
+                'max_reset'         => isset($info[23]) ? (int) $info[23] : null,
+                'connection_type'   => isset($info[24]) ? match ((int) $info[24]) {
                     1 => 'ethernet',
                     2 => 'cellular',
                     3 => 'wifi',
                     default => null,
                 } : null,
-                'signal_strength' => isset($info[23]) ? (int) $info[23] : null,
+                'signal_strength'   => isset($info[25]) ? (int) $info[25] : null,
             ];
         }
 

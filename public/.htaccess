@@ -23,3 +23,15 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+# ─── PHP Timeout Override ─────────────────────────────────────────────────────
+# MQTT calls (FTP download, sensor sync) can take up to 120s.
+# Override PHP's default 30s limit so requests don't get killed prematurely.
+<IfModule mod_php.c>
+    php_value max_execution_time 300
+    php_value max_input_time 300
+</IfModule>
+<IfModule mod_php8.c>
+    php_value max_execution_time 300
+    php_value max_input_time 300
+</IfModule>

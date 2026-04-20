@@ -263,7 +263,7 @@ class LoggerController extends Controller
                 'dhcp_mode' => $mqttData['dhcp_mode'] ?? null,
                 'sdcard_total' => $mqttData['sdcard_total'] ?? null,
                 'sdcard_used' => $mqttData['sdcard_used'] ?? null,
-                'uptime' => $mqttData['uptime'] ?? null,
+                'uptime'       => $mqttData['uptime'] ?? null,           // Format: "Xd Yh Zm"
                 'gps_lat' => $mqttData['gps_lat'] ?? null,
                 'gps_lng' => $mqttData['gps_lng'] ?? null,
                 'gps_alt' => $mqttData['gps_alt'] ?? null,
