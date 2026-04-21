@@ -136,6 +136,24 @@ interface Integration {
     lastError: string | null;
 }
 
+interface CalibrationFieldDef {
+    key: string;
+    label: string;
+    unit: string;
+    type: 'number';
+    min?: number;
+    step?: number;
+}
+
+interface LoggerModeOption {
+    slug: string;
+    label: string;
+    group: string;
+    hasCalibration: boolean;
+    calibrationFields: CalibrationFieldDef[] | null;
+    description: string | null;
+}
+
 interface LoggerDetail {
     id: string;
     name: string;
@@ -182,6 +200,10 @@ interface LoggerDetail {
     sensors: SensorItem[];
     activityLogs: LogItem[];
     integrations: Integration[];
+    loggerMode: string | null;
+    calibrationData: Record<string, number> | null;
+    calibratedAt: string | null;
+    availableModes: LoggerModeOption[];
 }
 
 interface LoggerShowProps {
@@ -2984,6 +3006,353 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
     );
 }
 
+// =============================================================================
+// Set Mode Card
+// =============================================================================
+type SetModePhase = 'idle' | 'sending' | 'success' | 'error';
+
+function SetModeCard({ logger }: { logger: LoggerDetail }) {
+    const [selectedMode, setSelectedMode] = useState<string>(logger.loggerMode || '');
+    const [phase, setPhase] = useState<SetModePhase>('idle');
+    const [message, setMessage] = useState('');
+    const [confirmOpen, setConfirmOpen] = useState(false);
+
+    const activeMode = logger.availableModes.find(m => m.slug === logger.loggerMode);
+    const selectedModeInfo = logger.availableModes.find(m => m.slug === selectedMode);
+    const isChanged = selectedMode !== (logger.loggerMode || '');
+
+    // Group modes by group
+    const grouped: Record<string, LoggerModeOption[]> = {};
+    for (const m of logger.availableModes) {
+        if (!grouped[m.group]) grouped[m.group] = [];
+        grouped[m.group].push(m);
+    }
+
+    async function handleSetMode() {
+        setConfirmOpen(false);
+        setPhase('sending');
+        setMessage('');
+        try {
+            const res = await apiFetch('/api/mqtt/system/set-mode', {
+                id_logger: logger.deviceIdentifier!,
+                mode: selectedMode,
+            });
+            const data = await res.json();
+            if (data.success) {
+                setPhase('success');
+                setMessage(data.message || `Mode berhasil diubah ke ${selectedMode}`);
+                setTimeout(() => router.reload(), 1500);
+            } else {
+                setPhase('error');
+                setMessage(data.message || 'Gagal mengubah mode');
+            }
+        } catch {
+            setPhase('error');
+            setMessage('Network error');
+        }
+    }
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                    <Radio className="size-5" /> Set Mode Logger
+                </CardTitle>
+                <CardDescription>
+                    {activeMode
+                        ? <>Mode aktif: <strong>{activeMode.label}</strong></>
+                        : 'Belum ada mode yang diset'
+                    }
+                </CardDescription>
+            </CardHeader>
+            <CardContent>
+                <div className="grid gap-4">
+                    {/* Current mode badge */}
+                    {logger.loggerMode && activeMode && (
+                        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/20">
+                                <Radio className="size-4 text-emerald-500" />
+                            </div>
+                            <div>
+                                <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{activeMode.label}</p>
+                                <p className="font-mono text-[10px] text-muted-foreground">{activeMode.slug}</p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Mode selection */}
+                    <div className="space-y-3">
+                        {Object.entries(grouped).map(([group, modes]) => (
+                            <div key={group}>
+                                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{group}</p>
+                                <div className="space-y-1">
+                                    {modes.map(m => (
+                                        <label
+                                            key={m.slug}
+                                            className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition-all ${
+                                                selectedMode === m.slug
+                                                    ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
+                                                    : 'border-transparent hover:bg-muted/50'
+                                            }`}
+                                        >
+                                            <input
+                                                type="radio"
+                                                name="logger_mode"
+                                                value={m.slug}
+                                                checked={selectedMode === m.slug}
+                                                onChange={() => setSelectedMode(m.slug)}
+                                                className="sr-only"
+                                            />
+                                            <div className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+                                                selectedMode === m.slug ? 'border-primary' : 'border-muted-foreground/30'
+                                            }`}>
+                                                {selectedMode === m.slug && (
+                                                    <div className="h-2 w-2 rounded-full bg-primary" />
+                                                )}
+                                            </div>
+                                            <div className="flex-1">
+                                                <p className="text-sm font-medium">{m.label}</p>
+                                                {m.description && <p className="text-[11px] text-muted-foreground line-clamp-1">{m.description}</p>}
+                                            </div>
+                                            <span className="font-mono text-[10px] text-muted-foreground">{m.slug}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Action button */}
+                    {phase === 'sending' ? (
+                        <Button disabled className="gap-2">
+                            <Loader2 className="size-4 animate-spin" /> Mengirim ke perangkat...
+                        </Button>
+                    ) : phase === 'success' ? (
+                        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
+                            <CheckCircle2 className="size-4" /> {message}
+                        </div>
+                    ) : phase === 'error' ? (
+                        <div className="space-y-2">
+                            <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+                                <XCircle className="size-4" /> {message}
+                            </div>
+                            <Button
+                                variant="outline"
+                                className="gap-2"
+                                onClick={() => setPhase('idle')}
+                            >
+                                Coba Lagi
+                            </Button>
+                        </div>
+                    ) : (
+                        <Button
+                            className="gap-2"
+                            disabled={!isChanged || !logger.deviceIdentifier || logger.status === 'offline'}
+                            onClick={() => setConfirmOpen(true)}
+                        >
+                            <Radio className="size-4" />
+                            {isChanged ? `Set Mode ke ${selectedModeInfo?.label || selectedMode}` : 'Pilih mode baru'}
+                        </Button>
+                    )}
+                </div>
+            </CardContent>
+
+            {/* Confirm dialog */}
+            <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Konfirmasi Set Mode</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Ubah mode logger dari <strong>{activeMode?.label || '—'}</strong> ke <strong>{selectedModeInfo?.label || selectedMode}</strong>?
+                            Perintah akan dikirim ke perangkat via MQTT.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Batal</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleSetMode}>Ya, Set Mode</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </Card>
+    );
+}
+
+// =============================================================================
+// Calibration Card
+// =============================================================================
+type CalibPhase = 'idle' | 'sending' | 'success' | 'error';
+
+function CalibrationCard({ logger }: { logger: LoggerDetail }) {
+    const activeMode = logger.availableModes.find(m => m.slug === logger.loggerMode);
+
+    // Don't render if no mode or mode has no calibration
+    if (!activeMode || !activeMode.hasCalibration || !activeMode.calibrationFields?.length) {
+        return null;
+    }
+
+    const fields = activeMode.calibrationFields;
+
+    const [phase, setPhase] = useState<CalibPhase>('idle');
+    const [message, setMessage] = useState('');
+    const [responseData, setResponseData] = useState<Record<string, number> | null>(null);
+    const [formValues, setFormValues] = useState<Record<string, string>>(() => {
+        const initial: Record<string, string> = {};
+        for (const f of fields) {
+            initial[f.key] = logger.calibrationData?.[f.key]?.toString() || '';
+        }
+        return initial;
+    });
+
+    function updateField(key: string, value: string) {
+        setFormValues(prev => ({ ...prev, [key]: value }));
+    }
+
+    const allFilled = fields.every(f => formValues[f.key] !== '' && !isNaN(parseFloat(formValues[f.key])));
+
+    async function handleCalibrate() {
+        setPhase('sending');
+        setMessage('');
+        setResponseData(null);
+        try {
+            const body: Record<string, unknown> = {
+                id_logger: logger.deviceIdentifier!,
+            };
+            for (const f of fields) {
+                body[f.key] = parseFloat(formValues[f.key]);
+            }
+
+            const res = await apiFetch('/api/mqtt/calibration/set', body);
+            const data = await res.json();
+            if (data.success) {
+                setPhase('success');
+                setMessage(data.message || 'Kalibrasi berhasil');
+                setResponseData(data.data || null);
+                setTimeout(() => router.reload(), 3000);
+            } else {
+                setPhase('error');
+                setMessage(data.message || 'Kalibrasi gagal');
+            }
+        } catch {
+            setPhase('error');
+            setMessage('Network error');
+        }
+    }
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                    <SlidersHorizontal className="size-5" /> Kalibrasi {activeMode.label}
+                </CardTitle>
+                <CardDescription>
+                    {logger.calibratedAt
+                        ? <>Terakhir kalibrasi: {logger.calibratedAt}</>
+                        : 'Belum pernah dikalibrasi'
+                    }
+                </CardDescription>
+            </CardHeader>
+            <CardContent>
+                <div className="grid gap-4">
+                    {/* Previous calibration data */}
+                    {logger.calibrationData && Object.keys(logger.calibrationData).length > 0 && (
+                        <div className="rounded-lg border bg-muted/30 p-3">
+                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Data Kalibrasi Terakhir</p>
+                            <div className="grid grid-cols-2 gap-2">
+                                {Object.entries(logger.calibrationData).map(([key, val]) => {
+                                    const fieldDef = fields.find(f => f.key === key);
+                                    return (
+                                        <div key={key} className="rounded-md bg-background px-3 py-1.5">
+                                            <p className="text-[10px] text-muted-foreground">{fieldDef?.label || key}</p>
+                                            <p className="font-mono text-sm font-medium">
+                                                {val} <span className="text-xs text-muted-foreground">{fieldDef?.unit || ''}</span>
+                                            </p>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Calibration form */}
+                    <div className="space-y-3">
+                        {fields.map(f => (
+                            <div key={f.key} className="grid gap-1.5">
+                                <Label htmlFor={`calib_${f.key}`} className="text-sm">
+                                    {f.label} <span className="text-xs text-muted-foreground">({f.unit})</span>
+                                </Label>
+                                <Input
+                                    id={`calib_${f.key}`}
+                                    type="number"
+                                    min={f.min ?? 0}
+                                    step={f.step ?? 0.01}
+                                    value={formValues[f.key]}
+                                    onChange={(e) => updateField(f.key, e.target.value)}
+                                    placeholder={`Masukkan ${f.label.toLowerCase()}`}
+                                    disabled={phase === 'sending'}
+                                />
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Action / Result */}
+                    {phase === 'sending' ? (
+                        <Button disabled className="gap-2">
+                            <Loader2 className="size-4 animate-spin" /> Mengirim kalibrasi...
+                        </Button>
+                    ) : phase === 'success' ? (
+                        <div className="space-y-3">
+                            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
+                                <CheckCircle2 className="size-4 shrink-0" /> {message}
+                            </div>
+                            {responseData && (
+                                <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+                                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Response dari Perangkat</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {Object.entries(responseData).map(([key, val]) => {
+                                            const fieldDef = fields.find(f => f.key === key);
+                                            return (
+                                                <div key={key} className="rounded-md bg-background/50 px-3 py-1.5">
+                                                    <p className="text-[10px] text-muted-foreground">{fieldDef?.label || key}</p>
+                                                    <p className="font-mono text-sm font-bold text-emerald-700 dark:text-emerald-400">
+                                                        {val} <span className="text-xs font-normal">{fieldDef?.unit || ''}</span>
+                                                    </p>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    ) : phase === 'error' ? (
+                        <div className="space-y-2">
+                            <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+                                <AlertCircle className="mt-0.5 size-4 shrink-0" /> {message}
+                            </div>
+                            <Button variant="outline" className="gap-2" onClick={() => setPhase('idle')}>
+                                Coba Lagi
+                            </Button>
+                        </div>
+                    ) : (
+                        <Button
+                            className="gap-2"
+                            disabled={!allFilled || !logger.deviceIdentifier || logger.status === 'offline'}
+                            onClick={handleCalibrate}
+                        >
+                            <SlidersHorizontal className="size-4" /> Kirim Kalibrasi
+                        </Button>
+                    )}
+
+                    {logger.status === 'offline' && (
+                        <p className="flex items-center gap-1.5 text-xs text-amber-600">
+                            <AlertCircle className="size-3.5" /> Perangkat offline — kalibrasi tidak dapat dilakukan
+                        </p>
+                    )}
+                </div>
+            </CardContent>
+        </Card>
+    );
+}
+
 export default function LoggerShow({ logger }: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const { t } = useTranslation();
@@ -3308,6 +3677,11 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
 
                     {/* ==================== MAINTENANCE ==================== */}
                     <TabsContent value="maintenance" className="mt-6">
+                        {/* Set Mode & Calibration */}
+                        <div className="mb-4 grid gap-4 lg:grid-cols-2">
+                            <SetModeCard logger={logger} />
+                            <CalibrationCard logger={logger} />
+                        </div>
                         <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
                                 <CardHeader>

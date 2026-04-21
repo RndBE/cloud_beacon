@@ -952,6 +952,136 @@ class MqttController extends Controller
         }
     }
 
+    // =========================================================================
+    // SYSTEM MODE & CALIBRATION
+    // =========================================================================
+
+    /**
+     * Send SYSTEM SET_MODE command to change the logger's operating mode.
+     */
+    public function setMode(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'mode'      => 'required|string|exists:logger_modes,slug',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $mode     = $request->input('mode');
+        $logger   = $this->resolveLogger($idLogger);
+
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
+        $modeConfig = \App\Models\LoggerMode::where('slug', $mode)->first();
+
+        $mqtt   = new MqttService();
+        $result = $mqtt->sendSystemSetMode($idLogger, $mode);
+
+        if ($result['success']) {
+            $oldMode = $logger->logger_mode;
+            $logger->update(['logger_mode' => $mode]);
+
+            \App\Models\ActivityLog::create([
+                'logger_id'  => $logger->id,
+                'action'     => 'set_mode',
+                'status'     => 'success',
+                'level'      => 'info',
+                'message'    => 'Mode diubah dari ' . ($oldMode ?? '—') . ' ke ' . $mode . ' (' . $modeConfig->label . ')',
+                'created_at' => now(),
+            ]);
+        } else {
+            \App\Models\ActivityLog::create([
+                'logger_id'  => $logger->id,
+                'action'     => 'set_mode',
+                'status'     => 'failed',
+                'level'      => 'warning',
+                'message'    => 'Gagal set mode ke ' . $mode . ': ' . ($result['message'] ?? 'Unknown error'),
+                'created_at' => now(),
+            ]);
+        }
+
+        return response()->json($result);
+    }
+
+    /**
+     * Send calibration SET command for the active mode.
+     */
+    public function setCalibration(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $logger   = $this->resolveLogger($idLogger);
+
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
+        if (!$logger->logger_mode) {
+            return response()->json(['success' => false, 'message' => 'Logger belum memiliki mode. Set mode terlebih dahulu.'], 400);
+        }
+
+        $modeConfig = \App\Models\LoggerMode::where('slug', $logger->logger_mode)->first();
+        if (!$modeConfig || !$modeConfig->has_calibration) {
+            return response()->json(['success' => false, 'message' => 'Mode ' . $logger->logger_mode . ' tidak memiliki fitur kalibrasi.'], 400);
+        }
+
+        // Dynamic validation based on mode's calibration_fields
+        $calibrationFields = $modeConfig->calibration_fields ?? [];
+        $validationRules = [];
+        foreach ($calibrationFields as $field) {
+            $rules = ['required', 'numeric'];
+            if (isset($field['min'])) {
+                $rules[] = 'min:' . $field['min'];
+            }
+            $validationRules[$field['key']] = $rules;
+        }
+        $request->validate($validationRules);
+
+        // Build params from calibration fields
+        $params = [];
+        foreach ($calibrationFields as $field) {
+            $params[$field['key']] = (float) $request->input($field['key']);
+        }
+
+        $mqtt   = new MqttService();
+        $result = $mqtt->sendCalibrationSet($idLogger, $logger->logger_mode, $params);
+
+        if ($result['success']) {
+            // Merge response data (including sensor_rekam) with input params
+            $calibrationData = array_merge($params, $result['data'] ?? []);
+
+            $logger->update([
+                'calibration_data' => $calibrationData,
+                'calibrated_at'    => now(),
+            ]);
+
+            \App\Models\ActivityLog::create([
+                'logger_id'  => $logger->id,
+                'action'     => 'calibration_set',
+                'status'     => 'success',
+                'level'      => 'info',
+                'message'    => 'Kalibrasi ' . $logger->logger_mode . ' berhasil — ' . json_encode($calibrationData),
+                'created_at' => now(),
+            ]);
+        } else {
+            \App\Models\ActivityLog::create([
+                'logger_id'  => $logger->id,
+                'action'     => 'calibration_set',
+                'status'     => 'failed',
+                'level'      => 'warning',
+                'message'    => 'Kalibrasi ' . $logger->logger_mode . ' gagal: ' . ($result['message'] ?? 'Unknown error'),
+                'created_at' => now(),
+            ]);
+        }
+
+        return response()->json($result);
+    }
+
     /**
      * Best-effort type inference from sensor name/unit.
      */

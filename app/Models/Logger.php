@@ -65,6 +65,9 @@ class Logger extends Model
         'ftp_pass',
         'last_data_received_at',
         'ministesy_last_forwarded_at',
+        'logger_mode',
+        'calibration_data',
+        'calibrated_at',
     ];
 
     protected function casts(): array
@@ -93,12 +96,22 @@ class Logger extends Model
             'ministesy_enabled' => 'boolean',
             'ministesy_interval' => 'integer',
             'ftp_port' => 'integer',
+            'calibration_data' => 'array',
+            'calibrated_at' => 'datetime',
         ];
     }
 
     public function user(): BelongsTo
     {
         return $this->belongsTo(\App\Models\User::class);
+    }
+
+    /**
+     * The mode configuration for this logger.
+     */
+    public function modeConfig(): BelongsTo
+    {
+        return $this->belongsTo(LoggerMode::class, 'logger_mode', 'slug');
     }
 
     public function sensors(): HasMany

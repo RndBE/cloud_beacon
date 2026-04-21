@@ -1003,6 +1003,201 @@ class MqttService
     }
 
     // =========================================================================
+    // SYSTEM MODE COMMANDS
+    // =========================================================================
+
+    /**
+     * Send SYSTEM SET_MODE command to change the logger's operating mode.
+     *
+     * Publishes {"SYSTEM":{"cmd":"SET_MODE","mode":"AWLR_TD"}}
+     * Waits for {"SYSTEM":{"status":"OK","mode":"AWLR_TD"}}
+     *
+     * @return array{success: bool, mode?: string, message?: string}
+     */
+    public function sendSystemSetMode(string $idLogger, string $mode): array
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $result = null;
+
+        Log::info("[MQTT] ═══════════════════════════════════════════════");
+        Log::info("[MQTT] [SET_MODE] Sending mode={$mode} to: {$idLogger}");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->timeout)
+                ->setKeepAliveInterval(10);
+
+            $mqtt->connect($connectionSettings, true);
+            Log::info("[MQTT] ✅ Connected");
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt, $mode) {
+                Log::info("[MQTT] 📩 [SET_MODE] Received: {$message}");
+
+                $error = self::parseErrorResponse($message);
+                if ($error) {
+                    $result = ['success' => false, 'message' => $error];
+                    $mqtt->interrupt();
+                    return;
+                }
+
+                try {
+                    $data = json_decode($message, true);
+                    if ($data && isset($data['SYSTEM']['status'])) {
+                        if ($data['SYSTEM']['status'] === 'OK') {
+                            $result = [
+                                'success' => true,
+                                'mode' => $data['SYSTEM']['mode'] ?? $mode,
+                                'message' => 'Mode berhasil diubah ke ' . ($data['SYSTEM']['mode'] ?? $mode),
+                            ];
+                            Log::info("[MQTT] ✅ [SET_MODE] OK — mode: " . ($data['SYSTEM']['mode'] ?? $mode));
+                        } else {
+                            $errMsg = $data['SYSTEM']['msg'] ?? 'Gagal mengubah mode';
+                            $result = ['success' => false, 'message' => $errMsg];
+                            Log::warning("[MQTT] ❌ [SET_MODE] ERR: {$errMsg}");
+                        }
+                        $mqtt->interrupt();
+                        return;
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning("[MQTT] ⚠️ [SET_MODE] Parse error: {$e->getMessage()}");
+                }
+            }, 0);
+
+            $payload = json_encode(['SYSTEM' => ['cmd' => 'SET_MODE', 'mode' => $mode]]);
+            Log::info("[MQTT] 📤 [SET_MODE] Publishing: {$payload}");
+            $mqtt->publish($subTopic, $payload, 0);
+
+            $startTime = microtime(true);
+            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
+                $mqtt->loopOnce(microtime(true) - $startTime, true);
+                usleep(100_000);
+            }
+
+            $elapsed = round(microtime(true) - $startTime, 2);
+            if ($result === null) {
+                Log::warning("[MQTT] ⏰ [SET_MODE] Timeout after {$elapsed}s");
+                $result = ['success' => false, 'message' => 'Timeout — perangkat tidak merespons'];
+            } else {
+                Log::info("[MQTT] ✅ [SET_MODE] Done in {$elapsed}s");
+            }
+
+            $mqtt->disconnect();
+            Log::info("[MQTT] ═══════════════════════════════════════════════");
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [SET_MODE] Error: {$e->getMessage()}");
+            return ['success' => false, 'message' => 'Koneksi MQTT gagal: ' . $e->getMessage()];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Send calibration SET command for the active mode.
+     *
+     * The module name in the JSON payload is the mode slug itself.
+     * Publishes {"AWLR_TD":{"cmd":"SET","sumur":25.5,"muka_air":12.0}}
+     * Waits for {"AWLR_TD":{"status":"OK","sumur":25.50,"muka_air":12.00,"sensor_rekam":14.25}}
+     * or        {"AWLR_TD":{"status":"ERR","msg":"Sensor RS485 tidak terbaca! Kalibrasi dibatalkan"}}
+     *
+     * @param string $idLogger   Device identifier
+     * @param string $modeSlug   Active mode slug used as JSON module key
+     * @param array  $params     Calibration parameters (e.g. ['sumur' => 25.5, 'muka_air' => 12.0])
+     * @return array{success: bool, data?: array, message?: string}
+     */
+    public function sendCalibrationSet(string $idLogger, string $modeSlug, array $params): array
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $result = null;
+
+        Log::info("[MQTT] ═══════════════════════════════════════════════");
+        Log::info("[MQTT] [CALIBRATION] Sending calibration for mode={$modeSlug} to: {$idLogger}");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->timeout)
+                ->setKeepAliveInterval(10);
+
+            $mqtt->connect($connectionSettings, true);
+            Log::info("[MQTT] ✅ Connected");
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt, $modeSlug) {
+                Log::info("[MQTT] 📩 [CALIBRATION] Received: {$message}");
+
+                $error = self::parseErrorResponse($message);
+                if ($error) {
+                    $result = ['success' => false, 'message' => $error];
+                    $mqtt->interrupt();
+                    return;
+                }
+
+                try {
+                    $data = json_decode($message, true);
+                    if ($data && isset($data[$modeSlug]['status'])) {
+                        if ($data[$modeSlug]['status'] === 'OK') {
+                            // Extract all response fields (sumur, muka_air, sensor_rekam, etc.)
+                            $responseData = $data[$modeSlug];
+                            unset($responseData['status']);
+                            $result = [
+                                'success' => true,
+                                'data' => $responseData,
+                                'message' => 'Kalibrasi berhasil',
+                            ];
+                            Log::info("[MQTT] ✅ [CALIBRATION] OK — data: " . json_encode($responseData));
+                        } else {
+                            $errMsg = $data[$modeSlug]['msg'] ?? 'Kalibrasi gagal';
+                            $result = ['success' => false, 'message' => $errMsg];
+                            Log::warning("[MQTT] ❌ [CALIBRATION] ERR: {$errMsg}");
+                        }
+                        $mqtt->interrupt();
+                        return;
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning("[MQTT] ⚠️ [CALIBRATION] Parse error: {$e->getMessage()}");
+                }
+            }, 0);
+
+            // Build payload: {"AWLR_TD": {"cmd": "SET", "sumur": 25.5, "muka_air": 12.0}}
+            $payload = json_encode([$modeSlug => array_merge(['cmd' => 'SET'], $params)]);
+            Log::info("[MQTT] 📤 [CALIBRATION] Publishing: {$payload}");
+            $mqtt->publish($subTopic, $payload, 0);
+
+            $startTime = microtime(true);
+            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
+                $mqtt->loopOnce(microtime(true) - $startTime, true);
+                usleep(100_000);
+            }
+
+            $elapsed = round(microtime(true) - $startTime, 2);
+            if ($result === null) {
+                Log::warning("[MQTT] ⏰ [CALIBRATION] Timeout after {$elapsed}s");
+                $result = ['success' => false, 'message' => 'Timeout — perangkat tidak merespons'];
+            } else {
+                Log::info("[MQTT] ✅ [CALIBRATION] Done in {$elapsed}s");
+            }
+
+            $mqtt->disconnect();
+            Log::info("[MQTT] ═══════════════════════════════════════════════");
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [CALIBRATION] Error: {$e->getMessage()}");
+            return ['success' => false, 'message' => 'Koneksi MQTT gagal: ' . $e->getMessage()];
+        }
+
+        return $result;
+    }
+
+    // =========================================================================
     // INTERNAL HELPERS
     // =========================================================================
 

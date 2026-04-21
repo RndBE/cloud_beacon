@@ -5,6 +5,7 @@ use App\Http\Controllers\DeviceModelController;
 use App\Http\Controllers\ForwardingLogController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
+use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\RoleController;
@@ -104,6 +105,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.ftp.get');
     Route::post('api/mqtt/ftp/download', [MqttController::class, 'downloadFtpFile'])
         ->name('api.mqtt.ftp.download');
+    Route::post('api/mqtt/system/set-mode', [MqttController::class, 'setMode'])
+        ->name('api.mqtt.system.set-mode');
+    Route::post('api/mqtt/calibration/set', [MqttController::class, 'setCalibration'])
+        ->name('api.mqtt.calibration.set');
 
     // TEMPORARY: Compare GET vs GET_ALL sensor formats
     Route::get('api/mqtt/sensors/compare/{id_logger}', function (string $id_logger) {
@@ -156,6 +161,20 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::put('loggers/{id}/platform', [LoggerController::class, 'updatePlatform'])
         ->name('loggers.updatePlatform');
+
+    // Logger Modes CRUD
+    Route::get('logger-modes', [LoggerModeController::class, 'index'])
+        ->middleware('permission:production.view')
+        ->name('logger-modes.index');
+    Route::post('logger-modes', [LoggerModeController::class, 'store'])
+        ->middleware('permission:production.create')
+        ->name('logger-modes.store');
+    Route::put('logger-modes/{id}', [LoggerModeController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('logger-modes.update');
+    Route::delete('logger-modes/{id}', [LoggerModeController::class, 'destroy'])
+        ->middleware('permission:production.delete')
+        ->name('logger-modes.destroy');
 
     // Sensor CRUD (nested under logger)
     Route::post('loggers/{loggerId}/sensors', [\App\Http\Controllers\SensorController::class, 'store'])

@@ -205,7 +205,7 @@ class ForwardToIntegrations implements ShouldQueue
             $response = Http::withHeaders([
                 'X-API-Key' => $logger->ministesy_key,
             ])
-                ->timeout(15)
+                ->timeout(30)          // dinaikkan: server Mini STESY lambat response
                 ->withoutVerifying()   // sementara: skip SSL verify (hostname/IP mismatch via /etc/hosts)
                 ->post($endpoint, $this->rawPayload);
 

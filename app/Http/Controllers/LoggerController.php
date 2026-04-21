@@ -160,6 +160,18 @@ class LoggerController extends Controller
                 'lastStatus' => $i->last_status,
                 'lastError' => $i->last_error,
             ]),
+            'loggerMode' => $logger->logger_mode,
+            'calibrationData' => $logger->calibration_data,
+            'calibratedAt' => $logger->calibrated_at?->format('Y-m-d H:i:s'),
+            'availableModes' => \App\Models\LoggerMode::orderBy('group')->orderBy('label')->get()
+                ->map(fn($m) => [
+                    'slug'              => $m->slug,
+                    'label'             => $m->label,
+                    'group'             => $m->group,
+                    'hasCalibration'    => $m->has_calibration,
+                    'calibrationFields' => $m->calibration_fields,
+                    'description'       => $m->description,
+                ]),
         ];
 
         return Inertia::render('loggers/show', [
