@@ -148,6 +148,7 @@ class MqttService
      *    [23] WDT Timeout     — int  (menit)
      *    [24] Connection Mode — int: 1=Ethernet, 2=Cellular, 3=WiFi
      *    [25] Signal Strength — int: 0–100%
+     *    [26] Logger Mode     — string: "AWLR_US", "AWLR_TD", "ARR", "DEF" (not set)
      * 2. Key-value object (legacy)
      */
     public static function parseInfoResponse(array $info): array
@@ -190,6 +191,8 @@ class MqttService
                     default => null,
                 } : null,
                 'signal_strength'   => isset($info[25]) ? (int) $info[25] : null,
+                // [26] Logger Mode — "AWLR_US", "AWLR_TD", "ARR", atau "DEF" (belum di-set)
+                'logger_mode'       => isset($info[26]) && $info[26] !== 'DEF' ? $info[26] : null,
             ];
         }
 

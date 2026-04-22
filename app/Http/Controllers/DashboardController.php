@@ -17,7 +17,7 @@ class DashboardController extends Controller
         if (!$user->isSuperAdmin()) {
             $query->where('user_id', $user->id);
         }
-        $loggers = $query->withCount('externalSensors')->get();
+        $loggers = $query->with('project')->withCount('externalSensors')->get();
         $loggerIds = $loggers->pluck('id');
 
         $builtinTypes = Logger::BUILTIN_SENSOR_TYPES;
@@ -58,6 +58,11 @@ class DashboardController extends Controller
                 'lat' => (float) $l->gps_lat,
                 'lng' => (float) $l->gps_lng,
                 'sensorsCount' => $l->external_sensors_count,
+                'serialNumber' => $l->serial_number,
+                'loggerMode' => $l->logger_mode,
+                'projectId' => $l->project_id,
+                'projectName' => $l->project?->name,
+                'projectColor' => $l->project?->color,
             ]),
         ]);
     }

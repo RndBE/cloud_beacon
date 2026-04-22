@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\DeviceModel;
 use App\Models\Logger;
+use App\Models\Project;
 use App\Services\IdHasher;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -12,9 +13,10 @@ class TopologyController extends Controller
 {
     public function index(): Response
     {
+        $user = auth()->user();
         $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
+        if (!$user->isSuperAdmin()) {
+            $query->where('user_id', $user->id);
         }
         // Build a model name → image URL map
         $modelImages = DeviceModel::whereNotNull('image')
@@ -22,7 +24,7 @@ class TopologyController extends Controller
             ->mapWithKeys(fn($path, $name) => [$name => asset('storage/' . $path)]);
 
         $loggers = $query
-            ->with('externalSensors')
+            ->with(['externalSensors', 'project'])
             ->withCount('externalSensors')
             ->orderBy('name')
             ->get()
@@ -38,6 +40,9 @@ class TopologyController extends Controller
                 'modelImage' => $logger->model ? ($modelImages[$logger->model] ?? null) : null,
                 'signalStrength' => $logger->signal_strength,
                 'sensorsCount' => $logger->external_sensors_count,
+                'projectId' => $logger->project_id,
+                'projectName' => $logger->project?->name,
+                'projectColor' => $logger->project?->color,
                 'sensors' => $logger->externalSensors->map(fn($s) => [
                     'id' => $s->id,
                     'name' => $s->name,
@@ -49,8 +54,21 @@ class TopologyController extends Controller
                 ]),
             ]);
 
+        // Projects list for filter dropdown
+        $projectQuery = Project::withCount('loggers');
+        if (!$user->isSuperAdmin()) {
+            $projectQuery->where('user_id', $user->id);
+        }
+        $projects = $projectQuery->orderBy('name')->get()->map(fn(Project $p) => [
+            'id'          => $p->id,
+            'name'        => $p->name,
+            'color'       => $p->color,
+            'loggerCount' => $p->loggers_count,
+        ]);
+
         return Inertia::render('topology', [
-            'loggers' => $loggers,
+            'loggers'  => $loggers,
+            'projects' => $projects,
         ]);
     }
 }

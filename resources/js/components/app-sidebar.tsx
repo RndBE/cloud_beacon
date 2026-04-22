@@ -1,5 +1,5 @@
 import { Link } from '@inertiajs/react';
-import { ArrowUpDown, Box, Factory, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
+import { ArrowUpDown, Box, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -38,6 +38,11 @@ export function AppSidebar() {
             title: t('nav.loggers'),
             href: '/loggers',
             icon: Radio,
+        },
+        {
+            title: 'Projects',
+            href: '/projects',
+            icon: FolderKanban,
         },
         {
             title: t('nav.production'),

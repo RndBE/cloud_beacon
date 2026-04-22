@@ -8,6 +8,7 @@ use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\ProductionController;
+use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\TopologyController;
 use App\Http\Controllers\UserManagementController;
@@ -158,9 +159,23 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::put('loggers/{id}/config', [LoggerController::class, 'updateConfig'])
         ->name('loggers.updateConfig');
+    Route::post('loggers/export-config', [LoggerController::class, 'exportConfig'])
+        ->name('loggers.export-config');
+    Route::put('loggers/{id}/project', [LoggerController::class, 'updateProject'])
+        ->name('loggers.updateProject');
 
     Route::put('loggers/{id}/platform', [LoggerController::class, 'updatePlatform'])
         ->name('loggers.updatePlatform');
+
+    // Projects CRUD
+    Route::get('projects', [ProjectController::class, 'index'])
+        ->name('projects.index');
+    Route::post('projects', [ProjectController::class, 'store'])
+        ->name('projects.store');
+    Route::put('projects/{id}', [ProjectController::class, 'update'])
+        ->name('projects.update');
+    Route::delete('projects/{id}', [ProjectController::class, 'destroy'])
+        ->name('projects.destroy');
 
     // Logger Modes CRUD
     Route::get('logger-modes', [LoggerModeController::class, 'index'])

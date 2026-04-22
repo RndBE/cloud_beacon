@@ -1,5 +1,5 @@
-import { Head, Link } from '@inertiajs/react';
-import { lazy, Suspense } from 'react';
+import { Head, Link, router } from '@inertiajs/react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     Activity,
@@ -7,7 +7,9 @@ import {
     ArrowRight,
     CheckCircle2,
     CloudDownload,
+    Download,
     HardDrive,
+    Loader2,
     MapPin,
     Power,
     Radio,
@@ -21,6 +23,15 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import {
@@ -45,6 +56,10 @@ interface MapLogger {
     lat: number;
     lng: number;
     sensorsCount: number;
+    serialNumber: string | null;
+    loggerMode: string | null;
+    projectName: string | null;
+    projectColor: string | null;
 }
 
 interface ActivityLogItem {
@@ -84,9 +99,94 @@ function getLogLevelColor(level: string) {
     }
 }
 
+function getStatusColor(status: string) {
+    switch (status) {
+        case 'online': return 'bg-emerald-500';
+        case 'offline': return 'bg-red-500';
+        case 'warning': return 'bg-amber-500';
+        default: return 'bg-muted-foreground';
+    }
+}
+
 export default function Dashboard({ stats, recentActivity, loggers }: DashboardProps) {
     const activeAlerts = stats.warningLoggers + stats.offlineLoggers;
     const { t } = useTranslation();
+
+    // ─── Backup Config Modal ──────────────────────────
+    const [backupOpen, setBackupOpen] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+    const [isExporting, setIsExporting] = useState(false);
+
+    const allSelected = loggers.length > 0 && selectedIds.size === loggers.length;
+    const someSelected = selectedIds.size > 0 && selectedIds.size < loggers.length;
+
+    function toggleAll() {
+        if (allSelected) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(loggers.map(l => l.id)));
+        }
+    }
+
+    function toggleOne(id: number) {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }
+
+    function openBackupModal() {
+        setSelectedIds(new Set(loggers.map(l => l.id))); // Select all by default
+        setBackupOpen(true);
+    }
+
+    async function handleExport() {
+        if (selectedIds.size === 0) return;
+        setIsExporting(true);
+
+        try {
+            const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+            const res = await fetch('/loggers/export-config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({ logger_ids: Array.from(selectedIds) }),
+            });
+
+            if (!res.ok) {
+                throw new Error('Export failed');
+            }
+
+            // Get filename from Content-Disposition header or use default
+            const disposition = res.headers.get('Content-Disposition');
+            let filename = 'beacon_config_backup.json';
+            if (disposition) {
+                const match = disposition.match(/filename="?(.+?)"?$/);
+                if (match) filename = match[1];
+            }
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+
+            setBackupOpen(false);
+        } catch (err) {
+            console.error('Export error:', err);
+        } finally {
+            setIsExporting(false);
+        }
+    }
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
@@ -228,7 +328,11 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                         <Power className="size-4" />
                                         {t('dashboard.reboot_devices')}
                                     </Button>
-                                    <Button variant="outline" className="justify-start gap-2">
+                                    <Button
+                                        variant="outline"
+                                        className="justify-start gap-2"
+                                        onClick={openBackupModal}
+                                    >
                                         <Save className="size-4" />
                                         {t('dashboard.backup_configs')}
                                     </Button>
@@ -320,6 +424,95 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                     </Card>
                 </div>
             </div>
+
+            {/* ═══ Backup Config Modal ═══ */}
+            <Dialog open={backupOpen} onOpenChange={setBackupOpen}>
+                <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Save className="size-5" /> Backup Konfigurasi Logger
+                        </DialogTitle>
+                        <DialogDescription>
+                            Pilih logger yang ingin di-backup. File konfigurasi akan diunduh dalam format JSON.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {/* Select all */}
+                    <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+                        <label className="flex cursor-pointer items-center gap-2.5 text-sm font-medium">
+                            <Checkbox
+                                checked={allSelected ? true : someSelected ? 'indeterminate' : false}
+                                onCheckedChange={toggleAll}
+                            />
+                            Pilih Semua
+                        </label>
+                        <span className="text-xs text-muted-foreground">
+                            {selectedIds.size} dari {loggers.length} dipilih
+                        </span>
+                    </div>
+
+                    {/* Logger list */}
+                    <div className="flex-1 overflow-y-auto -mx-1 px-1 space-y-1 min-h-0 max-h-[45vh]">
+                        {loggers.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-12 text-center">
+                                <Radio className="mb-2 size-8 text-muted-foreground/30" />
+                                <p className="text-sm text-muted-foreground">Belum ada logger terdaftar.</p>
+                            </div>
+                        ) : (
+                            loggers.map(logger => (
+                                <label
+                                    key={logger.id}
+                                    className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition-all ${
+                                        selectedIds.has(logger.id)
+                                            ? 'border-primary/30 bg-primary/5'
+                                            : 'border-transparent hover:bg-muted/40'
+                                    }`}
+                                >
+                                    <Checkbox
+                                        checked={selectedIds.has(logger.id)}
+                                        onCheckedChange={() => toggleOne(logger.id)}
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium truncate">{logger.name}</p>
+                                        <p className="font-mono text-[10px] text-muted-foreground">
+                                            {logger.serialNumber || '—'}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        {logger.loggerMode && (
+                                            <Badge variant="secondary" className="text-[10px]">
+                                                {logger.loggerMode}
+                                            </Badge>
+                                        )}
+                                        <div className={`h-2 w-2 rounded-full ${getStatusColor(logger.status)}`} />
+                                    </div>
+                                </label>
+                            ))
+                        )}
+                    </div>
+
+                    <DialogFooter className="border-t pt-3">
+                        <Button
+                            variant="outline"
+                            onClick={() => setBackupOpen(false)}
+                            disabled={isExporting}
+                        >
+                            Batal
+                        </Button>
+                        <Button
+                            className="gap-2"
+                            disabled={selectedIds.size === 0 || isExporting}
+                            onClick={handleExport}
+                        >
+                            {isExporting ? (
+                                <><Loader2 className="size-4 animate-spin" /> Mengekspor...</>
+                            ) : (
+                                <><Download className="size-4" /> Export JSON ({selectedIds.size})</>
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </AppLayout>
     );
 }

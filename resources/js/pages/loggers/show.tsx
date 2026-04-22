@@ -17,6 +17,7 @@ import {
     Droplets,
     Eye,
     EyeOff,
+    FolderKanban,
     HardDrive,
     Key,
     Link2,
@@ -49,7 +50,7 @@ import {
     ShieldCheck,
     AlertCircle,
 } from 'lucide-react';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -204,6 +205,10 @@ interface LoggerDetail {
     calibrationData: Record<string, number> | null;
     calibratedAt: string | null;
     availableModes: LoggerModeOption[];
+    projectId: number | null;
+    projectName: string | null;
+    projectColor: string | null;
+    availableProjects: { id: number; name: string; code: string | null; color: string }[];
 }
 
 interface LoggerShowProps {
@@ -3353,9 +3358,286 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     );
 }
 
+// =============================================================================
+// Project Assignment Dropdown
+// =============================================================================
+function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
+    const [open, setOpen] = useState(false);
+    const [saving, setSaving] = useState(false);
+
+    async function handleAssign(projectId: number | null) {
+        setSaving(true);
+        try {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+            await fetch(`/loggers/${logger.id}/project`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken || '' },
+                body: JSON.stringify({ project_id: projectId }),
+            });
+            router.reload();
+        } finally {
+            setSaving(false);
+            setOpen(false);
+        }
+    }
+
+    return (
+        <div className="relative">
+            <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setOpen(!open)}
+                disabled={saving}
+            >
+                {saving ? <Loader2 className="size-4 animate-spin" /> : <FolderKanban className="size-4" />}
+                {logger.projectName || 'Assign Project'}
+                <ChevronDown className="size-3 text-muted-foreground" />
+            </Button>
+            {open && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border bg-popover p-1 shadow-lg animate-in fade-in slide-in-from-top-2 duration-150">
+                    {logger.projectId && (
+                        <>
+                            <button
+                                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs hover:bg-muted transition-colors text-red-500"
+                                onClick={() => handleAssign(null)}
+                            >
+                                <XCircle className="size-3.5" /> Hapus dari Project
+                            </button>
+                            <div className="my-1 h-px bg-border" />
+                        </>
+                    )}
+                    {logger.availableProjects.length === 0 ? (
+                        <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                            Belum ada project.{' '}
+                            <Link href="/projects" className="text-primary underline">Buat project</Link>
+                        </p>
+                    ) : (
+                        logger.availableProjects.map(p => (
+                            <button
+                                key={p.id}
+                                className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs transition-colors ${
+                                    logger.projectId === p.id
+                                        ? 'bg-primary/10 text-primary font-medium'
+                                        : 'hover:bg-muted'
+                                }`}
+                                onClick={() => handleAssign(p.id)}
+                            >
+                                <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                                <span className="truncate">{p.name}</span>
+                                {p.code && <span className="ml-auto font-mono text-[10px] text-muted-foreground">{p.code}</span>}
+                                {logger.projectId === p.id && <Check className="ml-auto size-3.5 text-primary" />}
+                            </button>
+                        ))
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// =============================================================================
+// Quick Setup Wizard (router-style)
+// =============================================================================
+type WizardPhase = 'select' | 'sending' | 'success' | 'error';
+
+function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; open: boolean; onClose: () => void }) {
+    const [selectedMode, setSelectedMode] = useState<string>('');
+    const [phase, setPhase] = useState<WizardPhase>('select');
+    const [message, setMessage] = useState('');
+
+    // Group modes
+    const grouped: Record<string, LoggerModeOption[]> = {};
+    for (const m of logger.availableModes) {
+        if (!grouped[m.group]) grouped[m.group] = [];
+        grouped[m.group].push(m);
+    }
+
+    const selectedModeInfo = logger.availableModes.find(m => m.slug === selectedMode);
+
+    async function handleSetMode() {
+        if (!selectedMode) return;
+        setPhase('sending');
+        setMessage('');
+        try {
+            const res = await apiFetch('/api/mqtt/system/set-mode', {
+                id_logger: logger.deviceIdentifier!,
+                mode: selectedMode,
+            });
+            const data = await res.json();
+            if (data.success) {
+                setPhase('success');
+                setMessage(data.message || `Mode berhasil diubah ke ${selectedModeInfo?.label || selectedMode}`);
+                setTimeout(() => router.reload(), 1500);
+            } else {
+                setPhase('error');
+                setMessage(data.message || 'Gagal mengubah mode');
+            }
+        } catch {
+            setPhase('error');
+            setMessage('Koneksi gagal. Pastikan perangkat online.');
+        }
+    }
+
+    function handleSkip() {
+        sessionStorage.setItem(`skip_setup_${logger.id}`, '1');
+        onClose();
+    }
+
+    function handleRetry() {
+        setPhase('select');
+        setMessage('');
+    }
+
+    return (
+        <Dialog open={open} onOpenChange={(v) => { if (!v) handleSkip(); }}>
+            <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col p-0">
+                {/* Header */}
+                <div className="bg-gradient-to-br from-primary/10 via-primary/5 to-transparent px-6 pt-6 pb-4">
+                    <div className="flex items-center gap-3 mb-2">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/20">
+                            <Settings className="size-5 text-primary" />
+                        </div>
+                        <div>
+                            <DialogTitle className="text-lg">Quick Setup</DialogTitle>
+                            <DialogDescription className="text-xs">{logger.name}</DialogDescription>
+                        </div>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                        Logger ini belum dikonfigurasi. Pilih mode operasi untuk memulai.
+                    </p>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+                    {phase === 'select' && (
+                        <div className="space-y-4">
+                            {Object.entries(grouped).map(([group, modes]) => (
+                                <div key={group}>
+                                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{group}</p>
+                                    <div className="space-y-1.5">
+                                        {modes.map(m => (
+                                            <label
+                                                key={m.slug}
+                                                className={`flex cursor-pointer items-start gap-3 rounded-xl border-2 px-4 py-3 transition-all ${
+                                                    selectedMode === m.slug
+                                                        ? 'border-primary bg-primary/5 shadow-sm'
+                                                        : 'border-muted hover:border-muted-foreground/20 hover:bg-muted/30'
+                                                }`}
+                                            >
+                                                <input
+                                                    type="radio"
+                                                    name="wizard_mode"
+                                                    value={m.slug}
+                                                    checked={selectedMode === m.slug}
+                                                    onChange={() => setSelectedMode(m.slug)}
+                                                    className="sr-only"
+                                                />
+                                                <div className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+                                                    selectedMode === m.slug ? 'border-primary bg-primary' : 'border-muted-foreground/30'
+                                                }`}>
+                                                    {selectedMode === m.slug && (
+                                                        <Check className="size-3 text-primary-foreground" />
+                                                    )}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2">
+                                                        <p className="text-sm font-semibold">{m.label}</p>
+                                                        <span className="font-mono text-[10px] text-muted-foreground">{m.slug}</span>
+                                                    </div>
+                                                    {m.description && (
+                                                        <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{m.description}</p>
+                                                    )}
+                                                    {m.hasCalibration && (
+                                                        <Badge variant="secondary" className="mt-1.5 gap-1 text-[10px]">
+                                                            <SlidersHorizontal className="size-3" />
+                                                            Memerlukan kalibrasi
+                                                        </Badge>
+                                                    )}
+                                                </div>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+
+                            <div className="flex items-start gap-2 rounded-lg bg-blue-500/5 border border-blue-500/20 px-3 py-2">
+                                <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-blue-500" />
+                                <p className="text-[11px] text-blue-700 dark:text-blue-400">
+                                    Mode bisa diubah kapan saja di tab Maintenance.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {phase === 'sending' && (
+                        <div className="flex flex-col items-center justify-center py-12 gap-3">
+                            <Loader2 className="size-8 animate-spin text-primary" />
+                            <p className="text-sm text-muted-foreground">Mengirim ke perangkat...</p>
+                            <p className="font-mono text-xs text-muted-foreground">{selectedModeInfo?.label || selectedMode}</p>
+                        </div>
+                    )}
+
+                    {phase === 'success' && (
+                        <div className="flex flex-col items-center justify-center py-12 gap-3">
+                            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
+                                <CheckCircle2 className="size-7 text-emerald-500" />
+                            </div>
+                            <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{message}</p>
+                            <p className="text-xs text-muted-foreground">Halaman akan diperbarui...</p>
+                        </div>
+                    )}
+
+                    {phase === 'error' && (
+                        <div className="flex flex-col items-center justify-center py-12 gap-3">
+                            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10">
+                                <XCircle className="size-7 text-red-500" />
+                            </div>
+                            <p className="text-sm font-medium text-red-700 dark:text-red-400">{message}</p>
+                            <Button variant="outline" size="sm" className="mt-2 gap-1.5" onClick={handleRetry}>
+                                <RefreshCw className="size-3.5" /> Coba Lagi
+                            </Button>
+                        </div>
+                    )}
+                </div>
+
+                {/* Footer */}
+                {phase === 'select' && (
+                    <div className="border-t px-6 py-4 flex items-center justify-between">
+                        <Button variant="ghost" size="sm" onClick={handleSkip} className="text-muted-foreground">
+                            Lewati untuk sekarang
+                        </Button>
+                        <Button
+                            className="gap-2"
+                            disabled={!selectedMode || logger.status === 'offline'}
+                            onClick={handleSetMode}
+                        >
+                            Set Mode <ChevronRight className="size-4" />
+                        </Button>
+                    </div>
+                )}
+            </DialogContent>
+        </Dialog>
+    );
+}
+
 export default function LoggerShow({ logger }: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const { t } = useTranslation();
+
+    // Quick Setup Wizard state
+    const needsSetup = !logger.loggerMode;
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [setupBannerDismissed, setSetupBannerDismissed] = useState(false);
+
+    useEffect(() => {
+        if (needsSetup) {
+            const skipped = sessionStorage.getItem(`skip_setup_${logger.id}`);
+            if (!skipped) {
+                setWizardOpen(true);
+            }
+        }
+    }, [needsSetup, logger.id]);
 
     const breadcrumbs: BreadcrumbItem[] = [
         { title: t('nav.dashboard'), href: '/dashboard' },
@@ -3367,6 +3649,43 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={logger.name} />
             <div className="flex flex-col gap-6 p-4 md:p-6">
+                {/* Quick Setup Wizard */}
+                {needsSetup && (
+                    <QuickSetupWizard
+                        logger={logger}
+                        open={wizardOpen}
+                        onClose={() => setWizardOpen(false)}
+                    />
+                )}
+
+                {/* Setup Reminder Banner */}
+                {needsSetup && !wizardOpen && !setupBannerDismissed && (
+                    <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+                        <div className="flex items-center gap-2">
+                            <AlertTriangle className="size-4 text-amber-500" />
+                            <p className="text-sm text-amber-700 dark:text-amber-400">
+                                Logger ini belum memiliki mode operasi.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 gap-1.5 border-amber-500/30 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+                                onClick={() => setWizardOpen(true)}
+                            >
+                                <Settings className="size-3.5" /> Konfigurasi Sekarang
+                            </Button>
+                            <button
+                                className="text-amber-500/60 hover:text-amber-500 transition-colors"
+                                onClick={() => setSetupBannerDismissed(true)}
+                            >
+                                <XCircle className="size-4" />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Back link */}
                 <Link href="/loggers" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors w-fit">
                     <ArrowLeft className="size-4" />
@@ -3414,6 +3733,12 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                     </span>
                                 )}
                                 {logger.firmwareVersion && <span className="font-mono text-xs">{logger.firmwareVersion}</span>}
+                                {logger.projectName && (
+                                    <span className="flex items-center gap-1">
+                                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: logger.projectColor || '#6b7280' }} />
+                                        {logger.projectName}
+                                    </span>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -3427,6 +3752,7 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                 {t('loggerDetail.sync')}
                             </Button>
                         )}
+                        <ProjectAssignDropdown logger={logger} />
                         {logger.deviceIdentifier ? (
                             <RebootDialog deviceIdentifier={logger.deviceIdentifier} disabled={logger.status === 'offline'} />
                         ) : (

@@ -6,6 +6,7 @@ use App\Models\ActivityLog;
 use App\Models\DeviceModel;
 use App\Models\Logger;
 use App\Models\LoggerIntegration;
+use App\Models\Project;
 use App\Models\MqttLogger;
 use App\Models\ProductionDevice;
 use App\Models\Sensor;
@@ -172,6 +173,17 @@ class LoggerController extends Controller
                     'calibrationFields' => $m->calibration_fields,
                     'description'       => $m->description,
                 ]),
+            'projectId'   => $logger->project_id,
+            'projectName' => $logger->project?->name,
+            'projectColor' => $logger->project?->color,
+            'availableProjects' => Project::where('user_id', auth()->id())
+                ->orderBy('name')->get()
+                ->map(fn($p) => [
+                    'id'    => $p->id,
+                    'name'  => $p->name,
+                    'code'  => $p->code,
+                    'color' => $p->color,
+                ]),
         ];
 
         return Inertia::render('loggers/show', [
@@ -288,6 +300,7 @@ class LoggerController extends Controller
                 'max_reset' => $mqttData['max_reset'] ?? null,
                 'connection_type' => $mqttData['connection_type'] ?? null,
                 'signal_strength' => $mqttData['signal_strength'] ?? null,
+                'logger_mode' => $mqttData['logger_mode'] ?? null,
             ], fn($v) => $v !== null));
             $validated['last_connected_at'] = now();
             $validated['last_seen_at'] = now();
@@ -514,5 +527,111 @@ class LoggerController extends Controller
             return 'current';
 
         return 'pressure'; // safe default
+    }
+
+    /**
+     * Assign or unassign a logger to a project.
+     */
+    public function updateProject(Request $request, int $id)
+    {
+        $logger = Logger::findOrFail($id);
+
+        $request->validate([
+            'project_id' => 'nullable|integer|exists:projects,id',
+        ]);
+
+        $logger->update(['project_id' => $request->input('project_id')]);
+
+        return back()->with('success', $request->input('project_id')
+            ? 'Logger berhasil diassign ke project.'
+            : 'Logger berhasil dihapus dari project.');
+    }
+
+    /**
+     * Export configuration of selected loggers as a downloadable JSON file.
+     */
+    public function exportConfig(Request $request)
+    {
+        $request->validate([
+            'logger_ids'   => 'required|array|min:1',
+            'logger_ids.*' => 'required|integer|exists:loggers,id',
+        ]);
+
+        $user = auth()->user();
+        $query = Logger::with('externalSensors')
+            ->whereIn('id', $request->input('logger_ids'));
+
+        // Non-superadmin can only export their own loggers
+        if (!$user->isSuperAdmin()) {
+            $query->where('user_id', $user->id);
+        }
+
+        $loggers = $query->get();
+
+        if ($loggers->isEmpty()) {
+            return response()->json(['message' => 'Tidak ada logger yang bisa diekspor.'], 404);
+        }
+
+        $exportData = [
+            'exportedAt' => now()->toIso8601String(),
+            'version'    => '1.0',
+            'exportedBy' => $user->name,
+            'loggers'    => $loggers->map(function (Logger $l) {
+                return [
+                    'name'             => $l->name,
+                    'serialNumber'     => $l->serial_number,
+                    'deviceIdentifier' => $l->device_identifier,
+                    'model'            => $l->model,
+                    'status'           => $l->status,
+                    'location'         => $l->location,
+                    'gps'              => [
+                        'lat' => $l->gps_lat,
+                        'lng' => $l->gps_lng,
+                        'alt' => $l->gps_alt,
+                    ],
+                    'loggerMode'       => $l->logger_mode,
+                    'calibrationData'  => $l->calibration_data,
+                    'calibratedAt'     => $l->calibrated_at?->toIso8601String(),
+                    'config'           => [
+                        'intervalRead'      => $l->interval_read,
+                        'intervalSend'      => $l->interval_send,
+                        'maxReset'          => $l->max_reset,
+                        'dhcpMode'          => $l->dhcp_mode,
+                        'rebootCounter'     => $l->reboot_counter,
+                        'ipAddress'         => $l->ip_address,
+                        'gateway'           => $l->gateway,
+                        'dns'               => $l->dns,
+                        'subnet'            => $l->subnet,
+                        'ministesyEnabled'  => (bool) $l->ministesy_enabled,
+                        'ministesyKey'      => $l->ministesy_key,
+                        'ministesyInterval' => $l->ministesy_interval,
+                        'ftpHost'           => $l->ftp_host,
+                        'ftpPort'           => $l->ftp_port,
+                        'ftpUser'           => $l->ftp_user,
+                    ],
+                    'firmware'  => $l->firmware_version,
+                    'sensors'   => $l->externalSensors->map(fn($s) => [
+                        'name'            => $s->name,
+                        'type'            => $s->type,
+                        'unit'            => $s->unit,
+                        'connectionType'  => $s->connection_type,
+                        'modbusSlaveId'   => $s->modbus_slave_id,
+                        'deviceName'      => $s->device_name,
+                        'functionCode'    => $s->function_code,
+                        'registerAddress' => $s->register_address,
+                        'quantity'        => $s->quantity,
+                        'scaleFactor'     => $s->scale_factor,
+                        'channel'         => $s->channel,
+                        'port'            => $s->port,
+                    ]),
+                ];
+            })->values(),
+        ];
+
+        $filename = 'beacon_config_backup_' . now()->format('Y-m-d_His') . '.json';
+
+        return response()->json($exportData)
+            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"')
+            ->header('Content-Type', 'application/json');
     }
 }

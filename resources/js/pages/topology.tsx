@@ -1,6 +1,6 @@
 import { Head, Link } from '@inertiajs/react';
-import { ArrowLeft, Cable, Globe, Minus, Maximize, Plus, Radio, Signal, Wifi, Cpu, Zap, Thermometer, Droplets, Gauge } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Cable, ChevronDown, FolderKanban, Globe, Minus, Maximize, Plus, Radio, Signal, Wifi, Cpu, Zap, Thermometer, Droplets, Gauge } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
@@ -29,10 +29,21 @@ interface TopologyLogger {
     signalStrength: number;
     sensorsCount: number;
     sensors: TopologySensor[];
+    projectId: number | null;
+    projectName: string | null;
+    projectColor: string | null;
+}
+
+interface TopologyProject {
+    id: number;
+    name: string;
+    color: string;
+    loggerCount: number;
 }
 
 interface TopologyProps {
     loggers: TopologyLogger[];
+    projects: TopologyProject[];
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -117,9 +128,16 @@ function getElementTop(el: HTMLElement, container: HTMLElement): { x: number; y:
     return { x: center.x, y: center.y - el.offsetHeight / 2 };
 }
 
-export default function Topology({ loggers }: TopologyProps) {
+export default function Topology({ loggers, projects }: TopologyProps) {
     // ── State: which logger is selected for drill-down ──
     const [selectedLogger, setSelectedLogger] = useState<TopologyLogger | null>(null);
+    const [projectFilter, setProjectFilter] = useState<number | 'all'>('all');
+    const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+
+    const filteredLoggers = useMemo(() => {
+        if (projectFilter === 'all') return loggers;
+        return loggers.filter(l => l.projectId === projectFilter);
+    }, [loggers, projectFilter]);
 
     // ── Zoom & Pan state ──
     const [scale, setScale] = useState(1);
@@ -137,7 +155,7 @@ export default function Topology({ loggers }: TopologyProps) {
     const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
     // Items to show as children
-    const childItems = selectedLogger ? selectedLogger.sensors : null;
+    const _childItems = selectedLogger ? selectedLogger.sensors : null;
 
     // ── Calculate SVG lines ──
     const calculateLines = useCallback(() => {
@@ -174,13 +192,13 @@ export default function Topology({ loggers }: TopologyProps) {
                     y1: headBottom.y,
                     x2: cardTop.x,
                     y2: cardTop.y,
-                    status: loggers[i]?.status || 'offline',
+                    status: filteredLoggers[i]?.status || 'offline',
                 };
             }).filter(Boolean) as typeof lines;
             setCanvasSize({ width: container.scrollWidth, height: container.scrollHeight });
             setLines(newLines);
         }
-    }, [loggers, selectedLogger]);
+    }, [filteredLoggers, selectedLogger]);
 
     useEffect(() => {
         calculateLines();
@@ -260,9 +278,10 @@ export default function Topology({ loggers }: TopologyProps) {
         translateRef.current = { x: 0, y: 0 };
     }
 
-    const onlineCount = loggers.filter(l => l.status === 'online').length;
-    const totalSensors = loggers.reduce((s, l) => s + l.sensorsCount, 0);
+    const onlineCount = filteredLoggers.filter(l => l.status === 'online').length;
+    const totalSensors = filteredLoggers.reduce((s, l) => s + l.sensorsCount, 0);
     const zoomPercent = Math.round(scale * 100);
+    const activeProject = projectFilter !== 'all' ? projects.find(p => p.id === projectFilter) : null;
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
@@ -290,6 +309,54 @@ export default function Topology({ loggers }: TopologyProps) {
                             <ArrowLeft className="size-4" />
                             Back to Cloud
                         </Button>
+                    </div>
+                )}
+
+                {/* Project Filter */}
+                {!selectedLogger && projects.length > 0 && (
+                    <div className="absolute top-4 left-4 z-20">
+                        <div className="relative">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-1.5 bg-background/80 backdrop-blur-sm"
+                                onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
+                            >
+                                {activeProject ? (
+                                    <><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: activeProject.color }} />{activeProject.name}</>
+                                ) : (
+                                    <><FolderKanban className="size-4" />All Projects</>
+                                )}
+                                <ChevronDown className="size-3" />
+                            </Button>
+                            {projectDropdownOpen && (
+                                <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-lg border bg-popover p-1 shadow-lg animate-in fade-in slide-in-from-top-2 duration-150">
+                                    <button
+                                        className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs transition-colors ${
+                                            projectFilter === 'all' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted'
+                                        }`}
+                                        onClick={() => { setProjectFilter('all'); setProjectDropdownOpen(false); }}
+                                    >
+                                        <FolderKanban className="size-3.5" /> All Projects
+                                        <span className="ml-auto text-[10px] text-muted-foreground">{loggers.length}</span>
+                                    </button>
+                                    <div className="my-1 h-px bg-border" />
+                                    {projects.map(p => (
+                                        <button
+                                            key={p.id}
+                                            className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs transition-colors ${
+                                                projectFilter === p.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted'
+                                            }`}
+                                            onClick={() => { setProjectFilter(p.id); setProjectDropdownOpen(false); }}
+                                        >
+                                            <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                                            <span className="truncate">{p.name}</span>
+                                            <span className="ml-auto text-[10px] text-muted-foreground">{p.loggerCount}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
 
@@ -444,8 +511,8 @@ export default function Topology({ loggers }: TopologyProps) {
                                         <Globe className="size-10 text-emerald-500" />
                                     </div>
                                     <div className="mt-3 text-center">
-                                        <h2 className="text-sm font-bold">Beacon Logger Cloud</h2>
-                                        <p className="text-xs text-muted-foreground">{onlineCount}/{loggers.length} online · {totalSensors} sensors</p>
+                                        <h2 className="text-sm font-bold">{activeProject ? activeProject.name : 'Beacon Logger Cloud'}</h2>
+                                        <p className="text-xs text-muted-foreground">{onlineCount}/{filteredLoggers.length} online · {totalSensors} sensors</p>
                                     </div>
                                 </div>
                             )}
@@ -503,7 +570,7 @@ export default function Topology({ loggers }: TopologyProps) {
                                 ))
                             ) : (
                                 /* Logger cards */
-                                loggers.map((logger, i) => (
+                                filteredLoggers.map((logger, i) => (
                                     <div key={logger.id} data-clickable className="block w-36 sm:w-40 cursor-pointer" onClick={() => handleSelectLogger(logger)}>
                                         <div
                                             ref={el => { cardRefs.current[i] = el; }}
@@ -530,9 +597,17 @@ export default function Topology({ loggers }: TopologyProps) {
                                             <h3 className="mt-2 text-xs font-semibold leading-tight line-clamp-2">{logger.name}</h3>
                                             <p className="mt-0.5 text-[10px] text-muted-foreground">{logger.model || logger.serialNumber}</p>
 
-                                            <Badge variant="outline" className="mt-2 text-[10px] px-1.5 py-0">
-                                                {logger.sensorsCount} sensor{logger.sensorsCount !== 1 ? 's' : ''}
-                                            </Badge>
+                                            <div className="mt-2 flex flex-col items-center gap-1">
+                                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                                    {logger.sensorsCount} sensor{logger.sensorsCount !== 1 ? 's' : ''}
+                                                </Badge>
+                                                {logger.projectName && (
+                                                    <span className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                                                        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: logger.projectColor || '#6b7280' }} />
+                                                        {logger.projectName}
+                                                    </span>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                                 ))

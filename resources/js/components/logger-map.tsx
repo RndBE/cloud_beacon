@@ -48,6 +48,10 @@ interface LoggerMarker {
     lat: number;
     lng: number;
     sensorsCount: number;
+    serialNumber?: string | null;
+    loggerMode?: string | null;
+    projectName?: string | null;
+    projectColor?: string | null;
 }
 
 interface LoggerMapProps {
@@ -94,23 +98,60 @@ export default function LoggerMap({ loggers }: LoggerMapProps) {
                     icon={createStatusIcon(logger.status)}
                 >
                     <Popup>
-                        <div style={{ minWidth: '180px' }}>
-                            <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>
+                        <div style={{ minWidth: '200px', fontFamily: 'system-ui, sans-serif' }}>
+                            {/* Header */}
+                            <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '2px', color: '#111' }}>
                                 {logger.name}
                             </div>
-                            <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>
-                                {logger.location || 'No location set'}
+                            {logger.serialNumber && (
+                                <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#9ca3af', marginBottom: '6px' }}>
+                                    {logger.serialNumber}
+                                </div>
+                            )}
+
+                            {/* Info rows */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', marginBottom: '8px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <span style={{ color: '#6b7280' }}>Status</span>
+                                    <span>{statusLabel[logger.status] || logger.status}</span>
+                                </div>
+                                {logger.location && (
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                        <span style={{ color: '#6b7280' }}>Lokasi</span>
+                                        <span style={{ textAlign: 'right', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{logger.location}</span>
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <span style={{ color: '#6b7280' }}>Sensors</span>
+                                    <span>{logger.sensorsCount} sensor{logger.sensorsCount !== 1 ? 's' : ''}</span>
+                                </div>
+                                {logger.loggerMode && (
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                        <span style={{ color: '#6b7280' }}>Mode</span>
+                                        <span style={{ fontFamily: 'monospace', fontSize: '11px', background: '#f3f4f6', padding: '1px 6px', borderRadius: '4px' }}>{logger.loggerMode}</span>
+                                    </div>
+                                )}
+                                {logger.projectName && (
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                        <span style={{ color: '#6b7280' }}>Project</span>
+                                        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: logger.projectColor || '#6b7280', display: 'inline-block' }}></span>
+                                            {logger.projectName}
+                                        </span>
+                                    </div>
+                                )}
                             </div>
-                            <div style={{ fontSize: '12px', marginBottom: '2px' }}>
-                                {statusLabel[logger.status] || logger.status}
-                            </div>
-                            <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>
-                                {logger.sensorsCount} sensor{logger.sensorsCount !== 1 ? 's' : ''}
-                            </div>
+
+                            {/* Divider */}
+                            <div style={{ height: '1px', background: '#e5e7eb', marginBottom: '8px' }}></div>
+
+                            {/* Link */}
                             <a
                                 href={`/loggers/${logger.id}`}
                                 style={{
-                                    display: 'inline-block',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
                                     fontSize: '12px',
                                     fontWeight: 600,
                                     color: '#3b82f6',

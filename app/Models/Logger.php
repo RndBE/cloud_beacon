@@ -16,6 +16,7 @@ class Logger extends Model
 
     protected $fillable = [
         'user_id',
+        'project_id',
         'name',
         'serial_number',
         'location',
@@ -112,6 +113,11 @@ class Logger extends Model
     public function modeConfig(): BelongsTo
     {
         return $this->belongsTo(LoggerMode::class, 'logger_mode', 'slug');
+    }
+
+    public function project(): BelongsTo
+    {
+        return $this->belongsTo(Project::class);
     }
 
     public function sensors(): HasMany
