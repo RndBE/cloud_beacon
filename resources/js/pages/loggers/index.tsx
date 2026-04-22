@@ -4,6 +4,7 @@ import {
     Check,
     CheckCircle2,
     Cable,
+    FolderKanban,
     Loader2,
     MapPin,
     Plug,
@@ -76,10 +77,20 @@ interface LoggerItem {
     humidity: string | null;
     ipAddress: string | null;
     lastSyncStatus: string | null;
+    projectId: number | null;
+    projectName: string | null;
+    projectColor: string | null;
+}
+
+interface ProjectOption {
+    id: number;
+    name: string;
+    color: string;
 }
 
 interface LoggerListProps {
     loggers: LoggerItem[];
+    projects: ProjectOption[];
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -153,7 +164,7 @@ async function apiFetch(url: string, body: Record<string, unknown>) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 type WizardPhase = 'form' | 'provisioning' | 'success' | 'error';
 
-function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
+function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOpenChange: (v: boolean) => void; projects: ProjectOption[] }) {
     const { t } = useTranslation();
     const [phase, setPhase] = useState<WizardPhase>('form');
     const [stepStatuses, setStepStatuses] = useState<StepStatus[]>(PROVISION_STEPS.map(() => 'idle'));
@@ -173,6 +184,7 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
         name: '',
         serial_number: '',
         location: '',
+        project_id: '' as string,
     });
 
     // Reset on close
@@ -340,6 +352,7 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
             name: form.data.name,
             serial_number: form.data.serial_number,
             location: form.data.location,
+            project_id: form.data.project_id ? parseInt(form.data.project_id) : null,
             mqtt_data: mqttData || {},
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any, {
@@ -408,6 +421,26 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
                                 <Label htmlFor="location">{t('loggers.location')}</Label>
                                 <Input id="location" value={form.data.location} onChange={e => form.setData('location', e.target.value)} placeholder="e.g. Bogor, Jawa Barat" />
                             </div>
+                            {projects.length > 0 && (
+                                <div className="grid gap-2">
+                                    <Label>Project (opsional)</Label>
+                                    <Select value={form.data.project_id} onValueChange={v => form.setData('project_id', v)}>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Pilih project..." />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {projects.map(p => (
+                                                <SelectItem key={p.id} value={String(p.id)}>
+                                                    <span className="flex items-center gap-2">
+                                                        <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                                                        {p.name}
+                                                    </span>
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
                             <DialogFooter>
                                 <Button type="button" variant="outline" onClick={handleCancel}>{t('common.cancel')}</Button>
                                 <Button type="submit" disabled={serialChecking}>
@@ -585,11 +618,12 @@ function AddLoggerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Main page component
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-export default function LoggerList({ loggers }: LoggerListProps) {
+export default function LoggerList({ loggers, projects }: LoggerListProps) {
     const { t } = useTranslation();
     const { flash } = usePage<{ flash: { success?: string; error?: string; warning?: string } }>().props;
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<string>('all');
+    const [projectFilter, setProjectFilter] = useState<string>('all');
     const [addDialogOpen, setAddDialogOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<LoggerItem | null>(null);
     const [polling, setPolling] = useState(false);
@@ -637,9 +671,13 @@ export default function LoggerList({ loggers }: LoggerListProps) {
             const matchesStatus =
                 statusFilter === 'all' || logger.status === statusFilter;
 
-            return matchesSearch && matchesStatus;
+            const matchesProject =
+                projectFilter === 'all' ||
+                (projectFilter === 'none' ? logger.projectId === null : logger.projectId === parseInt(projectFilter));
+
+            return matchesSearch && matchesStatus && matchesProject;
         });
-    }, [loggers, search, statusFilter]);
+    }, [loggers, search, statusFilter, projectFilter]);
 
     const onlineCount = loggers.filter(l => l.status === 'online').length;
     const offlineCount = loggers.filter(l => l.status === 'offline').length;
@@ -748,6 +786,23 @@ export default function LoggerList({ loggers }: LoggerListProps) {
                                         <SelectItem value="offline">{t('dashboard.offline')}</SelectItem>
                                     </SelectContent>
                                 </Select>
+                                <Select value={projectFilter} onValueChange={setProjectFilter}>
+                                    <SelectTrigger className="w-[160px]">
+                                        <SelectValue placeholder="Project" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="all">Semua Project</SelectItem>
+                                        <SelectItem value="none">Tanpa Project</SelectItem>
+                                        {projects.map(p => (
+                                            <SelectItem key={p.id} value={String(p.id)}>
+                                                <span className="flex items-center gap-2">
+                                                    <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                                                    {p.name}
+                                                </span>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
                                 {(() => {
                                     const cronSyncing = loggers.some(l => l.lastSyncStatus === 'syncing');
                                     const isBusy = polling || cronSyncing;
@@ -762,7 +817,7 @@ export default function LoggerList({ loggers }: LoggerListProps) {
                                     <RefreshCw className="size-3" />
                                     Auto-refresh
                                 </span>
-                                <AddLoggerWizard open={addDialogOpen} onOpenChange={setAddDialogOpen} />
+                                <AddLoggerWizard open={addDialogOpen} onOpenChange={setAddDialogOpen} projects={projects} />
                             </div>
                         </div>
                     </CardHeader>
@@ -786,7 +841,15 @@ export default function LoggerList({ loggers }: LoggerListProps) {
                                         <TableCell>
                                             <Link href={`/loggers/${logger.id}`} className="block">
                                                 <div className="font-medium">{logger.name}</div>
-                                                <div className="text-xs text-muted-foreground md:hidden">{logger.serialNumber}</div>
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                    <span className="text-xs text-muted-foreground md:hidden">{logger.serialNumber}</span>
+                                                    {logger.projectName && (
+                                                        <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                                            <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: logger.projectColor || '#6b7280' }} />
+                                                            {logger.projectName}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </Link>
                                         </TableCell>
                                         <TableCell className="hidden font-mono text-xs md:table-cell">{logger.serialNumber}</TableCell>

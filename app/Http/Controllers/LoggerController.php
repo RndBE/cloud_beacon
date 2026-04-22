@@ -27,6 +27,7 @@ class LoggerController extends Controller
             $query->where('user_id', auth()->id());
         }
         $loggers = $query
+            ->with('project')
             ->withCount('externalSensors')
             ->orderBy('name')
             ->get()
@@ -46,10 +47,24 @@ class LoggerController extends Controller
                 'humidity' => $logger->humidity,
                 'ipAddress' => $logger->ip_address,
                 'lastSyncStatus' => $logger->last_sync_status,
+                'projectId' => $logger->project_id,
+                'projectName' => $logger->project?->name,
+                'projectColor' => $logger->project?->color,
             ]);
+
+        $projectQuery = Project::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $projectQuery->where('user_id', auth()->id());
+        }
+        $projects = $projectQuery->orderBy('name')->get()->map(fn(Project $p) => [
+            'id' => $p->id,
+            'name' => $p->name,
+            'color' => $p->color,
+        ]);
 
         return Inertia::render('loggers/index', [
             'loggers' => $loggers,
+            'projects' => $projects,
         ]);
     }
 
@@ -245,6 +260,7 @@ class LoggerController extends Controller
             'name' => 'required|string|max:255',
             'serial_number' => 'required|string|max:255|unique:loggers',
             'location' => 'nullable|string|max:255',
+            'project_id' => 'nullable|integer|exists:projects,id',
             // MQTT data passed from frontend provisioning
             'mqtt_data' => 'nullable|array',
         ]);
