@@ -3367,25 +3367,53 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
 function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
     const [open, setOpen] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-    async function handleAssign(projectId: number | null) {
+    function handleAssign(projectId: number | null) {
         setSaving(true);
-        try {
-            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-            await fetch(`/loggers/${logger.id}/project`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken || '' },
-                body: JSON.stringify({ project_id: projectId }),
-            });
-            router.reload();
-        } finally {
-            setSaving(false);
-            setOpen(false);
-        }
+        setNotification(null);
+        const targetName = projectId
+            ? logger.availableProjects.find(p => p.id === projectId)?.name || 'project'
+            : null;
+
+        router.put(`/loggers/${logger.id}/project`, { project_id: projectId }, {
+            preserveScroll: true,
+            onSuccess: () => {
+                setNotification({
+                    type: 'success',
+                    text: targetName
+                        ? `Berhasil assign ke ${targetName}`
+                        : 'Berhasil dihapus dari project',
+                });
+                setTimeout(() => setNotification(null), 3000);
+            },
+            onError: () => {
+                setNotification({ type: 'error', text: 'Gagal mengubah project' });
+                setTimeout(() => setNotification(null), 4000);
+            },
+            onFinish: () => {
+                setSaving(false);
+                setOpen(false);
+            },
+        });
     }
 
     return (
         <div className="relative">
+            {/* Notification toast */}
+            {notification && (
+                <div className={`absolute right-0 top-full z-[60] mt-1 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs shadow-lg animate-in fade-in slide-in-from-top-2 duration-200 ${
+                    notification.type === 'success'
+                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'
+                }`}>
+                    {notification.type === 'success'
+                        ? <CheckCircle2 className="size-3.5 shrink-0" />
+                        : <XCircle className="size-3.5 shrink-0" />
+                    }
+                    {notification.text}
+                </div>
+            )}
             <Button
                 variant="outline"
                 size="sm"
@@ -3397,7 +3425,7 @@ function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
                 {logger.projectName || 'Assign Project'}
                 <ChevronDown className="size-3 text-muted-foreground" />
             </Button>
-            {open && (
+            {open && !notification && (
                 <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border bg-popover p-1 shadow-lg animate-in fade-in slide-in-from-top-2 duration-150">
                     {logger.projectId && (
                         <>
