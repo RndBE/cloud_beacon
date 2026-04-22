@@ -202,14 +202,37 @@ class ForwardToIntegrations implements ShouldQueue
         $startTime = microtime(true);
 
         try {
-            $response = Http::withHeaders([
+            // Parse host dari endpoint untuk CURLOPT_RESOLVE
+            $parsedUrl = parse_url($endpoint);
+            $host = $parsedUrl['host'] ?? '';
+            $resolveIp = null;
+
+            // Baca IP dari /etc/hosts jika DNS tidak resolve (NXDOMAIN)
+            if ($host) {
+                $hostsFile = @file_get_contents('/etc/hosts');
+                if ($hostsFile && preg_match('/^([\d.]+)\s+' . preg_quote($host, '/') . '/m', $hostsFile, $m)) {
+                    $resolveIp = $m[1];
+                    Log::debug("[MiniSTESY] Using /etc/hosts resolve: {$host} -> {$resolveIp}");
+                }
+            }
+
+            $http = Http::withHeaders([
                 'X-API-Key' => $logger->ministesy_key,
             ])
-                ->connectTimeout(10)   // batas waktu koneksi TCP (DNS + handshake)
-                ->timeout(30)          // batas waktu response setelah connected
-                ->withoutVerifying()   // sementara: skip SSL verify (hostname/IP mismatch via /etc/hosts)
-                ->retry(2, 3000)       // retry 1x setelah 3 detik jika gagal
-                ->post($endpoint, $this->rawPayload);
+                ->connectTimeout(5)
+                ->timeout(10)
+                ->withoutVerifying();
+
+            // Force DNS resolve via cURL jika IP ditemukan di /etc/hosts
+            if ($resolveIp) {
+                $http = $http->withOptions([
+                    'curl' => [
+                        CURLOPT_RESOLVE => ["{$host}:443:{$resolveIp}", "{$host}:80:{$resolveIp}"],
+                    ],
+                ]);
+            }
+
+            $response = $http->post($endpoint, $this->rawPayload);
 
             $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
 
@@ -248,7 +271,15 @@ class ForwardToIntegrations implements ShouldQueue
         } catch (\Throwable $e) {
             $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
             $error = $e->getMessage();
-            Log::error('[MiniSTESY] ❌ Exception: ' . $error);
+
+            // Timeout = data kemungkinan sudah diterima, log sebagai warning
+            $isTimeout = str_contains($error, 'cURL error 28');
+            if ($isTimeout) {
+                Log::warning('[MiniSTESY] ⚠️ Timeout — data kemungkinan sudah diterima (server lambat merespons)');
+                $logger->update(['ministesy_last_forwarded_at' => now()]);
+            } else {
+                Log::error('[MiniSTESY] ❌ Exception: ' . $error);
+            }
 
             ForwardingLog::create([
                 'logger_id'        => $logger->id,
