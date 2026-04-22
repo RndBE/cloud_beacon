@@ -209,6 +209,9 @@ interface LoggerDetail {
     projectName: string | null;
     projectColor: string | null;
     availableProjects: { id: number; name: string; code: string | null; color: string }[];
+    lastSyncStatus: string | null;
+    lastSyncedAt: string | null;
+    lastSyncError: string | null;
 }
 
 interface LoggerShowProps {
@@ -3645,6 +3648,15 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
         { title: logger.name, href: `/loggers/${logger.id}` },
     ];
 
+    // Auto-refresh UI every 30s to show latest cron sync results
+    const [autoSyncing] = useState(false);
+    useEffect(() => {
+        const interval = setInterval(() => {
+            router.reload();
+        }, 30_000);
+        return () => clearInterval(interval);
+    }, []);
+
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={logger.name} />
@@ -3739,6 +3751,20 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
                                         {logger.projectName}
                                     </span>
                                 )}
+                                {/* Sync status */}
+                                {(autoSyncing || logger.lastSyncStatus === 'syncing') ? (
+                                    <span className="flex items-center gap-1 text-amber-500">
+                                        <Loader2 className="size-3 animate-spin" /> Syncing...
+                                    </span>
+                                ) : logger.lastSyncStatus === 'success' && logger.lastSeen ? (
+                                    <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                                        <CheckCircle2 className="size-3" /> Synced {new Date(logger.lastSeen).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                ) : logger.lastSyncStatus === 'error' ? (
+                                    <span className="flex items-center gap-1 text-red-500" title={logger.lastSyncError || 'No response from device'}>
+                                        <XCircle className="size-3" /> Sync error
+                                    </span>
+                                ) : null}
                             </div>
                         </div>
                     </div>

@@ -53,6 +53,9 @@ class MqttController extends Controller
                     'status' => 'online',
                     'last_connected_at' => now(),
                     'last_seen_at' => now(),
+                    'last_sync_status' => 'success',
+                    'last_sync_error' => null,
+                    'last_synced_at' => now(),
                 ]
             ));
         }
@@ -90,6 +93,9 @@ class MqttController extends Controller
                         'status' => 'online',
                         'last_connected_at' => now(),
                         'last_seen_at' => now(),
+                        'last_sync_status' => 'success',
+                        'last_sync_error' => null,
+                        'last_synced_at' => now(),
                     ]
                 ));
 
@@ -107,6 +113,12 @@ class MqttController extends Controller
                         $logger->update(['status' => 'offline']);
                     }
                 }
+
+                $logger->update([
+                    'last_sync_status' => 'error',
+                    'last_sync_error' => 'No response from device',
+                    'last_synced_at' => now(),
+                ]);
 
                 $results[] = [
                     'id' => $logger->id,

@@ -45,6 +45,7 @@ class LoggerController extends Controller
                 'temperature' => $logger->temperature,
                 'humidity' => $logger->humidity,
                 'ipAddress' => $logger->ip_address,
+                'lastSyncStatus' => $logger->last_sync_status,
             ]);
 
         return Inertia::render('loggers/index', [
@@ -77,6 +78,9 @@ class LoggerController extends Controller
             'firmwareVersion' => $logger->firmware_version,
             'lastSeen' => $logger->last_seen_at?->format('Y-m-d H:i:s'),
             'ipAddress' => $logger->ip_address,
+            'lastSyncStatus' => $logger->last_sync_status,
+            'lastSyncedAt' => $logger->last_synced_at?->toISOString(),
+            'lastSyncError' => $logger->last_sync_error,
             'macAddress' => $logger->mac_address,
             'model' => $logger->model,
             'modelImage' => $logger->model

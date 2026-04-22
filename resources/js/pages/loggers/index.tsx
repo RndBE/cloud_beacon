@@ -75,6 +75,7 @@ interface LoggerItem {
     temperature: string | null;
     humidity: string | null;
     ipAddress: string | null;
+    lastSyncStatus: string | null;
 }
 
 interface LoggerListProps {
@@ -93,6 +94,16 @@ function getStatusBadgeClass(status: string): string {
         case 'warning': return 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/20';
         default:        return 'bg-muted text-muted-foreground';
     }
+}
+
+
+function timeAgo(isoDate: string | null): string {
+    if (!isoDate) return '';
+    const diff = Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000);
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -585,13 +596,14 @@ export default function LoggerList({ loggers }: LoggerListProps) {
     const [warningMsg, setWarningMsg] = useState<string | null>(null);
     const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+
     useEffect(() => {
         if (flash?.warning) setWarningMsg(flash.warning);
         if (flash?.success) setSuccessMsg(flash.success);
     }, [flash]);
 
     // Manual MQTT poll — triggered by user clicking Refresh button
-    const pollNow = () => {
+    const pollNow = useCallback(() => {
         if (polling) return;
         setPolling(true);
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -604,7 +616,15 @@ export default function LoggerList({ loggers }: LoggerListProps) {
             })
             .catch(() => { /* silent fail */ })
             .finally(() => setPolling(false));
-    };
+    }, [polling]);
+
+    // Auto-refresh UI every 30s to show latest cron sync results (no MQTT call)
+    useEffect(() => {
+        const interval = setInterval(() => {
+            router.reload({ only: ['loggers'] });
+        }, 30_000);
+        return () => clearInterval(interval);
+    }, []);
 
     const filteredLoggers = useMemo(() => {
         return loggers.filter((logger) => {
@@ -728,10 +748,20 @@ export default function LoggerList({ loggers }: LoggerListProps) {
                                         <SelectItem value="offline">{t('dashboard.offline')}</SelectItem>
                                     </SelectContent>
                                 </Select>
-                                <Button variant="outline" size="sm" className="gap-1.5" onClick={pollNow} disabled={polling}>
-                                    <RefreshCw className={`size-4 ${polling ? 'animate-spin' : ''}`} />
-                                    {polling ? t('loggers.polling') : t('loggers.refresh')}
-                                </Button>
+                                {(() => {
+                                    const cronSyncing = loggers.some(l => l.lastSyncStatus === 'syncing');
+                                    const isBusy = polling || cronSyncing;
+                                    return (
+                                        <Button variant="outline" size="sm" className="gap-1.5" onClick={pollNow} disabled={isBusy}>
+                                            <RefreshCw className={`size-4 ${isBusy ? 'animate-spin' : ''}`} />
+                                            {polling ? t('loggers.polling') : cronSyncing ? 'Cron syncing...' : t('loggers.refresh')}
+                                        </Button>
+                                    );
+                                })()}
+                                <span className="hidden items-center gap-1.5 text-[10px] text-muted-foreground sm:flex">
+                                    <RefreshCw className="size-3" />
+                                    Auto-refresh
+                                </span>
                                 <AddLoggerWizard open={addDialogOpen} onOpenChange={setAddDialogOpen} />
                             </div>
                         </div>
@@ -746,7 +776,7 @@ export default function LoggerList({ loggers }: LoggerListProps) {
                                     <TableHead className="hidden lg:table-cell">{t('loggers.location')}</TableHead>
                                     <TableHead>{t('dashboard.status')}</TableHead>
                                     <TableHead className="hidden sm:table-cell">{t('loggers.connection')}</TableHead>
-                                    <TableHead className="hidden lg:table-cell">{t('loggers.last_connected')}</TableHead>
+                                    <TableHead className="hidden lg:table-cell">Sync</TableHead>
                                     <TableHead className="w-[60px]"></TableHead>
                                 </TableRow>
                             </TableHeader>
@@ -770,8 +800,26 @@ export default function LoggerList({ loggers }: LoggerListProps) {
                                             <Badge variant="outline" className={`capitalize ${getStatusBadgeClass(logger.status)}`}>{logger.status}</Badge>
                                         </TableCell>
                                         <TableCell className="hidden text-sm capitalize sm:table-cell">{logger.connectionType}</TableCell>
-                                        <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
-                                            {logger.lastConnected || '—'}
+                                        <TableCell className="hidden lg:table-cell">
+                                            {(polling || logger.lastSyncStatus === 'syncing') ? (
+                                                <span className="flex items-center gap-1.5 text-xs text-amber-500">
+                                                    <Loader2 className="size-3 animate-spin" /> Syncing...
+                                                </span>
+                                            ) : logger.lastSyncStatus === 'success' ? (
+                                                <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                                                    <CheckCircle2 className="size-3" /> {timeAgo(logger.lastSeen)}
+                                                </span>
+                                            ) : logger.lastSyncStatus === 'error' ? (
+                                                <span className="flex items-center gap-1.5 text-xs text-red-500" title={logger.lastSeen ? `Last seen: ${logger.lastSeen}` : undefined}>
+                                                    <XCircle className="size-3" /> Failed {logger.lastSeen ? `· seen ${timeAgo(logger.lastSeen)}` : ''}
+                                                </span>
+                                            ) : logger.lastSeen ? (
+                                                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                                    {timeAgo(logger.lastSeen)}
+                                                </span>
+                                            ) : (
+                                                <span className="text-xs text-muted-foreground">—</span>
+                                            )}
                                         </TableCell>
                                         <TableCell>
                                             <div className="flex items-center gap-1">

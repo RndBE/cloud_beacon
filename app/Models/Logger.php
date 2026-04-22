@@ -69,6 +69,9 @@ class Logger extends Model
         'logger_mode',
         'calibration_data',
         'calibrated_at',
+        'last_sync_status',
+        'last_sync_error',
+        'last_synced_at',
     ];
 
     protected function casts(): array
@@ -78,6 +81,7 @@ class Logger extends Model
             'last_config_backup_at'       => 'datetime',
             'last_connected_at'           => 'datetime',
             'last_data_received_at'       => 'datetime',
+            'last_synced_at'              => 'datetime',
             'ministesy_last_forwarded_at' => 'datetime',
             'cpu_usage' => 'integer',
             'memory_usage' => 'integer',
