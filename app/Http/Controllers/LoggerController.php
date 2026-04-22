@@ -536,9 +536,16 @@ class LoggerController extends Controller
     /**
      * Assign or unassign a logger to a project.
      */
-    public function updateProject(Request $request, int $id)
+    public function updateProject(Request $request, string $hash)
     {
-        $logger = Logger::findOrFail($id);
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $logger = $query->findOrFail($id);
 
         $request->validate([
             'project_id' => 'nullable|integer|exists:projects,id',
