@@ -86,6 +86,7 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
@@ -141,9 +142,10 @@ interface CalibrationFieldDef {
     key: string;
     label: string;
     unit: string;
-    type: 'number';
+    type: 'number' | 'select';
     min?: number;
     step?: number;
+    options?: { value: string; label: string }[];
 }
 
 interface LoggerModeOption {
@@ -3215,7 +3217,11 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
         setFormValues(prev => ({ ...prev, [key]: value }));
     }
 
-    const allFilled = fields.every(f => formValues[f.key] !== '' && !isNaN(parseFloat(formValues[f.key])));
+    const allFilled = fields.every(f => {
+        const val = formValues[f.key];
+        if (f.type === 'select') return val !== '';
+        return val !== '' && !isNaN(parseFloat(val));
+    });
 
     async function handleCalibrate() {
         setPhase('sending');
@@ -3226,7 +3232,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                 id_logger: logger.deviceIdentifier!,
             };
             for (const f of fields) {
-                body[f.key] = parseFloat(formValues[f.key]);
+                body[f.key] = f.type === 'select' ? formValues[f.key] : parseFloat(formValues[f.key]);
             }
 
             const res = await apiFetch('/api/mqtt/calibration/set', body);
@@ -3286,18 +3292,35 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                         {fields.map(f => (
                             <div key={f.key} className="grid gap-1.5">
                                 <Label htmlFor={`calib_${f.key}`} className="text-sm">
-                                    {f.label} <span className="text-xs text-muted-foreground">({f.unit})</span>
+                                    {f.label} {f.unit && <span className="text-xs text-muted-foreground">({f.unit})</span>}
                                 </Label>
-                                <Input
-                                    id={`calib_${f.key}`}
-                                    type="number"
-                                    min={f.min ?? 0}
-                                    step={f.step ?? 0.01}
-                                    value={formValues[f.key]}
-                                    onChange={(e) => updateField(f.key, e.target.value)}
-                                    placeholder={`Masukkan ${f.label.toLowerCase()}`}
-                                    disabled={phase === 'sending'}
-                                />
+                                {f.type === 'select' && f.options ? (
+                                    <Select
+                                        value={formValues[f.key]}
+                                        onValueChange={(v) => updateField(f.key, v)}
+                                        disabled={phase === 'sending'}
+                                    >
+                                        <SelectTrigger id={`calib_${f.key}`}>
+                                            <SelectValue placeholder={`Pilih ${f.label.toLowerCase()}`} />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {f.options.map(opt => (
+                                                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                ) : (
+                                    <Input
+                                        id={`calib_${f.key}`}
+                                        type="number"
+                                        min={f.min ?? 0}
+                                        step={f.step ?? 0.01}
+                                        value={formValues[f.key]}
+                                        onChange={(e) => updateField(f.key, e.target.value)}
+                                        placeholder={`Masukkan ${f.label.toLowerCase()}`}
+                                        disabled={phase === 'sending'}
+                                    />
+                                )}
                             </div>
                         ))}
                     </div>

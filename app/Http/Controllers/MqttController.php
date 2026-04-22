@@ -1046,9 +1046,14 @@ class MqttController extends Controller
         $calibrationFields = $modeConfig->calibration_fields ?? [];
         $validationRules = [];
         foreach ($calibrationFields as $field) {
-            $rules = ['required', 'numeric'];
-            if (isset($field['min'])) {
-                $rules[] = 'min:' . $field['min'];
+            if (($field['type'] ?? 'number') === 'select') {
+                $allowedValues = collect($field['options'] ?? [])->pluck('value')->implode(',');
+                $rules = ['required', 'string', 'in:' . $allowedValues];
+            } else {
+                $rules = ['required', 'numeric'];
+                if (isset($field['min'])) {
+                    $rules[] = 'min:' . $field['min'];
+                }
             }
             $validationRules[$field['key']] = $rules;
         }
@@ -1057,7 +1062,11 @@ class MqttController extends Controller
         // Build params from calibration fields
         $params = [];
         foreach ($calibrationFields as $field) {
-            $params[$field['key']] = (float) $request->input($field['key']);
+            if (($field['type'] ?? 'number') === 'select') {
+                $params[$field['key']] = $request->input($field['key']);
+            } else {
+                $params[$field['key']] = (float) $request->input($field['key']);
+            }
         }
 
         $mqtt   = new MqttService();

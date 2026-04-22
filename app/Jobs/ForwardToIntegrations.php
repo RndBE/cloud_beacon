@@ -205,8 +205,10 @@ class ForwardToIntegrations implements ShouldQueue
             $response = Http::withHeaders([
                 'X-API-Key' => $logger->ministesy_key,
             ])
-                ->timeout(30)          // dinaikkan: server Mini STESY lambat response
+                ->connectTimeout(10)   // batas waktu koneksi TCP (DNS + handshake)
+                ->timeout(30)          // batas waktu response setelah connected
                 ->withoutVerifying()   // sementara: skip SSL verify (hostname/IP mismatch via /etc/hosts)
+                ->retry(2, 3000)       // retry 1x setelah 3 detik jika gagal
                 ->post($endpoint, $this->rawPayload);
 
             $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
