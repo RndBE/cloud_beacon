@@ -174,14 +174,15 @@ class ForwardToIntegrations implements ShouldQueue
         }
 
         if ($lastForwarded) {
-            $minutesSinceLast = now()->diffInMinutes($lastForwarded, absolute: true);
-            if ($minutesSinceLast < $intervalMinutes) {
+            $secondsSinceLast = now()->diffInSeconds($lastForwarded, absolute: true);
+            $intervalSeconds  = ($intervalMinutes * 60) - 5; // 5s tolerance
+            if ($secondsSinceLast < $intervalSeconds) {
                 ForwardingLog::create([
                     'logger_id'      => $logger->id,
                     'target_name'    => 'Mini STESY',
                     'target_url'     => $endpoint,
                     'status'         => 'skipped',
-                    'error_message'  => 'Interval belum tercapai (' . ($intervalMinutes - $minutesSinceLast) . ' menit lagi)',
+                    'error_message'  => 'Interval belum tercapai (' . round(($intervalSeconds - $secondsSinceLast) / 60, 1) . ' menit lagi)',
                     'payload_summary' => $payloadSummary,
                     'raw_payload'     => $this->rawPayload,
                     'created_at'     => now(),
