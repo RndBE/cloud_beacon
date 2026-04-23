@@ -51,7 +51,7 @@ class DashboardController extends Controller
             'stats' => $stats,
             'recentActivity' => $recentActivity,
             'loggers' => $loggers->map(fn(Logger $l) => [
-                'id' => $l->id,
+                'id' => \App\Services\IdHasher::encode($l->id),
                 'name' => $l->name,
                 'status' => $l->status,
                 'location' => $l->location,

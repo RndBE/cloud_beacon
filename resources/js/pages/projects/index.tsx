@@ -174,7 +174,7 @@ export default function ProjectList({ projects }: ProjectListProps) {
                             <Card key={project.id} className="group relative overflow-hidden">
                                 {/* Color stripe */}
                                 <div className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: project.color }} />
-                                <CardHeader className="pt-5">
+                                <CardHeader className="p-4 pb-3">
                                     <div className="flex items-start justify-between">
                                         <div className="flex items-center gap-2.5 min-w-0">
                                             <div
@@ -211,7 +211,7 @@ export default function ProjectList({ projects }: ProjectListProps) {
                                     )}
                                 </CardHeader>
                                 <Separator />
-                                <CardContent className="pt-3 pb-3">
+                                <CardContent className="p-3">
                                     <div className="flex items-center justify-between text-xs">
                                         <span className="flex items-center gap-1.5 text-muted-foreground">
                                             <Radio className="size-3.5" />

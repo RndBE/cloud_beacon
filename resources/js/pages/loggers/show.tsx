@@ -86,6 +86,7 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
@@ -141,9 +142,10 @@ interface CalibrationFieldDef {
     key: string;
     label: string;
     unit: string;
-    type: 'number';
+    type: 'number' | 'select';
     min?: number;
     step?: number;
+    options?: { value: string; label: string }[];
 }
 
 interface LoggerModeOption {
@@ -3215,7 +3217,11 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
         setFormValues(prev => ({ ...prev, [key]: value }));
     }
 
-    const allFilled = fields.every(f => formValues[f.key] !== '' && !isNaN(parseFloat(formValues[f.key])));
+    const allFilled = fields.every(f => {
+        const val = formValues[f.key];
+        if (f.type === 'select') return val !== '';
+        return val !== '' && !isNaN(parseFloat(val));
+    });
 
     async function handleCalibrate() {
         setPhase('sending');
@@ -3226,7 +3232,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                 id_logger: logger.deviceIdentifier!,
             };
             for (const f of fields) {
-                body[f.key] = parseFloat(formValues[f.key]);
+                body[f.key] = f.type === 'select' ? formValues[f.key] : parseFloat(formValues[f.key]);
             }
 
             const res = await apiFetch('/api/mqtt/calibration/set', body);
@@ -3286,18 +3292,35 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                         {fields.map(f => (
                             <div key={f.key} className="grid gap-1.5">
                                 <Label htmlFor={`calib_${f.key}`} className="text-sm">
-                                    {f.label} <span className="text-xs text-muted-foreground">({f.unit})</span>
+                                    {f.label} {f.unit && <span className="text-xs text-muted-foreground">({f.unit})</span>}
                                 </Label>
-                                <Input
-                                    id={`calib_${f.key}`}
-                                    type="number"
-                                    min={f.min ?? 0}
-                                    step={f.step ?? 0.01}
-                                    value={formValues[f.key]}
-                                    onChange={(e) => updateField(f.key, e.target.value)}
-                                    placeholder={`Masukkan ${f.label.toLowerCase()}`}
-                                    disabled={phase === 'sending'}
-                                />
+                                {f.type === 'select' && f.options ? (
+                                    <Select
+                                        value={formValues[f.key]}
+                                        onValueChange={(v) => updateField(f.key, v)}
+                                        disabled={phase === 'sending'}
+                                    >
+                                        <SelectTrigger id={`calib_${f.key}`}>
+                                            <SelectValue placeholder={`Pilih ${f.label.toLowerCase()}`} />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {f.options.map(opt => (
+                                                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                ) : (
+                                    <Input
+                                        id={`calib_${f.key}`}
+                                        type="number"
+                                        min={f.min ?? 0}
+                                        step={f.step ?? 0.01}
+                                        value={formValues[f.key]}
+                                        onChange={(e) => updateField(f.key, e.target.value)}
+                                        placeholder={`Masukkan ${f.label.toLowerCase()}`}
+                                        disabled={phase === 'sending'}
+                                    />
+                                )}
                             </div>
                         ))}
                     </div>
@@ -3367,25 +3390,53 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
 function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
     const [open, setOpen] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-    async function handleAssign(projectId: number | null) {
+    function handleAssign(projectId: number | null) {
         setSaving(true);
-        try {
-            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-            await fetch(`/loggers/${logger.id}/project`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken || '' },
-                body: JSON.stringify({ project_id: projectId }),
-            });
-            router.reload();
-        } finally {
-            setSaving(false);
-            setOpen(false);
-        }
+        setNotification(null);
+        const targetName = projectId
+            ? logger.availableProjects.find(p => p.id === projectId)?.name || 'project'
+            : null;
+
+        router.put(`/loggers/${logger.id}/project`, { project_id: projectId }, {
+            preserveScroll: true,
+            onSuccess: () => {
+                setNotification({
+                    type: 'success',
+                    text: targetName
+                        ? `Berhasil assign ke ${targetName}`
+                        : 'Berhasil dihapus dari project',
+                });
+                setTimeout(() => setNotification(null), 3000);
+            },
+            onError: () => {
+                setNotification({ type: 'error', text: 'Gagal mengubah project' });
+                setTimeout(() => setNotification(null), 4000);
+            },
+            onFinish: () => {
+                setSaving(false);
+                setOpen(false);
+            },
+        });
     }
 
     return (
         <div className="relative">
+            {/* Notification toast */}
+            {notification && (
+                <div className={`absolute right-0 top-full z-[60] mt-1 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs shadow-lg animate-in fade-in slide-in-from-top-2 duration-200 ${
+                    notification.type === 'success'
+                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'
+                }`}>
+                    {notification.type === 'success'
+                        ? <CheckCircle2 className="size-3.5 shrink-0" />
+                        : <XCircle className="size-3.5 shrink-0" />
+                    }
+                    {notification.text}
+                </div>
+            )}
             <Button
                 variant="outline"
                 size="sm"
@@ -3397,7 +3448,7 @@ function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
                 {logger.projectName || 'Assign Project'}
                 <ChevronDown className="size-3 text-muted-foreground" />
             </Button>
-            {open && (
+            {open && !notification && (
                 <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border bg-popover p-1 shadow-lg animate-in fade-in slide-in-from-top-2 duration-150">
                     {logger.projectId && (
                         <>

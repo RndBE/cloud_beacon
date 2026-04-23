@@ -223,7 +223,7 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                         <img
                                             src={model.image}
                                             alt={model.name}
-                                            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                            className="h-full w-full object-contain p-4 transition-transform duration-300 group-hover:scale-105"
                                         />
                                     ) : (
                                         <div className="flex h-full w-full items-center justify-center">
