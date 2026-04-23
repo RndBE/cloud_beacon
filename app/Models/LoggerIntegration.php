@@ -61,7 +61,7 @@ class LoggerIntegration extends Model
             return true; // Never forwarded → send immediately
         }
 
-        return now()->diffInMinutes($this->last_forwarded_at) >= $this->interval_minutes;
+        return now()->diffInMinutes($this->last_forwarded_at, absolute: true) >= $this->interval_minutes;
     }
 
     /**

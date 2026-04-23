@@ -174,7 +174,7 @@ class ForwardToIntegrations implements ShouldQueue
         }
 
         if ($lastForwarded) {
-            $minutesSinceLast = now()->diffInMinutes($lastForwarded);
+            $minutesSinceLast = now()->diffInMinutes($lastForwarded, absolute: true);
             if ($minutesSinceLast < $intervalMinutes) {
                 ForwardingLog::create([
                     'logger_id'      => $logger->id,
