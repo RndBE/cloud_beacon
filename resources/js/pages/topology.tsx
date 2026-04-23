@@ -1,5 +1,5 @@
 import { Head, Link } from '@inertiajs/react';
-import { ArrowLeft, Cable, FolderKanban, Globe, Minus, Maximize, Plus, Radio, Signal, Wifi, Cpu, Zap, Thermometer, Droplets, Gauge } from 'lucide-react';
+import { ArrowLeft, Cable, ChevronDown, FolderKanban, Globe, Minus, Maximize, Plus, Radio, Signal, Wifi, Cpu, Zap, Thermometer, Droplets, Gauge } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -135,6 +135,7 @@ export default function Topology({ loggers, projects }: TopologyProps) {
     // Level 3: selectedLogger set → show sensors of that logger
     const [selectedProject, setSelectedProject] = useState<TopologyProject | null>(null);
     const [selectedLogger, setSelectedLogger] = useState<TopologyLogger | null>(null);
+    const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
 
     const filteredLoggers = useMemo(() => {
         if (!selectedProject) return [];
@@ -334,13 +335,54 @@ export default function Topology({ loggers, projects }: TopologyProps) {
                     </Button>
                 </div>
 
-                {/* Back Button (when drilled down to loggers or sensors) */}
+                {/* Back Button + Project Switcher (when drilled down) */}
                 {(selectedProject || selectedLogger) && (
-                    <div className="absolute top-4 left-4 z-20">
+                    <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
                         <Button variant="outline" size="sm" className="gap-1.5 bg-background/80 backdrop-blur-sm" onClick={handleBack}>
                             <ArrowLeft className="size-4" />
                             {selectedLogger ? `Back to ${selectedProject?.name || 'Project'}` : 'Back to Projects'}
                         </Button>
+
+                        {/* Project switcher dropdown (visible at loggers & sensors level) */}
+                        {selectedProject && (
+                            <div className="relative">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="gap-1.5 bg-background/80 backdrop-blur-sm"
+                                    onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
+                                >
+                                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: selectedProject.color }} />
+                                    {selectedProject.name}
+                                    <ChevronDown className="size-3" />
+                                </Button>
+                                {projectDropdownOpen && (
+                                    <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-lg border bg-popover p-1 shadow-lg animate-in fade-in slide-in-from-top-2 duration-150">
+                                        {projects.map(p => (
+                                            <button
+                                                key={p.id}
+                                                className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs transition-colors ${
+                                                    selectedProject.id === p.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted'
+                                                }`}
+                                                onClick={() => {
+                                                    const proj = projects.find(pr => pr.id === p.id);
+                                                    if (proj) {
+                                                        setSelectedProject(proj);
+                                                        setSelectedLogger(null);
+                                                        cardRefs.current = [];
+                                                    }
+                                                    setProjectDropdownOpen(false);
+                                                }}
+                                            >
+                                                <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                                                <span className="truncate">{p.name}</span>
+                                                <span className="ml-auto text-[10px] text-muted-foreground">{p.loggerCount}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
 
