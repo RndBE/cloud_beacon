@@ -173,6 +173,12 @@ class ForwardToIntegrations implements ShouldQueue
             return;
         }
 
+        Log::info('[MiniSTESY] DEBUG interval check', [
+            'intervalMinutes'  => $intervalMinutes,
+            'lastForwarded'    => $lastForwarded?->toDateTimeString(),
+            'bypass'           => $intervalMinutes <= 1 ? 'YES — skipping interval check' : 'NO',
+        ]);
+
         if ($lastForwarded && $intervalMinutes > 1) {
             $secondsSinceLast = (int) now()->diffInSeconds($lastForwarded, absolute: true);
             $intervalSeconds  = ($intervalMinutes * 60) - 10; // 10s tolerance
