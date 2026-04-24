@@ -830,6 +830,7 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                 <TableRow>
                                     <TableHead>{t('loggers.name')}</TableHead>
                                     <TableHead className="hidden md:table-cell">{t('loggers.serial_number')}</TableHead>
+                                    <TableHead className="hidden md:table-cell">{t('loggers.model')}</TableHead>
                                     <TableHead className="hidden lg:table-cell">{t('loggers.location')}</TableHead>
                                     <TableHead>{t('dashboard.status')}</TableHead>
                                     <TableHead className="hidden sm:table-cell">{t('loggers.connection')}</TableHead>
@@ -844,7 +845,7 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                             <Link href={`/loggers/${logger.id}`} className="block">
                                                 <div className="flex items-center gap-3">
                                                     {/* Model Thumbnail */}
-                                                    <div className="hidden sm:flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/30 overflow-hidden">
+                                                    <div className="hidden sm:flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-muted/30 overflow-hidden">
                                                         {logger.modelImage ? (
                                                             <img
                                                                 src={logger.modelImage}
@@ -859,9 +860,6 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                                         <div className="font-medium">{logger.name}</div>
                                                         <div className="flex items-center gap-2 mt-0.5">
                                                             <span className="text-xs text-muted-foreground md:hidden">{logger.serialNumber}</span>
-                                                            {logger.model && (
-                                                                <span className="text-[10px] text-muted-foreground font-medium">{logger.model}</span>
-                                                            )}
                                                             {logger.projectName && (
                                                                 <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
                                                                     <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: logger.projectColor || '#6b7280' }} />
@@ -874,6 +872,13 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                             </Link>
                                         </TableCell>
                                         <TableCell className="hidden font-mono text-xs md:table-cell">{logger.serialNumber}</TableCell>
+                                        <TableCell className="hidden md:table-cell">
+                                            {logger.model ? (
+                                                <span className="text-sm font-medium text-foreground">{logger.model}</span>
+                                            ) : (
+                                                <span className="text-xs text-muted-foreground">—</span>
+                                            )}
+                                        </TableCell>
                                         <TableCell className="hidden lg:table-cell">
                                             <span className="flex items-center gap-1 text-sm">
                                                 <MapPin className="size-3.5 text-muted-foreground" />
@@ -924,7 +929,7 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                 ))}
                                 {filteredLoggers.length === 0 && (
                                     <TableRow>
-                                        <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
+                                        <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
                                             {t('loggers.no_loggers_found')}
                                         </TableCell>
                                     </TableRow>
