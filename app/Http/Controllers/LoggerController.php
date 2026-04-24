@@ -13,6 +13,7 @@ use App\Models\Sensor;
 use App\Services\IdHasher;
 use App\Services\MqttService;
 use App\Services\SshService;
+use App\Services\LoggerHealthService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -205,8 +206,12 @@ class LoggerController extends Controller
                 ]),
         ];
 
+        // Health diagnostics — computed real-time, no DB storage needed
+        $diagnostics = LoggerHealthService::diagnose($logger);
+
         return Inertia::render('loggers/show', [
-            'logger' => $loggerData,
+            'logger'      => $loggerData,
+            'diagnostics' => $diagnostics,
         ]);
     }
 

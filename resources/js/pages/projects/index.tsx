@@ -147,10 +147,7 @@ export default function ProjectList({ projects }: ProjectListProps) {
                     <div>
                         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
                             <FolderKanban className="size-6" /> Projects
-                        </h1>
-                        <p className="text-sm text-muted-foreground mt-1">
-                            Kelola project dan assign logger ke dalamnya.
-                        </p>
+                        </h1>   
                     </div>
                     <Button className="gap-1.5" onClick={openCreate}>
                         <Plus className="size-4" /> Tambah Project

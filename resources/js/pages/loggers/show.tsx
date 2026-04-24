@@ -49,6 +49,8 @@ import {
     Globe,
     ShieldCheck,
     AlertCircle,
+    HeartPulse,
+    ShieldAlert,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -216,8 +218,35 @@ interface LoggerDetail {
     lastSyncError: string | null;
 }
 
+interface DiagnosticCheck {
+    key: string;
+    label: string;
+    category: string;
+    passed: boolean;
+    value: string;
+    threshold: string;
+    severity: 'info' | 'warning' | 'critical';
+    message: string | null;
+}
+
+interface DiagnosticCategory {
+    label: string;
+    icon: string;
+    checks: DiagnosticCheck[];
+}
+
+interface DiagnosticsResult {
+    status: 'healthy' | 'warning' | 'critical';
+    totalChecks: number;
+    passedChecks: number;
+    failedChecks: number;
+    criticalCount: number;
+    categories: Record<string, DiagnosticCategory>;
+}
+
 interface LoggerShowProps {
     logger: LoggerDetail;
+    diagnostics: DiagnosticsResult;
 }
 
 // =============================================================================
@@ -3675,7 +3704,134 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
     );
 }
 
-export default function LoggerShow({ logger }: LoggerShowProps) {
+// =============================================================================
+// Health Diagnostics Card
+// =============================================================================
+
+const CATEGORY_CONFIG: Record<string, { icon: typeof Battery; color: string; bg: string }> = {
+    power:        { icon: Battery,       color: 'text-amber-500',   bg: 'bg-amber-500/10' },
+    connectivity: { icon: Signal,        color: 'text-blue-500',    bg: 'bg-blue-500/10' },
+    environment:  { icon: Thermometer,   color: 'text-red-500',     bg: 'bg-red-500/10' },
+    device:       { icon: Settings,      color: 'text-violet-500',  bg: 'bg-violet-500/10' },
+};
+
+function HealthDiagnosticsCard({ diagnostics }: { diagnostics: DiagnosticsResult }) {
+    const allChecks = Object.values(diagnostics.categories).flatMap(c => c.checks);
+    const failedChecks = allChecks.filter(c => !c.passed);
+
+    return (
+        <Card className="mb-4">
+            <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2">
+                    <HeartPulse className="size-5" /> Diagnosa Kesehatan
+                </CardTitle>
+                <CardDescription>
+                    {diagnostics.passedChecks}/{diagnostics.totalChecks} pengecekan lulus
+                </CardDescription>
+            </CardHeader>
+            <CardContent>
+                <div className="grid gap-4">
+                    {/* Status Banner */}
+                    <div className={`flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${
+                        diagnostics.status === 'healthy'
+                            ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                            : diagnostics.status === 'warning'
+                              ? 'border border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                              : 'border border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-400'
+                    }`}>
+                        {diagnostics.status === 'healthy' ? (
+                            <><CheckCircle2 className="size-4" /> No abnormality detected.</>
+                        ) : diagnostics.status === 'warning' ? (
+                            <><AlertTriangle className="size-4" /> {diagnostics.failedChecks} issue{diagnostics.failedChecks > 1 ? 's' : ''} detected</>
+                        ) : (
+                            <><ShieldAlert className="size-4" /> {diagnostics.criticalCount} critical issue{diagnostics.criticalCount > 1 ? 's' : ''} found!</>
+                        )}
+                    </div>
+
+                    {/* Category Grid */}
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                        {Object.entries(diagnostics.categories).map(([catKey, category]) => {
+                            const config = CATEGORY_CONFIG[catKey] || CATEGORY_CONFIG.device;
+                            const Icon = config.icon;
+                            const catFails = category.checks.filter(c => !c.passed).length;
+
+                            return (
+                                <div key={catKey} className="rounded-lg border">
+                                    {/* Category Header */}
+                                    <div className="flex items-center gap-2 border-b px-3 py-2.5">
+                                        <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${config.bg}`}>
+                                            <Icon className={`size-3.5 ${config.color}`} />
+                                        </div>
+                                        <span className="text-sm font-semibold">{category.label}</span>
+                                        {catFails > 0 && (
+                                            <Badge variant="outline" className="ml-auto text-[10px] border-red-500/30 text-red-500 bg-red-500/5">
+                                                {catFails}
+                                            </Badge>
+                                        )}
+                                    </div>
+
+                                    {/* Check Items */}
+                                    <div className="divide-y">
+                                        {category.checks.map(check => (
+                                            <div
+                                                key={check.key}
+                                                className={`flex items-center justify-between px-3 py-2 text-sm transition-colors ${
+                                                    !check.passed ? 'bg-red-500/[0.03]' : ''
+                                                }`}
+                                                title={check.message || `${check.value} (threshold: ${check.threshold})`}
+                                            >
+                                                <span className={`${!check.passed ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
+                                                    {check.label}
+                                                </span>
+                                                <div className="flex items-center gap-1.5">
+                                                    <span className="font-mono text-[10px] text-muted-foreground">
+                                                        {check.value}
+                                                    </span>
+                                                    {check.passed ? (
+                                                        <Check className="size-4 text-emerald-500" />
+                                                    ) : check.severity === 'critical' ? (
+                                                        <XCircle className="size-4 text-red-500" />
+                                                    ) : (
+                                                        <AlertCircle className="size-4 text-amber-500" />
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Failed Checks Detail */}
+                    {failedChecks.length > 0 && (
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                                Rekomendasi
+                            </p>
+                            <ul className="space-y-1.5">
+                                {failedChecks.map(check => (
+                                    <li key={check.key} className="flex items-start gap-2 text-xs">
+                                        {check.severity === 'critical' ? (
+                                            <XCircle className="mt-0.5 size-3 shrink-0 text-red-500" />
+                                        ) : (
+                                            <AlertCircle className="mt-0.5 size-3 shrink-0 text-amber-500" />
+                                        )}
+                                        <span className={check.severity === 'critical' ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}>
+                                            <strong>{check.label}</strong>: {check.message || `Nilai ${check.value} di luar threshold ${check.threshold}`}
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            </CardContent>
+        </Card>
+    );
+}
+
+export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const { t } = useTranslation();
 
@@ -3944,6 +4100,9 @@ export default function LoggerShow({ logger }: LoggerShowProps) {
 
                     {/* ==================== SYSTEM ==================== */}
                     <TabsContent value="system" className="mt-6">
+                        {/* Health Diagnostics */}
+                        <HealthDiagnosticsCard diagnostics={diagnostics} />
+
                         {/* Internal Sensors */}
                         <Card className="mb-4">
                             <CardHeader>
