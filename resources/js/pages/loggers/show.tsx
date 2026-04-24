@@ -347,9 +347,9 @@ interface SyncStep {
 }
 
 const SYNC_STEPS: SyncStep[] = [
-    { id: 'connect', label: 'Connecting to Logger', description: 'Publishing MQTT INFO request…', icon: Plug, durationMs: 2000 },
+    { id: 'connect', label: 'Connecting to Logger', description: 'Menghubungkan ke perangkat…', icon: Plug, durationMs: 2000 },
     { id: 'info', label: 'Fetching Device Info', description: 'Reading configuration data…', icon: Settings, durationMs: 1800 },
-    { id: 'sensors', label: 'Syncing Sensor Config', description: 'Fetching sensor channels from MCU…', icon: Cable, durationMs: 2200 },
+    { id: 'sensors', label: 'Syncing Sensor Config', description: 'Mengambil konfigurasi sensor…', icon: Cable, durationMs: 2200 },
 ];
 
 interface SyncDiffItem {
@@ -601,7 +601,7 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                         <>
                             <DialogHeader>
                                 <DialogTitle>Syncing Device Data</DialogTitle>
-                                <DialogDescription>Fetching latest data from <strong>{deviceIdentifier}</strong> via MQTT…</DialogDescription>
+                                <DialogDescription>Fetching latest data from <strong>{deviceIdentifier}</strong>…</DialogDescription>
                             </DialogHeader>
                             <div className="py-4">
                                 <div className="mb-6 space-y-2">
@@ -1714,13 +1714,13 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                             <Button onClick={handleCancel} variant="outline" size="sm" className="gap-2" disabled={saving}>
                                 <XCircle className="size-4" /> {t('common.cancel')}
                             </Button>
-                            {deviceIdentifier && <span className="text-[10px] text-muted-foreground ml-auto">via MQTT</span>}
+                            {deviceIdentifier && <span className="text-[10px] text-muted-foreground ml-auto">via perangkat</span>}
                         </div>
                     </div>
                 )}
             </CardContent>
 
-            {/* ══════ MQTT Save Modal ══════ */}
+            {/* ══════ Save to Device Modal ══════ */}
             <Dialog open={dialogOpen} onOpenChange={(v) => { if (!v && dialogPhase !== 'sending' && dialogPhase !== 'waiting') handleDialogClose(); }}>
                 <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (dialogPhase === 'sending' || dialogPhase === 'waiting') e.preventDefault(); }}>
                     {(dialogPhase === 'sending' || dialogPhase === 'waiting') && (
@@ -1793,7 +1793,7 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
                 </DialogContent>
             </Dialog>
 
-            {/* ══════ MQTT GET Modal ══════ */}
+            {/* ══════ Read from Device Modal ══════ */}
             <Dialog open={getDialogOpen} onOpenChange={(v) => { if (!v && getPhase !== 'sending' && getPhase !== 'waiting') handleGetDialogClose(); }}>
                 <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (getPhase === 'sending' || getPhase === 'waiting') e.preventDefault(); }}>
                     {(getPhase === 'sending' || getPhase === 'waiting') && (
@@ -2711,7 +2711,7 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
                                 <XCircle className="size-4" /> {t('common.cancel')}
                             </Button>
                             <span className="text-[10px] text-muted-foreground ml-auto">
-                                {disabled ? '⚠️ Device offline' : 'via MQTT'}
+                                {disabled ? '⚠️ Device offline' : 'via perangkat'}
                             </span>
                         </div>
                     </div>
@@ -3203,7 +3203,7 @@ function SetModeCard({ logger }: { logger: LoggerDetail }) {
                         <AlertDialogTitle>Konfirmasi Set Mode</AlertDialogTitle>
                         <AlertDialogDescription>
                             Ubah mode logger dari <strong>{activeMode?.label || '—'}</strong> ke <strong>{selectedModeInfo?.label || selectedMode}</strong>?
-                            Perintah akan dikirim ke perangkat via MQTT.
+                            Perintah akan dikirim ke perangkat.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>

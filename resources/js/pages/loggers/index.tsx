@@ -131,7 +131,7 @@ interface ProvisionStep {
 }
 
 const PROVISION_STEPS: ProvisionStep[] = [
-    { id: 'connect', label: 'Connecting to Logger', description: 'Publishing MQTT request…', icon: Plug, durationMs: 2000 },
+    { id: 'connect', label: 'Connecting to Logger', description: 'Menghubungkan ke perangkat…', icon: Plug, durationMs: 2000 },
     { id: 'config', label: 'Fetching Configuration', description: 'Reading device configuration data…', icon: Settings, durationMs: 1800 },
     { id: 'connection', label: 'Fetching Connection Info', description: 'Retrieving network parameters…', icon: Cable, durationMs: 1500 },
     { id: 'sensors', label: 'Fetching Sensor Data', description: 'Discovering sensor channels…', icon: Thermometer, durationMs: 2200 },
@@ -461,7 +461,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                         <DialogHeader>
                             <DialogTitle>{t('loggers.provisioning_logger')}</DialogTitle>
                             <DialogDescription>
-                                Connecting to <strong>{form.data.name || form.data.serial_number}</strong> via MQTT…
+                                Connecting to <strong>{form.data.name || form.data.serial_number}</strong>…
                             </DialogDescription>
                         </DialogHeader>
                         <div className="py-4">
@@ -512,7 +512,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                                                 {isActive && (
                                                     <>
                                                         <p className="mt-0.5 text-xs text-muted-foreground animate-in fade-in slide-in-from-left-2 duration-200">
-                                                            {i === 0 ? `Publishing to sub_${prodDevice?.deviceId ?? '...'}…` : step.description}
+                                                            {i === 0 ? `Menghubungkan ke ${prodDevice?.deviceId ?? '...'}…` : step.description}
                                                         </p>
                                                         <div className="mt-2">
                                                             <Progress value={stepProgress} className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100" />
@@ -566,7 +566,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                                     Successfully connected to <strong>{form.data.name}</strong>. All data has been retrieved.
                                 </p>
                             </div>
-                            {/* MQTT data summary */}
+                            {/* Device data summary */}
                             {mqttData && (
                                 <div className="w-full rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
                                     <p className="mb-2 text-xs font-medium text-emerald-600 dark:text-emerald-400">{t('loggers.device_info_mqtt')}</p>
