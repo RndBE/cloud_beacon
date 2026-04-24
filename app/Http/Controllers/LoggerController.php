@@ -27,6 +27,12 @@ class LoggerController extends Controller
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
         }
+        // Pre-build lookup: model name → image URL
+        $modelImages = DeviceModel::whereNotNull('image')
+            ->pluck('image', 'name')
+            ->mapWithKeys(fn($img, $name) => [strtolower($name) => asset('storage/' . $img)])
+            ->all();
+
         $loggers = $query
             ->with('project')
             ->withCount('externalSensors')
@@ -51,6 +57,10 @@ class LoggerController extends Controller
                 'projectId' => $logger->project_id,
                 'projectName' => $logger->project?->name,
                 'projectColor' => $logger->project?->color,
+                'model' => $logger->model,
+                'modelImage' => $logger->model
+                    ? ($modelImages[strtolower($logger->model)] ?? null)
+                    : null,
             ]);
 
         $projectQuery = Project::query();

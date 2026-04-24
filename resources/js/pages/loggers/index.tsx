@@ -80,6 +80,8 @@ interface LoggerItem {
     projectId: number | null;
     projectName: string | null;
     projectColor: string | null;
+    model: string | null;
+    modelImage: string | null;
 }
 
 interface ProjectOption {
@@ -840,15 +842,34 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                     <TableRow key={logger.id} className="cursor-pointer hover:bg-muted/50">
                                         <TableCell>
                                             <Link href={`/loggers/${logger.id}`} className="block">
-                                                <div className="font-medium">{logger.name}</div>
-                                                <div className="flex items-center gap-2 mt-0.5">
-                                                    <span className="text-xs text-muted-foreground md:hidden">{logger.serialNumber}</span>
-                                                    {logger.projectName && (
-                                                        <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                                                            <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: logger.projectColor || '#6b7280' }} />
-                                                            {logger.projectName}
-                                                        </span>
-                                                    )}
+                                                <div className="flex items-center gap-3">
+                                                    {/* Model Thumbnail */}
+                                                    <div className="hidden sm:flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/30 overflow-hidden">
+                                                        {logger.modelImage ? (
+                                                            <img
+                                                                src={logger.modelImage}
+                                                                alt={logger.model || 'Device'}
+                                                                className="h-full w-full object-contain p-0.5"
+                                                            />
+                                                        ) : (
+                                                            <Radio className="size-4 text-muted-foreground" />
+                                                        )}
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <div className="font-medium">{logger.name}</div>
+                                                        <div className="flex items-center gap-2 mt-0.5">
+                                                            <span className="text-xs text-muted-foreground md:hidden">{logger.serialNumber}</span>
+                                                            {logger.model && (
+                                                                <span className="text-[10px] text-muted-foreground font-medium">{logger.model}</span>
+                                                            )}
+                                                            {logger.projectName && (
+                                                                <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                                                    <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: logger.projectColor || '#6b7280' }} />
+                                                                    {logger.projectName}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </Link>
                                         </TableCell>

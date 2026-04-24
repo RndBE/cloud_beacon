@@ -1630,7 +1630,7 @@ function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disa
     };
 
     return (
-        <Card className="mt-4">
+        <Card>
             <CardHeader>
                 <div className="flex items-center justify-between">
                     <div>
@@ -2178,7 +2178,7 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
     const maskedKey = ministesyKey ? ministesyKey.slice(0, 4) + '••••••••' + ministesyKey.slice(-4) : '—';
 
     return (
-        <Card className="mt-4">
+        <Card>
             <CardHeader>
                 <div className="flex items-center justify-between">
                     <CardTitle className="flex items-center gap-2">
@@ -2581,7 +2581,7 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
     const hasCredentials = ftpHost && ftpUser && ftpPass;
 
     return (
-        <Card className="mt-4">
+        <Card>
             <CardHeader>
                 <div className="flex items-center justify-between">
                     <div>
@@ -3720,7 +3720,7 @@ function HealthDiagnosticsCard({ diagnostics }: { diagnostics: DiagnosticsResult
     const failedChecks = allChecks.filter(c => !c.passed);
 
     return (
-        <Card className="mb-4">
+        <Card>
             <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2">
                     <HeartPulse className="size-5" /> Diagnosa Kesehatan
@@ -4020,7 +4020,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     </TabsList>
 
                     {/* ==================== OVERVIEW ==================== */}
-                    <TabsContent value="overview" className="mt-6">
+                    <TabsContent value="overview" className="mt-6 space-y-4">
                         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                             <InfoCard icon={Wifi} label={t('loggerDetail.connection')} value={logger.connectionType.toUpperCase()} color="blue" />
                             <InfoCard icon={Signal} label={t('loggerDetail.signal_strength')} value={`${logger.signalStrength}%`} color="emerald" />
@@ -4028,7 +4028,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             <InfoCard icon={Activity} label={t('loggerDetail.active_sensors')} value={`${logger.sensors.filter(s => s.status === 'active').length}/${logger.sensors.length}`} color="amber" />
                         </div>
 
-                        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                        <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
                                 <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> {t('loggerDetail.device_info')}</CardTitle></CardHeader>
                                 <CardContent>
@@ -4071,7 +4071,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             </Card>
                         </div>
 
-                        <Card className="mt-4">
+                        <Card>
                             <CardHeader>
                                 <CardTitle>{t('loggerDetail.sensor_summary')}</CardTitle>
                                 <CardDescription>{t('loggerDetail.latest_readings')}</CardDescription>
@@ -4094,17 +4094,17 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     </TabsContent>
 
                     {/* ==================== SENSORS ==================== */}
-                    <TabsContent value="sensors" className="mt-6">
+                    <TabsContent value="sensors" className="mt-6 space-y-4">
                         <SensorCrudPanel loggerId={logger.id} sensors={logger.sensors} deviceIdentifier={logger.deviceIdentifier} />
                     </TabsContent>
 
                     {/* ==================== SYSTEM ==================== */}
-                    <TabsContent value="system" className="mt-6">
+                    <TabsContent value="system" className="mt-6 space-y-4">
                         {/* Health Diagnostics */}
                         <HealthDiagnosticsCard diagnostics={diagnostics} />
 
                         {/* Internal Sensors */}
-                        <Card className="mb-4">
+                        <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> {t('loggerDetail.internal_sensors')}</CardTitle>
 
@@ -4219,7 +4219,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 initialUser={logger.ftpUser}
                             />
                         )}
-                        <Card className="mt-4">
+                        <Card>
                             <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="size-5" /> {t('loggerDetail.storage_management')}</CardTitle></CardHeader>
                             <CardContent>
                                 <div className="flex flex-wrap gap-3">
@@ -4238,9 +4238,9 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     </TabsContent>
 
                     {/* ==================== MAINTENANCE ==================== */}
-                    <TabsContent value="maintenance" className="mt-6">
+                    <TabsContent value="maintenance" className="mt-6 space-y-4">
                         {/* Set Mode & Calibration */}
-                        <div className="mb-4 grid gap-4 lg:grid-cols-2">
+                        <div className="grid gap-4 lg:grid-cols-2">
                             <SetModeCard logger={logger} />
                             <CalibrationCard logger={logger} />
                         </div>
@@ -4289,7 +4289,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     </TabsContent>
 
                     {/* ==================== LOGS ==================== */}
-                    <TabsContent value="logs" className="mt-6">
+                    <TabsContent value="logs" className="mt-6 space-y-4">
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2"><Terminal className="size-5" /> {t('loggerDetail.activity_logs')}</CardTitle>
@@ -4333,7 +4333,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     </TabsContent>
 
                     {/* ==================== API ==================== */}
-                    <TabsContent value="api" className="mt-6">
+                    <TabsContent value="api" className="mt-6 space-y-4">
                         <ApiDocumentation loggerId={logger.id} loggerName={logger.name} />
                     </TabsContent>
                 </Tabs>
