@@ -19,7 +19,7 @@ import {
     XCircle,
     Zap,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -84,6 +84,7 @@ interface PaginatedLogs {
 interface LoggerOption {
     id: number;
     name: string;
+    deviceId: string;
 }
 
 interface Stats {
@@ -152,10 +153,21 @@ function ResponseTimeBadge({ ms }: { ms: number | null }) {
 }
 
 export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: PageProps) {
-    const [localFilters, setLocalFilters] = useState(filters);
+    const [localFilters, setLocalFilters] = useState<Filters>(filters);
     const [detailLog, setDetailLog] = useState<LogEntry | null>(null);
     const [isFiltering, setIsFiltering] = useState(false);
     const [showRawPayload, setShowRawPayload] = useState(false);
+
+    // Sync local filter state whenever server-returned filters prop changes
+    useEffect(() => {
+        setLocalFilters({
+            status: filters.status || 'all',
+            target: filters.target || '',
+            logger_id: filters.logger_id || '',
+            from: filters.from || '',
+            to: filters.to || '',
+        });
+    }, [filters.status, filters.target, filters.logger_id, filters.from, filters.to]);
 
     function applyFilters(overrides: Partial<Filters> = {}) {
         const merged = { ...localFilters, ...overrides };
@@ -165,7 +177,7 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
         const params: Record<string, string> = {};
         if (merged.status && merged.status !== 'all') params.status = merged.status;
         if (merged.target) params.target = merged.target;
-        if (merged.logger_id) params.logger_id = merged.logger_id;
+        if (merged.logger_id && merged.logger_id !== 'all') params.logger_id = merged.logger_id;
         if (merged.from) params.from = merged.from;
         if (merged.to) params.to = merged.to;
 
@@ -179,14 +191,19 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
     function clearFilters() {
         const defaults: Filters = { status: 'all', target: '', logger_id: '', from: '', to: '' };
         setLocalFilters(defaults);
-        router.get('/forwarding-logs', {}, { preserveState: true, preserveScroll: true });
+        setIsFiltering(true);
+        router.get('/forwarding-logs', {}, {
+            preserveState: true,
+            preserveScroll: true,
+            onFinish: () => setIsFiltering(false),
+        });
     }
 
     function goToPage(page: number) {
         const params: Record<string, string> = { page: String(page) };
         if (localFilters.status && localFilters.status !== 'all') params.status = localFilters.status;
         if (localFilters.target) params.target = localFilters.target;
-        if (localFilters.logger_id) params.logger_id = localFilters.logger_id;
+        if (localFilters.logger_id && localFilters.logger_id !== 'all') params.logger_id = localFilters.logger_id;
         if (localFilters.from) params.from = localFilters.from;
         if (localFilters.to) params.to = localFilters.to;
         router.get('/forwarding-logs', params, { preserveState: true, preserveScroll: true });
@@ -268,7 +285,11 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                 <Filter className="size-4" /> Filter
                             </div>
                             <div className="w-[140px]">
-                                <Select value={localFilters.status} onValueChange={(v) => applyFilters({ status: v })}>
+                                <Select
+                                    key={`status-${localFilters.status}`}
+                                    value={localFilters.status || 'all'}
+                                    onValueChange={(v) => applyFilters({ status: v })}
+                                >
                                     <SelectTrigger className="h-9 text-sm">
                                         <SelectValue placeholder="Status" />
                                     </SelectTrigger>
@@ -280,15 +301,24 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                     </SelectContent>
                                 </Select>
                             </div>
-                            <div className="w-[180px]">
-                                <Select value={localFilters.logger_id || 'all'} onValueChange={(v) => applyFilters({ logger_id: v === 'all' ? '' : v })}>
+                            <div className="w-[220px] min-w-0">
+                                <Select
+                                    key={`logger-${localFilters.logger_id}`}
+                                    value={localFilters.logger_id || 'all'}
+                                    onValueChange={(v) => applyFilters({ logger_id: v === 'all' ? '' : v })}
+                                >
                                     <SelectTrigger className="h-9 text-sm">
                                         <SelectValue placeholder="Semua Logger" />
                                     </SelectTrigger>
-                                    <SelectContent>
+                                    <SelectContent position="popper" className="min-w-[280px]">
                                         <SelectItem value="all">Semua Logger</SelectItem>
                                         {loggers.map((l) => (
-                                            <SelectItem key={l.id} value={String(l.id)}>{l.name}</SelectItem>
+                                            <SelectItem key={l.id} value={String(l.id)}>
+                                                <span className="flex flex-col leading-tight">
+                                                    <span className="truncate">{l.name}</span>
+                                                    {l.deviceId && <span className="text-[10px] text-muted-foreground font-mono">{l.deviceId}</span>}
+                                                </span>
+                                            </SelectItem>
                                         ))}
                                     </SelectContent>
                                 </Select>

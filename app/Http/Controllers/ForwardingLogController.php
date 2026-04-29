@@ -32,7 +32,7 @@ class ForwardingLogController extends Controller
         }
 
         // Filter: logger
-        if ($request->filled('logger_id')) {
+        if ($request->filled('logger_id') && $request->logger_id !== 'all') {
             $query->where('logger_id', $request->logger_id);
         }
 
@@ -83,8 +83,9 @@ class ForwardingLogController extends Controller
             $loggerQuery->where('user_id', auth()->id());
         }
         $loggers = $loggerQuery->orderBy('name')->get()->map(fn($l) => [
-            'id'   => $l->id,
-            'name' => $l->name . ' (' . ($l->device_identifier ?? 'N/A') . ')',
+            'id'       => $l->id,
+            'name'     => $l->name,
+            'deviceId' => $l->device_identifier ?? '',
         ]);
 
         return Inertia::render('forwarding-logs/index', [
