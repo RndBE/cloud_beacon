@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\ProductionDevice;
+use App\Models\ProductionFirmwareLog;
 use Illuminate\Database\Seeder;
 
 class ProductionDeviceSeeder extends Seeder
@@ -102,6 +103,25 @@ class ProductionDeviceSeeder extends Seeder
 
             // ── Unregistered devices (available for new loggers) ──
             [
+                'serial_number' => 'BL110-2026-00001',
+                'device_id' => 'BL110-OTA-DEMO',
+                'model' => 'BL110',
+                'hardware_version' => 'v2.0',
+                'firmware_version' => 'v2.0',
+                'firmware_file_path' => 'firmware/production/BL110-v2.0.bin',
+                'firmware_file_name' => 'BL110-v2.0.bin',
+                'firmware_file_size' => file_exists(public_path('firmware/production/BL110-v2.0.bin'))
+                    ? filesize(public_path('firmware/production/BL110-v2.0.bin'))
+                    : null,
+                'firmware_uploaded_at' => now(),
+                'batch_number' => 'BATCH-2026-OTA-001',
+                'production_date' => '2026-05-08',
+                'tested_by' => 'QC Team OTA',
+                'qc_status' => 'passed',
+                'is_registered' => false,
+                'notes' => 'Sample production firmware for OTA update testing.',
+            ],
+            [
                 'serial_number' => 'BLC-2025-00050',
                 'device_id' => 'DEV-050',
                 'model' => 'Beacon Logger Pro X3',
@@ -149,7 +169,18 @@ class ProductionDeviceSeeder extends Seeder
         ];
 
         foreach ($devices as $device) {
-            ProductionDevice::create($device);
+            $productionDevice = ProductionDevice::create($device);
+
+            if (!empty($device['firmware_file_path'])) {
+                ProductionFirmwareLog::create([
+                    'production_device_id' => $productionDevice->id,
+                    'action' => 'firmware_seeded',
+                    'to_version' => $device['firmware_version'] ?? null,
+                    'file_name' => $device['firmware_file_name'] ?? null,
+                    'file_size' => $device['firmware_file_size'] ?? null,
+                    'message' => "Initial OTA firmware {$device['firmware_file_name']} registered for {$device['serial_number']}.",
+                ]);
+            }
         }
     }
 }

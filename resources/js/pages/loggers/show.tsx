@@ -108,12 +108,16 @@ interface SensorItem {
     functionCode: number | null;
     registerAddress: number | null;
     quantity: number | null;
+    baudrate: number | null;
+    serialFormat: string | null;
     scaleFactor: number | null;
     channel: number | null;
+    analogMode: number | null;
     port: number | null;
     lcdEnabled: boolean;
     logEnabled: boolean;
     sendEnabled: boolean;
+    fastPoll: boolean;
 }
 
 interface LogItem {
@@ -277,12 +281,16 @@ const EMPTY_FORM = {
     function_code: 3,
     register_address: 0,
     quantity: 1,
+    baudrate: 9600,
+    serial_format: '8N1',
     scale_factor: 1.0,
     channel: 0,
+    analog_mode: 1,
     port: 1,
     lcd_enabled: true,
     log_enabled: true,
     send_enabled: true,
+    fast_poll: false,
 };
 
 // Helper: fetch with CSRF
@@ -362,6 +370,10 @@ interface SyncDiffItem {
     modbus_slave_id?: number | null;
     port?: number | null;
     channel?: number | null;
+    baudrate?: number | null;
+    serial_format?: string | null;
+    analog_mode?: number | null;
+    fast_poll?: boolean | null;
     db_id?: number;
 }
 
@@ -1092,12 +1104,16 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
             function_code: sensor.functionCode || 3,
             register_address: sensor.registerAddress || 0,
             quantity: sensor.quantity || 1,
+            baudrate: sensor.baudrate || 9600,
+            serial_format: sensor.serialFormat || '8N1',
             scale_factor: sensor.scaleFactor || 1.0,
             channel: sensor.channel || 0,
+            analog_mode: sensor.analogMode ?? 1,
             port: sensor.port || 1,
             lcd_enabled: sensor.lcdEnabled ?? true,
             log_enabled: sensor.logEnabled ?? true,
             send_enabled: sensor.sendEnabled ?? true,
+            fast_poll: sensor.fastPoll ?? false,
         });
         setErrors({});
         setDialogOpen(true);
@@ -1320,7 +1336,7 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Slave ID</Label>
-                                        <Input type="number" min={1} max={247} value={form.modbus_slave_id} onChange={e => setForm({ ...form, modbus_slave_id: parseInt(e.target.value) || 1 })} />
+                                        <Input type="number" min={1} max={5} value={form.modbus_slave_id} onChange={e => setForm({ ...form, modbus_slave_id: parseInt(e.target.value) || 1 })} />
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Device Name</Label>
@@ -1331,8 +1347,6 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Function Code</Label>
                                         <select value={form.function_code} onChange={e => setForm({ ...form, function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                            <option value={1}>01 (Coils)</option>
-                                            <option value={2}>02 (DI)</option>
                                             <option value={3}>03 (HR)</option>
                                             <option value={4}>04 (IR)</option>
                                         </select>
@@ -1342,9 +1356,34 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                         <Input type="number" min={0} max={65535} value={form.register_address} onChange={e => setForm({ ...form, register_address: parseInt(e.target.value) || 0 })} />
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Quantity</Label>
-                                        <Input type="number" min={1} max={125} value={form.quantity} onChange={e => setForm({ ...form, quantity: parseInt(e.target.value) || 1 })} />
+                                        <Label className="text-xs">Item Count</Label>
+                                        <Input type="number" min={1} max={16} value={form.quantity} onChange={e => setForm({ ...form, quantity: parseInt(e.target.value) || 1 })} />
                                     </div>
+                                </div>
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Baudrate</Label>
+                                        <select value={form.baudrate} onChange={e => setForm({ ...form, baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map(rate => (
+                                                <option key={rate} value={rate}>{rate}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Format</Label>
+                                        <select value={form.serial_format} onChange={e => setForm({ ...form, serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            <option value="8N1">8N1</option>
+                                            <option value="8E1">8E1</option>
+                                            <option value="8O1">8O1</option>
+                                        </select>
+                                    </div>
+                                    <label className="flex items-center gap-2 pt-5 text-xs">
+                                        <input type="checkbox" checked={form.fast_poll} onChange={e => setForm({ ...form, fast_poll: e.target.checked })} className="rounded" />
+                                        Fast Poll
+                                    </label>
+                                </div>
+                                <div className="text-[10px] text-muted-foreground">
+                                    Register juga dikirim sebagai alamat parameter; jika firmware memakai sequential fallback, nilai ini tetap menjadi register awal.
                                 </div>
                             </div>
                         )}
@@ -1355,7 +1394,7 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                 <p className="text-xs font-semibold uppercase text-muted-foreground">RS232 Config</p>
                                 <div className="grid gap-1.5">
                                     <Label className="text-xs">Port</Label>
-                                    <Input type="number" min={1} max={4} value={form.port} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
+                                    <Input type="number" min={1} max={2} value={form.port} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
                                 </div>
                             </div>
                         )}
@@ -1366,8 +1405,15 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                 <p className="text-xs font-semibold uppercase text-muted-foreground">Analog Config</p>
                                 <div className="grid gap-1.5">
                                     <Label className="text-xs">Channel</Label>
-                                    <Input type="number" min={0} max={15} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 0 })} />
+                                    <Input type="number" min={0} max={7} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 0 })} />
                                     <p className="text-[10px] text-muted-foreground">Channel sesuai jumlah yang dikonfigurasi di Production Models</p>
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Input Mode</Label>
+                                    <select value={form.analog_mode} onChange={e => setForm({ ...form, analog_mode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <option value={1}>4-20mA Current Loop</option>
+                                        <option value={0}>0-10V Voltage</option>
+                                    </select>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
@@ -4743,4 +4789,3 @@ function ApiDocumentation({ loggerId, loggerName }: { loggerId: string; loggerNa
         </div>
     );
 }
-

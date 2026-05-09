@@ -56,6 +56,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/import', [ProductionController::class, 'import'])
         ->middleware('permission:production.import')
         ->name('production.import');
+    Route::post('production/{id}/firmware', [ProductionController::class, 'updateFirmware'])
+        ->middleware('permission:production.create')
+        ->name('production.firmware.update');
     Route::delete('production/{id}', [ProductionController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.destroy');
@@ -212,6 +215,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
 // API v1 Routes
 Route::prefix('api/v1')->group(function () {
+    Route::get('production/{serialNumber}/firmware', [ProductionController::class, 'firmware']);
     Route::get('loggers/{id}', [\App\Http\Controllers\Api\LoggerApiController::class, 'show']);
     Route::get('loggers/{id}/sensors', [\App\Http\Controllers\Api\LoggerApiController::class, 'sensors']);
     Route::get('loggers/{id}/logs', [\App\Http\Controllers\Api\LoggerApiController::class, 'logs']);

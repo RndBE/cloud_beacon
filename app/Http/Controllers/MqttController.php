@@ -353,10 +353,29 @@ class MqttController extends Controller
                 $added[] = $ds;
             } else {
                 $matchedDbIds[] = $match->id;
-                // Check for structural changes (unit, device_name) — NOT value (readings change constantly)
+                // Check for structural changes — NOT value (readings change constantly)
                 $changes = [];
                 if ($match->unit !== ($ds['unit'] ?? '')) $changes['unit'] = ['old' => $match->unit, 'new' => $ds['unit']];
                 if ($match->device_name !== ($ds['device_name'] ?? null)) $changes['device_name'] = ['old' => $match->device_name, 'new' => $ds['device_name']];
+                foreach ([
+                    'scale_factor',
+                    'min_value',
+                    'max_value',
+                    'function_code',
+                    'register_address',
+                    'quantity',
+                    'baudrate',
+                    'serial_format',
+                    'lcd_enabled',
+                    'log_enabled',
+                    'send_enabled',
+                    'fast_poll',
+                    'analog_mode',
+                ] as $field) {
+                    if (($match->{$field} ?? null) != ($ds[$field] ?? null)) {
+                        $changes[$field] = ['old' => $match->{$field} ?? null, 'new' => $ds[$field] ?? null];
+                    }
+                }
 
                 if (!empty($changes)) {
                     $changed[] = ['sensor' => $ds, 'db_id' => $match->id, 'db_name' => $match->name, 'changes' => $changes];
@@ -424,15 +443,21 @@ class MqttController extends Controller
                 'unit' => $ds['unit'] ?? '',
                 'value' => $ds['value'] ?? 0,
                 'scale_factor' => $ds['scale_factor'] ?? null,
+                'min_value' => $ds['min_value'] ?? 0,
+                'max_value' => $ds['max_value'] ?? 100,
                 'function_code' => $ds['function_code'] ?? null,
                 'register_address' => $ds['register_address'] ?? null,
                 'quantity' => $ds['quantity'] ?? null,
+                'baudrate' => $ds['baudrate'] ?? null,
+                'serial_format' => $ds['serial_format'] ?? null,
                 'lcd_enabled' => $ds['lcd_enabled'] ?? false,
                 'log_enabled' => $ds['log_enabled'] ?? false,
                 'send_enabled' => $ds['send_enabled'] ?? false,
+                'fast_poll' => $ds['fast_poll'] ?? false,
                 'modbus_slave_id' => $ds['modbus_slave_id'] ?? null,
                 'port' => $ds['port'] ?? null,
                 'channel' => $ds['channel'] ?? null,
+                'analog_mode' => $ds['analog_mode'] ?? null,
                 'status' => 'active',
             ]);
             $synced[] = $sensor->id;
@@ -450,12 +475,18 @@ class MqttController extends Controller
                     'value' => $ds['value'] ?? $sensor->value,
                     'type' => $ds['type'] ?? $sensor->type,
                     'scale_factor' => $ds['scale_factor'] ?? $sensor->scale_factor,
+                    'min_value' => $ds['min_value'] ?? $sensor->min_value,
+                    'max_value' => $ds['max_value'] ?? $sensor->max_value,
                     'function_code' => $ds['function_code'] ?? $sensor->function_code,
                     'register_address' => $ds['register_address'] ?? $sensor->register_address,
                     'quantity' => $ds['quantity'] ?? $sensor->quantity,
+                    'baudrate' => $ds['baudrate'] ?? $sensor->baudrate,
+                    'serial_format' => $ds['serial_format'] ?? $sensor->serial_format,
                     'lcd_enabled' => $ds['lcd_enabled'] ?? $sensor->lcd_enabled,
                     'log_enabled' => $ds['log_enabled'] ?? $sensor->log_enabled,
                     'send_enabled' => $ds['send_enabled'] ?? $sensor->send_enabled,
+                    'fast_poll' => $ds['fast_poll'] ?? $sensor->fast_poll,
+                    'analog_mode' => $ds['analog_mode'] ?? $sensor->analog_mode,
                     'status' => 'active',
                 ]);
                 $synced[] = $sensor->id;
@@ -511,76 +542,26 @@ class MqttController extends Controller
             // RS485 / RS232 only
             'scale_factor'    => 'nullable|numeric',
             // RS485-specific
-            'modbus_slave_id' => 'required_if:connection_type,rs485|integer|min:1|max:247',
+            'modbus_slave_id' => 'required_if:connection_type,rs485|integer|min:1|max:5',
             'device_name'     => 'nullable|string|max:50',
-            'function_code'   => 'required_if:connection_type,rs485|integer|in:1,2,3,4',
+            'function_code'   => 'required_if:connection_type,rs485|integer|in:3,4',
             'register_address'=> 'required_if:connection_type,rs485|integer|min:0',
-            'quantity'        => 'required_if:connection_type,rs485|integer|min:1',
+            'quantity'        => 'required_if:connection_type,rs485|integer|min:1|max:16',
+            'baudrate'        => 'nullable|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
+            'serial_format'   => 'nullable|string|in:8N1,8E1,8O1',
+            'fast_poll'       => 'nullable|boolean',
             // RS232-specific
-            'port'            => 'required_if:connection_type,rs232|integer|min:1|max:4',
+            'port'            => 'required_if:connection_type,rs232|integer|min:1|max:2',
             // Analog-specific
-            'channel'         => 'required_if:connection_type,analog|integer|min:0|max:15',
+            'channel'         => 'required_if:connection_type,analog|integer|min:0|max:7',
+            'analog_mode'     => 'required_if:connection_type,analog|integer|in:0,1',
             'min_value'       => 'required_if:connection_type,analog|numeric',
             'max_value'       => 'required_if:connection_type,analog|numeric',
         ]);
 
         $idLogger  = $request->input('id_logger');
         $connType  = $request->input('connection_type');
-        $lcdFlag   = $request->boolean('lcd_enabled', true) ? 1 : 0;
-        $logFlag   = $request->boolean('log_enabled', true) ? 1 : 0;
-        $sendFlag  = $request->boolean('send_enabled', true) ? 1 : 0;
-
-        if ($connType === 'analog') {
-            // New ANALOG protocol:
-            // {"SENSORS":{"cmd":"SET","type":"ANALOG","ch":N,"s":[[name,min,max,unit,lcd,sd,server]]}}
-            $sEntry = [
-                $request->input('sensor_name'),
-                (float) $request->input('min_value', 0),    // batas bawah
-                (float) $request->input('max_value', 100),  // batas atas
-                $request->input('unit'),
-                $lcdFlag,
-                $logFlag,
-                $sendFlag,
-            ];
-
-            $payload = [
-                'SENSORS' => [
-                    'cmd'  => 'SET',
-                    'type' => 'ANALOG',   // uppercase per protocol update
-                    'ch'   => (int) $request->input('channel'),
-                    's'    => [$sEntry],  // array-of-arrays
-                ],
-            ];
-        } else {
-            // RS485 / RS232 protocol (unchanged):
-            // s: [name, scale_factor, unit, lcd, log, send]
-            $sEntry = [
-                $request->input('sensor_name'),
-                (float) ($request->input('scale_factor', 1.0)),
-                $request->input('unit'),
-                $lcdFlag,
-                $logFlag,
-                $sendFlag,
-            ];
-
-            $payload = ['SENSORS' => ['cmd' => 'SET', 'type' => $connType]];
-
-            if ($connType === 'rs485') {
-                $payload['SENSORS']['d'] = [[
-                    'cfg' => [
-                        (int) $request->input('modbus_slave_id'),
-                        $request->input('device_name', ''),
-                        (int) $request->input('function_code'),
-                        (int) $request->input('register_address'),
-                        (int) $request->input('quantity'),
-                    ],
-                    's' => [$sEntry],
-                ]];
-            } elseif ($connType === 'rs232') {
-                $payload['SENSORS']['p'] = (int) $request->input('port');
-                $payload['SENSORS']['s'] = $sEntry;
-            }
-        }
+        $payload = MqttService::buildSensorSetPayload($request->all());
 
         $mqtt = new MqttService();
         $result = $mqtt->sendSensorSet($idLogger, $payload);
@@ -596,6 +577,7 @@ class MqttController extends Controller
                 'lcd_enabled'     => $request->boolean('lcd_enabled', true),
                 'log_enabled'     => $request->boolean('log_enabled', true),
                 'send_enabled'    => $request->boolean('send_enabled', true),
+                'fast_poll'       => $request->boolean('fast_poll', false),
                 'status'          => 'active',
             ];
 
@@ -606,14 +588,16 @@ class MqttController extends Controller
                 $sensorData['function_code']    = $request->input('function_code');
                 $sensorData['register_address'] = $request->input('register_address');
                 $sensorData['quantity']         = $request->input('quantity');
+                $sensorData['baudrate']         = $request->input('baudrate');
+                $sensorData['serial_format']    = $request->input('serial_format');
             } elseif ($connType === 'rs232') {
                 $sensorData['scale_factor'] = $request->input('scale_factor', 1.0);
                 $sensorData['port']         = $request->input('port');
             } elseif ($connType === 'analog') {
-                // Repurpose scale_factor = min_value, offset = max_value for analog sensors
-                $sensorData['scale_factor'] = $request->input('min_value', 0);
-                $sensorData['offset']       = $request->input('max_value', 100);
-                $sensorData['channel']      = $request->input('channel');
+                $sensorData['min_value']   = $request->input('min_value', 0);
+                $sensorData['max_value']   = $request->input('max_value', 100);
+                $sensorData['analog_mode'] = $request->input('analog_mode', 1);
+                $sensorData['channel']     = $request->input('channel');
             }
 
             $sensor = Sensor::create($sensorData);

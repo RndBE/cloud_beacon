@@ -24,8 +24,11 @@ class Sensor extends Model
         'function_code',
         'register_address',
         'quantity',
+        'baudrate',
+        'serial_format',
         // Analog
         'channel',
+        'analog_mode',
         // RS232
         'port',
         // Common protocol fields
@@ -33,6 +36,7 @@ class Sensor extends Model
         'lcd_enabled',
         'log_enabled',
         'send_enabled',
+        'fast_poll',
     ];
 
     protected function casts(): array
@@ -47,11 +51,14 @@ class Sensor extends Model
             'function_code' => 'integer',
             'register_address' => 'integer',
             'quantity' => 'integer',
+            'baudrate' => 'integer',
             'channel' => 'integer',
+            'analog_mode' => 'integer',
             'port' => 'integer',
             'lcd_enabled' => 'boolean',
             'log_enabled' => 'boolean',
             'send_enabled' => 'boolean',
+            'fast_poll' => 'boolean',
         ];
     }
 

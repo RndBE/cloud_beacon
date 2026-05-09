@@ -40,17 +40,21 @@ class SensorController extends Controller
             'max_value' => 'required|numeric|gte:min_value',
             // Protocol fields (optional — only for protocol-configured sensors)
             'connection_type' => 'nullable|string|in:rs485,rs232,analog',
-            'modbus_slave_id' => 'nullable|integer|min:1|max:247',
+            'modbus_slave_id' => 'nullable|integer|min:1|max:5',
             'device_name' => 'nullable|string|max:50',
-            'function_code' => 'nullable|integer|in:1,2,3,4',
+            'function_code' => 'nullable|integer|in:3,4',
             'register_address' => 'nullable|integer|min:0|max:65535',
-            'quantity' => 'nullable|integer|min:1|max:125',
+            'quantity' => 'nullable|integer|min:1|max:16',
+            'baudrate' => 'nullable|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
+            'serial_format' => 'nullable|string|in:8N1,8E1,8O1',
             'scale_factor' => 'nullable|numeric',
-            'channel' => 'nullable|integer|min:0|max:15',
-            'port' => 'nullable|integer|min:1|max:4',
+            'channel' => 'nullable|integer|min:0|max:7',
+            'analog_mode' => 'nullable|integer|in:0,1',
+            'port' => 'nullable|integer|min:1|max:2',
             'lcd_enabled' => 'nullable|boolean',
             'log_enabled' => 'nullable|boolean',
             'send_enabled' => 'nullable|boolean',
+            'fast_poll' => 'nullable|boolean',
         ];
     }
 
@@ -63,36 +67,7 @@ class SensorController extends Controller
             return null;
         }
 
-        $connType = $data['connection_type'];
-        $sEntry = [
-            $data['name'],
-            (float) ($data['scale_factor'] ?? 1.0),
-            $data['unit'],
-            ($data['lcd_enabled'] ?? true) ? 1 : 0,
-            ($data['log_enabled'] ?? true) ? 1 : 0,
-            ($data['send_enabled'] ?? true) ? 1 : 0,
-        ];
-
-        $payload = ['SENSORS' => ['cmd' => 'SET', 'type' => $connType]];
-
-        if ($connType === 'rs485') {
-            $payload['SENSORS']['d'] = [[
-                'cfg' => [
-                    (int) ($data['modbus_slave_id'] ?? 1),
-                    $data['device_name'] ?? '',
-                    (int) ($data['function_code'] ?? 3),
-                    (int) ($data['register_address'] ?? 0),
-                    (int) ($data['quantity'] ?? 1),
-                ],
-                's' => [$sEntry],
-            ]];
-        } elseif ($connType === 'rs232') {
-            $payload['SENSORS']['p'] = (int) ($data['port'] ?? 1);
-            $payload['SENSORS']['s'] = $sEntry;
-        } elseif ($connType === 'analog') {
-            $payload['SENSORS']['ch'] = (int) ($data['channel'] ?? 0);
-            $payload['SENSORS']['s'] = $sEntry;
-        }
+        $payload = MqttService::buildSensorSetPayload($data);
 
         $mqtt = new MqttService();
         return $mqtt->sendSensorSet($logger->device_identifier, $payload);

@@ -277,9 +277,10 @@ class MqttService
      * Parse the new SENSORS GET response format into a flat normalized sensor list.
      *
      * Input format (grouped by protocol):
-     *   { "rs485": [ { "cfg": [slave_id, device_name, func_code, reg_addr, qty], "s": [[name, scale, unit, lcd, log, send], ...] } ],
-     *     "rs232": [ { "p": port, "s": [[name, scale, unit, lcd, log, send], ...] } ],
-     *     "analog": [ { "ch": channel, "s": [[name, scale, offset, unit, lcd, log, send], ...] } ] }
+     *   { "rs485": [ { "cfg": [slave_id, device_name, func_code, fallback_reg, item_count, baudrate, format],
+     *                  "s": [[name, scale, unit, lcd, sd, server, register_address, fast_poll], ...] } ],
+     *     "rs232": [ { "p": port, "s": [[name, scale, unit, lcd, sd, server], ...] } ],
+     *     "analog": [ { "ch": channel, "mode": 1, "s": [[name, min, max, unit, lcd, sd, server], ...] } ] }
      *
      * Output: flat array of normalized sensor entries.
      */
@@ -287,46 +288,53 @@ class MqttService
     {
         $sensors = [];
 
-        // RS485 — cfg: [slave_id, device_name, function_code, register_address, quantity]
-        //          s:   [name, scale, unit, lcd, log, send]
-        foreach ($raw['rs485'] ?? [] as $device) {
+        // RS485 — cfg: [slave_id, device_name, function_code, fallback_register_address, item_count, baudrate, serial_format]
+        //          s:   [name, scale, unit, lcd, sd, server, register_address, fast_poll]
+        $rs485Devices = $raw['rs485'] ?? $raw['RS485'] ?? [];
+        foreach ($rs485Devices as $device) {
             $cfg = $device['cfg'] ?? [];
             $slaveId = $cfg[0] ?? null;
             $deviceName = $cfg[1] ?? null;
             $funcCode = $cfg[2] ?? null;
-            $regAddr = $cfg[3] ?? null;
+            $fallbackRegAddr = $cfg[3] ?? null;
             $quantity = $cfg[4] ?? null;
+            $baudrate = $cfg[5] ?? null;
+            $serialFormat = $cfg[6] ?? null;
 
-            foreach ($device['s'] ?? [] as $s) {
+            foreach (self::normalizeSensorRows($device['s'] ?? []) as $s) {
                 $sensors[] = [
                     'connection_type' => 'rs485',
                     'name' => $s[0] ?? 'Unknown',
                     'device_name' => $deviceName,
                     'scale_factor' => $s[1] ?? 1,
-                    'unit' => is_string($s[2]) ? $s[2] : '',
+                    'unit' => is_string($s[2] ?? null) ? $s[2] : '',
                     'lcd_enabled' => (bool) ($s[3] ?? false),
                     'log_enabled' => (bool) ($s[4] ?? false),
                     'send_enabled' => (bool) ($s[5] ?? false),
                     'modbus_slave_id' => $slaveId,
                     'function_code' => $funcCode,
-                    'register_address' => $regAddr,
+                    'register_address' => $s[6] ?? $fallbackRegAddr,
                     'quantity' => $quantity,
+                    'baudrate' => isset($baudrate) ? (int) $baudrate : null,
+                    'serial_format' => is_string($serialFormat) ? $serialFormat : null,
+                    'fast_poll' => (bool) ($s[7] ?? false),
                 ];
             }
         }
 
         // RS232 — p: port
-        //          s: [name, scale, unit, lcd, log, send]
-        foreach ($raw['rs232'] ?? [] as $device) {
+        //          s: [[name, scale, unit, lcd, sd, server], ...]
+        $rs232Devices = $raw['rs232'] ?? $raw['RS232'] ?? [];
+        foreach ($rs232Devices as $device) {
             $port = $device['p'] ?? 1;
 
-            foreach ($device['s'] ?? [] as $s) {
+            foreach (self::normalizeSensorRows($device['s'] ?? []) as $s) {
                 $sensors[] = [
                     'connection_type' => 'rs232',
                     'name' => $s[0] ?? 'Unknown',
                     'device_name' => null,
                     'scale_factor' => $s[1] ?? 1,
-                    'unit' => is_string($s[2]) ? $s[2] : '',
+                    'unit' => is_string($s[2] ?? null) ? $s[2] : '',
                     'lcd_enabled' => (bool) ($s[3] ?? false),
                     'log_enabled' => (bool) ($s[4] ?? false),
                     'send_enabled' => (bool) ($s[5] ?? false),
@@ -348,27 +356,35 @@ class MqttService
         $analogDevices = $raw['analog'] ?? $raw['ANALOG'] ?? [];
         foreach ($analogDevices as $device) {
             $channel = $device['ch'] ?? 0;
+            $mode = $device['mode'] ?? null;
 
-            foreach ($device['s'] ?? [] as $s) {
+            foreach (self::normalizeSensorRows($device['s'] ?? []) as $s) {
                 $sensors[] = [
                     'connection_type' => 'analog',
                     'name' => $s[0] ?? 'Unknown',
                     'device_name' => null,
                     'min_value' => isset($s[1]) ? (float) $s[1] : 0,   // batas bawah
                     'max_value' => isset($s[2]) ? (float) $s[2] : 100, // batas atas
-                    // Repurpose these columns to store min/max for compatibility
-                    'scale_factor' => isset($s[1]) ? (float) $s[1] : 0,
-                    'offset' => isset($s[2]) ? (float) $s[2] : 100,
                     'unit' => is_string($s[3] ?? null) ? $s[3] : '',
                     'lcd_enabled' => (bool) ($s[4] ?? false),
                     'log_enabled' => (bool) ($s[5] ?? false),
                     'send_enabled' => (bool) ($s[6] ?? false),
                     'channel' => $channel,
+                    'analog_mode' => isset($mode) ? (int) $mode : null,
                 ];
             }
         }
 
         return $sensors;
+    }
+
+    private static function normalizeSensorRows(array $rows): array
+    {
+        if ($rows === []) {
+            return [];
+        }
+
+        return is_array($rows[0] ?? null) ? $rows : [$rows];
     }
 
     /**
@@ -444,6 +460,98 @@ class MqttService
     }
 
     /**
+     * Build a firmware-compatible SENSORS SET payload from normalized form data.
+     */
+    public static function buildSensorSetPayload(array $data): array
+    {
+        $connType = strtolower((string) ($data['connection_type'] ?? ''));
+        $name = (string) ($data['sensor_name'] ?? $data['name'] ?? 'Unknown');
+        $unit = (string) ($data['unit'] ?? '');
+        $lcdFlag = array_key_exists('lcd_enabled', $data) ? ((bool) $data['lcd_enabled'] ? 1 : 0) : 1;
+        $sdFlag = array_key_exists('log_enabled', $data) ? ((bool) $data['log_enabled'] ? 1 : 0) : 1;
+        $serverFlag = array_key_exists('send_enabled', $data) ? ((bool) $data['send_enabled'] ? 1 : 0) : 1;
+
+        if ($connType === 'analog') {
+            return [
+                'SENSORS' => [
+                    'cmd' => 'SET',
+                    'type' => 'ANALOG',
+                    'ch' => (int) ($data['channel'] ?? 0),
+                    'mode' => (int) ($data['analog_mode'] ?? 1),
+                    's' => [[
+                        $name,
+                        (float) ($data['min_value'] ?? 0),
+                        (float) ($data['max_value'] ?? 100),
+                        $unit,
+                        $lcdFlag,
+                        $sdFlag,
+                        $serverFlag,
+                    ]],
+                ],
+            ];
+        }
+
+        if ($connType === 'rs232') {
+            return [
+                'SENSORS' => [
+                    'cmd' => 'SET',
+                    'type' => 'RS232',
+                    'p' => (int) ($data['port'] ?? 1),
+                    's' => [[
+                        $name,
+                        (float) ($data['scale_factor'] ?? 1.0),
+                        $unit,
+                        $lcdFlag,
+                        $sdFlag,
+                        $serverFlag,
+                    ]],
+                ],
+            ];
+        }
+
+        $cfg = [
+            (int) ($data['modbus_slave_id'] ?? 1),
+            (string) ($data['device_name'] ?? ''),
+            (int) ($data['function_code'] ?? 3),
+            (int) ($data['register_address'] ?? 0),
+            (int) ($data['quantity'] ?? 1),
+        ];
+
+        if (!empty($data['baudrate'])) {
+            $cfg[] = (int) $data['baudrate'];
+        }
+
+        if (!empty($data['serial_format'])) {
+            if (count($cfg) === 5) {
+                $cfg[] = 9600;
+            }
+            $cfg[] = (string) $data['serial_format'];
+        }
+
+        $sEntry = [
+            $name,
+            (float) ($data['scale_factor'] ?? 1.0),
+            $unit,
+            $lcdFlag,
+            $sdFlag,
+            $serverFlag,
+            (int) ($data['register_address'] ?? 0),
+            !empty($data['fast_poll']) ? 1 : 0,
+        ];
+
+        return [
+            'SENSORS' => [
+                'cmd' => 'SET',
+                'type' => 'RS485',
+                'd' => [[
+                    'cfg' => $cfg,
+                    's' => [$sEntry],
+                ]],
+            ],
+        ];
+    }
+
+    /**
      * Send a SENSORS DEL command to remove a sensor config from the logger.
      *
      * @param string $idLogger
@@ -463,7 +571,7 @@ class MqttService
         $payload = json_encode([
             'SENSORS' => [
                 'cmd' => 'DEL',
-                'type' => $type,
+                'type' => strtoupper($type),
                 $key => $id,
             ],
         ]);
