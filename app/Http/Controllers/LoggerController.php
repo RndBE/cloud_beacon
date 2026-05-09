@@ -229,6 +229,31 @@ class LoggerController extends Controller
         ]);
     }
 
+    public function protocol(string $hash): Response
+    {
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+
+        $logger = $query->findOrFail($id);
+
+        return Inertia::render('loggers/protocol', [
+            'logger' => [
+                'id' => IdHasher::encode($logger->id),
+                'name' => $logger->name,
+                'serialNumber' => $logger->serial_number,
+                'status' => $logger->status,
+                'deviceIdentifier' => $logger->device_identifier,
+                'model' => $logger->model,
+                'firmwareVersion' => $logger->firmware_version,
+            ],
+        ]);
+    }
+
     public function updateConfig(Request $request, string $hash)
     {
         $id = IdHasher::decode($hash);

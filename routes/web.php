@@ -37,6 +37,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('loggers', [LoggerController::class, 'index'])
         ->middleware('permission:loggers.view')
         ->name('loggers.index');
+    Route::get('loggers/{id}/protocol', [LoggerController::class, 'protocol'])
+        ->middleware('permission:loggers.view')
+        ->name('loggers.protocol');
     Route::get('loggers/{id}', [LoggerController::class, 'show'])
         ->middleware('permission:loggers.view')
         ->name('loggers.show');
@@ -113,6 +116,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.system.set-mode');
     Route::post('api/mqtt/calibration/set', [MqttController::class, 'setCalibration'])
         ->name('api.mqtt.calibration.set');
+    Route::post('api/mqtt/protocol/command', [MqttController::class, 'sendProtocolCommand'])
+        ->name('api.mqtt.protocol.command');
 
     // TEMPORARY: Compare GET vs GET_ALL sensor formats
     Route::get('api/mqtt/sensors/compare/{id_logger}', function (string $id_logger) {

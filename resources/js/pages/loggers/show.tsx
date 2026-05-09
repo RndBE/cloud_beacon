@@ -4025,6 +4025,14 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         {logger.deviceIdentifier && (
                             <SyncFromDeviceDialog deviceIdentifier={logger.deviceIdentifier} loggerId={logger.id} label={t('loggerDetail.sync')} />
                         )}
+                        {logger.deviceIdentifier && (
+                            <Button asChild variant="outline" size="sm" className="gap-1.5">
+                                <Link href={`/loggers/${logger.id}/protocol`}>
+                                    <Terminal className="size-4" />
+                                    Protocol
+                                </Link>
+                            </Button>
+                        )}
                         {!logger.deviceIdentifier && (
                             <Button variant="outline" size="sm" className="gap-1.5" disabled>
                                 <RefreshCw className="size-4" />

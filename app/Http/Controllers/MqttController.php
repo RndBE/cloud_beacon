@@ -827,6 +827,92 @@ class MqttController extends Controller
 
         return response()->json($result);
     }
+
+    /**
+     * Send an allowlisted protocol command that does not have a dedicated UI/service yet.
+     */
+    public function sendProtocolCommand(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'module' => 'required|string|max:32',
+            'payload' => 'required|array',
+        ]);
+
+        $module = strtoupper($request->input('module'));
+        $blockedModules = ['PRODUCTION', 'SDCARD'];
+        $allowedModules = [
+            'RTC',
+            'NET',
+            'AUTH',
+            'WDT',
+            'SIM',
+            'CAL',
+            'STATUS',
+            'FAC',
+            'AWLR_PUMP',
+            'P_OUT24',
+            'P_OUT12',
+            'SENS_DOOR',
+            'ALERT',
+            'MODBUSTCP',
+            'POWER',
+            'POWER_CAL',
+            'FTP',
+        ];
+
+        if (in_array($module, $blockedModules, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => "{$module} tidak dikirim via MQTT. Modul ini hanya boleh lewat UART/Bluetooth sesuai dokumen.",
+            ], 422);
+        }
+
+        if (!in_array($module, $allowedModules, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Module tidak ada di allowlist protocol command.',
+            ], 422);
+        }
+
+        $payload = $request->input('payload');
+        if (!array_key_exists($module, $payload)) {
+            return response()->json([
+                'success' => false,
+                'message' => "Payload harus memiliki root key {$module}.",
+            ], 422);
+        }
+
+        $idLogger = $request->input('id_logger');
+        $logger = $this->resolveLogger($idLogger);
+
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
+        $mqtt = new MqttService();
+        $result = $mqtt->sendProtocolCommand($idLogger, $payload, $module);
+
+        \App\Models\ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'protocol_command',
+            'status' => $result['success'] ? 'success' : 'failed',
+            'level' => $result['success'] ? 'info' : 'warning',
+            'message' => $module . ' command: ' . json_encode($this->redactProtocolPayload($payload)),
+            'created_at' => now(),
+        ]);
+
+        if ($result['success']) {
+            $logger->update([
+                'status' => 'online',
+                'last_connected_at' => now(),
+                'last_seen_at' => now(),
+            ]);
+        }
+
+        return response()->json($result);
+    }
+
     /**
      * Download a file from the FTP server using stored credentials.
      * Connects to FTP, downloads the file, and streams it to the browser.
@@ -1106,5 +1192,18 @@ class MqttController extends Controller
         if (str_contains($name, 'wind')) return 'pressure'; // generic fallback for wind sensors
 
         return 'pressure'; // safe default
+    }
+
+    private function redactProtocolPayload(array $payload): array
+    {
+        if (isset($payload['AUTH']['pin'])) {
+            $payload['AUTH']['pin'] = '***';
+        }
+
+        if (($payload['FTP']['cmd'] ?? null) === 'SET' && isset($payload['FTP']['d'][3])) {
+            $payload['FTP']['d'][3] = '***';
+        }
+
+        return $payload;
     }
 }

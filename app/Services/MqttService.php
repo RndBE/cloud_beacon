@@ -1308,6 +1308,160 @@ class MqttService
         return $result;
     }
 
+    /**
+     * Send a protocol command from the command-center page.
+     *
+     * This intentionally stays allowlist-driven in the controller. The service only
+     * handles transport and accepts the first response that belongs to the module.
+     *
+     * @return array{success: bool, message: string, data?: mixed, raw?: string}
+     */
+    public function sendProtocolCommand(string $idLogger, array $payload, string $module): array
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
+        $result = null;
+
+        if ($jsonPayload === false) {
+            return ['success' => false, 'message' => 'Payload tidak bisa di-encode ke JSON'];
+        }
+
+        Log::info("[MQTT] ═══════════════════════════════════════════════");
+        Log::info("[MQTT] [PROTOCOL {$module}] Sending command to: {$idLogger}");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->timeout)
+                ->setKeepAliveInterval(10);
+
+            $mqtt->connect($connectionSettings, true);
+            Log::info("[MQTT] ✅ Connected");
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt, $module) {
+                Log::info("[MQTT] 📩 [PROTOCOL {$module}] Received: {$message}");
+
+                $trimmed = trim($message);
+                if ($trimmed === '') {
+                    return;
+                }
+
+                if (str_starts_with($trimmed, 'ERR:')) {
+                    $result = ['success' => false, 'message' => $trimmed, 'raw' => $message];
+                    $mqtt->interrupt();
+                    return;
+                }
+
+                if (str_starts_with($trimmed, 'OK:')) {
+                    $result = ['success' => true, 'message' => $trimmed, 'raw' => $message];
+                    $mqtt->interrupt();
+                    return;
+                }
+
+                $error = self::parseErrorResponse($message);
+                if ($error) {
+                    $result = ['success' => false, 'message' => $error, 'raw' => $message];
+                    $mqtt->interrupt();
+                    return;
+                }
+
+                try {
+                    $data = json_decode($message, true);
+                    if (!is_array($data)) {
+                        return;
+                    }
+
+                    if ($module === 'RTC' && isset($data['date'], $data['time'])) {
+                        $result = ['success' => true, 'message' => 'RTC response received', 'data' => $data, 'raw' => $message];
+                        $mqtt->interrupt();
+                        return;
+                    }
+
+                    foreach ($data as $key => $value) {
+                        if (!self::protocolKeyMatches($module, (string) $key)) {
+                            continue;
+                        }
+
+                        if (is_string($value)) {
+                            if (strtoupper($value) === 'ERR') {
+                                $result = ['success' => false, 'message' => (string) ($data['msg'] ?? "{$key}: ERR"), 'data' => $data, 'raw' => $message];
+                                $mqtt->interrupt();
+                                return;
+                            }
+
+                            if ($module === 'FAC' && $value === 'ERASING...') {
+                                $result = ['success' => true, 'message' => "{$key}: {$value}", 'data' => $data, 'raw' => $message];
+                                $mqtt->interrupt();
+                                return;
+                            }
+
+                            $result = ['success' => true, 'message' => "{$key}: {$value}", 'data' => $data, 'raw' => $message];
+                            $mqtt->interrupt();
+                            return;
+                        }
+
+                        if (is_array($value)) {
+                            $status = strtoupper((string) ($value['status'] ?? ''));
+                            if ($status === 'ERR' || $status === 'ERROR') {
+                                $result = [
+                                    'success' => false,
+                                    'message' => (string) ($value['msg'] ?? $value['message'] ?? "{$key}: {$status}"),
+                                    'data' => $data,
+                                    'raw' => $message,
+                                ];
+                                $mqtt->interrupt();
+                                return;
+                            }
+                        }
+
+                        $result = ['success' => true, 'message' => "{$key} response received", 'data' => $data, 'raw' => $message];
+                        $mqtt->interrupt();
+                        return;
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning("[MQTT] ❌ [PROTOCOL {$module}] Parse error: {$e->getMessage()}");
+                }
+            }, 0);
+
+            Log::info("[MQTT] 📤 [PROTOCOL {$module}] Publishing payload: {$jsonPayload}");
+            $mqtt->publish($subTopic, $jsonPayload, 0);
+
+            $startTime = microtime(true);
+            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
+                $mqtt->loopOnce(microtime(true) - $startTime, true);
+                usleep(100_000);
+            }
+
+            $elapsed = round(microtime(true) - $startTime, 2);
+            if ($result === null) {
+                Log::warning("[MQTT] ⏰ [PROTOCOL {$module}] Timeout after {$elapsed}s");
+                $result = ['success' => false, 'message' => 'Timeout — perangkat tidak merespons'];
+            } else {
+                Log::info("[MQTT] ✅ [PROTOCOL {$module}] Done in {$elapsed}s");
+            }
+
+            $mqtt->disconnect();
+            Log::info("[MQTT] ═══════════════════════════════════════════════");
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [PROTOCOL {$module}] Error: {$e->getMessage()}");
+            return ['success' => false, 'message' => 'Koneksi MQTT gagal: ' . $e->getMessage()];
+        }
+
+        return $result;
+    }
+
+    private static function protocolKeyMatches(string $module, string $key): bool
+    {
+        return $key === $module
+            || str_starts_with($key, $module . ' ')
+            || str_starts_with($key, $module . '_');
+    }
+
     // =========================================================================
     // INTERNAL HELPERS
     // =========================================================================
