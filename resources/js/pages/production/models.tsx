@@ -1,6 +1,7 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
 import {
     Box,
+    Code2,
     Download,
     Edit2,
     History,
@@ -344,6 +345,16 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                                 </a>
                                             </Button>
                                         )}
+                                        <Button variant="outline" size="icon-sm" asChild>
+                                            <a
+                                                href={`/api/v1/production/models/${encodeURIComponent(model.name)}/firmware`}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                aria-label={`Check firmware API ${model.name}`}
+                                            >
+                                                <Code2 className="size-3.5" />
+                                            </a>
+                                        </Button>
                                         <Button
                                             variant="outline"
                                             size="icon-sm"

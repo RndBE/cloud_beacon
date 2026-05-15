@@ -192,16 +192,23 @@ class DeviceModelController extends Controller
             ], 404);
         }
 
+        $fileName = $model->firmware_file_name ?: basename($model->firmware_file_path);
+        $firmwareKey = pathinfo($fileName, PATHINFO_FILENAME);
+        $downloadUrl = asset($model->firmware_file_path);
+
         return response()->json([
             'success' => true,
+            'ver' => $firmwareKey,
+            'file' => $fileName,
+            'url' => $downloadUrl,
             'data' => [
                 'model' => $model->name,
                 'current_version' => $currentVersion,
                 'latest_version' => $model->firmware_version,
                 'update_available' => $this->isUpdateAvailable($currentVersion, $model->firmware_version),
-                'file_name' => $model->firmware_file_name,
+                'file_name' => $fileName,
                 'file_size' => $model->firmware_file_size,
-                'download_url' => asset($model->firmware_file_path),
+                'download_url' => $downloadUrl,
                 'uploaded_at' => $model->firmware_uploaded_at?->toISOString(),
             ],
         ]);
