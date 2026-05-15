@@ -1,6 +1,4 @@
 import { Head, Link, router } from '@inertiajs/react';
-import { lazy, Suspense, useMemo, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import {
     Activity,
     AlertTriangle,
@@ -20,6 +18,8 @@ import {
     WifiOff,
     XCircle,
 } from 'lucide-react';
+import { lazy, Suspense, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -43,8 +43,8 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
-import { dashboard } from '@/routes';
 import type { BreadcrumbItem } from '@/types';
+import { dashboard } from '@/routes';
 
 const LoggerMap = lazy(() => import('@/components/logger-map'));
 
@@ -336,11 +336,13 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                         <Save className="size-4" />
                                         {t('dashboard.backup_configs')}
                                     </Button>
-                                    <Button variant="outline" className="justify-start gap-2" asChild>
-                                        <Link href="/production?ota=1">
-                                            <CloudDownload className="size-4" />
-                                            {t('dashboard.check_firmware')}
-                                        </Link>
+                                    <Button
+                                        variant="outline"
+                                        className="justify-start gap-2"
+                                        onClick={() => router.visit('/production?ota=1')}
+                                    >
+                                        <CloudDownload className="size-4" />
+                                        {t('dashboard.check_firmware')}
                                     </Button>
                                 </div>
                             </CardContent>

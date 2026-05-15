@@ -142,7 +142,11 @@ export default function ProductionIndex({
     devices,
     deviceModels,
 }: ProductionPageProps) {
-    const [search, setSearch] = useState('');
+    const initialSearch =
+        typeof window === 'undefined'
+            ? ''
+            : new URLSearchParams(window.location.search).get('model') || '';
+    const [search, setSearch] = useState(initialSearch);
     const [qcFilter, setQcFilter] = useState<string>('all');
     const [addOpen, setAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);

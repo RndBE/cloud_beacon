@@ -9,9 +9,9 @@ import {
     Plus,
     Search,
     Trash2,
-    X,
+    UploadCloud,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     AlertDialog,
@@ -65,22 +65,17 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
     const [addOpen, setAddOpen] = useState(false);
     const [editTarget, setEditTarget] = useState<DeviceModelItem | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<DeviceModelItem | null>(null);
-    const [flashMsg, setFlashMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const flashMsg = flash?.success
+        ? { type: 'success' as const, text: flash.success }
+        : flash?.error
+          ? { type: 'error' as const, text: flash.error }
+          : null;
 
     // Image preview states
     const [addPreview, setAddPreview] = useState<string | null>(null);
     const [editPreview, setEditPreview] = useState<string | null>(null);
     const addFileRef = useRef<HTMLInputElement>(null);
     const editFileRef = useRef<HTMLInputElement>(null);
-
-    useEffect(() => {
-        if (flash?.success) setFlashMsg({ type: 'success', text: flash.success });
-        else if (flash?.error) setFlashMsg({ type: 'error', text: flash.error });
-        if (flashMsg) {
-            const timer = setTimeout(() => setFlashMsg(null), 4000);
-            return () => clearTimeout(timer);
-        }
-    }, [flash]);
 
     const createForm = useForm<{ name: string; description: string; channel_count: number; image: File | null }>({
         name: '',
@@ -176,9 +171,8 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
             <div className="flex flex-col gap-6 p-4 md:p-6">
                 {/* Flash message */}
                 {flashMsg && (
-                    <div className={`flex items-center justify-between rounded-lg border px-4 py-3 text-sm ${flashMsg.type === 'success' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700' : 'border-red-500/30 bg-red-500/10 text-red-700'}`}>
+                    <div className={`rounded-lg border px-4 py-3 text-sm ${flashMsg.type === 'success' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700' : 'border-red-500/30 bg-red-500/10 text-red-700'}`}>
                         <span>{flashMsg.text}</span>
-                        <button onClick={() => setFlashMsg(null)}><X className="size-4" /></button>
                     </div>
                 )}
 
@@ -203,6 +197,14 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                         <Button className="gap-1.5" onClick={() => setAddOpen(true)}>
                             <Plus className="size-4" />
                             {t('models.add_model')}
+                        </Button>
+                        <Button
+                            variant="outline"
+                            className="gap-1.5"
+                            onClick={() => router.visit('/production?ota=1')}
+                        >
+                            <UploadCloud className="size-4" />
+                            OTA Firmware
                         </Button>
                     </div>
                 </div>
@@ -261,6 +263,19 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                     {model.description && (
                                         <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{model.description}</p>
                                     )}
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="mt-3 w-full gap-1.5"
+                                        onClick={() =>
+                                            router.visit(
+                                                `/production?model=${encodeURIComponent(model.name)}&ota=1`,
+                                            )
+                                        }
+                                    >
+                                        <UploadCloud className="size-3.5" />
+                                        Kelola OTA
+                                    </Button>
                                 </CardContent>
                             </Card>
                         ))}
