@@ -220,6 +220,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
 // API v1 Routes
 Route::prefix('api/v1')->group(function () {
+    Route::get('production/models/{modelName}/firmware', [DeviceModelController::class, 'firmware']);
     Route::get('production/{serialNumber}/firmware', [ProductionController::class, 'firmware']);
     Route::get('loggers/{id}', [\App\Http\Controllers\Api\LoggerApiController::class, 'show']);
     Route::get('loggers/{id}/sensors', [\App\Http\Controllers\Api\LoggerApiController::class, 'sensors']);

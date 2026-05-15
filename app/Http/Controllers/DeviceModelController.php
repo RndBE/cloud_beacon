@@ -180,6 +180,33 @@ class DeviceModelController extends Controller
         return redirect()->route('production.models.index')->with('success', 'Firmware OTA model updated successfully.');
     }
 
+    public function firmware(Request $request, string $modelName)
+    {
+        $currentVersion = $request->query('current_version');
+        $model = $this->findDeviceModel($modelName);
+
+        if (!$model || !$model->firmware_file_path || !$model->firmware_version) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Firmware OTA belum tersedia untuk model ini.',
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'model' => $model->name,
+                'current_version' => $currentVersion,
+                'latest_version' => $model->firmware_version,
+                'update_available' => $this->isUpdateAvailable($currentVersion, $model->firmware_version),
+                'file_name' => $model->firmware_file_name,
+                'file_size' => $model->firmware_file_size,
+                'download_url' => asset($model->firmware_file_path),
+                'uploaded_at' => $model->firmware_uploaded_at?->toISOString(),
+            ],
+        ]);
+    }
+
     public function destroy(int $id): RedirectResponse
     {
         $model = DeviceModel::findOrFail($id);
@@ -250,5 +277,33 @@ class DeviceModelController extends Controller
         $filename = preg_replace('/[^A-Za-z0-9._-]/', '-', $filename) ?: 'firmware.bin';
 
         return str_ends_with(strtolower($filename), '.bin') ? $filename : $filename . '.bin';
+    }
+
+    private function findDeviceModel(string $modelName): ?DeviceModel
+    {
+        $exact = DeviceModel::where('name', $modelName)->first();
+        if ($exact) {
+            return $exact;
+        }
+
+        $normalized = $this->normalizeModelName($modelName);
+
+        return DeviceModel::all()->first(
+            fn(DeviceModel $model) => $this->normalizeModelName($model->name) === $normalized
+        );
+    }
+
+    private function normalizeModelName(string $modelName): string
+    {
+        return strtolower(preg_replace('/[^A-Za-z0-9]/', '', $modelName));
+    }
+
+    private function isUpdateAvailable(?string $currentVersion, string $latestVersion): bool
+    {
+        if (!$currentVersion) {
+            return true;
+        }
+
+        return version_compare(ltrim($currentVersion, 'vV'), ltrim($latestVersion, 'vV'), '<');
     }
 }
