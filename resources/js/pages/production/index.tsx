@@ -5,12 +5,10 @@ import {
     Download,
     Factory,
     FileUp,
-    History,
     Loader2,
     Plus,
     Search,
     Trash2,
-    UploadCloud,
     XCircle,
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
@@ -75,25 +73,12 @@ interface ProductionDeviceItem {
     firmwareFileUrl: string | null;
     firmwareFileSize: number | null;
     firmwareUploadedAt: string | null;
-    firmwareLogs: ProductionFirmwareLogItem[];
     batchNumber: string | null;
     productionDate: string | null;
     testedBy: string | null;
     qcStatus: 'passed' | 'failed' | 'pending';
     notes: string | null;
     isRegistered: boolean;
-    createdAt: string | null;
-}
-
-interface ProductionFirmwareLogItem {
-    id: number;
-    action: string;
-    fromVersion: string | null;
-    toVersion: string | null;
-    fileName: string | null;
-    fileSize: number | null;
-    message: string | null;
-    userName: string | null;
     createdAt: string | null;
 }
 
@@ -130,14 +115,6 @@ function getQcBadge(status: string) {
     }
 }
 
-function formatBytes(bytes: number | null) {
-    if (!bytes) return '—';
-    if (bytes < 1024) return `${bytes} B`;
-    const kb = bytes / 1024;
-    if (kb < 1024) return `${kb.toFixed(1)} KB`;
-    return `${(kb / 1024).toFixed(1)} MB`;
-}
-
 export default function ProductionIndex({
     devices,
     deviceModels,
@@ -150,22 +127,15 @@ export default function ProductionIndex({
     const [qcFilter, setQcFilter] = useState<string>('all');
     const [addOpen, setAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
-    const [firmwareTarget, setFirmwareTarget] =
-        useState<ProductionDeviceItem | null>(null);
-    const [logTarget, setLogTarget] = useState<ProductionDeviceItem | null>(
-        null,
-    );
     const [deleteTarget, setDeleteTarget] =
         useState<ProductionDeviceItem | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const firmwareFileInputRef = useRef<HTMLInputElement>(null);
 
     const form = useForm({
         serial_number: '',
         device_id: '',
         model: '',
         hardware_version: '',
-        firmware_version: '',
         production_date: '',
         tested_by: '',
         qc_status: 'pending',
@@ -174,14 +144,6 @@ export default function ProductionIndex({
 
     const importForm = useForm<{ csv_file: File | null }>({
         csv_file: null,
-    });
-
-    const firmwareForm = useForm<{
-        firmware_version: string;
-        firmware_file: File | null;
-    }>({
-        firmware_version: '',
-        firmware_file: null,
     });
 
     const filtered = useMemo(() => {
@@ -226,32 +188,6 @@ export default function ProductionIndex({
             onSuccess: () => {
                 setImportOpen(false);
                 importForm.reset();
-            },
-        });
-    }
-
-    function openFirmwareDialog(device: ProductionDeviceItem) {
-        setFirmwareTarget(device);
-        firmwareForm.clearErrors();
-        firmwareForm.setData({
-            firmware_version: device.firmwareVersion || '',
-            firmware_file: null,
-        });
-        if (firmwareFileInputRef.current)
-            firmwareFileInputRef.current.value = '';
-    }
-
-    function handleFirmwareSubmit(e: React.FormEvent) {
-        e.preventDefault();
-        if (!firmwareTarget || !firmwareForm.data.firmware_file) return;
-
-        firmwareForm.post(`/production/${firmwareTarget.id}/firmware`, {
-            forceFormData: true,
-            onSuccess: () => {
-                setFirmwareTarget(null);
-                firmwareForm.reset();
-                if (firmwareFileInputRef.current)
-                    firmwareFileInputRef.current.value = '';
             },
         });
     }
@@ -416,7 +352,6 @@ export default function ProductionIndex({
                                                 Upload a CSV file with columns:
                                                 serial_number, device_id, model,
                                                 hardware_version,
-                                                firmware_version,
                                                 production_date, tested_by,
                                                 qc_status, notes
                                             </DialogDescription>
@@ -624,8 +559,7 @@ export default function ProductionIndex({
                                                     </Select>
                                                 </div>
                                             </div>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="grid gap-2">
+                                            <div className="grid gap-2">
                                                     <Label htmlFor="hardware_version">
                                                         Hardware Version
                                                     </Label>
@@ -643,26 +577,6 @@ export default function ProductionIndex({
                                                         }
                                                         placeholder="e.g. v4.0"
                                                     />
-                                                </div>
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="firmware_version">
-                                                        Firmware Version
-                                                    </Label>
-                                                    <Input
-                                                        id="firmware_version"
-                                                        value={
-                                                            form.data
-                                                                .firmware_version
-                                                        }
-                                                        onChange={(e) =>
-                                                            form.setData(
-                                                                'firmware_version',
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        placeholder="e.g. v1.2.3"
-                                                    />
-                                                </div>
                                             </div>
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="grid gap-2">
@@ -841,28 +755,6 @@ export default function ProductionIndex({
                                                 <Button
                                                     variant="ghost"
                                                     size="icon-sm"
-                                                    onClick={() =>
-                                                        openFirmwareDialog(
-                                                            device,
-                                                        )
-                                                    }
-                                                    aria-label={`Update firmware ${device.serialNumber}`}
-                                                >
-                                                    <UploadCloud className="size-4" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon-sm"
-                                                    onClick={() =>
-                                                        setLogTarget(device)
-                                                    }
-                                                    aria-label={`Firmware logs ${device.serialNumber}`}
-                                                >
-                                                    <History className="size-4" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon-sm"
                                                     className="text-red-500 hover:bg-red-500/10 hover:text-red-600"
                                                     onClick={() =>
                                                         setDeleteTarget(device)
@@ -892,185 +784,6 @@ export default function ProductionIndex({
                         </Table>
                     </CardContent>
                 </Card>
-
-                {/* Firmware Dialog */}
-                <Dialog
-                    open={!!firmwareTarget}
-                    onOpenChange={(open) => {
-                        if (!open) setFirmwareTarget(null);
-                    }}
-                >
-                    <DialogContent className="sm:max-w-md">
-                        <DialogHeader>
-                            <DialogTitle>Update OTA Firmware</DialogTitle>
-                            <DialogDescription>
-                                {firmwareTarget?.serialNumber} · current{' '}
-                                {firmwareTarget?.firmwareVersion || '—'}
-                            </DialogDescription>
-                        </DialogHeader>
-                        <form
-                            onSubmit={handleFirmwareSubmit}
-                            className="grid gap-4 py-2"
-                        >
-                            <div className="rounded-lg border p-3 text-sm">
-                                <div className="flex items-center justify-between gap-3">
-                                    <span className="text-muted-foreground">
-                                        Current file
-                                    </span>
-                                    <span className="max-w-[220px] truncate font-mono text-xs">
-                                        {firmwareTarget?.firmwareFileName ||
-                                            '—'}
-                                    </span>
-                                </div>
-                                <div className="mt-1 flex items-center justify-between gap-3">
-                                    <span className="text-muted-foreground">
-                                        Size
-                                    </span>
-                                    <span className="font-mono text-xs">
-                                        {formatBytes(
-                                            firmwareTarget?.firmwareFileSize ??
-                                                null,
-                                        )}
-                                    </span>
-                                </div>
-                            </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="ota_firmware_version">
-                                    Firmware Version *
-                                </Label>
-                                <Input
-                                    id="ota_firmware_version"
-                                    value={firmwareForm.data.firmware_version}
-                                    onChange={(e) =>
-                                        firmwareForm.setData(
-                                            'firmware_version',
-                                            e.target.value,
-                                        )
-                                    }
-                                    placeholder="e.g. v2.0"
-                                />
-                                {firmwareForm.errors.firmware_version && (
-                                    <p className="text-xs text-red-500">
-                                        {firmwareForm.errors.firmware_version}
-                                    </p>
-                                )}
-                            </div>
-                            <div className="grid gap-2">
-                                <Label htmlFor="ota_firmware_file">
-                                    Firmware File (.bin) *
-                                </Label>
-                                <Input
-                                    id="ota_firmware_file"
-                                    type="file"
-                                    accept=".bin,application/octet-stream"
-                                    ref={firmwareFileInputRef}
-                                    onChange={(e) => {
-                                        const file = e.target.files?.[0];
-                                        firmwareForm.setData(
-                                            'firmware_file',
-                                            file || null,
-                                        );
-                                    }}
-                                />
-                                {firmwareForm.errors.firmware_file && (
-                                    <p className="text-xs text-red-500">
-                                        {firmwareForm.errors.firmware_file}
-                                    </p>
-                                )}
-                            </div>
-                            <DialogFooter>
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    onClick={() => setFirmwareTarget(null)}
-                                >
-                                    Cancel
-                                </Button>
-                                <Button
-                                    type="submit"
-                                    disabled={
-                                        firmwareForm.processing ||
-                                        !firmwareForm.data.firmware_version ||
-                                        !firmwareForm.data.firmware_file
-                                    }
-                                >
-                                    {firmwareForm.processing
-                                        ? 'Updating…'
-                                        : 'Update Firmware'}
-                                </Button>
-                            </DialogFooter>
-                        </form>
-                    </DialogContent>
-                </Dialog>
-
-                {/* Firmware Logs Dialog */}
-                <Dialog
-                    open={!!logTarget}
-                    onOpenChange={(open) => {
-                        if (!open) setLogTarget(null);
-                    }}
-                >
-                    <DialogContent className="sm:max-w-2xl">
-                        <DialogHeader>
-                            <DialogTitle>Firmware Logs</DialogTitle>
-                            <DialogDescription>
-                                {logTarget?.serialNumber} · OTA update history
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="max-h-[420px] overflow-auto rounded-lg border">
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead>Time</TableHead>
-                                        <TableHead>Version</TableHead>
-                                        <TableHead>File</TableHead>
-                                        <TableHead>User</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {logTarget?.firmwareLogs.map((log) => (
-                                        <TableRow key={log.id}>
-                                            <TableCell className="font-mono text-xs text-muted-foreground">
-                                                {log.createdAt || '—'}
-                                            </TableCell>
-                                            <TableCell className="font-mono text-xs">
-                                                {log.fromVersion || '—'} -&gt;{' '}
-                                                {log.toVersion || '—'}
-                                            </TableCell>
-                                            <TableCell>
-                                                <div className="flex flex-col">
-                                                    <span className="max-w-[210px] truncate text-xs">
-                                                        {log.fileName || '—'}
-                                                    </span>
-                                                    <span className="text-xs text-muted-foreground">
-                                                        {formatBytes(
-                                                            log.fileSize,
-                                                        )}
-                                                    </span>
-                                                </div>
-                                            </TableCell>
-                                            <TableCell className="text-xs">
-                                                {log.userName || 'System'}
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                    {(!logTarget ||
-                                        logTarget.firmwareLogs.length ===
-                                            0) && (
-                                        <TableRow>
-                                            <TableCell
-                                                colSpan={4}
-                                                className="py-8 text-center text-muted-foreground"
-                                            >
-                                                No firmware logs yet.
-                                            </TableCell>
-                                        </TableRow>
-                                    )}
-                                </TableBody>
-                            </Table>
-                        </div>
-                    </DialogContent>
-                </Dialog>
 
                 {/* Delete Dialog */}
                 <AlertDialog

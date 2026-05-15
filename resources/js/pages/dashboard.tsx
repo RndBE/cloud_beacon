@@ -43,8 +43,8 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
-import type { BreadcrumbItem } from '@/types';
 import { dashboard } from '@/routes';
+import type { BreadcrumbItem } from '@/types';
 
 const LoggerMap = lazy(() => import('@/components/logger-map'));
 
@@ -339,7 +339,7 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                     <Button
                                         variant="outline"
                                         className="justify-start gap-2"
-                                        onClick={() => router.visit('/production?ota=1')}
+                                        onClick={() => router.visit('/production/models?ota=1')}
                                     >
                                         <CloudDownload className="size-4" />
                                         {t('dashboard.check_firmware')}

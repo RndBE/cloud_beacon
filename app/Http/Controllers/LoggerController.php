@@ -370,14 +370,22 @@ class LoggerController extends Controller
             $validated['last_seen_at'] = now();
         }
 
-        // Pull model, firmware_version, device_identifier from production device
+        // Pull model and device_identifier from production device. Firmware follows the device model.
         $productionDevice = ProductionDevice::where('serial_number', $validated['serial_number'])->first();
         if ($productionDevice) {
             if ($productionDevice->model && empty($validated['model'])) {
                 $validated['model'] = $productionDevice->model;
             }
-            if ($productionDevice->firmware_version && empty($validated['firmware_version'])) {
-                $validated['firmware_version'] = $productionDevice->firmware_version;
+            if (empty($validated['firmware_version']) && $productionDevice->model) {
+                $normalizedProductionModel = strtolower(preg_replace('/[^A-Za-z0-9]/', '', $productionDevice->model));
+                $deviceModel = DeviceModel::where('name', $productionDevice->model)->first()
+                    ?? DeviceModel::all()->first(
+                        fn(DeviceModel $model) => strtolower(preg_replace('/[^A-Za-z0-9]/', '', $model->name)) === $normalizedProductionModel
+                    );
+
+                if ($deviceModel?->firmware_version) {
+                    $validated['firmware_version'] = $deviceModel->firmware_version;
+                }
             }
             // device_identifier always comes from production DB
             if ($productionDevice->device_id) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\DeviceModel;
+use App\Models\DeviceModelFirmwareLog;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -14,7 +15,11 @@ class DeviceModelController extends Controller
 {
     public function index(): Response
     {
-        $models = DeviceModel::orderBy('name')
+        $models = DeviceModel::with(['firmwareLogs' => fn($query) => $query
+                ->with('user:id,name')
+                ->latest(),
+            ])
+            ->orderBy('name')
             ->get()
             ->map(fn(DeviceModel $m) => [
                 'id' => $m->id,
@@ -22,6 +27,22 @@ class DeviceModelController extends Controller
                 'description' => $m->description,
                 'channelCount' => $m->channel_count,
                 'image' => $m->image ? asset('storage/' . $m->image) : null,
+                'firmwareVersion' => $m->firmware_version,
+                'firmwareFileName' => $m->firmware_file_name,
+                'firmwareFileUrl' => $m->firmware_file_path ? asset($m->firmware_file_path) : null,
+                'firmwareFileSize' => $m->firmware_file_size,
+                'firmwareUploadedAt' => $m->firmware_uploaded_at?->format('Y-m-d H:i'),
+                'firmwareLogs' => $m->firmwareLogs->map(fn(DeviceModelFirmwareLog $log) => [
+                    'id' => $log->id,
+                    'action' => $log->action,
+                    'fromVersion' => $log->from_version,
+                    'toVersion' => $log->to_version,
+                    'fileName' => $log->file_name,
+                    'fileSize' => $log->file_size,
+                    'message' => $log->message,
+                    'userName' => $log->user?->name,
+                    'createdAt' => $log->created_at?->format('Y-m-d H:i'),
+                ]),
                 'createdAt' => $m->created_at?->format('Y-m-d H:i'),
             ]);
 
@@ -97,6 +118,68 @@ class DeviceModelController extends Controller
             ->with('success', 'Device model updated successfully.');
     }
 
+    public function updateFirmware(Request $request, int $id): RedirectResponse
+    {
+        $validated = $request->validate([
+            'firmware_version' => 'required|string|max:50',
+            'firmware_file' => 'required|file|max:51200',
+        ]);
+
+        $file = $request->file('firmware_file');
+
+        if (!$file || strtolower($file->getClientOriginalExtension()) !== 'bin') {
+            return back()->withErrors([
+                'firmware_file' => 'Firmware OTA harus berupa file .bin.',
+            ]);
+        }
+
+        $model = DeviceModel::findOrFail($id);
+        $fromVersion = $model->firmware_version;
+        $directory = public_path('firmware/models');
+
+        if (!is_dir($directory)) {
+            mkdir($directory, 0755, true);
+        }
+
+        $originalName = $this->sanitizeFirmwareFilename($file->getClientOriginalName());
+        $modelPrefix = preg_replace('/[^A-Za-z0-9._-]/', '-', $model->name) ?: 'model';
+        $filename = $modelPrefix . '-' . $originalName;
+        $targetPath = $directory . DIRECTORY_SEPARATOR . $filename;
+
+        if (file_exists($targetPath)) {
+            $name = pathinfo($filename, PATHINFO_FILENAME);
+            $extension = pathinfo($filename, PATHINFO_EXTENSION);
+            $filename = $name . '-' . now()->format('YmdHis') . '.' . $extension;
+            $targetPath = $directory . DIRECTORY_SEPARATOR . $filename;
+        }
+
+        $file->move($directory, $filename);
+
+        $relativePath = 'firmware/models/' . $filename;
+        $fileSize = filesize($targetPath) ?: null;
+
+        $model->update([
+            'firmware_version' => $validated['firmware_version'],
+            'firmware_file_path' => $relativePath,
+            'firmware_file_name' => $filename,
+            'firmware_file_size' => $fileSize,
+            'firmware_uploaded_at' => now(),
+        ]);
+
+        DeviceModelFirmwareLog::create([
+            'device_model_id' => $model->id,
+            'user_id' => auth()->id(),
+            'action' => 'firmware_updated',
+            'from_version' => $fromVersion,
+            'to_version' => $validated['firmware_version'],
+            'file_name' => $filename,
+            'file_size' => $fileSize,
+            'message' => "Firmware OTA model {$model->name} updated from " . ($fromVersion ?: 'none') . " to {$validated['firmware_version']}.",
+        ]);
+
+        return redirect()->route('production.models.index')->with('success', 'Firmware OTA model updated successfully.');
+    }
+
     public function destroy(int $id): RedirectResponse
     {
         $model = DeviceModel::findOrFail($id);
@@ -159,5 +242,13 @@ class DeviceModelController extends Controller
         }
 
         return $directory . '/' . $filename;
+    }
+
+    private function sanitizeFirmwareFilename(string $filename): string
+    {
+        $filename = basename($filename);
+        $filename = preg_replace('/[^A-Za-z0-9._-]/', '-', $filename) ?: 'firmware.bin';
+
+        return str_ends_with(strtolower($filename), '.bin') ? $filename : $filename . '.bin';
     }
 }

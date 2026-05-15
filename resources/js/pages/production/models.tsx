@@ -1,7 +1,9 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
 import {
     Box,
+    Download,
     Edit2,
+    History,
     ImagePlus,
     Layers,
     Loader2,
@@ -45,6 +47,24 @@ interface DeviceModelItem {
     description: string | null;
     channelCount: number;
     image: string | null;
+    firmwareVersion: string | null;
+    firmwareFileName: string | null;
+    firmwareFileUrl: string | null;
+    firmwareFileSize: number | null;
+    firmwareUploadedAt: string | null;
+    firmwareLogs: DeviceModelFirmwareLogItem[];
+    createdAt: string | null;
+}
+
+interface DeviceModelFirmwareLogItem {
+    id: number;
+    action: string;
+    fromVersion: string | null;
+    toVersion: string | null;
+    fileName: string | null;
+    fileSize: number | null;
+    message: string | null;
+    userName: string | null;
     createdAt: string | null;
 }
 
@@ -58,12 +78,22 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Models', href: '/production/models' },
 ];
 
+function formatBytes(bytes: number | null) {
+    if (!bytes) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    return `${(kb / 1024).toFixed(1)} MB`;
+}
+
 export default function ModelsIndex({ models }: ModelsPageProps) {
     const { t } = useTranslation();
     const { flash } = usePage<{ flash: { success?: string; error?: string } }>().props;
     const [search, setSearch] = useState('');
     const [addOpen, setAddOpen] = useState(false);
     const [editTarget, setEditTarget] = useState<DeviceModelItem | null>(null);
+    const [firmwareTarget, setFirmwareTarget] = useState<DeviceModelItem | null>(null);
+    const [logTarget, setLogTarget] = useState<DeviceModelItem | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<DeviceModelItem | null>(null);
     const flashMsg = flash?.success
         ? { type: 'success' as const, text: flash.success }
@@ -76,6 +106,7 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
     const [editPreview, setEditPreview] = useState<string | null>(null);
     const addFileRef = useRef<HTMLInputElement>(null);
     const editFileRef = useRef<HTMLInputElement>(null);
+    const firmwareFileRef = useRef<HTMLInputElement>(null);
 
     const createForm = useForm<{ name: string; description: string; channel_count: number; image: File | null }>({
         name: '',
@@ -89,6 +120,14 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
         description: '',
         channel_count: 0,
         image: null,
+    });
+
+    const firmwareForm = useForm<{
+        firmware_version: string;
+        firmware_file: File | null;
+    }>({
+        firmware_version: '',
+        firmware_file: null,
     });
 
     const filtered = useMemo(() => {
@@ -136,6 +175,30 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                 setEditTarget(null);
                 editForm.reset();
                 setEditPreview(null);
+            },
+        });
+    }
+
+    function openFirmwareDialog(model: DeviceModelItem) {
+        setFirmwareTarget(model);
+        firmwareForm.clearErrors();
+        firmwareForm.setData({
+            firmware_version: model.firmwareVersion || '',
+            firmware_file: null,
+        });
+        if (firmwareFileRef.current) firmwareFileRef.current.value = '';
+    }
+
+    function handleFirmwareSubmit(e: React.FormEvent) {
+        e.preventDefault();
+        if (!firmwareTarget || !firmwareForm.data.firmware_file) return;
+
+        firmwareForm.post(`/production/models/${firmwareTarget.id}/firmware`, {
+            forceFormData: true,
+            onSuccess: () => {
+                setFirmwareTarget(null);
+                firmwareForm.reset();
+                if (firmwareFileRef.current) firmwareFileRef.current.value = '';
             },
         });
     }
@@ -198,14 +261,6 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                             <Plus className="size-4" />
                             {t('models.add_model')}
                         </Button>
-                        <Button
-                            variant="outline"
-                            className="gap-1.5"
-                            onClick={() => router.visit('/production?ota=1')}
-                        >
-                            <UploadCloud className="size-4" />
-                            OTA Firmware
-                        </Button>
                     </div>
                 </div>
 
@@ -263,19 +318,41 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                     {model.description && (
                                         <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{model.description}</p>
                                     )}
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="mt-3 w-full gap-1.5"
-                                        onClick={() =>
-                                            router.visit(
-                                                `/production?model=${encodeURIComponent(model.name)}&ota=1`,
-                                            )
-                                        }
-                                    >
-                                        <UploadCloud className="size-3.5" />
-                                        Kelola OTA
-                                    </Button>
+                                    <div className="mt-3 rounded-lg border p-3 text-xs">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <span className="text-muted-foreground">OTA</span>
+                                            <span className="font-mono font-medium">{model.firmwareVersion || '—'}</span>
+                                        </div>
+                                        <div className="mt-1 truncate font-mono text-muted-foreground">
+                                            {model.firmwareFileName || 'No firmware file'}
+                                        </div>
+                                    </div>
+                                    <div className="mt-3 flex gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="flex-1 gap-1.5"
+                                            onClick={() => openFirmwareDialog(model)}
+                                        >
+                                            <UploadCloud className="size-3.5" />
+                                            Upload OTA
+                                        </Button>
+                                        {model.firmwareFileUrl && (
+                                            <Button variant="outline" size="icon-sm" asChild>
+                                                <a href={model.firmwareFileUrl} target="_blank" rel="noreferrer" aria-label={`Download firmware ${model.name}`}>
+                                                    <Download className="size-3.5" />
+                                                </a>
+                                            </Button>
+                                        )}
+                                        <Button
+                                            variant="outline"
+                                            size="icon-sm"
+                                            onClick={() => setLogTarget(model)}
+                                            aria-label={`Firmware logs ${model.name}`}
+                                        >
+                                            <History className="size-3.5" />
+                                        </Button>
+                                    </div>
                                 </CardContent>
                             </Card>
                         ))}
@@ -432,6 +509,110 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                                 </Button>
                             </DialogFooter>
                         </form>
+                    </DialogContent>
+                </Dialog>
+
+                {/* ═══ Firmware Dialog ═══ */}
+                <Dialog open={!!firmwareTarget} onOpenChange={(open) => { if (!open) setFirmwareTarget(null); }}>
+                    <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                            <DialogTitle>Upload OTA Firmware</DialogTitle>
+                            <DialogDescription>
+                                {firmwareTarget?.name} · current {firmwareTarget?.firmwareVersion || '—'}
+                            </DialogDescription>
+                        </DialogHeader>
+                        <form onSubmit={handleFirmwareSubmit} className="grid gap-4 py-2">
+                            <div className="rounded-lg border p-3 text-sm">
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-muted-foreground">Current file</span>
+                                    <span className="max-w-[220px] truncate font-mono text-xs">
+                                        {firmwareTarget?.firmwareFileName || '—'}
+                                    </span>
+                                </div>
+                                <div className="mt-1 flex items-center justify-between gap-3">
+                                    <span className="text-muted-foreground">Size</span>
+                                    <span className="font-mono text-xs">
+                                        {formatBytes(firmwareTarget?.firmwareFileSize ?? null)}
+                                    </span>
+                                </div>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="model_ota_firmware_version">Firmware Version *</Label>
+                                <Input
+                                    id="model_ota_firmware_version"
+                                    value={firmwareForm.data.firmware_version}
+                                    onChange={(e) => firmwareForm.setData('firmware_version', e.target.value)}
+                                    placeholder="e.g. v2.0"
+                                />
+                                {firmwareForm.errors.firmware_version && (
+                                    <p className="text-xs text-red-500">{firmwareForm.errors.firmware_version}</p>
+                                )}
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="model_ota_firmware_file">Firmware File (.bin) *</Label>
+                                <Input
+                                    id="model_ota_firmware_file"
+                                    type="file"
+                                    accept=".bin,application/octet-stream"
+                                    ref={firmwareFileRef}
+                                    onChange={(e) => {
+                                        const file = e.target.files?.[0];
+                                        firmwareForm.setData('firmware_file', file || null);
+                                    }}
+                                />
+                                {firmwareForm.errors.firmware_file && (
+                                    <p className="text-xs text-red-500">{firmwareForm.errors.firmware_file}</p>
+                                )}
+                            </div>
+                            <DialogFooter>
+                                <Button type="button" variant="outline" onClick={() => setFirmwareTarget(null)}>
+                                    Cancel
+                                </Button>
+                                <Button
+                                    type="submit"
+                                    disabled={
+                                        firmwareForm.processing ||
+                                        !firmwareForm.data.firmware_version ||
+                                        !firmwareForm.data.firmware_file
+                                    }
+                                >
+                                    {firmwareForm.processing ? 'Uploading…' : 'Upload Firmware'}
+                                </Button>
+                            </DialogFooter>
+                        </form>
+                    </DialogContent>
+                </Dialog>
+
+                {/* ═══ Firmware Logs Dialog ═══ */}
+                <Dialog open={!!logTarget} onOpenChange={(open) => { if (!open) setLogTarget(null); }}>
+                    <DialogContent className="sm:max-w-xl">
+                        <DialogHeader>
+                            <DialogTitle>Firmware Logs</DialogTitle>
+                            <DialogDescription>
+                                {logTarget?.name} · OTA update history
+                            </DialogDescription>
+                        </DialogHeader>
+                        <div className="max-h-[420px] overflow-auto rounded-lg border">
+                            {logTarget?.firmwareLogs.length ? (
+                                <div className="divide-y">
+                                    {logTarget.firmwareLogs.map((log) => (
+                                        <div key={log.id} className="grid gap-1 p-3 text-sm">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <span className="font-mono text-xs text-muted-foreground">{log.createdAt || '—'}</span>
+                                                <span className="font-mono text-xs">{log.fromVersion || '—'} -&gt; {log.toVersion || '—'}</span>
+                                            </div>
+                                            <div className="truncate text-xs">{log.fileName || '—'}</div>
+                                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                <span>{formatBytes(log.fileSize)}</span>
+                                                <span>{log.userName || 'System'}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="py-8 text-center text-sm text-muted-foreground">No firmware logs yet.</div>
+                            )}
+                        </div>
                     </DialogContent>
                 </Dialog>
 

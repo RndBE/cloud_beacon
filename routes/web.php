@@ -59,9 +59,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/import', [ProductionController::class, 'import'])
         ->middleware('permission:production.import')
         ->name('production.import');
-    Route::post('production/{id}/firmware', [ProductionController::class, 'updateFirmware'])
-        ->middleware('permission:production.create')
-        ->name('production.firmware.update');
     Route::delete('production/{id}', [ProductionController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.destroy');
@@ -75,6 +72,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/models/{id}', [DeviceModelController::class, 'update'])
         ->middleware('permission:production.create')
         ->name('production.models.update');
+    Route::post('production/models/{id}/firmware', [DeviceModelController::class, 'updateFirmware'])
+        ->middleware('permission:production.create')
+        ->name('production.models.firmware.update');
     Route::delete('production/models/{id}', [DeviceModelController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.models.destroy');
