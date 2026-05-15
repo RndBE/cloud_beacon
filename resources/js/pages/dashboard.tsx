@@ -336,9 +336,11 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                         <Save className="size-4" />
                                         {t('dashboard.backup_configs')}
                                     </Button>
-                                    <Button variant="outline" className="justify-start gap-2">
-                                        <CloudDownload className="size-4" />
-                                        {t('dashboard.check_firmware')}
+                                    <Button variant="outline" className="justify-start gap-2" asChild>
+                                        <Link href="/production?ota=1">
+                                            <CloudDownload className="size-4" />
+                                            {t('dashboard.check_firmware')}
+                                        </Link>
                                     </Button>
                                 </div>
                             </CardContent>
