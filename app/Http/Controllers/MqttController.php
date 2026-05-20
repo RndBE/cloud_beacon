@@ -344,7 +344,7 @@ class MqttController extends Controller
                 return match ($ds['connection_type']) {
                     'rs485' => $s->modbus_slave_id == $ds['modbus_slave_id'],
                     'rs232' => $s->port == $ds['port'],
-                    'analog' => $s->channel == $ds['channel'],
+                    'analog', 'digital' => $s->channel == $ds['channel'],
                     default => true,
                 };
             });
@@ -533,7 +533,7 @@ class MqttController extends Controller
         $request->validate([
             'id_logger'       => 'required|string',
             'logger_id'       => 'required|integer',
-            'connection_type' => 'required|string|in:rs485,rs232,analog',
+            'connection_type' => 'required|string|in:rs485,rs232,analog,digital',
             'sensor_name'     => 'required|string|max:255',
             'unit'            => 'required|string|max:50',
             'lcd_enabled'     => 'nullable|boolean',
@@ -552,9 +552,18 @@ class MqttController extends Controller
             'fast_poll'       => 'nullable|boolean',
             // RS232-specific
             'port'            => 'required_if:connection_type,rs232|integer|min:1|max:2',
-            // Analog-specific
-            'channel'         => 'required_if:connection_type,analog|integer|min:0|max:7',
-            'analog_mode'     => 'required_if:connection_type,analog|integer|in:0,1',
+            // Analog / Digital specific
+            'channel'         => 'required_if:connection_type,analog,digital|integer|min:1|max:8',
+            'analog_mode'     => 'required_if:connection_type,analog|integer|min:0|max:3',
+            'digital_mode'    => 'required_if:connection_type,digital|integer|in:0,1,2,3',
+            'label_high'      => 'nullable|string|max:32',
+            'label_low'       => 'nullable|string|max:32',
+            'debounce_ms'     => 'nullable|integer|min:0|max:10000',
+            'invert_logic'    => 'nullable|boolean',
+            'pulse_submode'   => 'nullable|integer|in:0,1,2',
+            'timeout_sec'     => 'nullable|integer|min:0|max:86400',
+            'default_state'   => 'nullable|integer|in:0,1',
+            'failsafe'        => 'nullable|integer|in:0,1',
             'min_value'       => 'required_if:connection_type,analog|numeric',
             'max_value'       => 'required_if:connection_type,analog|numeric',
         ]);
@@ -598,6 +607,12 @@ class MqttController extends Controller
                 $sensorData['max_value']   = $request->input('max_value', 100);
                 $sensorData['analog_mode'] = $request->input('analog_mode', 1);
                 $sensorData['channel']     = $request->input('channel');
+            } elseif ($connType === 'digital') {
+                $sensorData['min_value']    = 0;
+                $sensorData['max_value']    = 100;
+                $sensorData['scale_factor'] = $request->input('scale_factor');
+                $sensorData['analog_mode']  = $request->input('digital_mode', 0);
+                $sensorData['channel']      = $request->input('channel');
             }
 
             $sensor = Sensor::create($sensorData);
@@ -635,7 +650,7 @@ class MqttController extends Controller
             $identifier = match ($sensor->connection_type) {
                 'rs485' => $sensor->modbus_slave_id,
                 'rs232' => $sensor->port,
-                'analog' => $sensor->channel,
+                'analog', 'digital' => $sensor->channel,
                 default => 0,
             };
 
@@ -840,16 +855,14 @@ class MqttController extends Controller
         ]);
 
         $module = strtoupper($request->input('module'));
-        $blockedModules = ['PRODUCTION', 'SDCARD'];
+        $blockedModules = ['PRODUCTION', 'FAC', 'AUTH', 'CONTROL', 'BT', 'USB', 'OTA', 'SDCARD'];
         $allowedModules = [
             'RTC',
             'NET',
-            'AUTH',
             'WDT',
             'SIM',
             'CAL',
             'STATUS',
-            'FAC',
             'AWLR_PUMP',
             'P_OUT24',
             'P_OUT12',
@@ -1045,7 +1058,7 @@ class MqttController extends Controller
     {
         $request->validate([
             'id_logger' => 'required|string',
-            'mode'      => 'required|string|exists:logger_modes,slug',
+            'mode'      => 'required|string|in:AWLR_TD,AWLR_US,WEATHER,DEFAULT',
         ]);
 
         $idLogger = $request->input('id_logger');
@@ -1063,14 +1076,38 @@ class MqttController extends Controller
 
         if ($result['success']) {
             $oldMode = $logger->logger_mode;
-            $logger->update(['logger_mode' => $mode]);
+            $parsedInfo = null;
+            $modeLabel = $modeConfig?->label ?? $mode;
+            $info = $mqtt->requestInfo($idLogger);
+            if ($info !== null) {
+                $parsedInfo = MqttService::parseInfoResponse($info);
+                $logger->update(array_merge(
+                    array_filter($parsedInfo, fn($value) => $value !== null),
+                    [
+                        'status' => 'online',
+                        'last_connected_at' => now(),
+                        'last_seen_at' => now(),
+                        'last_sync_status' => 'success',
+                        'last_sync_error' => null,
+                        'last_synced_at' => now(),
+                    ],
+                ));
+            } else {
+                $logger->update([
+                    'logger_mode' => $mode,
+                    'last_sync_status' => 'error',
+                    'last_sync_error' => 'Mode changed, but INFO GET did not respond',
+                    'last_synced_at' => now(),
+                ]);
+            }
+            $activeMode = $parsedInfo['logger_mode'] ?? $mode;
 
             \App\Models\ActivityLog::create([
                 'logger_id'  => $logger->id,
                 'action'     => 'set_mode',
                 'status'     => 'success',
                 'level'      => 'info',
-                'message'    => 'Mode diubah dari ' . ($oldMode ?? '—') . ' ke ' . $mode . ' (' . $modeConfig->label . ')',
+                'message'    => 'Mode diubah dari ' . ($oldMode ?? '—') . ' ke ' . $activeMode . ' (' . $modeLabel . ')',
                 'created_at' => now(),
             ]);
         } else {

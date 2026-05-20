@@ -11,6 +11,22 @@ class LoggerModeSeeder extends Seeder
     {
         $modes = [
             [
+                'slug'               => 'DEFAULT',
+                'label'              => 'Default',
+                'group'              => 'General',
+                'has_calibration'    => false,
+                'calibration_fields' => null,
+                'description'        => 'Mode konfigurasi umum tanpa profil khusus.',
+            ],
+            [
+                'slug'               => 'WEATHER',
+                'label'              => 'Weather Station',
+                'group'              => 'Weather',
+                'has_calibration'    => false,
+                'calibration_fields' => null,
+                'description'        => 'Mode weather station untuk konfigurasi sensor cuaca.',
+            ],
+            [
                 'slug'               => 'AWLR_US',
                 'label'              => 'AWLR Ultrasonic',
                 'group'              => 'AWLR',
@@ -35,14 +51,6 @@ class LoggerModeSeeder extends Seeder
                     ['key' => 'muka_air', 'label' => 'Muka Air', 'unit' => 'm', 'type' => 'number', 'min' => 0, 'step' => 0.01],
                 ],
                 'description'        => 'Automatic Water Level Recorder menggunakan sensor Pressure Transducer untuk mengukur ketinggian muka air.',
-            ],
-            [
-                'slug'               => 'ARR',
-                'label'              => 'Automatic Rain Recorder',
-                'group'              => 'ARR',
-                'has_calibration'    => false,
-                'calibration_fields' => null,
-                'description'        => 'Automatic Rain Recorder untuk mengukur curah hujan secara otomatis.',
             ],
         ];
 

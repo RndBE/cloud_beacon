@@ -1,5 +1,6 @@
 /.phpunit.cache
 /bootstrap/ssr
+/mobile_cloud/*
 /node_modules
 /public/build
 /public/hot

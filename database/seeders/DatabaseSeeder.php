@@ -31,6 +31,7 @@ class DatabaseSeeder extends Seeder
         $testUser->roles()->sync(Role::where('name', 'viewer')->pluck('id'));
 
         $this->call([
+            LoggerModeSeeder::class,
             LoggerSeeder::class,
             ProductionDeviceSeeder::class,
         ]);

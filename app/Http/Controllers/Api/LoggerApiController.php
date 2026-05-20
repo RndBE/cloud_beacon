@@ -128,7 +128,7 @@ class LoggerApiController extends Controller
         $logger = Logger::findOrFail($id);
 
         $validated = $request->validate([
-            'command' => 'required|string|in:reboot,sync_config,backup_config,check_firmware,request_info',
+            'command' => 'required|string|in:reboot,sync_config,backup_config,request_info',
             'params' => 'nullable|array',
         ]);
 

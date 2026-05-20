@@ -33,13 +33,13 @@ class SensorController extends Controller
     {
         return [
             'name' => 'required|string|max:255',
-            'type' => 'required|string|in:temperature,humidity,pressure,water-level,flow-rate,rainfall,voltage,current',
+            'type' => 'required|string|in:temperature,humidity,pressure,water-level,flow-rate,rainfall,voltage,current,digital-input,pulse-counter,digital-output',
             'unit' => 'required|string|max:50',
             'status' => 'required|string|in:active,inactive,error',
             'min_value' => 'required|numeric',
             'max_value' => 'required|numeric|gte:min_value',
             // Protocol fields (optional — only for protocol-configured sensors)
-            'connection_type' => 'nullable|string|in:rs485,rs232,analog',
+            'connection_type' => 'nullable|string|in:rs485,rs232,analog,digital',
             'modbus_slave_id' => 'nullable|integer|min:1|max:5',
             'device_name' => 'nullable|string|max:50',
             'function_code' => 'nullable|integer|in:3,4',
@@ -48,9 +48,18 @@ class SensorController extends Controller
             'baudrate' => 'nullable|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
             'serial_format' => 'nullable|string|in:8N1,8E1,8O1',
             'scale_factor' => 'nullable|numeric',
-            'channel' => 'nullable|integer|min:0|max:7',
-            'analog_mode' => 'nullable|integer|in:0,1',
+            'channel' => 'nullable|integer|min:1|max:8',
+            'analog_mode' => 'nullable|integer|min:0|max:3',
             'port' => 'nullable|integer|min:1|max:2',
+            'digital_mode' => 'nullable|integer|in:0,1,2,3',
+            'label_high' => 'nullable|string|max:32',
+            'label_low' => 'nullable|string|max:32',
+            'debounce_ms' => 'nullable|integer|min:0|max:10000',
+            'invert_logic' => 'nullable|boolean',
+            'pulse_submode' => 'nullable|integer|in:0,1,2',
+            'timeout_sec' => 'nullable|integer|min:0|max:86400',
+            'default_state' => 'nullable|integer|in:0,1',
+            'failsafe' => 'nullable|integer|in:0,1',
             'lcd_enabled' => 'nullable|boolean',
             'log_enabled' => 'nullable|boolean',
             'send_enabled' => 'nullable|boolean',
@@ -85,7 +94,7 @@ class SensorController extends Controller
         $identifier = match ($sensor->connection_type) {
             'rs485' => $sensor->modbus_slave_id,
             'rs232' => $sensor->port,
-            'analog' => $sensor->channel,
+            'analog', 'digital' => $sensor->channel,
             default => 0,
         };
 
@@ -97,11 +106,13 @@ class SensorController extends Controller
     {
         $logger = $this->resolveLogger($loggerHash);
         $validated = $request->validate($this->rules());
+        $mqttPayloadData = $validated;
+        $validated = $this->persistableSensorData($validated);
         $validated['logger_id'] = $logger->id;
 
         // Send MQTT SET to device first (if it has connection_type)
-        if (!empty($validated['connection_type'])) {
-            $result = $this->sendMqttSet($logger, $validated);
+        if (!empty($mqttPayloadData['connection_type'])) {
+            $result = $this->sendMqttSet($logger, $mqttPayloadData);
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']])->withInput();
             }
@@ -117,10 +128,12 @@ class SensorController extends Controller
         $logger = $this->resolveLogger($loggerHash);
         $sensor = Sensor::where('logger_id', $logger->id)->findOrFail($id);
         $validated = $request->validate($this->rules());
+        $mqttPayloadData = $validated;
+        $validated = $this->persistableSensorData($validated);
 
         // Send MQTT SET to device (if it has connection_type)
-        if (!empty($validated['connection_type'])) {
-            $result = $this->sendMqttSet($logger, $validated);
+        if (!empty($mqttPayloadData['connection_type'])) {
+            $result = $this->sendMqttSet($logger, $mqttPayloadData);
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']])->withInput();
             }
@@ -147,5 +160,28 @@ class SensorController extends Controller
         $sensor->delete();
 
         return back()->with('success', 'Sensor deleted successfully.');
+    }
+
+    private function persistableSensorData(array $data): array
+    {
+        if (($data['connection_type'] ?? null) === 'digital') {
+            $data['analog_mode'] = (int) ($data['digital_mode'] ?? $data['analog_mode'] ?? 0);
+        }
+
+        foreach ([
+            'digital_mode',
+            'label_high',
+            'label_low',
+            'debounce_ms',
+            'invert_logic',
+            'pulse_submode',
+            'timeout_sec',
+            'default_state',
+            'failsafe',
+        ] as $field) {
+            unset($data[$field]);
+        }
+
+        return $data;
     }
 }

@@ -7,14 +7,11 @@ import {
     Cpu,
     DoorOpen,
     Gauge,
-    HardDrive,
-    KeyRound,
     Loader2,
     Network,
     PlugZap,
     Power,
     RefreshCw,
-    RotateCcw,
     Send,
     Server,
     ShieldAlert,
@@ -46,11 +43,24 @@ interface ProtocolLogger {
     status: 'online' | 'offline' | 'warning';
     deviceIdentifier: string | null;
     model: string | null;
+    connectionType: string | null;
+    loggerMode: string | null;
+    channelCount: number | null;
     firmwareVersion: string | null;
+    sensors: ProtocolSensor[];
 }
 
 interface ProtocolPageProps {
     logger: ProtocolLogger;
+}
+
+interface ProtocolSensor {
+    id: number;
+    name: string;
+    connectionType: string | null;
+    modbusSlaveId: number | null;
+    port: number | null;
+    channel: number | null;
 }
 
 interface CommandResult {
@@ -62,6 +72,18 @@ interface CommandResult {
 
 const inputClass = 'h-8';
 const selectClass = 'h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
+function inferBoardVariant(logger: ProtocolLogger): 'BL11' | 'BL110' | 'BL1100' | null {
+    const normalized = (logger.model || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (normalized.includes('BL1100') || (logger.channelCount ?? 0) >= 8) return 'BL1100';
+    if (normalized.includes('BL110')) return 'BL110';
+    if (normalized.includes('BL11') || logger.connectionType === 'cellular') return 'BL11';
+    return null;
+}
+
+function targetKey(sensor: ProtocolSensor): string {
+    return `${sensor.connectionType}:${sensor.id}`;
+}
 
 function csrfToken(): string {
     return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
@@ -160,18 +182,13 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
         gateway: '192.168.1.1',
         dns: '8.8.8.8',
     });
-    const [authPin, setAuthPin] = useState('superadmin');
     const [wdtTime, setWdtTime] = useState('30');
     const [simApn, setSimApn] = useState('internet');
     const [cal, setCal] = useState({
-        ch: '1',
         actual: '20',
-        sens: 'RS485',
-        slave: '1',
-        item: '0',
-        port: '1',
+        analogTarget: '',
+        offsetTarget: '',
     });
-    const [facConfirm, setFacConfirm] = useState(false);
     const [pumpState, setPumpState] = useState('1');
     const [out24State, setOut24State] = useState('1');
     const [out12State, setOut12State] = useState('1');
@@ -186,6 +203,17 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     const [ftpLogFile, setFtpLogFile] = useState('20260502.txt');
 
     const canSend = Boolean(logger.deviceIdentifier);
+    const variant = inferBoardVariant(logger);
+    const isCellularBoard = variant === 'BL11';
+    const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
+    const isAwlrMode = logger.loggerMode === 'AWLR_TD' || logger.loggerMode === 'AWLR_US';
+    const calibrationTargets = logger.sensors.filter((sensor) =>
+        sensor.connectionType === 'rs485' || sensor.connectionType === 'rs232' || sensor.connectionType === 'analog',
+    );
+    const analogTargets = calibrationTargets.filter((sensor) => sensor.connectionType === 'analog');
+    const selectedAnalogTarget = analogTargets.find((sensor) => targetKey(sensor) === cal.analogTarget) ?? analogTargets[0] ?? null;
+    const selectedOffsetTarget = calibrationTargets.find((sensor) => targetKey(sensor) === cal.offsetTarget) ?? calibrationTargets[0] ?? null;
+    const powerCalSensors = isEthernetBoard ? ['bat', 'out5', 'out12', 'out24'] : ['bat'];
 
     const breadcrumbs: BreadcrumbItem[] = [
         { title: 'Loggers', href: '/loggers' },
@@ -225,24 +253,47 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
         setResponses((current) => ({ ...current, [key]: { success: false, message } }));
     }
 
-    function actionButton(label: string, key: string, onClick: () => void, variant: 'default' | 'outline' | 'destructive' = 'outline') {
+    function actionButton(
+        label: string,
+        key: string,
+        onClick: () => void,
+        variant: 'default' | 'outline' | 'destructive' = 'outline',
+        confirmMessage?: string,
+    ) {
         const busy = loading === key;
         return (
-            <Button type="button" size="sm" variant={variant} disabled={!canSend || busy} onClick={onClick}>
+            <Button
+                type="button"
+                size="sm"
+                variant={variant}
+                disabled={!canSend || busy}
+                onClick={() => {
+                    if (confirmMessage && !window.confirm(confirmMessage)) return;
+                    onClick();
+                }}
+            >
                 {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
                 {label}
             </Button>
         );
     }
 
-    function calTarget(): Record<string, JsonValue> {
-        if (cal.sens === 'RS485') {
-            return { Sens: 'RS485', slave: numberValue(cal.slave, 1), item: numberValue(cal.item, 0) };
+    function targetPayload(sensor: ProtocolSensor | null): Record<string, JsonValue> | null {
+        if (!sensor?.connectionType) {
+            return null;
         }
-        if (cal.sens === 'RS232') {
-            return { Sens: 'RS232', p: numberValue(cal.port, 1) };
+
+        if (sensor.connectionType === 'rs485') {
+            return { Sens: 'RS485', slave: sensor.modbusSlaveId ?? 1, item: 0 };
         }
-        return { Sens: 'Analog', ch: numberValue(cal.ch, 1) };
+        if (sensor.connectionType === 'rs232') {
+            return { Sens: 'RS232', p: sensor.port ?? 1 };
+        }
+        if (sensor.connectionType === 'analog') {
+            return { Sens: 'Analog', ch: sensor.channel ?? 1 };
+        }
+
+        return null;
     }
 
     function sendPowerCalSet() {
@@ -259,7 +310,62 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
             return;
         }
 
+        if (body.v_ref !== undefined && (Number(body.v_ref) < 0.01 || Number(body.v_ref) > 60)) {
+            localError('POWER_CAL', 'v_ref harus 0.01 sampai 60.0 Volt.');
+            return;
+        }
+
+        if (body.i_ref !== undefined && (Number(body.i_ref) < 0 || Number(body.i_ref) > 50)) {
+            localError('POWER_CAL', 'i_ref harus 0 sampai 50.0 Ampere.');
+            return;
+        }
+
         send('POWER_CAL', { POWER_CAL: body }, 'POWER_CAL');
+    }
+
+    function actualValue(): number | null {
+        const value = numberValue(cal.actual, Number.NaN);
+        return Number.isFinite(value) && value > 0 ? value : null;
+    }
+
+    function sendCalSet() {
+        const actual = actualValue();
+        if (!selectedAnalogTarget || actual === null) {
+            localError('CAL', 'Pilih sensor analog dan isi actual_val lebih besar dari 0.');
+            return;
+        }
+
+        send('CAL', { CAL: { cmd: 'SET', ch: selectedAnalogTarget.channel ?? 1, actual_val: actual } }, 'CAL');
+    }
+
+    function sendCalReset() {
+        if (!selectedAnalogTarget) {
+            localError('CAL', 'Pilih sensor analog yang sudah terdaftar.');
+            return;
+        }
+
+        send('CAL', { CAL: { cmd: 'RST', ch: selectedAnalogTarget.channel ?? 1 } }, 'CAL');
+    }
+
+    function sendCalOffset() {
+        const target = targetPayload(selectedOffsetTarget);
+        const actual = actualValue();
+        if (!target || actual === null) {
+            localError('CAL', 'Pilih target sensor dan isi actual_val lebih besar dari 0.');
+            return;
+        }
+
+        send('CAL', { CAL: { cmd: 'OFFSET', ...target, actual_val: actual } }, 'CAL');
+    }
+
+    function sendCalResetOffset() {
+        const target = targetPayload(selectedOffsetTarget);
+        if (!target) {
+            localError('CAL', 'Pilih target sensor yang sudah terdaftar.');
+            return;
+        }
+
+        send('CAL', { CAL: { cmd: 'RSTSET', ...target } }, 'CAL');
     }
 
     return (
@@ -298,9 +404,8 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                         <div>
                             <p className="font-medium">Status implementasi</p>
                             <p className="text-muted-foreground">
-                                Modul berikut sekarang punya halaman dan endpoint MQTT generik: RTC, NET, AUTH, WDT, SIM, CAL, STATUS, FAC, AWLR_PUMP, P_OUT24,
-                                P_OUT12, SENS_DOOR, ALERT, MODBUSTCP, POWER, POWER_CAL, dan FTP READLOGS/GETLOG. PRODUCTION SET dan SDCARD tetap ditandai
-                                tidak dikirim via MQTT karena dokumen membatasi keduanya ke UART/Bluetooth.
+                                Halaman ini hanya menampilkan command MQTT configurator yang aman untuk model dan mode logger aktif. Modul yang tidak
+                                tersedia melalui MQTT umum tidak dirender sebagai menu atau tombol.
                             </p>
                         </div>
                     </CardContent>
@@ -313,7 +418,6 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                         <TabsTrigger value="io">I/O</TabsTrigger>
                         <TabsTrigger value="power">Power</TabsTrigger>
                         <TabsTrigger value="logs">Logs</TabsTrigger>
-                        <TabsTrigger value="blocked">Blocked</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="system" className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -344,76 +448,63 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                             <ButtonRow>
                                 {actionButton('SET', 'WDT', () => send('WDT', { WDT: { command: 'SET', time: wdtTime } }, 'WDT'))}
                                 {actionButton('GET', 'WDT', () => send('WDT', { WDT: { command: 'GET' } }, 'WDT'))}
-                                {actionButton('SET_REBOOT', 'WDT', () => send('WDT', { WDT: { command: 'SET_REBOOT', value: 1 } }, 'WDT'), 'destructive')}
+                                {actionButton(
+                                    'SET_REBOOT',
+                                    'WDT',
+                                    () => send('WDT', { WDT: { command: 'SET_REBOOT', value: 1 } }, 'WDT'),
+                                    'destructive',
+                                    'Kirim WDT SET_REBOOT? Logger akan restart.',
+                                )}
                             </ButtonRow>
                         </CommandCard>
 
-                        <CommandCard title="AUTH" description="Unlock akses command kritis di firmware." icon={KeyRound} result={responses.AUTH}>
-                            <Field label="PIN">
-                                <Input className={inputClass} type="password" value={authPin} onChange={(event) => setAuthPin(event.target.value)} />
-                            </Field>
+                        <CommandCard title="STATUS" description="Heartbeat/cek koneksi logger." icon={ShieldAlert} result={responses.STATUS}>
                             <ButtonRow>
-                                {actionButton('AUTH', 'AUTH', () => send('AUTH', { AUTH: { pin: authPin } }, 'AUTH'))}
+                                {actionButton('GET', 'STATUS', () => send('STATUS', { STATUS: { cmd: 'GET' } }, 'STATUS'))}
                             </ButtonRow>
                         </CommandCard>
 
-                        <CommandCard title="STATUS / FAC" description="Heartbeat dan factory reset." icon={ShieldAlert} result={responses.STATUS_FAC}>
-                            <div className="flex items-center gap-2">
-                                <input id="fac-confirm" type="checkbox" checked={facConfirm} onChange={(event) => setFacConfirm(event.target.checked)} />
-                                <Label htmlFor="fac-confirm" className="text-xs">Saya paham FAC RST menghapus konfigurasi dan reboot perangkat.</Label>
-                            </div>
-                            <ButtonRow>
-                                {actionButton('STATUS GET', 'STATUS_FAC', () => send('STATUS', { STATUS: { cmd: 'GET' } }, 'STATUS_FAC'))}
-                                <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="destructive"
-                                    disabled={!canSend || !facConfirm || loading === 'STATUS_FAC'}
-                                    onClick={() => send('FAC', { FAC: 'RST' }, 'STATUS_FAC')}
-                                >
-                                    {loading === 'STATUS_FAC' ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
-                                    FAC RST
-                                </Button>
-                            </ButtonRow>
-                        </CommandCard>
-
-                        <CommandCard title="CAL" description="Kalibrasi analog gain dan offset sensor." icon={Gauge} result={responses.CAL}>
-                            <div className="grid gap-3 sm:grid-cols-3">
-                                <Field label="Channel">
-                                    <Input className={inputClass} type="number" min="1" value={cal.ch} onChange={(event) => setCal({ ...cal, ch: event.target.value })} />
-                                </Field>
-                                <Field label="Actual value">
-                                    <Input className={inputClass} type="number" step="0.001" value={cal.actual} onChange={(event) => setCal({ ...cal, actual: event.target.value })} />
-                                </Field>
-                                <Field label="Sensor target">
-                                    <select className={selectClass} value={cal.sens} onChange={(event) => setCal({ ...cal, sens: event.target.value })}>
-                                        <option value="RS485">RS485</option>
-                                        <option value="RS232">RS232</option>
-                                        <option value="Analog">Analog</option>
-                                    </select>
-                                </Field>
-                                <Field label="RS485 slave">
-                                    <Input className={inputClass} type="number" min="1" max="5" value={cal.slave} onChange={(event) => setCal({ ...cal, slave: event.target.value })} />
-                                </Field>
-                                <Field label="RS485 item">
-                                    <Input className={inputClass} type="number" min="0" value={cal.item} onChange={(event) => setCal({ ...cal, item: event.target.value })} />
-                                </Field>
-                                <Field label="RS232 port">
-                                    <Input className={inputClass} type="number" min="1" max="2" value={cal.port} onChange={(event) => setCal({ ...cal, port: event.target.value })} />
-                                </Field>
-                            </div>
-                            <ButtonRow>
-                                {actionButton('SET', 'CAL', () => send('CAL', { CAL: { cmd: 'SET', ch: numberValue(cal.ch, 1), actual_val: numberValue(cal.actual) } }, 'CAL'))}
-                                {actionButton('GET', 'CAL', () => send('CAL', { CAL: { cmd: 'GET' } }, 'CAL'))}
-                                {actionButton('RST', 'CAL', () => send('CAL', { CAL: { cmd: 'RST', ch: numberValue(cal.ch, 1) } }, 'CAL'))}
-                                {actionButton('OFFSET', 'CAL', () => send('CAL', { CAL: { cmd: 'OFFSET', ...calTarget(), actual_val: numberValue(cal.actual) } }, 'CAL'))}
-                                {actionButton('RSTSET', 'CAL', () => send('CAL', { CAL: { cmd: 'RSTSET', ...calTarget() } }, 'CAL'))}
-                            </ButtonRow>
-                        </CommandCard>
+                        {calibrationTargets.length > 0 && (
+                            <CommandCard title="CAL" description="Kalibrasi analog gain dan offset sensor terdaftar." icon={Gauge} result={responses.CAL}>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                    {analogTargets.length > 0 && (
+                                        <Field label="Analog target">
+                                            <select className={selectClass} value={cal.analogTarget || (selectedAnalogTarget ? targetKey(selectedAnalogTarget) : '')} onChange={(event) => setCal({ ...cal, analogTarget: event.target.value })}>
+                                                {analogTargets.map((sensor) => (
+                                                    <option key={targetKey(sensor)} value={targetKey(sensor)}>
+                                                        {sensor.name} · ch {sensor.channel ?? 1}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </Field>
+                                    )}
+                                    <Field label="Offset target">
+                                        <select className={selectClass} value={cal.offsetTarget || (selectedOffsetTarget ? targetKey(selectedOffsetTarget) : '')} onChange={(event) => setCal({ ...cal, offsetTarget: event.target.value })}>
+                                            {calibrationTargets.map((sensor) => (
+                                                <option key={targetKey(sensor)} value={targetKey(sensor)}>
+                                                    {sensor.name} · {sensor.connectionType?.toUpperCase()}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </Field>
+                                    <Field label="actual_val">
+                                        <Input className={inputClass} type="number" min="0.001" step="0.001" value={cal.actual} onChange={(event) => setCal({ ...cal, actual: event.target.value })} />
+                                    </Field>
+                                </div>
+                                <ButtonRow>
+                                    {analogTargets.length > 0 && actionButton('SET', 'CAL', sendCalSet)}
+                                    {actionButton('GET', 'CAL', () => send('CAL', { CAL: { cmd: 'GET' } }, 'CAL'))}
+                                    {analogTargets.length > 0 && actionButton('RST', 'CAL', sendCalReset, 'destructive', 'Reset kalibrasi analog channel ini?')}
+                                    {actionButton('OFFSET', 'CAL', sendCalOffset)}
+                                    {actionButton('RSTSET', 'CAL', sendCalResetOffset, 'destructive', 'Reset offset sensor target ini?')}
+                                </ButtonRow>
+                            </CommandCard>
+                        )}
                     </TabsContent>
 
                     <TabsContent value="network" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="NET" description="Ethernet GET/SET untuk BL110 dan BL1100." icon={Network} result={responses.NET}>
+                        {isEthernetBoard && (
+                            <CommandCard title="NET" description="Ethernet GET/SET untuk BL110 dan BL1100." icon={Network} result={responses.NET}>
                             <div className="grid gap-3 sm:grid-cols-2">
                                 <Field label="DHCP">
                                     <select className={selectClass} value={net.dhcp} onChange={(event) => setNet({ ...net, dhcp: event.target.value })}>
@@ -438,9 +529,11 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                                 {actionButton('GET', 'NET', () => send('NET', { NET: { cmd: 'GET' } }, 'NET'))}
                                 {actionButton('SET', 'NET', () => send('NET', { NET: { cmd: 'SET', d: [numberValue(net.dhcp), net.ip, net.subnet, net.gateway, net.dns] } }, 'NET'))}
                             </ButtonRow>
-                        </CommandCard>
+                            </CommandCard>
+                        )}
 
-                        <CommandCard title="SIM" description="SIM7600 status dan APN untuk BL11." icon={Wifi} result={responses.SIM}>
+                        {isCellularBoard && (
+                            <CommandCard title="SIM" description="SIM7600 status dan APN untuk BL11." icon={Wifi} result={responses.SIM}>
                             <Field label="APN">
                                 <Input className={inputClass} value={simApn} onChange={(event) => setSimApn(event.target.value)} />
                             </Field>
@@ -448,9 +541,11 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                                 {actionButton('GET', 'SIM', () => send('SIM', { SIM: 'GET' }, 'SIM'))}
                                 {actionButton('SET', 'SIM', () => send('SIM', { SIM: { cmd: 'SET', apn: simApn } }, 'SIM'))}
                             </ButtonRow>
-                        </CommandCard>
+                            </CommandCard>
+                        )}
 
-                        <CommandCard title="MODBUSTCP" description="Modbus TCP server untuk SCADA/HMI." icon={Server} result={responses.MODBUSTCP}>
+                        {isEthernetBoard && (
+                            <CommandCard title="MODBUSTCP" description="Modbus TCP server untuk SCADA/HMI." icon={Server} result={responses.MODBUSTCP}>
                             <div className="grid gap-3 sm:grid-cols-2">
                                 <Field label="Enable">
                                     <select className={selectClass} value={modbusTcp.enable} onChange={(event) => setModbusTcp({ ...modbusTcp, enable: event.target.value })}>
@@ -466,11 +561,13 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                                 {actionButton('GET', 'MODBUSTCP', () => send('MODBUSTCP', { MODBUSTCP: { cmd: 'GET' } }, 'MODBUSTCP'))}
                                 {actionButton('SET', 'MODBUSTCP', () => send('MODBUSTCP', { MODBUSTCP: { cmd: 'SET', enable: numberValue(modbusTcp.enable), port: numberValue(modbusTcp.port, 502) } }, 'MODBUSTCP'))}
                             </ButtonRow>
-                        </CommandCard>
+                            </CommandCard>
+                        )}
                     </TabsContent>
 
                     <TabsContent value="io" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="AWLR_PUMP" description="Kontrol relay pompa via Modbus RTU." icon={PlugZap} result={responses.AWLR_PUMP}>
+                        {isAwlrMode && (
+                            <CommandCard title="AWLR_PUMP" description="Kontrol relay pompa via Modbus RTU." icon={PlugZap} result={responses.AWLR_PUMP}>
                             <Field label="State">
                                 <select className={selectClass} value={pumpState} onChange={(event) => setPumpState(event.target.value)}>
                                     <option value="1">ON</option>
@@ -479,9 +576,10 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                             </Field>
                             <ButtonRow>
                                 {actionButton('GET', 'AWLR_PUMP', () => send('AWLR_PUMP', { AWLR_PUMP: { cmd: 'GET' } }, 'AWLR_PUMP'))}
-                                {actionButton('SET', 'AWLR_PUMP', () => send('AWLR_PUMP', { AWLR_PUMP: { cmd: 'SET', state: numberValue(pumpState) } }, 'AWLR_PUMP'))}
+                                {actionButton('SET', 'AWLR_PUMP', () => send('AWLR_PUMP', { AWLR_PUMP: { cmd: 'SET', state: numberValue(pumpState) } }, 'AWLR_PUMP'), 'destructive', 'Ubah status pompa AWLR?')}
                             </ButtonRow>
-                        </CommandCard>
+                            </CommandCard>
+                        )}
 
                         <CommandCard title="Power Output" description="Kontrol output 24V dan 12V active-low." icon={Zap} result={responses.P_OUT}>
                             <div className="grid gap-3 sm:grid-cols-2">
@@ -499,8 +597,8 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                                 </Field>
                             </div>
                             <ButtonRow>
-                                {actionButton('P_OUT24 SET', 'P_OUT', () => send('P_OUT24', { P_OUT24: { cmd: 'SET', state: numberValue(out24State) } }, 'P_OUT'))}
-                                {actionButton('P_OUT12 SET', 'P_OUT', () => send('P_OUT12', { P_OUT12: { cmd: 'SET', state: numberValue(out12State) } }, 'P_OUT'))}
+                                {actionButton('P_OUT24 SET', 'P_OUT', () => send('P_OUT24', { P_OUT24: { cmd: 'SET', state: numberValue(out24State) } }, 'P_OUT'), 'destructive', 'Ubah output power 24V?')}
+                                {actionButton('P_OUT12 SET', 'P_OUT', () => send('P_OUT12', { P_OUT12: { cmd: 'SET', state: numberValue(out12State) } }, 'P_OUT'), 'destructive', 'Ubah output power 12V?')}
                             </ButtonRow>
                         </CommandCard>
 
@@ -542,10 +640,9 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                             <div className="grid gap-3 sm:grid-cols-3">
                                 <Field label="Sensor">
                                     <select className={selectClass} value={powerCal.sensor} onChange={(event) => setPowerCal({ ...powerCal, sensor: event.target.value })}>
-                                        <option value="bat">bat</option>
-                                        <option value="out5">out5</option>
-                                        <option value="out12">out12</option>
-                                        <option value="out24">out24</option>
+                                        {powerCalSensors.map((sensor) => (
+                                            <option key={sensor} value={sensor}>{sensor}</option>
+                                        ))}
                                     </select>
                                 </Field>
                                 <Field label="v_ref">
@@ -558,7 +655,7 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                             <ButtonRow>
                                 {actionButton('SET', 'POWER_CAL', sendPowerCalSet)}
                                 {actionButton('GET', 'POWER_CAL', () => send('POWER_CAL', { POWER_CAL: { cmd: 'GET' } }, 'POWER_CAL'))}
-                                {actionButton('RST', 'POWER_CAL', () => send('POWER_CAL', { POWER_CAL: { cmd: 'RST' } }, 'POWER_CAL'), 'destructive')}
+                                {actionButton('RST', 'POWER_CAL', () => send('POWER_CAL', { POWER_CAL: { cmd: 'RST' } }, 'POWER_CAL'), 'destructive', 'Reset semua kalibrasi INA219 ke default?')}
                             </ButtonRow>
                         </CommandCard>
                     </TabsContent>
@@ -573,30 +670,6 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                                 {actionButton('GETLOG', 'FTP_LOGS', () => send('FTP', { FTP: { cmd: 'GETLOG', f: ftpLogFile } }, 'FTP_LOGS'))}
                             </ButtonRow>
                         </CommandCard>
-                    </TabsContent>
-
-                    <TabsContent value="blocked" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <Card>
-                            <CardHeader>
-                                <CardTitle className="flex items-center gap-2 text-base"><ShieldAlert className="size-4" />PRODUCTION SET</CardTitle>
-                                <CardDescription>Provisioning SN, device ID, dan broker MQTT.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-3 text-sm text-muted-foreground">
-                                <p>Dokumen menandai PRODUCTION sebagai UART/Bluetooth only dan MQTT ditolak untuk alasan keamanan.</p>
-                                <Button size="sm" variant="outline" disabled>MQTT disabled</Button>
-                            </CardContent>
-                        </Card>
-
-                        <Card>
-                            <CardHeader>
-                                <CardTitle className="flex items-center gap-2 text-base"><HardDrive className="size-4" />SDCARD FIND/READ</CardTitle>
-                                <CardDescription>Akses file SD card mentah.</CardDescription>
-                            </CardHeader>
-                            <CardContent className="space-y-3 text-sm text-muted-foreground">
-                                <p>Dokumen membatasi SDCARD ke UART/Bluetooth. Untuk MQTT gunakan FTP READ/GET/READLOGS/GETLOG.</p>
-                                <Button size="sm" variant="outline" disabled>MQTT disabled</Button>
-                            </CardContent>
-                        </Card>
                     </TabsContent>
                 </Tabs>
 

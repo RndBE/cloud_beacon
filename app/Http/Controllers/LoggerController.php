@@ -93,6 +93,10 @@ class LoggerController extends Controller
             $query->where('user_id', auth()->id());
         }
         $logger = $query->findOrFail($id);
+        $deviceModel = $logger->model
+            ? DeviceModel::where('name', $logger->model)->first()
+            : null;
+        $allowedConfiguratorModes = ['DEFAULT', 'WEATHER', 'AWLR_TD', 'AWLR_US'];
 
         $loggerData = [
             'id' => IdHasher::encode($logger->id),
@@ -109,9 +113,8 @@ class LoggerController extends Controller
             'lastSyncError' => $logger->last_sync_error,
             'macAddress' => $logger->mac_address,
             'model' => $logger->model,
-            'modelImage' => $logger->model
-                ? optional(DeviceModel::where('name', $logger->model)->first(), fn($m) => $m->image ? asset('storage/' . $m->image) : null)
-                : null,
+            'modelImage' => $deviceModel?->image ? asset('storage/' . $deviceModel->image) : null,
+            'channelCount' => $deviceModel?->channel_count,
             'uptime' => $logger->uptime,
             'cpuUsage' => $logger->cpu_usage,
             'memoryUsage' => $logger->memory_usage,
@@ -139,6 +142,7 @@ class LoggerController extends Controller
             'mqttTopic' => $logger->mqtt_topic,
             'dhcpMode' => $logger->dhcp_mode,
             'rebootCounter' => $logger->reboot_counter,
+            'rebootDaily' => $logger->reboot_daily,
             'intervalRead' => $logger->interval_read ?? 5,
             'intervalSend' => $logger->interval_send ?? 10,
             'maxReset' => $logger->max_reset ?? 3,
@@ -198,7 +202,10 @@ class LoggerController extends Controller
             'loggerMode' => $logger->logger_mode,
             'calibrationData' => $logger->calibration_data,
             'calibratedAt' => $logger->calibrated_at?->format('Y-m-d H:i:s'),
-            'availableModes' => \App\Models\LoggerMode::orderBy('group')->orderBy('label')->get()
+            'availableModes' => \App\Models\LoggerMode::whereIn('slug', $allowedConfiguratorModes)
+                ->orderBy('group')
+                ->orderBy('label')
+                ->get()
                 ->map(fn($m) => [
                     'slug'              => $m->slug,
                     'label'             => $m->label,
@@ -234,12 +241,15 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::query();
+        $query = Logger::with('externalSensors');
         if (!auth()->user()->isSuperAdmin()) {
             $query->where('user_id', auth()->id());
         }
 
         $logger = $query->findOrFail($id);
+        $deviceModel = $logger->model
+            ? DeviceModel::where('name', $logger->model)->first()
+            : null;
 
         return Inertia::render('loggers/protocol', [
             'logger' => [
@@ -249,7 +259,18 @@ class LoggerController extends Controller
                 'status' => $logger->status,
                 'deviceIdentifier' => $logger->device_identifier,
                 'model' => $logger->model,
+                'connectionType' => $logger->connection_type,
+                'loggerMode' => $logger->logger_mode,
+                'channelCount' => $deviceModel?->channel_count,
                 'firmwareVersion' => $logger->firmware_version,
+                'sensors' => $logger->externalSensors->map(fn(Sensor $sensor) => [
+                    'id' => $sensor->id,
+                    'name' => $sensor->name,
+                    'connectionType' => $sensor->connection_type,
+                    'modbusSlaveId' => $sensor->modbus_slave_id,
+                    'port' => $sensor->port,
+                    'channel' => $sensor->channel,
+                ]),
             ],
         ]);
     }
@@ -359,6 +380,7 @@ class LoggerController extends Controller
                 'temperature' => $mqttData['temperature'] ?? null,
                 'humidity' => $mqttData['humidity'] ?? null,
                 'reboot_counter' => $mqttData['reboot_counter'] ?? null,
+                'reboot_daily' => $mqttData['reboot_daily'] ?? null,
                 'interval_read' => $mqttData['interval_read'] ?? null,
                 'interval_send' => $mqttData['interval_send'] ?? null,
                 'max_reset' => $mqttData['max_reset'] ?? null,
@@ -421,7 +443,7 @@ class LoggerController extends Controller
                             $uniqueKey['modbus_slave_id'] = $ds['modbus_slave_id'] ?? null;
                         } elseif ($ds['connection_type'] === 'rs232') {
                             $uniqueKey['port'] = $ds['port'] ?? 1;
-                        } elseif ($ds['connection_type'] === 'analog') {
+                        } elseif (in_array($ds['connection_type'], ['analog', 'digital'], true)) {
                             $uniqueKey['channel'] = $ds['channel'] ?? 0;
                         }
 

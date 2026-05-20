@@ -1,4 +1,4 @@
-import { Head, Link, router, usePage } from '@inertiajs/react';
+import { Head, Link, router } from '@inertiajs/react';
 import {
     Activity,
     AlertTriangle,
@@ -22,7 +22,6 @@ import {
     Key,
     Link2,
     MapPin,
-    MemoryStick,
     Network,
     Pencil,
     Plug,
@@ -54,30 +53,6 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
-import { Separator } from '@/components/ui/separator';
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -88,7 +63,31 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
@@ -176,6 +175,7 @@ interface LoggerDetail {
     macAddress: string;
     model: string;
     modelImage: string | null;
+    channelCount: number | null;
     uptime: string;
     cpuUsage: number;
     memoryUsage: number;
@@ -266,7 +266,12 @@ const SENSOR_TYPES = [
     { value: 'rainfall', label: 'Rainfall', defaultUnit: 'mm' },
     { value: 'voltage', label: 'Voltage', defaultUnit: 'V' },
     { value: 'current', label: 'Current', defaultUnit: 'A' },
+    { value: 'digital-input', label: 'Digital Input', defaultUnit: '-' },
+    { value: 'pulse-counter', label: 'Pulse Counter', defaultUnit: 'count' },
+    { value: 'digital-output', label: 'Digital Output', defaultUnit: '-' },
 ] as const;
+
+const CONFIGURATOR_MODES = new Set(['DEFAULT', 'WEATHER', 'AWLR_TD', 'AWLR_US']);
 
 const EMPTY_FORM = {
     name: '',
@@ -284,14 +289,46 @@ const EMPTY_FORM = {
     baudrate: 9600,
     serial_format: '8N1',
     scale_factor: 1.0,
-    channel: 0,
+    channel: 1,
     analog_mode: 1,
     port: 1,
+    digital_mode: 0,
+    label_high: 'HIGH',
+    label_low: 'LOW',
+    debounce_ms: 50,
+    invert_logic: false,
+    pulse_submode: 0,
+    timeout_sec: 5,
+    default_state: 0,
+    failsafe: 0,
     lcd_enabled: true,
     log_enabled: true,
     send_enabled: true,
     fast_poll: false,
 };
+
+function configuratorModes(modes: LoggerModeOption[]): LoggerModeOption[] {
+    return modes.filter((mode) => CONFIGURATOR_MODES.has(mode.slug));
+}
+
+function inferBoardVariant(logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>): 'BL11' | 'BL110' | 'BL1100' | null {
+    const normalized = (logger.model || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (normalized.includes('BL1100') || (logger.channelCount ?? 0) >= 8) return 'BL1100';
+    if (normalized.includes('BL110')) return 'BL110';
+    if (normalized.includes('BL11') || logger.connectionType === 'cellular') return 'BL11';
+    return null;
+}
+
+function maxAnalogChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>): number {
+    if (logger.channelCount && logger.channelCount > 0) {
+        return Math.min(logger.channelCount, 8);
+    }
+
+    const variant = inferBoardVariant(logger);
+    if (variant === 'BL1100') return 8;
+    if (variant === 'BL11' || variant === 'BL110') return 2;
+    return 2;
+}
 
 // Helper: fetch with CSRF
 async function apiFetch(url: string, body: Record<string, unknown>) {
@@ -500,7 +537,7 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
         setStepStatuses(prev => { const n = [...prev]; n[2] = 'running'; return n; });
 
         let sensorDone = false;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
         const sensorResultRef: { current: any } = { current: null };
 
         const sensorPromise = apiFetch('/api/mqtt/sensors/get', { id_logger: deviceIdentifier, logger_id: loggerId })
@@ -1072,7 +1109,17 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
     );
 }
 
-function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: string; sensors: SensorItem[]; deviceIdentifier?: string | null }) {
+function SensorCrudPanel({
+    loggerId,
+    sensors,
+    deviceIdentifier,
+    analogChannelMax,
+}: {
+    loggerId: string;
+    sensors: SensorItem[];
+    deviceIdentifier?: string | null;
+    analogChannelMax: number;
+}) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [editingSensor, setEditingSensor] = useState<SensorItem | null>(null);
@@ -1107,9 +1154,18 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
             baudrate: sensor.baudrate || 9600,
             serial_format: sensor.serialFormat || '8N1',
             scale_factor: sensor.scaleFactor || 1.0,
-            channel: sensor.channel || 0,
+            channel: sensor.channel || 1,
             analog_mode: sensor.analogMode ?? 1,
             port: sensor.port || 1,
+            digital_mode: sensor.connectionType === 'digital' ? sensor.analogMode ?? 0 : 0,
+            label_high: 'HIGH',
+            label_low: 'LOW',
+            debounce_ms: 50,
+            invert_logic: false,
+            pulse_submode: 0,
+            timeout_sec: 5,
+            default_state: 0,
+            failsafe: 0,
             lcd_enabled: sensor.lcdEnabled ?? true,
             log_enabled: sensor.logEnabled ?? true,
             send_enabled: sensor.sendEnabled ?? true,
@@ -1326,6 +1382,7 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                 <option value="rs485">RS485 (Modbus)</option>
                                 <option value="rs232">RS232</option>
                                 <option value="analog">Analog</option>
+                                <option value="digital">Digital</option>
                             </select>
                         </div>
 
@@ -1405,8 +1462,8 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                 <p className="text-xs font-semibold uppercase text-muted-foreground">Analog Config</p>
                                 <div className="grid gap-1.5">
                                     <Label className="text-xs">Channel</Label>
-                                    <Input type="number" min={0} max={7} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 0 })} />
-                                    <p className="text-[10px] text-muted-foreground">Channel sesuai jumlah yang dikonfigurasi di Production Models</p>
+                                    <Input type="number" min={1} max={analogChannelMax} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
+                                    <p className="text-[10px] text-muted-foreground">Channel 1-based, maksimum {analogChannelMax} sesuai varian perangkat</p>
                                 </div>
                                 <div className="grid gap-1.5">
                                     <Label className="text-xs">Input Mode</Label>
@@ -1425,6 +1482,89 @@ function SensorCrudPanel({ loggerId, sensors, deviceIdentifier }: { loggerId: st
                                         <Input type="number" step="any" value={form.max_value} onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 100 })} placeholder="100" />
                                     </div>
                                 </div>
+                            </div>
+                        )}
+
+                        {/* Digital fields */}
+                        {form.connection_type === 'digital' && (
+                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Digital Config</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Channel</Label>
+                                        <Input type="number" min={1} max={8} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Mode</Label>
+                                        <select value={form.digital_mode} onChange={e => setForm({ ...form, digital_mode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            <option value={0}>Logic Input</option>
+                                            <option value={1}>Pulse Volatile</option>
+                                            <option value={2}>Pulse Persistent</option>
+                                            <option value={3}>Logic Output</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                {form.digital_mode === 0 && (
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Label HIGH</Label>
+                                            <Input value={form.label_high} onChange={e => setForm({ ...form, label_high: e.target.value })} />
+                                        </div>
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Label LOW</Label>
+                                            <Input value={form.label_low} onChange={e => setForm({ ...form, label_low: e.target.value })} />
+                                        </div>
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Debounce (ms)</Label>
+                                            <Input type="number" min={0} value={form.debounce_ms} onChange={e => setForm({ ...form, debounce_ms: parseInt(e.target.value) || 0 })} />
+                                        </div>
+                                        <label className="flex items-center gap-2 pt-5 text-xs">
+                                            <input type="checkbox" checked={form.invert_logic} onChange={e => setForm({ ...form, invert_logic: e.target.checked })} className="rounded" />
+                                            Invert logic
+                                        </label>
+                                    </div>
+                                )}
+
+                                {(form.digital_mode === 1 || form.digital_mode === 2) && (
+                                    <div className="grid gap-3 sm:grid-cols-3">
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Pulse Submode</Label>
+                                            <select value={form.pulse_submode} onChange={e => setForm({ ...form, pulse_submode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                                <option value={0}>Counter</option>
+                                                <option value={1}>Rate</option>
+                                                <option value={2}>Auto Reset</option>
+                                            </select>
+                                        </div>
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Scale</Label>
+                                            <Input type="number" step="any" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: parseFloat(e.target.value) || 1 })} />
+                                        </div>
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Timeout (s)</Label>
+                                            <Input type="number" min={0} value={form.timeout_sec} onChange={e => setForm({ ...form, timeout_sec: parseInt(e.target.value) || 0 })} />
+                                        </div>
+                                    </div>
+                                )}
+
+                                {form.digital_mode === 3 && (
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Default State</Label>
+                                            <select value={form.default_state} onChange={e => setForm({ ...form, default_state: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                                <option value={0}>OFF</option>
+                                                <option value={1}>ON</option>
+                                            </select>
+                                        </div>
+                                        <div className="grid gap-1.5">
+                                            <Label className="text-xs">Failsafe</Label>
+                                            <select value={form.failsafe} onChange={e => setForm({ ...form, failsafe: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                                <option value={0}>OFF</option>
+                                                <option value={1}>ON</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -1953,6 +2093,21 @@ const EMPTY_INTEGRATION_FORM = {
     is_enabled: true,
 };
 
+function initialIntegrationForm(integration?: Integration | null): typeof EMPTY_INTEGRATION_FORM {
+    if (!integration) {
+        return { ...EMPTY_INTEGRATION_FORM };
+    }
+
+    return {
+        name: integration.name,
+        endpoint_url: integration.endpointUrl,
+        auth_type: integration.authType,
+        auth_config: { ...integration.authConfig },
+        interval_minutes: integration.intervalMinutes,
+        is_enabled: integration.isEnabled,
+    };
+}
+
 function IntegrationFormModal({ open, onClose, loggerId, integration }: {
     open: boolean;
     onClose: () => void;
@@ -1960,25 +2115,8 @@ function IntegrationFormModal({ open, onClose, loggerId, integration }: {
     integration?: Integration | null;
 }) {
     const isEdit = !!integration;
-    const [form, setForm] = useState({ ...EMPTY_INTEGRATION_FORM });
+    const [form, setForm] = useState(() => initialIntegrationForm(integration));
     const [saving, setSaving] = useState(false);
-    const prevOpen = useRef(false);
-
-    if (open && !prevOpen.current) {
-        if (integration) {
-            setForm({
-                name: integration.name,
-                endpoint_url: integration.endpointUrl,
-                auth_type: integration.authType,
-                auth_config: { ...integration.authConfig },
-                interval_minutes: integration.intervalMinutes,
-                is_enabled: integration.isEnabled,
-            });
-        } else {
-            setForm({ ...EMPTY_INTEGRATION_FORM });
-        }
-    }
-    prevOpen.current = open;
 
     const setAuthCfg = (key: string, value: string) => setForm(f => ({ ...f, auth_config: { ...f.auth_config, [key]: value } }));
 
@@ -2169,7 +2307,13 @@ function IntegrationRow({ integration, loggerId, disabled }: {
                 )}
             </div>
 
-            <IntegrationFormModal open={editOpen} onClose={() => setEditOpen(false)} loggerId={loggerId} integration={integration} />
+            <IntegrationFormModal
+                key={editOpen ? `edit-${integration.id}-open` : `edit-${integration.id}-closed`}
+                open={editOpen}
+                onClose={() => setEditOpen(false)}
+                loggerId={loggerId}
+                integration={integration}
+            />
 
             <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
                 <AlertDialogContent>
@@ -2341,7 +2485,12 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                 )}
             </CardContent>
 
-            <IntegrationFormModal open={addOpen} onClose={() => setAddOpen(false)} loggerId={loggerId} />
+            <IntegrationFormModal
+                key={addOpen ? 'add-open' : 'add-closed'}
+                open={addOpen}
+                onClose={() => setAddOpen(false)}
+                loggerId={loggerId}
+            />
 
             <AlertDialog open={showDisableDialog} onOpenChange={setShowDisableDialog}>
                 <AlertDialogContent>
@@ -3097,18 +3246,20 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
 type SetModePhase = 'idle' | 'sending' | 'success' | 'error';
 
 function SetModeCard({ logger }: { logger: LoggerDetail }) {
-    const [selectedMode, setSelectedMode] = useState<string>(logger.loggerMode || '');
+    const allowedModes = configuratorModes(logger.availableModes);
+    const initialMode = allowedModes.some((mode) => mode.slug === logger.loggerMode) ? logger.loggerMode || '' : '';
+    const [selectedMode, setSelectedMode] = useState<string>(initialMode);
     const [phase, setPhase] = useState<SetModePhase>('idle');
     const [message, setMessage] = useState('');
     const [confirmOpen, setConfirmOpen] = useState(false);
 
-    const activeMode = logger.availableModes.find(m => m.slug === logger.loggerMode);
-    const selectedModeInfo = logger.availableModes.find(m => m.slug === selectedMode);
-    const isChanged = selectedMode !== (logger.loggerMode || '');
+    const activeMode = allowedModes.find(m => m.slug === logger.loggerMode);
+    const selectedModeInfo = allowedModes.find(m => m.slug === selectedMode);
+    const isChanged = selectedMode !== initialMode;
 
     // Group modes by group
     const grouped: Record<string, LoggerModeOption[]> = {};
-    for (const m of logger.availableModes) {
+    for (const m of allowedModes) {
         if (!grouped[m.group]) grouped[m.group] = [];
         grouped[m.group].push(m);
     }
@@ -3269,13 +3420,7 @@ type CalibPhase = 'idle' | 'sending' | 'success' | 'error';
 
 function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     const activeMode = logger.availableModes.find(m => m.slug === logger.loggerMode);
-
-    // Don't render if no mode or mode has no calibration
-    if (!activeMode || !activeMode.hasCalibration || !activeMode.calibrationFields?.length) {
-        return null;
-    }
-
-    const fields = activeMode.calibrationFields;
+    const fields = activeMode?.hasCalibration ? activeMode.calibrationFields ?? [] : [];
 
     const [phase, setPhase] = useState<CalibPhase>('idle');
     const [message, setMessage] = useState('');
@@ -3297,6 +3442,10 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
         if (f.type === 'select') return val !== '';
         return val !== '' && !isNaN(parseFloat(val));
     });
+
+    if (!activeMode || fields.length === 0) {
+        return null;
+    }
 
     async function handleCalibrate() {
         setPhase('sending');
@@ -3574,15 +3723,16 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
     const [selectedMode, setSelectedMode] = useState<string>('');
     const [phase, setPhase] = useState<WizardPhase>('select');
     const [message, setMessage] = useState('');
+    const allowedModes = configuratorModes(logger.availableModes);
 
     // Group modes
     const grouped: Record<string, LoggerModeOption[]> = {};
-    for (const m of logger.availableModes) {
+    for (const m of allowedModes) {
         if (!grouped[m.group]) grouped[m.group] = [];
         grouped[m.group].push(m);
     }
 
-    const selectedModeInfo = logger.availableModes.find(m => m.slug === selectedMode);
+    const selectedModeInfo = allowedModes.find(m => m.slug === selectedMode);
 
     async function handleSetMode() {
         if (!selectedMode) return;
@@ -3883,17 +4033,11 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
     // Quick Setup Wizard state
     const needsSetup = !logger.loggerMode;
-    const [wizardOpen, setWizardOpen] = useState(false);
+    const [wizardOpen, setWizardOpen] = useState(() => {
+        if (!needsSetup || typeof window === 'undefined') return false;
+        return !sessionStorage.getItem(`skip_setup_${logger.id}`);
+    });
     const [setupBannerDismissed, setSetupBannerDismissed] = useState(false);
-
-    useEffect(() => {
-        if (needsSetup) {
-            const skipped = sessionStorage.getItem(`skip_setup_${logger.id}`);
-            if (!skipped) {
-                setWizardOpen(true);
-            }
-        }
-    }, [needsSetup, logger.id]);
 
     const breadcrumbs: BreadcrumbItem[] = [
         { title: t('nav.dashboard'), href: '/dashboard' },
@@ -4149,7 +4293,12 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
                     {/* ==================== SENSORS ==================== */}
                     <TabsContent value="sensors" className="mt-6 space-y-4">
-                        <SensorCrudPanel loggerId={logger.id} sensors={logger.sensors} deviceIdentifier={logger.deviceIdentifier} />
+                        <SensorCrudPanel
+                            loggerId={logger.id}
+                            sensors={logger.sensors}
+                            deviceIdentifier={logger.deviceIdentifier}
+                            analogChannelMax={maxAnalogChannel(logger)}
+                        />
                     </TabsContent>
 
                     {/* ==================== SYSTEM ==================== */}
@@ -4273,22 +4422,6 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 initialUser={logger.ftpUser}
                             />
                         )}
-                        <Card>
-                            <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="size-5" /> {t('loggerDetail.storage_management')}</CardTitle></CardHeader>
-                            <CardContent>
-                                <div className="flex flex-wrap gap-3">
-                                    <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                        <Trash2 className="size-4" /> {t('loggerDetail.clean_old_logs')}
-                                    </Button>
-                                    <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                        <Download className="size-4" /> {t('loggerDetail.export_log_files')}
-                                    </Button>
-                                    <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                        <Save className="size-4" /> {t('loggerDetail.backup_configuration')}
-                                    </Button>
-                                </div>
-                            </CardContent>
-                        </Card>
                     </TabsContent>
 
                     {/* ==================== MAINTENANCE ==================== */}
@@ -4296,7 +4429,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         {/* Set Mode & Calibration */}
                         <div className="grid gap-4 lg:grid-cols-2">
                             <SetModeCard logger={logger} />
-                            <CalibrationCard logger={logger} />
+                            <CalibrationCard key={logger.loggerMode || 'no-mode'} logger={logger} />
                         </div>
                         <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
@@ -4313,29 +4446,6 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                             </div>
                                             <Badge variant="default">{t('loggerDetail.up_to_date')}</Badge>
                                         </div>
-                                        <Button variant="outline" className="gap-2" disabled={logger.status === 'offline'}>
-                                            <Upload className="size-4" /> {t('loggerDetail.upload_firmware')}
-                                        </Button>
-                                    </div>
-                                </CardContent>
-                            </Card>
-                            <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><HardDrive className="size-5" /> {t('loggerDetail.device_actions')}</CardTitle></CardHeader>
-                                <CardContent>
-                                    <div className="grid gap-3">
-                                        <Button variant="outline" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <Power className="size-4" /> {t('loggerDetail.schedule_reboot')}
-                                        </Button>
-                                        <Button variant="outline" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <Download className="size-4" /> {t('loggerDetail.export_configuration')}
-                                        </Button>
-                                        <Button variant="outline" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <Upload className="size-4" /> {t('loggerDetail.import_configuration')}
-                                        </Button>
-                                        <Separator />
-                                        <Button variant="destructive" className="justify-start gap-2" disabled={logger.status === 'offline'}>
-                                            <RotateCcw className="size-4" /> {t('loggerDetail.factory_reset')}
-                                        </Button>
                                     </div>
                                 </CardContent>
                             </Card>
@@ -4554,9 +4664,9 @@ function ApiDocumentation({ loggerId, loggerName }: { loggerId: string; loggerNa
             method: 'POST',
             path: `/loggers/${loggerId}/command`,
             title: 'Send Command',
-            description: 'Send a remote command to the logger device. Available commands: reboot, sync_config, backup_config, check_firmware, request_info.',
+            description: 'Send a remote command to the logger device. Available commands: reboot, sync_config, backup_config, request_info.',
             params: [
-                { name: 'command', type: 'string', required: true, description: 'Command to execute: reboot | sync_config | backup_config | check_firmware | request_info' },
+                { name: 'command', type: 'string', required: true, description: 'Command to execute: reboot | sync_config | backup_config | request_info' },
                 { name: 'params', type: 'object', required: false, description: 'Optional parameters for the command' },
             ],
             requestBody: JSON.stringify({

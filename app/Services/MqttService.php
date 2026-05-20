@@ -30,7 +30,7 @@ class MqttService
     /**
      * Request INFO from a logger via MQTT.
      *
-     * Publishes {"INFO":{"command":"GET"}} to sub_{id_logger}
+     * Publishes {"INFO":{"cmd":"GET"}} to sub_{id_logger}
      * Subscribes to pub_{id_logger} and waits for response.
      *
      * @param string $idLogger  The logger's device identifier (IdAlat)
@@ -121,7 +121,7 @@ class MqttService
      * Parse INFO response into structured data for the logger model.
      *
      * Supports two formats:
-     * 1. Indexed array (protocol spec, 26 elements):
+     * 1. Indexed array (protocol spec §3.5 INFO, 27/28 elements):
      *    [0]  SN              — Serial Number
      *    [1]  DeviceID        — Logger / Device ID
      *    [2]  Topic           — MQTT Telemetry Topic
@@ -133,8 +133,8 @@ class MqttService
      *    [8]  DHCP Mode       — int: 0=Static, 1=DHCP
      *    [9]  SD Total (KB)
      *    [10] SD Used  (KB)
-     *    [11] Uptime HARI     — days   (int)
-     *    [12] Uptime JAM      — hours  (int)
+     *    [11] Uptime HARI     — days    (int)
+     *    [12] Uptime JAM      — hours   (int)
      *    [13] Uptime MENIT    — minutes (int)
      *    [14] GPS Latitude    — float
      *    [15] GPS Longitude   — float
@@ -142,13 +142,14 @@ class MqttService
      *    [17] Battery Voltage — float (V)
      *    [18] Temperature     — float (°C, SHT30)
      *    [19] Humidity        — float (%, SHT30)
-     *    [20] Reboot Count    — int  (persistent)
-     *    [21] Read Interval   — int  (menit)
-     *    [22] Send Interval   — int  (menit)
-     *    [23] WDT Timeout     — int  (menit)
-     *    [24] Connection Mode — int: 1=Ethernet, 2=Cellular, 3=WiFi
-     *    [25] Signal Strength — int: 0–100%
-     *    [26] Logger Mode     — string: "AWLR_US", "AWLR_TD", "ARR", "DEF" (not set)
+     *    [20] Reboot Harian   — int  (reset setiap hari)
+     *    [21] Reboot Total    — int  (persistent)
+     *    [22] Read Interval   — int  (menit)
+     *    [23] Send Interval   — int  (menit)
+     *    [24] WDT Timeout     — int  (menit)
+     *    [25] Connection Mode — int: 0=Cellular, 1=Ethernet
+     *    [26] Signal Strength — int: 0–100%
+     *    [27] System Mode     — string: "DEF", "AWLR_TD", "AWLR_US", "WEATHER" ("DEF" = belum di-set)
      * 2. Key-value object (legacy)
      */
     public static function parseInfoResponse(array $info): array
@@ -160,6 +161,8 @@ class MqttService
             $uptimeHours   = isset($info[12]) ? (int) $info[12] : 0;
             $uptimeMinutes = isset($info[13]) ? (int) $info[13] : 0;
             $uptimeStr     = "{$uptimeDays}d {$uptimeHours}h {$uptimeMinutes}m";
+
+            $modeValue = $info[27] ?? (is_string($info[26] ?? null) ? $info[26] : null);
 
             return [
                 'serial_number'     => $info[0] ?? null,
@@ -180,19 +183,19 @@ class MqttService
                 'battery'           => $info[17] ?? null,
                 'temperature'       => $info[18] ?? null,
                 'humidity'          => $info[19] ?? null,
-                'reboot_counter'    => isset($info[20]) ? (int) $info[20] : null,
-                'interval_read'     => isset($info[21]) ? (int) $info[21] : null,
-                'interval_send'     => isset($info[22]) ? (int) $info[22] : null,
-                'max_reset'         => isset($info[23]) ? (int) $info[23] : null,
-                'connection_type'   => isset($info[24]) ? match ((int) $info[24]) {
+                'reboot_daily'      => isset($info[20]) ? (int) $info[20] : null,
+                'reboot_counter'    => isset($info[21]) ? (int) $info[21] : null,
+                'interval_read'     => isset($info[22]) ? (int) $info[22] : null,
+                'interval_send'     => isset($info[23]) ? (int) $info[23] : null,
+                'max_reset'         => isset($info[24]) ? (int) $info[24] : null,
+                'connection_type'   => isset($info[25]) ? match ((int) $info[25]) {
+                    0 => 'cellular',
                     1 => 'ethernet',
-                    2 => 'cellular',
-                    3 => 'wifi',
                     default => null,
                 } : null,
-                'signal_strength'   => isset($info[25]) ? (int) $info[25] : null,
-                // [26] Logger Mode — "AWLR_US", "AWLR_TD", "ARR", atau "DEF" (belum di-set)
-                'logger_mode'       => isset($info[26]) && $info[26] !== 'DEF' ? $info[26] : null,
+                'signal_strength'   => isset($info[26]) && is_numeric($info[26]) ? (int) $info[26] : null,
+                // [27] System Mode in the current table. Some devices still send it as the last value at [26].
+                'logger_mode'       => self::normalizeSystemMode($modeValue),
             ];
         }
 
@@ -224,6 +227,7 @@ class MqttService
                 default => null,
             } : null,
             'signal_strength' => isset($info['signal']) ? (int) $info['signal'] : null,
+            'logger_mode' => self::normalizeSystemMode($info['mode'] ?? $info['system_mode'] ?? null),
         ];
 
         // Parse GPS: "lat,lng,alt"
@@ -237,6 +241,21 @@ class MqttService
         }
 
         return $parsed;
+    }
+
+    private static function normalizeSystemMode(mixed $mode): ?string
+    {
+        if (!is_string($mode) || trim($mode) === '') {
+            return null;
+        }
+
+        $normalized = strtoupper(trim($mode));
+
+        return match ($normalized) {
+            'DEF' => 'DEFAULT',
+            'DEFAULT', 'AWLR_TD', 'AWLR_US', 'WEATHER' => $normalized,
+            default => null,
+        };
     }
 
     // =========================================================================
@@ -375,6 +394,36 @@ class MqttService
             }
         }
 
+        // Digital — ch: channel, mode: 0 logic input, 1/2 pulse input, 3 logic output.
+        $digitalDevices = $raw['digital'] ?? $raw['DIGITAL'] ?? [];
+        foreach ($digitalDevices as $device) {
+            $channel = $device['ch'] ?? 1;
+            $mode = isset($device['mode']) ? (int) $device['mode'] : 0;
+
+            foreach (self::normalizeSensorRows($device['s'] ?? []) as $s) {
+                $unit = match ($mode) {
+                    1, 2 => is_string($s[3] ?? null) ? $s[3] : '',
+                    3 => is_string($s[3] ?? null) ? $s[3] : '-',
+                    default => '',
+                };
+
+                $sensors[] = [
+                    'connection_type' => 'digital',
+                    'name' => $s[0] ?? 'Unknown',
+                    'device_name' => null,
+                    'scale_factor' => in_array($mode, [1, 2], true) ? (float) ($s[2] ?? 1) : null,
+                    'min_value' => 0,
+                    'max_value' => $mode === 3 ? 1 : 100,
+                    'unit' => $unit,
+                    'lcd_enabled' => (bool) ($s[$mode === 3 ? 4 : 5] ?? false),
+                    'log_enabled' => (bool) ($s[$mode === 3 ? 5 : 6] ?? false),
+                    'send_enabled' => (bool) ($s[$mode === 3 ? 6 : 7] ?? false),
+                    'channel' => $channel,
+                    'analog_mode' => $mode,
+                ];
+            }
+        }
+
         return $sensors;
     }
 
@@ -415,7 +464,7 @@ class MqttService
                 $matched = match ($sensor['connection_type']) {
                     'rs485' => ($entry['slave_id'] ?? null) == ($sensor['modbus_slave_id'] ?? null),
                     'rs232' => ($entry['port'] ?? null) == ($sensor['port'] ?? null),
-                    'analog' => ($entry['channel'] ?? null) == ($sensor['channel'] ?? null),
+                    'analog', 'digital' => ($entry['channel'] ?? null) == ($sensor['channel'] ?? null),
                     default => false,
                 };
 
@@ -476,7 +525,7 @@ class MqttService
                 'SENSORS' => [
                     'cmd' => 'SET',
                     'type' => 'ANALOG',
-                    'ch' => (int) ($data['channel'] ?? 0),
+                    'ch' => (int) ($data['channel'] ?? 1),
                     'mode' => (int) ($data['analog_mode'] ?? 1),
                     's' => [[
                         $name,
@@ -489,6 +538,52 @@ class MqttService
                     ]],
                 ],
             ];
+        }
+
+        if ($connType === 'digital') {
+            $mode = (int) ($data['digital_mode'] ?? $data['analog_mode'] ?? 0);
+
+            $payload = [
+                'SENSORS' => [
+                    'cmd' => 'SET',
+                    'type' => 'DIGITAL',
+                    'ch' => (int) ($data['channel'] ?? 1),
+                    'mode' => $mode,
+                    's' => match ($mode) {
+                        1, 2 => [
+                            $name,
+                            (int) ($data['pulse_submode'] ?? 0),
+                            (float) ($data['scale_factor'] ?? 1.0),
+                            $unit,
+                            (int) ($data['timeout_sec'] ?? 5),
+                            $lcdFlag,
+                            $sdFlag,
+                            $serverFlag,
+                        ],
+                        3 => [
+                            $name,
+                            (int) ($data['default_state'] ?? 0),
+                            (int) ($data['failsafe'] ?? 0),
+                            $unit !== '' ? $unit : '-',
+                            $lcdFlag,
+                            $sdFlag,
+                            $serverFlag,
+                        ],
+                        default => [
+                            $name,
+                            (string) ($data['label_high'] ?? 'HIGH'),
+                            (string) ($data['label_low'] ?? 'LOW'),
+                            (int) ($data['debounce_ms'] ?? 50),
+                            !empty($data['invert_logic']) ? 1 : 0,
+                            $lcdFlag,
+                            $sdFlag,
+                            $serverFlag,
+                        ],
+                    },
+                ],
+            ];
+
+            return $payload;
         }
 
         if ($connType === 'rs232') {
@@ -555,7 +650,7 @@ class MqttService
      * Send a SENSORS DEL command to remove a sensor config from the logger.
      *
      * @param string $idLogger
-     * @param string $type     rs485 | rs232 | analog
+     * @param string $type     rs485 | rs232 | analog | digital
      * @param int    $id       Modbus slave id (RS485), port (RS232), or channel (Analog)
      * @return array{success: bool, message: string}
      */
@@ -564,7 +659,7 @@ class MqttService
         $key = match ($type) {
             'rs485' => 'id',
             'rs232' => 'p',
-            'analog' => 'ch',
+            'analog', 'digital' => 'ch',
             default => 'id',
         };
 
