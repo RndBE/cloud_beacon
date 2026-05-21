@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Logger;
+use App\Models\LoggerMode;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Sensor;
@@ -117,6 +118,46 @@ test('mobile can persist interval values after direct mqtt command succeeds', fu
     expect($logger->interval_send)->toBe(15)
         ->and($logger->interval_read)->toBe(6)
         ->and($logger->max_reset)->toBe(4);
+});
+
+test('mobile can persist logger mode after direct mqtt command succeeds', function () {
+    $user = directMqttUser();
+    $logger = directMqttLogger($user, ['logger_mode' => 'DEFAULT']);
+    LoggerMode::create([
+        'slug' => 'AWLR_TD',
+        'label' => 'AWLR Transducer',
+        'group' => 'AWLR',
+        'has_calibration' => true,
+        'calibration_fields' => [],
+        'description' => 'AWLR transducer mode.',
+    ]);
+
+    directMqttPost($this, $user, "/api/mobile/v1/loggers/{$logger->id}/mode", [
+        'mode' => 'AWLR_TD',
+    ])
+        ->assertOk()
+        ->assertJsonPath('success', true)
+        ->assertJsonPath('data.mode', 'AWLR_TD')
+        ->assertJsonPath('logger.summary.name', $logger->name);
+
+    $logger->refresh();
+    expect($logger->logger_mode)->toBe('AWLR_TD')
+        ->and($logger->last_sync_status)->toBe('success');
+
+    $this->assertDatabaseHas('activity_logs', [
+        'logger_id' => $logger->id,
+        'action' => 'mobile_mode_update',
+        'status' => 'success',
+    ]);
+});
+
+test('mobile mode update rejects unknown logger mode', function () {
+    $user = directMqttUser();
+    $logger = directMqttLogger($user);
+
+    directMqttPost($this, $user, "/api/mobile/v1/loggers/{$logger->id}/mode", [
+        'mode' => 'UNKNOWN_MODE',
+    ])->assertUnprocessable();
 });
 
 test('mobile sensor sync apply only mutates sensors for the scoped logger', function () {

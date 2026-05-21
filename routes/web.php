@@ -171,6 +171,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('loggers.export-config');
     Route::put('loggers/{id}/project', [LoggerController::class, 'updateProject'])
         ->name('loggers.updateProject');
+    Route::put('loggers/{id}', [LoggerController::class, 'update'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.update');
 
     Route::put('loggers/{id}/platform', [LoggerController::class, 'updatePlatform'])
         ->name('loggers.updatePlatform');

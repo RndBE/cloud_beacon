@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources\Mobile;
 
+use App\Models\LoggerMode;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -51,7 +52,23 @@ class LoggerDetailResource extends JsonResource
                 'port' => $this->ftp_port ?? 21,
                 'username' => $this->ftp_user,
             ],
-            'availableModes' => [],
+            'availableModes' => LoggerMode::whereIn('slug', [
+                'DEFAULT',
+                'WEATHER',
+                'AWLR_TD',
+                'AWLR_US',
+            ])
+                ->orderBy('group')
+                ->orderBy('label')
+                ->get()
+                ->map(fn (LoggerMode $mode) => [
+                    'slug' => $mode->slug,
+                    'label' => $mode->label,
+                    'group' => $mode->group,
+                    'hasCalibration' => $mode->has_calibration,
+                    'calibrationFields' => $mode->calibration_fields,
+                    'description' => $mode->description,
+                ]),
             'sensors' => SensorResource::collection($this->whenLoaded('externalSensors'))->resolve($request),
             'integrations' => $this->integrations->map(fn ($integration) => [
                 'id' => $integration->id,

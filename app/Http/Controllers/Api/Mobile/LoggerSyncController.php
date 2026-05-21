@@ -62,6 +62,30 @@ class LoggerSyncController extends Controller
         ]);
     }
 
+    public function updateMode(
+        Request $request,
+        MobileLoggerQueryService $queryService,
+        MobileLoggerSyncService $syncService,
+        int $logger
+    ): JsonResponse {
+        $logger = $queryService->loggerDetail($request->user(), $logger);
+
+        $validated = $request->validate([
+            'mode' => ['required', 'string', 'exists:logger_modes,slug'],
+        ]);
+
+        $updatedLogger = $syncService->applyMode($logger, $validated['mode']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Logger mode updated.',
+            'data' => [
+                'mode' => $updatedLogger->logger_mode,
+            ],
+            'logger' => (new LoggerDetailResource($updatedLogger))->resolve($request),
+        ]);
+    }
+
     public function applySensorSync(
         Request $request,
         MobileLoggerQueryService $queryService,

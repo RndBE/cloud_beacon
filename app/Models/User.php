@@ -28,12 +28,22 @@ class User extends Authenticatable
     ];
 
     /**
+     * The accessors to append to the model's array form.
+     *
+     * @var list<string>
+     */
+    protected $appends = [
+        'avatar',
+    ];
+
+    /**
      * The attributes that should be hidden for serialization.
      *
      * @var list<string>
      */
     protected $hidden = [
         'password',
+        'profile_photo_path',
         'two_factor_secret',
         'two_factor_recovery_codes',
         'remember_token',
@@ -56,6 +66,11 @@ class User extends Authenticatable
     public function roles(): BelongsToMany
     {
         return $this->belongsToMany(Role::class, 'role_user');
+    }
+
+    public function getAvatarAttribute(): ?string
+    {
+        return $this->profile_photo_path ? asset('storage/'.$this->profile_photo_path) : null;
     }
 
     public function isSuperAdmin(): bool

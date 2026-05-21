@@ -1,13 +1,17 @@
 import { Transition } from '@headlessui/react';
 import { Form, Head, Link, usePage } from '@inertiajs/react';
+import { Camera } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ProfileController from '@/actions/App/Http/Controllers/Settings/ProfileController';
 import DeleteUser from '@/components/delete-user';
 import Heading from '@/components/heading';
 import InputError from '@/components/input-error';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useInitials } from '@/hooks/use-initials';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
 import { edit } from '@/routes/profile';
@@ -23,6 +27,34 @@ export default function Profile({
 }) {
     const { auth } = usePage().props;
     const { t } = useTranslation();
+    const getInitials = useInitials();
+    const photoInputRef = useRef<HTMLInputElement>(null);
+    const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+    const avatarUrl = photoPreview ?? auth.user.avatar ?? undefined;
+
+    useEffect(() => {
+        return () => {
+            if (photoPreview) {
+                URL.revokeObjectURL(photoPreview);
+            }
+        };
+    }, [photoPreview]);
+
+    function handlePhotoChange(event: React.ChangeEvent<HTMLInputElement>) {
+        const file = event.target.files?.[0];
+
+        if (!file) {
+            return;
+        }
+
+        setPhotoPreview((currentPreview) => {
+            if (currentPreview) {
+                URL.revokeObjectURL(currentPreview);
+            }
+
+            return URL.createObjectURL(file);
+        });
+    }
 
     const breadcrumbs: BreadcrumbItem[] = [
         {
@@ -42,7 +74,7 @@ export default function Profile({
                     <Heading
                         variant="small"
                         title={t('settings.profile_information')}
-                        description={t('settings.update_name_email')}
+                        description={t('settings.update_profile_information')}
                     />
 
                     <Form
@@ -54,8 +86,56 @@ export default function Profile({
                     >
                         {({ processing, recentlySuccessful, errors }) => (
                             <>
+                                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                                    <Avatar className="size-20 overflow-hidden rounded-full">
+                                        <AvatarImage
+                                            src={avatarUrl}
+                                            alt={auth.user.name}
+                                        />
+                                        <AvatarFallback className="rounded-full bg-neutral-200 text-lg text-black dark:bg-neutral-700 dark:text-white">
+                                            {getInitials(auth.user.name)}
+                                        </AvatarFallback>
+                                    </Avatar>
+
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="profile_photo">
+                                            {t('settings.profile_photo')}
+                                        </Label>
+                                        <p className="text-sm text-muted-foreground">
+                                            {t('settings.profile_photo_help')}
+                                        </p>
+                                        <div>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                onClick={() =>
+                                                    photoInputRef.current?.click()
+                                                }
+                                            >
+                                                <Camera className="mr-2 size-4" />
+                                                {t('settings.choose_photo')}
+                                            </Button>
+                                            <input
+                                                ref={photoInputRef}
+                                                id="profile_photo"
+                                                name="profile_photo"
+                                                type="file"
+                                                accept="image/png,image/jpeg,image/webp"
+                                                className="hidden"
+                                                onChange={handlePhotoChange}
+                                            />
+                                        </div>
+                                        <InputError
+                                            className="mt-1"
+                                            message={errors.profile_photo}
+                                        />
+                                    </div>
+                                </div>
+
                                 <div className="grid gap-2">
-                                    <Label htmlFor="name">{t('settings.name')}</Label>
+                                    <Label htmlFor="name">
+                                        {t('settings.name')}
+                                    </Label>
 
                                     <Input
                                         id="name"
@@ -64,7 +144,9 @@ export default function Profile({
                                         name="name"
                                         required
                                         autoComplete="name"
-                                        placeholder={t('settings.full_name_placeholder')}
+                                        placeholder={t(
+                                            'settings.full_name_placeholder',
+                                        )}
                                     />
 
                                     <InputError
@@ -74,7 +156,36 @@ export default function Profile({
                                 </div>
 
                                 <div className="grid gap-2">
-                                    <Label htmlFor="email">{t('auth.email_address')}</Label>
+                                    <Label htmlFor="instansi">
+                                        {t('settings.institution')}
+                                    </Label>
+
+                                    <Input
+                                        id="instansi"
+                                        className="mt-1 block w-full"
+                                        defaultValue={
+                                            typeof auth.user.instansi ===
+                                            'string'
+                                                ? auth.user.instansi
+                                                : ''
+                                        }
+                                        name="instansi"
+                                        autoComplete="organization"
+                                        placeholder={t(
+                                            'settings.institution_placeholder',
+                                        )}
+                                    />
+
+                                    <InputError
+                                        className="mt-2"
+                                        message={errors.instansi}
+                                    />
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Label htmlFor="email">
+                                        {t('auth.email_address')}
+                                    </Label>
 
                                     <Input
                                         id="email"
@@ -84,7 +195,9 @@ export default function Profile({
                                         name="email"
                                         required
                                         autoComplete="username"
-                                        placeholder={t('settings.email_placeholder')}
+                                        placeholder={t(
+                                            'settings.email_placeholder',
+                                        )}
                                     />
 
                                     <InputError
@@ -103,14 +216,18 @@ export default function Profile({
                                                     as="button"
                                                     className="text-foreground underline decoration-neutral-300 underline-offset-4 transition-colors duration-300 ease-out hover:decoration-current! dark:decoration-neutral-500"
                                                 >
-                                                    {t('settings.resend_verification')}
+                                                    {t(
+                                                        'settings.resend_verification',
+                                                    )}
                                                 </Link>
                                             </p>
 
                                             {status ===
                                                 'verification-link-sent' && (
                                                 <div className="mt-2 text-sm font-medium text-green-600">
-                                                    {t('settings.verification_sent')}
+                                                    {t(
+                                                        'settings.verification_sent',
+                                                    )}
                                                 </div>
                                             )}
                                         </div>

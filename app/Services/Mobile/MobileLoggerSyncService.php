@@ -71,6 +71,35 @@ class MobileLoggerSyncService
         ])->loadCount('externalSensors');
     }
 
+    public function applyMode(Logger $logger, string $mode): Logger
+    {
+        $previousMode = $logger->logger_mode;
+
+        $logger->update([
+            'logger_mode' => $mode,
+            'last_sync_status' => 'success',
+            'last_sync_error' => null,
+            'last_synced_at' => now(),
+        ]);
+
+        ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'mobile_mode_update',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => 'Logger mode updated from mobile direct MQTT response. '.$previousMode.' -> '.$mode,
+            'created_at' => now(),
+        ]);
+
+        return $logger->fresh([
+            'project',
+            'deviceModel',
+            'externalSensors',
+            'integrations',
+            'activityLogs' => fn ($query) => $query->latest('created_at')->limit(20),
+        ])->loadCount('externalSensors');
+    }
+
     public function applySensorDiff(Logger $logger, array $diff): array
     {
         $added = 0;

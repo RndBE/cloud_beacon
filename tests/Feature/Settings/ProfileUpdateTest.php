@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\User;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 
 test('profile page is displayed', function () {
     $user = User::factory()->create();
@@ -20,6 +22,7 @@ test('profile information can be updated', function () {
         ->patch(route('profile.update'), [
             'name' => 'Test User',
             'email' => 'test@example.com',
+            'instansi' => 'Beacon Research Lab',
         ]);
 
     $response
@@ -30,7 +33,32 @@ test('profile information can be updated', function () {
 
     expect($user->name)->toBe('Test User');
     expect($user->email)->toBe('test@example.com');
+    expect($user->instansi)->toBe('Beacon Research Lab');
     expect($user->email_verified_at)->toBeNull();
+});
+
+test('profile photo can be uploaded', function () {
+    Storage::fake('public');
+
+    $user = User::factory()->create();
+
+    $response = $this
+        ->actingAs($user)
+        ->patch(route('profile.update'), [
+            'name' => $user->name,
+            'email' => $user->email,
+            'instansi' => 'Beacon Research Lab',
+            'profile_photo' => UploadedFile::fake()->image('avatar.jpg'),
+        ]);
+
+    $response
+        ->assertSessionHasNoErrors()
+        ->assertRedirect(route('profile.edit'));
+
+    $user->refresh();
+
+    expect($user->profile_photo_path)->toStartWith('profile-photos/');
+    Storage::disk('public')->assertExists($user->profile_photo_path);
 });
 
 test('email verification status is unchanged when the email address is unchanged', function () {

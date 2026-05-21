@@ -7,6 +7,7 @@ import {
     FolderKanban,
     Loader2,
     MapPin,
+    Pencil,
     Plug,
     Plus,
     Radio,
@@ -618,6 +619,110 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Edit Logger Dialog
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function EditLoggerDialog({
+    logger,
+    projects,
+    onClose,
+}: {
+    logger: LoggerItem;
+    projects: ProjectOption[];
+    onClose: () => void;
+}) {
+    const { t } = useTranslation();
+    const form = useForm({
+        name: logger.name,
+        location: logger.location ?? '',
+        project_id: logger.projectId ? String(logger.projectId) : '',
+    });
+
+    function handleSubmit(e: React.FormEvent) {
+        e.preventDefault();
+        form.put(`/loggers/${logger.id}`, {
+            preserveScroll: true,
+            onSuccess: onClose,
+        });
+    }
+
+    return (
+        <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
+            <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                    <DialogTitle>{t('loggers.edit_logger', 'Edit Logger')}</DialogTitle>
+                    <DialogDescription>
+                        {t('loggers.edit_description', 'Update logger name, location, or project assignment.')}
+                    </DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleSubmit} className="grid gap-4 py-2">
+                    <div className="grid gap-1.5">
+                        <Label className="text-xs text-muted-foreground">{t('loggers.serial_number')}</Label>
+                        <div className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground">
+                            {logger.serialNumber}
+                        </div>
+                    </div>
+                    <div className="grid gap-2">
+                        <Label htmlFor="edit-name">{t('loggers.device_name')} *</Label>
+                        <Input
+                            id="edit-name"
+                            value={form.data.name}
+                            onChange={(e) => form.setData('name', e.target.value)}
+                            placeholder="e.g. Bendung Katulampa"
+                        />
+                        {form.errors.name && <p className="text-xs text-red-500">{form.errors.name}</p>}
+                    </div>
+                    <div className="grid gap-2">
+                        <Label htmlFor="edit-location">{t('loggers.location')}</Label>
+                        <Input
+                            id="edit-location"
+                            value={form.data.location}
+                            onChange={(e) => form.setData('location', e.target.value)}
+                            placeholder="e.g. Bogor, Jawa Barat"
+                        />
+                        {form.errors.location && <p className="text-xs text-red-500">{form.errors.location}</p>}
+                    </div>
+                    {projects.length > 0 && (
+                        <div className="grid gap-2">
+                            <Label>Project</Label>
+                            <Select
+                                value={form.data.project_id === '' ? 'none' : form.data.project_id}
+                                onValueChange={(v) => form.setData('project_id', v === 'none' ? '' : v)}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Pilih project..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="none">
+                                        <span className="text-muted-foreground">— No project —</span>
+                                    </SelectItem>
+                                    {projects.map((p) => (
+                                        <SelectItem key={p.id} value={String(p.id)}>
+                                            <span className="flex items-center gap-2">
+                                                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                                                {p.name}
+                                            </span>
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    )}
+                    <DialogFooter>
+                        <Button type="button" variant="outline" onClick={onClose} disabled={form.processing}>
+                            {t('common.cancel')}
+                        </Button>
+                        <Button type="submit" disabled={form.processing} className="gap-1.5">
+                            {form.processing ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+                            {t('loggers.save_changes', 'Save Changes')}
+                        </Button>
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Main page component
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export default function LoggerList({ loggers, projects }: LoggerListProps) {
@@ -628,6 +733,7 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
     const [projectFilter, setProjectFilter] = useState<string>('all');
     const [addDialogOpen, setAddDialogOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<LoggerItem | null>(null);
+    const [editTarget, setEditTarget] = useState<LoggerItem | null>(null);
     const [polling, setPolling] = useState(false);
     const [warningMsg, setWarningMsg] = useState<string | null>(null);
     const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -918,6 +1024,15 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                                 <Button
                                                     variant="ghost"
                                                     size="sm"
+                                                    className="text-muted-foreground hover:bg-muted hover:text-foreground"
+                                                    onClick={(e) => { e.stopPropagation(); setEditTarget(logger); }}
+                                                    title={t('loggers.edit_logger', 'Edit Logger')}
+                                                >
+                                                    <Pencil className="size-4" />
+                                                </Button>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
                                                     className="text-red-500 hover:bg-red-500/10 hover:text-red-600"
                                                     onClick={(e) => { e.stopPropagation(); setDeleteTarget(logger); }}
                                                 >
@@ -938,6 +1053,15 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                         </Table>
                     </CardContent>
                 </Card>
+
+                {/* Edit Dialog */}
+                {editTarget && (
+                    <EditLoggerDialog
+                        logger={editTarget}
+                        projects={projects}
+                        onClose={() => setEditTarget(null)}
+                    />
+                )}
 
                 {/* Delete Dialog */}
                 <AlertDialog open={!!deleteTarget} onOpenChange={(open: boolean) => { if (!open) setDeleteTarget(null); }}>

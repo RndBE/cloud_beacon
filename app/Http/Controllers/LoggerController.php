@@ -655,6 +655,35 @@ class LoggerController extends Controller
     }
 
     /**
+     * Update editable logger details (name, location, project).
+     */
+    public function update(Request $request, string $hash)
+    {
+        $id = IdHasher::decode($hash);
+        abort_unless($id, 404);
+
+        $query = Logger::query();
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->where('user_id', auth()->id());
+        }
+        $logger = $query->findOrFail($id);
+
+        $validated = $request->validate([
+            'name'       => 'required|string|max:100',
+            'location'   => 'nullable|string|max:255',
+            'project_id' => 'nullable|integer|exists:projects,id',
+        ]);
+
+        $logger->update([
+            'name'       => $validated['name'],
+            'location'   => $validated['location'] ?? null,
+            'project_id' => $validated['project_id'] ?? null,
+        ]);
+
+        return back()->with('success', 'Logger berhasil diupdate.');
+    }
+
+    /**
      * Export configuration of selected loggers as a downloadable JSON file.
      */
     public function exportConfig(Request $request)

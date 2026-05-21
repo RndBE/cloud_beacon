@@ -4,12 +4,15 @@ use App\Models\ActivityLog;
 use App\Models\DeviceModel;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
+use App\Models\LoggerMode;
 use App\Models\Permission;
 use App\Models\Project;
 use App\Models\Role;
 use App\Models\Sensor;
 use App\Models\User;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 
 test('mobile login returns a bearer token and user profile', function () {
     $user = mobileApiUser('operator', [
@@ -29,17 +32,48 @@ test('mobile login returns a bearer token and user profile', function () {
         ->assertJsonPath('data.token_type', 'Bearer')
         ->assertJsonPath('data.user.id', $user->id)
         ->assertJsonPath('data.user.name', 'Field Operator')
+        ->assertJsonPath('data.user.instansi', $user->instansi)
+        ->assertJsonPath('data.user.avatar', null)
         ->assertJsonPath('data.user.roles.0', 'operator')
         ->assertJsonStructure([
             'data' => [
                 'token',
                 'user' => [
+                    'avatar',
                     'permissions',
                 ],
             ],
         ]);
 
     expect($response->json('data.token'))->toBeString()->toContain('|');
+});
+
+test('mobile user can update profile information and photo', function () {
+    Storage::fake('public');
+
+    $user = mobileApiUser('operator', [
+        'name' => 'Field Operator',
+        'email' => 'operator@example.test',
+        'instansi' => 'Old Agency',
+    ]);
+
+    mobileApiPost($this, $user, '/api/mobile/v1/profile', [
+        'name' => 'Updated Operator',
+        'email' => 'updated@example.test',
+        'instansi' => 'Beacon Research Lab',
+        'profile_photo' => UploadedFile::fake()->image('operator.jpg'),
+    ])
+        ->assertOk()
+        ->assertJsonPath('success', true)
+        ->assertJsonPath('data.user.name', 'Updated Operator')
+        ->assertJsonPath('data.user.email', 'updated@example.test')
+        ->assertJsonPath('data.user.instansi', 'Beacon Research Lab')
+        ->assertJsonPath('data.user.roles.0', 'operator');
+
+    $user->refresh();
+
+    expect($user->profile_photo_path)->toStartWith('profile-photos/');
+    Storage::disk('public')->assertExists($user->profile_photo_path);
 });
 
 test('mobile protected endpoints reject unauthenticated requests', function () {
@@ -166,6 +200,16 @@ test('mobile logger detail returns sensors integrations and activity logs', func
         'channel_count' => 8,
         'image' => 'device-models/bl-1100.webp',
     ]);
+    LoggerMode::create([
+        'slug' => 'AWLR_TD',
+        'label' => 'AWLR Transducer',
+        'group' => 'AWLR',
+        'has_calibration' => true,
+        'calibration_fields' => [
+            ['key' => 'sumur', 'label' => 'Kedalaman Sumur'],
+        ],
+        'description' => 'Automatic Water Level Recorder transducer mode.',
+    ]);
     $logger = mobileApiLogger($user, [
         'name' => 'AWR Bendung Barat',
         'serial_number' => 'CB-AWR-001',
@@ -201,6 +245,9 @@ test('mobile logger detail returns sensors integrations and activity logs', func
         ->assertOk()
         ->assertJsonPath('data.summary.name', 'AWR Bendung Barat')
         ->assertJsonPath('data.summary.modelImage', asset('storage/device-models/bl-1100.webp'))
+        ->assertJsonPath('data.availableModes.0.slug', 'AWLR_TD')
+        ->assertJsonPath('data.availableModes.0.label', 'AWLR Transducer')
+        ->assertJsonPath('data.availableModes.0.hasCalibration', true)
         ->assertJsonPath('data.config.intervalRead', 5)
         ->assertJsonPath('data.ftp.host', 'ftp.example.test')
         ->assertJsonPath('data.sensors.0.name', 'Water Level')
@@ -305,6 +352,18 @@ function mobileApiGet($test, User $user, string $uri)
     return $test
         ->withHeader('Authorization', 'Bearer '.$login->json('data.token'))
         ->getJson($uri);
+}
+
+function mobileApiPost($test, User $user, string $uri, array $payload = [])
+{
+    $login = $test->postJson('/api/mobile/v1/login', [
+        'email' => $user->email,
+        'password' => 'password',
+    ])->assertOk();
+
+    return $test
+        ->withHeader('Authorization', 'Bearer '.$login->json('data.token'))
+        ->post($uri, $payload, ['Accept' => 'application/json']);
 }
 
 function mobileApiUser(string $roleName = 'operator', array $attributes = []): User
