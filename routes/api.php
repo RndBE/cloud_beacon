@@ -15,6 +15,7 @@ Route::prefix('mobile/v1')->group(function () {
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('me', [AuthController::class, 'me'])->name('mobile.me');
         Route::post('profile', [AuthController::class, 'updateProfile'])->name('mobile.profile.update');
+        Route::post('password', [AuthController::class, 'updatePassword'])->name('mobile.password.update');
         Route::post('logout', [AuthController::class, 'logout'])->name('mobile.logout');
 
         Route::get('home', HomeController::class)->name('mobile.home');

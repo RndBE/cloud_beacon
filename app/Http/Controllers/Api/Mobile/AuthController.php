@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -92,6 +93,29 @@ class AuthController extends Controller
             'data' => [
                 'user' => $this->userPayload($user),
             ],
+        ]);
+    }
+
+    public function updatePassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'current_password' => ['required', 'string'],
+            'password' => ['required', 'string', Password::default(), 'confirmed'],
+        ]);
+
+        if (! Hash::check($validated['current_password'], $request->user()->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['The current password is incorrect.'],
+            ]);
+        }
+
+        $request->user()->update([
+            'password' => $validated['password'],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Password updated.',
         ]);
     }
 

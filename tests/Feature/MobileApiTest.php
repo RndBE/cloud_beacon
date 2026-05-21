@@ -76,6 +76,34 @@ test('mobile user can update profile information and photo', function () {
     Storage::disk('public')->assertExists($user->profile_photo_path);
 });
 
+test('mobile user can update password', function () {
+    $user = mobileApiUser();
+
+    mobileApiPost($this, $user, '/api/mobile/v1/password', [
+        'current_password' => 'password',
+        'password' => 'new-password',
+        'password_confirmation' => 'new-password',
+    ])
+        ->assertOk()
+        ->assertJsonPath('success', true);
+
+    expect(Hash::check('new-password', $user->refresh()->password))->toBeTrue();
+});
+
+test('mobile password update requires the correct current password', function () {
+    $user = mobileApiUser();
+
+    mobileApiPost($this, $user, '/api/mobile/v1/password', [
+        'current_password' => 'wrong-password',
+        'password' => 'new-password',
+        'password_confirmation' => 'new-password',
+    ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('current_password');
+
+    expect(Hash::check('password', $user->refresh()->password))->toBeTrue();
+});
+
 test('mobile protected endpoints reject unauthenticated requests', function () {
     $this->getJson('/api/mobile/v1/home')
         ->assertUnauthorized();
