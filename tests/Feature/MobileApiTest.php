@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\ActivityLog;
+use App\Models\DeviceModel;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
 use App\Models\Permission;
@@ -95,6 +96,12 @@ test('mobile home returns user scoped stats and recent activity', function () {
 test('mobile logger list only includes loggers owned by normal users', function () {
     $user = mobileApiUser();
     $otherUser = mobileApiUser('operator', ['email' => 'other@example.test']);
+    DeviceModel::create([
+        'name' => 'BL-1100',
+        'description' => 'Beacon logger board',
+        'channel_count' => 8,
+        'image' => 'device-models/bl-1100.webp',
+    ]);
 
     $project = Project::create([
         'user_id' => $user->id,
@@ -109,6 +116,7 @@ test('mobile logger list only includes loggers owned by normal users', function 
         'device_identifier' => 'AWR-001',
         'status' => 'online',
         'project_id' => $project->id,
+        'model' => 'BL-1100',
     ]);
     mobileApiLogger($user, [
         'name' => 'Rain Gauge Utara',
@@ -122,6 +130,7 @@ test('mobile logger list only includes loggers owned by normal users', function 
         ->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.name', 'AWR Bendung Barat')
+        ->assertJsonPath('data.0.modelImage', asset('storage/device-models/bl-1100.webp'))
         ->assertJsonPath('data.0.projectName', 'Bendung Barat')
         ->assertJsonPath('meta.total', 1);
 });
@@ -151,11 +160,18 @@ test('normal users cannot fetch another users logger detail', function () {
 
 test('mobile logger detail returns sensors integrations and activity logs', function () {
     $user = mobileApiUser();
+    DeviceModel::create([
+        'name' => 'BL-1100',
+        'description' => 'Beacon logger board',
+        'channel_count' => 8,
+        'image' => 'device-models/bl-1100.webp',
+    ]);
     $logger = mobileApiLogger($user, [
         'name' => 'AWR Bendung Barat',
         'serial_number' => 'CB-AWR-001',
         'device_identifier' => 'AWR-001',
         'status' => 'online',
+        'model' => 'BL-1100',
         'interval_read' => 5,
         'interval_send' => 10,
         'max_reset' => 3,
@@ -184,6 +200,7 @@ test('mobile logger detail returns sensors integrations and activity logs', func
     mobileApiGet($this, $user, '/api/mobile/v1/loggers/'.$logger->id)
         ->assertOk()
         ->assertJsonPath('data.summary.name', 'AWR Bendung Barat')
+        ->assertJsonPath('data.summary.modelImage', asset('storage/device-models/bl-1100.webp'))
         ->assertJsonPath('data.config.intervalRead', 5)
         ->assertJsonPath('data.ftp.host', 'ftp.example.test')
         ->assertJsonPath('data.sensors.0.name', 'Water Level')

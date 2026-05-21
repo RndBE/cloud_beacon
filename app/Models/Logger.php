@@ -78,11 +78,11 @@ class Logger extends Model
     protected function casts(): array
     {
         return [
-            'last_seen_at'                => 'datetime',
-            'last_config_backup_at'       => 'datetime',
-            'last_connected_at'           => 'datetime',
-            'last_data_received_at'       => 'datetime',
-            'last_synced_at'              => 'datetime',
+            'last_seen_at' => 'datetime',
+            'last_config_backup_at' => 'datetime',
+            'last_connected_at' => 'datetime',
+            'last_data_received_at' => 'datetime',
+            'last_synced_at' => 'datetime',
             'ministesy_last_forwarded_at' => 'datetime',
             'cpu_usage' => 'integer',
             'memory_usage' => 'integer',
@@ -126,6 +126,11 @@ class Logger extends Model
         return $this->belongsTo(Project::class);
     }
 
+    public function deviceModel(): BelongsTo
+    {
+        return $this->belongsTo(DeviceModel::class, 'model', 'name');
+    }
+
     public function sensors(): HasMany
     {
         return $this->hasMany(Sensor::class);
@@ -156,7 +161,7 @@ class Logger extends Model
                 // Include all sensors that have a connection_type (protocol sensors)
                 // OR exclude built-in types (battery/temp/humidity logger readings)
                 $query->whereNotNull('connection_type')
-                      ->orWhereNotIn('type', self::BUILTIN_SENSOR_TYPES);
+                    ->orWhereNotIn('type', self::BUILTIN_SENSOR_TYPES);
             });
     }
 
@@ -198,8 +203,9 @@ class Logger extends Model
 
         foreach ($sensorMap as $key => $config) {
             $value = $mqttData[$config['field']] ?? null;
-            if ($value === null)
+            if ($value === null) {
                 continue;
+            }
 
             Sensor::updateOrCreate(
                 [

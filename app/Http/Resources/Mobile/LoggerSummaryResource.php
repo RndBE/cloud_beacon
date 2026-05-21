@@ -27,7 +27,11 @@ class LoggerSummaryResource extends JsonResource
             'projectName' => $this->whenLoaded('project', fn () => $this->project?->name),
             'projectColor' => $this->whenLoaded('project', fn () => $this->project?->color),
             'model' => $this->model,
-            'modelImage' => null,
+            'modelImage' => $this->whenLoaded(
+                'deviceModel',
+                fn () => $this->deviceModel?->image ? asset('storage/'.$this->deviceModel->image) : null,
+                null
+            ),
             'sensorsCount' => $this->external_sensors_count ?? $this->externalSensors?->count() ?? 0,
             'signalStrength' => $this->signal_strength,
             'battery' => $this->battery,

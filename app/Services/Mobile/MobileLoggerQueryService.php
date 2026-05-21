@@ -27,7 +27,7 @@ class MobileLoggerQueryService
     public function home(User $user): array
     {
         $loggers = $this->scopedLoggers($user)
-            ->with('project')
+            ->with(['project', 'deviceModel'])
             ->withCount('externalSensors')
             ->get();
         $loggerIds = $loggers->pluck('id');
@@ -56,7 +56,7 @@ class MobileLoggerQueryService
     public function paginatedLoggers(User $user, array $filters): LengthAwarePaginator
     {
         $query = $this->scopedLoggers($user)
-            ->with('project')
+            ->with(['project', 'deviceModel'])
             ->withCount('externalSensors');
 
         if (! empty($filters['search'])) {
@@ -89,6 +89,7 @@ class MobileLoggerQueryService
         return $this->scopedLoggers($user)
             ->with([
                 'project',
+                'deviceModel',
                 'externalSensors',
                 'integrations',
                 'activityLogs' => fn ($query) => $query->latest('created_at')->limit(20),
@@ -100,7 +101,7 @@ class MobileLoggerQueryService
     public function topology(User $user): Collection
     {
         $loggers = $this->scopedLoggers($user)
-            ->with(['project', 'externalSensors'])
+            ->with(['project', 'deviceModel', 'externalSensors'])
             ->withCount('externalSensors')
             ->orderBy('name')
             ->get();
