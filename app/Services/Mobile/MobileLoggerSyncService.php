@@ -71,6 +71,35 @@ class MobileLoggerSyncService
         ])->loadCount('externalSensors');
     }
 
+    public function applyFtpConfig(Logger $logger, array $data): Logger
+    {
+        $logger->update([
+            'ftp_host' => $data['host'],
+            'ftp_port' => (int) $data['port'],
+            'ftp_user' => $data['username'],
+            'ftp_pass' => $data['password'],
+            'last_sync_status' => 'success',
+            'last_sync_error' => null,
+            'last_synced_at' => now(),
+        ]);
+
+        ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'mobile_ftp_set',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => 'FTP config updated from mobile direct MQTT. Host: '.$data['host'].':'.$data['port'].', User: '.$data['username'],
+            'created_at' => now(),
+        ]);
+
+        return $logger->fresh([
+            'project',
+            'externalSensors',
+            'integrations',
+            'activityLogs' => fn ($query) => $query->latest('created_at')->limit(20),
+        ])->loadCount('externalSensors');
+    }
+
     public function applyMode(Logger $logger, string $mode): Logger
     {
         $previousMode = $logger->logger_mode;
@@ -88,6 +117,34 @@ class MobileLoggerSyncService
             'status' => 'success',
             'level' => 'info',
             'message' => 'Logger mode updated from mobile direct MQTT response. '.$previousMode.' -> '.$mode,
+            'created_at' => now(),
+        ]);
+
+        return $logger->fresh([
+            'project',
+            'deviceModel',
+            'externalSensors',
+            'integrations',
+            'activityLogs' => fn ($query) => $query->latest('created_at')->limit(20),
+        ])->loadCount('externalSensors');
+    }
+
+    public function applyCalibration(Logger $logger, string $mode, array $calibrationData): Logger
+    {
+        $logger->update([
+            'calibration_data' => $calibrationData,
+            'calibrated_at' => now(),
+            'last_sync_status' => 'success',
+            'last_sync_error' => null,
+            'last_synced_at' => now(),
+        ]);
+
+        ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'mobile_calibration_set',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => 'Kalibrasi '.$mode.' dari mobile direct MQTT — '.json_encode($calibrationData),
             'created_at' => now(),
         ]);
 

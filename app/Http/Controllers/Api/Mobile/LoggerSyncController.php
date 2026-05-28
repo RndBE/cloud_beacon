@@ -86,6 +86,65 @@ class LoggerSyncController extends Controller
         ]);
     }
 
+    public function updateCalibration(
+        Request $request,
+        MobileLoggerQueryService $queryService,
+        MobileLoggerSyncService $syncService,
+        int $logger
+    ): JsonResponse {
+        $logger = $queryService->loggerDetail($request->user(), $logger);
+
+        $validated = $request->validate([
+            'mode' => ['required', 'string', 'exists:logger_modes,slug'],
+            'calibration_data' => ['required', 'array'],
+        ]);
+
+        $updatedLogger = $syncService->applyCalibration(
+            $logger,
+            $validated['mode'],
+            $validated['calibration_data'],
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Kalibrasi tersimpan.',
+            'data' => [
+                'calibrationData' => $updatedLogger->calibration_data,
+                'calibratedAt' => $updatedLogger->calibrated_at?->format('Y-m-d H:i:s'),
+            ],
+            'logger' => (new LoggerDetailResource($updatedLogger))->resolve($request),
+        ]);
+    }
+
+    public function updateFtp(
+        Request $request,
+        MobileLoggerQueryService $queryService,
+        MobileLoggerSyncService $syncService,
+        int $logger
+    ): JsonResponse {
+        $logger = $queryService->loggerDetail($request->user(), $logger);
+
+        $validated = $request->validate([
+            'host' => ['required', 'string', 'max:255'],
+            'port' => ['required', 'integer', 'min:1', 'max:65535'],
+            'username' => ['required', 'string', 'max:255'],
+            'password' => ['required', 'string', 'max:255'],
+        ]);
+
+        $updatedLogger = $syncService->applyFtpConfig($logger, $validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'FTP config updated.',
+            'data' => [
+                'host' => $updatedLogger->ftp_host,
+                'port' => $updatedLogger->ftp_port,
+                'username' => $updatedLogger->ftp_user,
+            ],
+            'logger' => (new LoggerDetailResource($updatedLogger))->resolve($request),
+        ]);
+    }
+
     public function applySensorSync(
         Request $request,
         MobileLoggerQueryService $queryService,

@@ -12,6 +12,9 @@ class LoggerDetailResource extends JsonResource
     {
         return [
             'summary' => (new LoggerSummaryResource($this->resource))->resolve($request),
+            'loggerMode' => $this->logger_mode,
+            'calibrationData' => $this->calibration_data,
+            'calibratedAt' => $this->calibrated_at?->format('Y-m-d H:i:s'),
             'device' => [
                 'Serial' => $this->serial_number,
                 'Device ID' => $this->device_identifier,

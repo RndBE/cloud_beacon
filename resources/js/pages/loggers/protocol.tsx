@@ -9,13 +9,16 @@ import {
     Gauge,
     Loader2,
     Network,
+    Plus,
     PlugZap,
     Power,
     RefreshCw,
     Send,
     Server,
     ShieldAlert,
+    Siren,
     Terminal,
+    Trash2,
     UploadCloud,
     Wifi,
     Zap,
@@ -202,11 +205,39 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     });
     const [ftpLogFile, setFtpLogFile] = useState('20260502.txt');
 
+    type EwsSourceType = 'RS485' | 'RS232' | 'ANALOG' | 'DIGITAL' | 'CALC';
+    type EwsRuleRow = { min: string; max: string; level: string };
+    const [ewsMode, setEwsMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
+    const [ewsSourceType, setEwsSourceType] = useState<EwsSourceType>('CALC');
+    const [ewsSource, setEwsSource] = useState({
+        slave: '1',
+        item: '0',
+        port: '2',
+        channel: '0',
+        name: '',
+    });
+    const [ewsRules, setEwsRules] = useState<EwsRuleRow[]>([
+        { min: '0', max: '10', level: '0' },
+        { min: '10', max: '70', level: '1' },
+        { min: '70', max: '90', level: '2' },
+        { min: '90', max: '9999', level: '3' },
+    ]);
+    const [ewsManualLevel, setEwsManualLevel] = useState('0');
+
     const canSend = Boolean(logger.deviceIdentifier);
     const variant = inferBoardVariant(logger);
     const isCellularBoard = variant === 'BL11';
     const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
     const isAwlrMode = logger.loggerMode === 'AWLR_TD' || logger.loggerMode === 'AWLR_US';
+
+    const ewsCalcNames = useMemo<string[]>(() => {
+        if (logger.loggerMode === 'AWLR_TD') return ['AWLR_TD.TMA', 'AWLR_TD.KEDALAMAN'];
+        if (logger.loggerMode === 'AWLR_US') return ['AWLR_US.TMA', 'AWLR_US.JARAK_SENSOR'];
+        return [];
+    }, [logger.loggerMode]);
+    const ewsHasDualRs232 = variant === 'BL1100';
+    const ewsSourceTypes: EwsSourceType[] = ['RS485', 'ANALOG', 'DIGITAL', 'CALC'];
+    if (ewsHasDualRs232) ewsSourceTypes.splice(1, 0, 'RS232');
     const calibrationTargets = logger.sensors.filter((sensor) =>
         sensor.connectionType === 'rs485' || sensor.connectionType === 'rs232' || sensor.connectionType === 'analog',
     );
@@ -368,6 +399,117 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
         send('CAL', { CAL: { cmd: 'RSTSET', ...target } }, 'CAL');
     }
 
+    type EwsResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+    function buildEwsSourcePayload(): EwsResult<Record<string, JsonValue>> {
+        switch (ewsSourceType) {
+            case 'RS485': {
+                const slave = numberValue(ewsSource.slave);
+                const item = numberValue(ewsSource.item);
+                if (slave < 1 || slave > 247) return { ok: false, error: 'source.slave harus 1–247.' };
+                if (item < 0) return { ok: false, error: 'source.item harus >= 0.' };
+                return { ok: true, value: { type: 'RS485', slave, item } };
+            }
+            case 'RS232': {
+                const port = numberValue(ewsSource.port);
+                if (port < 1) return { ok: false, error: 'source.port harus >= 1.' };
+                if (port === 1) return { ok: false, error: 'Port 1 dipakai EWS sendiri, pakai port 2.' };
+                return { ok: true, value: { type: 'RS232', port } };
+            }
+            case 'ANALOG': {
+                const channel = numberValue(ewsSource.channel);
+                if (channel < 0) return { ok: false, error: 'source.channel harus >= 0.' };
+                return { ok: true, value: { type: 'ANALOG', channel } };
+            }
+            case 'DIGITAL': {
+                const channel = numberValue(ewsSource.channel);
+                if (channel < 0) return { ok: false, error: 'source.channel harus >= 0.' };
+                return { ok: true, value: { type: 'DIGITAL', channel } };
+            }
+            case 'CALC': {
+                if (!ewsSource.name) return { ok: false, error: 'Pilih CALC name (profile AWLR_TD/AWLR_US dulu).' };
+                return { ok: true, value: { type: 'CALC', name: ewsSource.name } };
+            }
+        }
+    }
+
+    function buildEwsRulesPayload(): EwsResult<JsonValue[]> {
+        if (ewsRules.length === 0) return { ok: false, error: 'Tambahkan minimal 1 rule.' };
+        if (ewsRules.length > 8) return { ok: false, error: 'Maksimal 8 rules.' };
+        const out: JsonValue[] = [];
+        for (let i = 0; i < ewsRules.length; i++) {
+            const r = ewsRules[i];
+            const min = Number(r.min);
+            const max = Number(r.max);
+            const level = Number(r.level);
+            if (!Number.isFinite(min) || !Number.isFinite(max)) {
+                return { ok: false, error: `Rule #${i + 1}: min/max harus angka.` };
+            }
+            if (max <= min) {
+                return { ok: false, error: `Rule #${i + 1}: max harus > min.` };
+            }
+            if (!Number.isInteger(level) || level < 0 || level > 8) {
+                return { ok: false, error: `Rule #${i + 1}: level harus integer 0–8.` };
+            }
+            out.push({ min, max, level });
+        }
+        return { ok: true, value: out };
+    }
+
+    function sendEwsEnable(enable: 0 | 1) {
+        send('EWS', { EWS: { cmd: 'SET', enable } }, 'EWS');
+    }
+
+    function sendEwsSetMode() {
+        if (ewsMode === 'MANUAL') {
+            send('EWS', { EWS: { cmd: 'SET', mode: 'MANUAL' } }, 'EWS');
+            return;
+        }
+        const source = buildEwsSourcePayload();
+        if (!source.ok) {
+            localError('EWS', source.error);
+            return;
+        }
+        const rules = buildEwsRulesPayload();
+        if (!rules.ok) {
+            localError('EWS', rules.error);
+            return;
+        }
+        send('EWS', { EWS: { cmd: 'SET', mode: 'AUTO', source: source.value, rules: rules.value } }, 'EWS');
+    }
+
+    function sendEwsCtrl() {
+        if (ewsMode === 'AUTO') {
+            localError('EWS', 'Switch mode ke MANUAL dulu sebelum kirim CTRL.');
+            return;
+        }
+        const level = numberValue(ewsManualLevel);
+        if (!Number.isInteger(level) || level < 0 || level > 8) {
+            localError('EWS', 'level CTRL harus 0–8.');
+            return;
+        }
+        send('EWS', { EWS: { cmd: 'CTRL', level } }, 'EWS');
+    }
+
+    function sendEwsCheck() {
+        send('EWS', { EWS: { cmd: 'CHECK' } }, 'EWS');
+    }
+
+    function addEwsRule() {
+        if (ewsRules.length >= 8) return;
+        const last = ewsRules[ewsRules.length - 1];
+        const nextMin = last ? last.max : '0';
+        setEwsRules([...ewsRules, { min: nextMin, max: '', level: '0' }]);
+    }
+
+    function removeEwsRule(index: number) {
+        setEwsRules(ewsRules.filter((_, i) => i !== index));
+    }
+
+    function updateEwsRule(index: number, field: keyof EwsRuleRow, value: string) {
+        setEwsRules(ewsRules.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
+    }
+
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={`${logger.name} Protocol`} />
@@ -418,6 +560,7 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                         <TabsTrigger value="io">I/O</TabsTrigger>
                         <TabsTrigger value="power">Power</TabsTrigger>
                         <TabsTrigger value="logs">Logs</TabsTrigger>
+                        <TabsTrigger value="ews">EWS</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="system" className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -669,6 +812,245 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                                 {actionButton('READLOGS', 'FTP_LOGS', () => send('FTP', { FTP: { cmd: 'READLOGS' } }, 'FTP_LOGS'))}
                                 {actionButton('GETLOG', 'FTP_LOGS', () => send('FTP', { FTP: { cmd: 'GETLOG', f: ftpLogFile } }, 'FTP_LOGS'))}
                             </ButtonRow>
+                        </CommandCard>
+                    </TabsContent>
+
+                    <TabsContent value="ews" className="mt-4 grid gap-4">
+                        <CommandCard
+                            title="EWS Module"
+                            description="Early Warning System via RS232 ch1. Atur enable, mode (MANUAL/AUTO), source + rules, dan kirim CTRL / CHECK."
+                            icon={Siren}
+                            result={responses.EWS}
+                        >
+                            <div className="space-y-2 rounded-md border border-border/60 p-3">
+                                <Label className="text-xs font-semibold uppercase text-muted-foreground">1. Enable / Disable</Label>
+                                <p className="text-xs text-muted-foreground">
+                                    Enable mengklaim RS232 ch1. Disable melepas port (mode + source + rules tetap di flash).
+                                </p>
+                                <ButtonRow>
+                                    {actionButton('Enable EWS', 'EWS', () => sendEwsEnable(1))}
+                                    {actionButton('Disable EWS', 'EWS', () => sendEwsEnable(0), 'destructive', 'Disable EWS? RS232 ch1 akan dilepas.')}
+                                    {actionButton('CHECK Module', 'EWS', sendEwsCheck)}
+                                </ButtonRow>
+                            </div>
+
+                            <div className="space-y-3 rounded-md border border-border/60 p-3">
+                                <Label className="text-xs font-semibold uppercase text-muted-foreground">2. Mode</Label>
+                                <Field label="Mode">
+                                    <select
+                                        className={selectClass}
+                                        value={ewsMode}
+                                        onChange={(event) => setEwsMode(event.target.value as 'MANUAL' | 'AUTO')}
+                                    >
+                                        <option value="MANUAL">MANUAL — user kirim level via CTRL</option>
+                                        <option value="AUTO">AUTO — firmware kirim level dari rules</option>
+                                    </select>
+                                </Field>
+
+                                {ewsMode === 'AUTO' && (
+                                    <div className="space-y-3 rounded border border-dashed border-border/60 p-3">
+                                        <Label className="text-xs font-semibold uppercase text-muted-foreground">Source</Label>
+                                        <div className="grid gap-3 sm:grid-cols-2">
+                                            <Field label="Source Type">
+                                                <select
+                                                    className={selectClass}
+                                                    value={ewsSourceType}
+                                                    onChange={(event) => setEwsSourceType(event.target.value as EwsSourceType)}
+                                                >
+                                                    {ewsSourceTypes.map((type) => (
+                                                        <option key={type} value={type} disabled={type === 'CALC' && ewsCalcNames.length === 0}>
+                                                            {type}
+                                                            {type === 'CALC' && ewsCalcNames.length === 0 ? ' (butuh profile AWLR_TD/AWLR_US)' : ''}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </Field>
+
+                                            {ewsSourceType === 'RS485' && (
+                                                <>
+                                                    <Field label="Slave (1–247)">
+                                                        <Input
+                                                            className={inputClass}
+                                                            type="number"
+                                                            min={1}
+                                                            max={247}
+                                                            value={ewsSource.slave}
+                                                            onChange={(event) => setEwsSource({ ...ewsSource, slave: event.target.value })}
+                                                        />
+                                                    </Field>
+                                                    <Field label="Item index (0-based)">
+                                                        <Input
+                                                            className={inputClass}
+                                                            type="number"
+                                                            min={0}
+                                                            value={ewsSource.item}
+                                                            onChange={(event) => setEwsSource({ ...ewsSource, item: event.target.value })}
+                                                        />
+                                                    </Field>
+                                                </>
+                                            )}
+
+                                            {ewsSourceType === 'RS232' && (
+                                                <Field label="Port (≥ 2, port 1 dipakai EWS)">
+                                                    <Input
+                                                        className={inputClass}
+                                                        type="number"
+                                                        min={2}
+                                                        value={ewsSource.port}
+                                                        onChange={(event) => setEwsSource({ ...ewsSource, port: event.target.value })}
+                                                    />
+                                                </Field>
+                                            )}
+
+                                            {(ewsSourceType === 'ANALOG' || ewsSourceType === 'DIGITAL') && (
+                                                <Field label="Channel (0-based)">
+                                                    <Input
+                                                        className={inputClass}
+                                                        type="number"
+                                                        min={0}
+                                                        value={ewsSource.channel}
+                                                        onChange={(event) => setEwsSource({ ...ewsSource, channel: event.target.value })}
+                                                    />
+                                                </Field>
+                                            )}
+
+                                            {ewsSourceType === 'CALC' && (
+                                                <Field label="CALC name">
+                                                    {ewsCalcNames.length === 0 ? (
+                                                        <p className="rounded border border-dashed border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-700">
+                                                            Profile logger ({logger.loggerMode ?? '—'}) tidak punya CALC source. Set profile ke AWLR_TD / AWLR_US dulu.
+                                                        </p>
+                                                    ) : (
+                                                        <select
+                                                            className={selectClass}
+                                                            value={ewsSource.name}
+                                                            onChange={(event) => setEwsSource({ ...ewsSource, name: event.target.value })}
+                                                        >
+                                                            <option value="">— pilih —</option>
+                                                            {ewsCalcNames.map((name) => (
+                                                                <option key={name} value={name}>{name}</option>
+                                                            ))}
+                                                        </select>
+                                                    )}
+                                                </Field>
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <Label className="text-xs font-semibold uppercase text-muted-foreground">Rules (1–8)</Label>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="outline"
+                                                    disabled={ewsRules.length >= 8}
+                                                    onClick={addEwsRule}
+                                                >
+                                                    <Plus className="size-3.5" />
+                                                    Tambah rule
+                                                </Button>
+                                            </div>
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full text-xs">
+                                                    <thead className="text-left text-muted-foreground">
+                                                        <tr>
+                                                            <th className="py-1 pr-2">#</th>
+                                                            <th className="py-1 pr-2">min</th>
+                                                            <th className="py-1 pr-2">max</th>
+                                                            <th className="py-1 pr-2">level (0–8)</th>
+                                                            <th className="py-1"></th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {ewsRules.map((rule, index) => (
+                                                            <tr key={index} className="align-top">
+                                                                <td className="py-1 pr-2 text-muted-foreground">{index + 1}</td>
+                                                                <td className="py-1 pr-2">
+                                                                    <Input
+                                                                        className={inputClass}
+                                                                        type="number"
+                                                                        step="0.01"
+                                                                        value={rule.min}
+                                                                        onChange={(event) => updateEwsRule(index, 'min', event.target.value)}
+                                                                    />
+                                                                </td>
+                                                                <td className="py-1 pr-2">
+                                                                    <Input
+                                                                        className={inputClass}
+                                                                        type="number"
+                                                                        step="0.01"
+                                                                        value={rule.max}
+                                                                        onChange={(event) => updateEwsRule(index, 'max', event.target.value)}
+                                                                    />
+                                                                </td>
+                                                                <td className="py-1 pr-2">
+                                                                    <Input
+                                                                        className={inputClass}
+                                                                        type="number"
+                                                                        min={0}
+                                                                        max={8}
+                                                                        value={rule.level}
+                                                                        onChange={(event) => updateEwsRule(index, 'level', event.target.value)}
+                                                                    />
+                                                                </td>
+                                                                <td className="py-1">
+                                                                    <Button
+                                                                        type="button"
+                                                                        size="sm"
+                                                                        variant="ghost"
+                                                                        disabled={ewsRules.length <= 1}
+                                                                        onClick={() => removeEwsRule(index)}
+                                                                        aria-label={`Hapus rule ${index + 1}`}
+                                                                    >
+                                                                        <Trash2 className="size-3.5" />
+                                                                    </Button>
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <p className="text-xs text-muted-foreground">
+                                                Rule pertama yang memenuhi <code>min ≤ value &lt; max</code> dipakai. Hysteresis 0.5 & delay 5 s di-hardcode.
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <ButtonRow>
+                                    {actionButton(
+                                        `Apply Mode (${ewsMode})`,
+                                        'EWS',
+                                        sendEwsSetMode,
+                                        ewsMode === 'AUTO' ? 'default' : 'outline',
+                                    )}
+                                </ButtonRow>
+                            </div>
+
+                            {ewsMode === 'MANUAL' && (
+                                <div className="space-y-2 rounded-md border border-border/60 p-3">
+                                    <Label className="text-xs font-semibold uppercase text-muted-foreground">3. Manual CTRL (level 0–8)</Label>
+                                    <div className="grid grid-cols-9 gap-1">
+                                        {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((level) => (
+                                            <Button
+                                                key={level}
+                                                type="button"
+                                                size="sm"
+                                                variant={ewsManualLevel === String(level) ? 'default' : 'outline'}
+                                                onClick={() => setEwsManualLevel(String(level))}
+                                            >
+                                                {level}
+                                            </Button>
+                                        ))}
+                                    </div>
+                                    <ButtonRow>
+                                        {actionButton(`Kirim CTRL level=${ewsManualLevel}`, 'EWS', sendEwsCtrl, 'destructive', `Kirim CTRL level ${ewsManualLevel} ke modul EWS?`)}
+                                    </ButtonRow>
+                                    <p className="text-xs text-muted-foreground">
+                                        Level: 0 normal · 1–3 siaga · 4 mute · 5 mode lain · 6–8 siaga sound-off.
+                                    </p>
+                                </div>
+                            )}
                         </CommandCard>
                     </TabsContent>
                 </Tabs>

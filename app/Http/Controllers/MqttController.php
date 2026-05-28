@@ -872,6 +872,7 @@ class MqttController extends Controller
             'POWER',
             'POWER_CAL',
             'FTP',
+            'EWS',
         ];
 
         if (in_array($module, $blockedModules, true)) {
