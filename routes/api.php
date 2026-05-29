@@ -21,6 +21,7 @@ Route::prefix('mobile/v1')->group(function () {
         Route::get('home', HomeController::class)->name('mobile.home');
         Route::get('mqtt/credentials', MqttCredentialController::class)->name('mobile.mqtt.credentials');
         Route::get('loggers', [LoggerController::class, 'index'])->name('mobile.loggers.index');
+        Route::post('loggers/claim', [LoggerController::class, 'claim'])->name('mobile.loggers.claim');
         Route::get('loggers/{logger}', [LoggerController::class, 'show'])->name('mobile.loggers.show');
         Route::post('loggers/{logger}/sync-info', [LoggerSyncController::class, 'syncInfo'])->name('mobile.loggers.sync-info');
         Route::post('loggers/{logger}/interval', [LoggerSyncController::class, 'updateInterval'])->name('mobile.loggers.interval');

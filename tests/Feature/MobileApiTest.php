@@ -220,6 +220,80 @@ test('normal users cannot fetch another users logger detail', function () {
         ->assertNotFound();
 });
 
+test('mobile claim creates a new logger for the authenticated user', function () {
+    $user = mobileApiUser();
+
+    $response = mobileApiPost($this, $user, '/api/mobile/v1/loggers/claim', [
+        'serial_number' => 'BE-1100V22024121609',
+        'device_id' => '30070',
+        'telemetry_topic' => 'Logger_30070',
+        'firmware_version' => 'BE-1100V22024121609',
+        'connection_mode' => 'ethernet',
+        'model' => 'BL-1100',
+        'mac_address' => 'AA:BB:CC:DD:EE:FF',
+        'ip_address' => '192.168.12.156',
+    ]);
+
+    $response->assertCreated()
+        ->assertJsonPath('success', true)
+        ->assertJsonPath('data.name', 'Logger_30070');
+
+    expect(Logger::query()->where('serial_number', 'BE-1100V22024121609')->first())
+        ->not->toBeNull()
+        ->and(Logger::query()->where('serial_number', 'BE-1100V22024121609')->first()->user_id)
+        ->toBe($user->id);
+});
+
+test('mobile claim returns existing logger when same user claims twice', function () {
+    $user = mobileApiUser();
+    $existing = mobileApiLogger($user, [
+        'name' => 'Already Mine',
+        'serial_number' => 'CB-DUPE-001',
+        'device_identifier' => 'DUPE-001',
+    ]);
+
+    $response = mobileApiPost($this, $user, '/api/mobile/v1/loggers/claim', [
+        'serial_number' => 'CB-DUPE-001',
+        'device_id' => 'DUPE-001',
+        'connection_mode' => 'ethernet',
+    ]);
+
+    $response->assertOk()
+        ->assertJsonPath('success', true)
+        ->assertJsonPath('data.logger_id', (string) $existing->id)
+        ->assertJsonPath('data.name', 'Already Mine');
+});
+
+test('mobile claim rejects logger already owned by another user with 409', function () {
+    $user = mobileApiUser();
+    $otherUser = mobileApiUser('operator', ['email' => 'other@example.test']);
+    mobileApiLogger($otherUser, [
+        'name' => 'Other Logger',
+        'serial_number' => 'CB-OTHER-002',
+        'device_identifier' => 'OTHER-002',
+    ]);
+
+    $response = mobileApiPost($this, $user, '/api/mobile/v1/loggers/claim', [
+        'serial_number' => 'CB-OTHER-002',
+        'device_id' => 'OTHER-002',
+        'connection_mode' => 'cellular',
+    ]);
+
+    $response->assertStatus(409)
+        ->assertJsonPath('success', false)
+        ->assertJsonPath('code', 'logger_already_claimed');
+});
+
+test('mobile claim validates required fields and connection_mode enum', function () {
+    $user = mobileApiUser();
+
+    mobileApiPost($this, $user, '/api/mobile/v1/loggers/claim', [
+        'serial_number' => '',
+        'connection_mode' => 'wifi',
+    ])->assertStatus(422)
+        ->assertJsonValidationErrors(['serial_number', 'device_id', 'connection_mode']);
+});
+
 test('mobile logger detail returns sensors integrations and activity logs', function () {
     $user = mobileApiUser();
     DeviceModel::create([
