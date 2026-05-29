@@ -146,11 +146,9 @@ class DeviceModelController extends Controller
         $filename = $modelPrefix . '-' . $originalName;
         $targetPath = $directory . DIRECTORY_SEPARATOR . $filename;
 
+        // Kalau nama file sama / sudah ada, timpa file lama (bukan tambah baru)
         if (file_exists($targetPath)) {
-            $name = pathinfo($filename, PATHINFO_FILENAME);
-            $extension = pathinfo($filename, PATHINFO_EXTENSION);
-            $filename = $name . '-' . now()->format('YmdHis') . '.' . $extension;
-            $targetPath = $directory . DIRECTORY_SEPARATOR . $filename;
+            @unlink($targetPath);
         }
 
         $file->move($directory, $filename);
