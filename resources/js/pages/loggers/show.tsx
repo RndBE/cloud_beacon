@@ -51,7 +51,7 @@ import {
     HeartPulse,
     ShieldAlert,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     AlertDialog,
@@ -331,6 +331,137 @@ function maxAnalogChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' 
 function maxDigitalChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>): number {
     // Spec §3.2.9: digital channels 1–2 (BL11/BL110), 1–4 (BL1100).
     return inferBoardVariant(logger) === 'BL1100' ? 4 : 2;
+}
+
+interface SensorGroup {
+    key: string;
+    deviceLabel: string;          // e.g. "RainGauge" (RS485 device) or "Analog"
+    locator: string | null;       // e.g. "Slave 1" / "Ch 1" / "Port 2"
+    interfaceLabel: string | null; // "RS485"/"RS232"/"ANALOG"/"DIGITAL"; null = virtual (no device header)
+    members: SensorItem[];
+}
+
+/**
+ * Group sensors by their physical device/channel so an RS485 slave with several
+ * registers reads as ONE device with N parameters (spec §3.2 cfg + s) rather than
+ * N independent rows. RS232/Analog/Digital group by port/channel; virtual sensors
+ * (no connection type) stay ungrouped. Order follows first appearance.
+ */
+function groupSensorsByDevice(sensors: SensorItem[]): SensorGroup[] {
+    const groups: SensorGroup[] = [];
+    const index = new Map<string, SensorGroup>();
+
+    for (const s of sensors) {
+        let key: string;
+        let deviceLabel: string;
+        let locator: string | null;
+        let interfaceLabel: string | null;
+
+        switch (s.connectionType) {
+            case 'rs485':
+                key = `rs485:${s.modbusSlaveId}`;
+                deviceLabel = s.deviceName?.trim() ? s.deviceName : 'RS485 Device';
+                locator = `Slave ${s.modbusSlaveId ?? '?'}`;
+                interfaceLabel = 'RS485';
+                break;
+            case 'rs232':
+                key = `rs232:${s.port}`;
+                deviceLabel = s.deviceName?.trim() ? s.deviceName : 'RS232';
+                locator = `Port ${s.port ?? '?'}`;
+                interfaceLabel = 'RS232';
+                break;
+            case 'analog':
+                key = `analog:${s.channel}`;
+                deviceLabel = 'Analog';
+                locator = `Ch ${s.channel ?? '?'}`;
+                interfaceLabel = 'ANALOG';
+                break;
+            case 'digital':
+                key = `digital:${s.channel}`;
+                deviceLabel = 'Digital';
+                locator = `Ch ${s.channel ?? '?'}`;
+                interfaceLabel = 'DIGITAL';
+                break;
+            default:
+                key = `virtual:${s.id}`;
+                deviceLabel = 'Virtual';
+                locator = null;
+                interfaceLabel = null;
+        }
+
+        let group = index.get(key);
+        if (!group) {
+            group = { key, deviceLabel, locator, interfaceLabel, members: [] };
+            index.set(key, group);
+            groups.push(group);
+        }
+        group.members.push(s);
+    }
+
+    return groups;
+}
+
+interface DiffGroup {
+    key: string;
+    deviceLabel: string;
+    locator: string | null;
+    interfaceLabel: string;
+    members: SyncDiffItem[];
+}
+
+/** Same device grouping as groupSensorsByDevice, for the sync-preview diff items (snake_case). */
+function groupDiffItemsByDevice(items: SyncDiffItem[]): DiffGroup[] {
+    const groups: DiffGroup[] = [];
+    const index = new Map<string, DiffGroup>();
+
+    for (const s of items) {
+        let key: string;
+        let deviceLabel: string;
+        let locator: string | null;
+        let interfaceLabel: string;
+
+        switch (s.connection_type) {
+            case 'rs485':
+                key = `rs485:${s.modbus_slave_id}`;
+                deviceLabel = s.device_name?.trim() ? s.device_name : 'RS485 Device';
+                locator = `Slave ${s.modbus_slave_id ?? '?'}`;
+                interfaceLabel = 'RS485';
+                break;
+            case 'rs232':
+                key = `rs232:${s.port}`;
+                deviceLabel = s.device_name?.trim() ? s.device_name : 'RS232';
+                locator = `Port ${s.port ?? '?'}`;
+                interfaceLabel = 'RS232';
+                break;
+            case 'analog':
+                key = `analog:${s.channel}`;
+                deviceLabel = 'Analog';
+                locator = `Ch ${s.channel ?? '?'}`;
+                interfaceLabel = 'ANALOG';
+                break;
+            case 'digital':
+                key = `digital:${s.channel}`;
+                deviceLabel = 'Digital';
+                locator = `Ch ${s.channel ?? '?'}`;
+                interfaceLabel = 'DIGITAL';
+                break;
+            default:
+                key = `other:${s.name}`;
+                deviceLabel = s.name;
+                locator = null;
+                interfaceLabel = (s.connection_type || '').toUpperCase();
+        }
+
+        let group = index.get(key);
+        if (!group) {
+            group = { key, deviceLabel, locator, interfaceLabel, members: [] };
+            index.set(key, group);
+            groups.push(group);
+        }
+        group.members.push(s);
+    }
+
+    return groups;
 }
 
 // Helper: fetch with CSRF
@@ -751,10 +882,19 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                                             <Plus className="size-3.5" /> New Sensors (will be added)
                                         </p>
                                         <div className="space-y-1.5">
-                                            {diff.added.map((s, i) => (
-                                                <div key={i} className="flex items-center justify-between rounded bg-background/50 px-3 py-1.5 text-xs">
-                                                    <span className="font-medium">{s.name}</span>
-                                                    <span className="text-muted-foreground">{s.connection_type.toUpperCase()} · {s.unit}</span>
+                                            {groupDiffItemsByDevice(diff.added).map((group) => (
+                                                <div key={group.key} className="rounded bg-background/50 px-3 py-1.5 text-xs">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="font-medium">{group.deviceLabel}{group.locator ? ` · ${group.locator}` : ''}</span>
+                                                        <span className="text-muted-foreground">{group.interfaceLabel}{group.members.length > 1 ? ` · ${group.members.length} parameter` : ` · ${group.members[0].unit ?? ''}`}</span>
+                                                    </div>
+                                                    {group.members.length > 1 && (
+                                                        <div className="mt-1 flex flex-wrap gap-1">
+                                                            {group.members.map((m, mi) => (
+                                                                <span key={mi} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.name}{m.unit ? ` (${m.unit})` : ''}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
@@ -794,10 +934,19 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                                             <Trash2 className="size-3.5" /> Missing from Device (will be removed)
                                         </p>
                                         <div className="space-y-1.5">
-                                            {diff.removed.map((s, i) => (
-                                                <div key={i} className="flex items-center justify-between rounded bg-background/50 px-3 py-1.5 text-xs">
-                                                    <span className="font-medium">{s.name}</span>
-                                                    <span className="text-muted-foreground">{s.connection_type.toUpperCase()} · {s.unit}</span>
+                                            {groupDiffItemsByDevice(diff.removed).map((group) => (
+                                                <div key={group.key} className="rounded bg-background/50 px-3 py-1.5 text-xs">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="font-medium">{group.deviceLabel}{group.locator ? ` · ${group.locator}` : ''}</span>
+                                                        <span className="text-muted-foreground">{group.interfaceLabel}{group.members.length > 1 ? ` · ${group.members.length} parameter` : ` · ${group.members[0].unit ?? ''}`}</span>
+                                                    </div>
+                                                    {group.members.length > 1 && (
+                                                        <div className="mt-1 flex flex-wrap gap-1">
+                                                            {group.members.map((m, mi) => (
+                                                                <span key={mi} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.name}{m.unit ? ` (${m.unit})` : ''}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
@@ -1289,36 +1438,56 @@ function SensorCrudPanel({
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {sensors.map((sensor) => (
-                                <TableRow key={sensor.id}>
-                                    <TableCell className="font-medium">{sensor.name}</TableCell>
-                                    <TableCell className="capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</TableCell>
-                                    <TableCell>
-                                        {sensor.connectionType ? (
-                                            <Badge variant="outline" className="text-xs uppercase">{sensor.connectionType}</Badge>
-                                        ) : (
-                                            <span className="text-xs text-muted-foreground">—</span>
-                                        )}
-                                    </TableCell>
-                                    <TableCell className="font-mono font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></TableCell>
-                                    <TableCell className="font-mono text-xs text-muted-foreground">{sensor.min} – {sensor.max} {sensor.unit}</TableCell>
-                                    <TableCell>
-                                        <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
-                                            {sensor.status}
-                                        </Badge>
-                                    </TableCell>
-                                    <TableCell className="hidden text-xs text-muted-foreground md:table-cell">{sensor.lastReading || '—'}</TableCell>
-                                    <TableCell className="text-right">
-                                        <div className="flex items-center justify-end gap-1">
-                                            <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
-                                                <Pencil className="size-3.5" />
-                                            </Button>
-                                            <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
-                                                <Trash2 className="size-3.5" />
-                                            </Button>
-                                        </div>
-                                    </TableCell>
-                                </TableRow>
+                            {groupSensorsByDevice(sensors).map((group) => (
+                                <Fragment key={group.key}>
+                                    {group.interfaceLabel && (
+                                        <TableRow className="bg-muted/40 hover:bg-muted/40">
+                                            <TableCell colSpan={8} className="py-2">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-semibold">{group.deviceLabel}</span>
+                                                    {group.locator && <span className="text-xs text-muted-foreground">· {group.locator}</span>}
+                                                    <Badge variant="outline" className="text-[10px] uppercase">{group.interfaceLabel}</Badge>
+                                                    {group.members.length > 1 && (
+                                                        <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
+                                                    )}
+                                                </div>
+                                            </TableCell>
+                                        </TableRow>
+                                    )}
+                                    {group.members.map((sensor) => (
+                                        <TableRow key={sensor.id}>
+                                            <TableCell className={group.interfaceLabel ? 'pl-8 font-medium' : 'font-medium'}>{sensor.name}</TableCell>
+                                            <TableCell className="capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</TableCell>
+                                            <TableCell>
+                                                {group.interfaceLabel ? (
+                                                    <span className="text-xs text-muted-foreground">—</span>
+                                                ) : sensor.connectionType ? (
+                                                    <Badge variant="outline" className="text-xs uppercase">{sensor.connectionType}</Badge>
+                                                ) : (
+                                                    <span className="text-xs text-muted-foreground">—</span>
+                                                )}
+                                            </TableCell>
+                                            <TableCell className="font-mono font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></TableCell>
+                                            <TableCell className="font-mono text-xs text-muted-foreground">{sensor.min} – {sensor.max} {sensor.unit}</TableCell>
+                                            <TableCell>
+                                                <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
+                                                    {sensor.status}
+                                                </Badge>
+                                            </TableCell>
+                                            <TableCell className="hidden text-xs text-muted-foreground md:table-cell">{sensor.lastReading || '—'}</TableCell>
+                                            <TableCell className="text-right">
+                                                <div className="flex items-center justify-end gap-1">
+                                                    <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
+                                                        <Pencil className="size-3.5" />
+                                                    </Button>
+                                                    <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
+                                                        <Trash2 className="size-3.5" />
+                                                    </Button>
+                                                </div>
+                                            </TableCell>
+                                        </TableRow>
+                                    ))}
+                                </Fragment>
                             ))}
                             {sensors.length === 0 && (
                                 <TableRow>
