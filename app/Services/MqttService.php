@@ -688,6 +688,71 @@ class MqttService
     }
 
     /**
+     * Build a SENSORS SET payload for an ENTIRE RS485 slave or RS232 port at once
+     * (device-as-unit, spec §3.2.3/§3.2.5). The firmware treats a SET as the full
+     * param list for that slave/port, so callers must pass ALL params that should
+     * remain — removing one parameter is done by re-SETting without it.
+     *
+     * @param string $connType  'rs485' or 'rs232'
+     * @param array  $device    Device-level cfg (modbus_slave_id, device_name, function_code,
+     *                          register_address, baudrate, serial_format | port)
+     * @param array  $params    List of param dicts (name, scale_factor, unit,
+     *                          register_address, reg_count|quantity, fast_poll)
+     */
+    public static function buildGroupSetPayload(string $connType, array $device, array $params): array
+    {
+        $connType = strtolower($connType);
+        $params = array_values($params);
+
+        if ($connType === 'rs232') {
+            return [
+                'SENSORS' => [
+                    'cmd' => 'SET',
+                    'type' => 'RS232',
+                    'p' => (int) ($device['port'] ?? 1),
+                    's' => array_map(static fn (array $p) => [
+                        (string) ($p['name'] ?? 'Unknown'),
+                        (float) ($p['scale_factor'] ?? 1.0),
+                        (string) ($p['unit'] ?? ''),
+                    ], $params),
+                ],
+            ];
+        }
+
+        // RS485
+        return [
+            'SENSORS' => [
+                'cmd' => 'SET',
+                'type' => 'RS485',
+                'd' => [[
+                    'cfg' => [
+                        (int) ($device['modbus_slave_id'] ?? 1),
+                        (string) ($device['device_name'] ?? ''),
+                        (int) ($device['function_code'] ?? 3),
+                        (int) ($device['register_address'] ?? 0),
+                        (int) ($device['baudrate'] ?? 9600),
+                        (string) ($device['serial_format'] ?? '8N1'),
+                    ],
+                    's' => array_map(static function (array $p) {
+                        $regCount = (int) ($p['reg_count'] ?? $p['quantity'] ?? 1);
+                        if (!in_array($regCount, [1, 2, 4], true)) {
+                            $regCount = 1;
+                        }
+                        return [
+                            (string) ($p['name'] ?? 'Unknown'),
+                            (float) ($p['scale_factor'] ?? 1.0),
+                            (string) ($p['unit'] ?? ''),
+                            (int) ($p['register_address'] ?? 0),
+                            $regCount,
+                            !empty($p['fast_poll']) ? 1 : 0,
+                        ];
+                    }, $params),
+                ]],
+            ],
+        ];
+    }
+
+    /**
      * Send a SENSORS DEL command to remove a sensor config from the logger.
      *
      * @param string $idLogger

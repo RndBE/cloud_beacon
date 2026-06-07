@@ -401,6 +401,11 @@ function groupSensorsByDevice(sensors: SensorItem[]): SensorGroup[] {
     return groups;
 }
 
+/** Whether a connection type is a multi-parameter device (slave/port) that can be deleted as a unit. */
+function isDeviceGroupType(connectionType: string | null): boolean {
+    return connectionType === 'rs485' || connectionType === 'rs232';
+}
+
 interface DiffGroup {
     key: string;
     deviceLabel: string;
@@ -1290,6 +1295,30 @@ function SensorCrudPanel({
         setDialogOpen(true);
     };
 
+    // Add another parameter to an existing RS485 slave / RS232 port: opens the
+    // form in create mode pre-filled with the device's cfg, so the operator only
+    // fills the param fields. store() merges it into the slave's full param list.
+    const openAddParam = (group: SensorGroup) => {
+        const head = group.members[0];
+        const nextRegister = Math.max(-1, ...group.members.map((m) => m.registerAddress ?? 0)) + 1;
+        setEditingSensor(null);
+        setForm({
+            ...EMPTY_FORM,
+            type: head.type || EMPTY_FORM.type,
+            unit: head.unit || EMPTY_FORM.unit,
+            connection_type: head.connectionType || '',
+            modbus_slave_id: head.modbusSlaveId ?? 1,
+            device_name: head.deviceName ?? '',
+            function_code: head.functionCode ?? 3,
+            register_address: head.connectionType === 'rs485' ? nextRegister : 0,
+            baudrate: head.baudrate ?? 9600,
+            serial_format: head.serialFormat ?? '8N1',
+            port: head.port ?? 1,
+        });
+        setErrors({});
+        setDialogOpen(true);
+    };
+
     const openEdit = (sensor: SensorItem) => {
         setEditingSensor(sensor);
         setForm({
@@ -1375,6 +1404,19 @@ function SensorCrudPanel({
         });
     };
 
+    // Delete an entire RS485 slave / RS232 port (the whole device + all its params).
+    const deleteDevice = (group: SensorGroup) => {
+        const head = group.members[0];
+        const connType = head.connectionType;
+        const groupId = connType === 'rs485' ? head.modbusSlaveId : head.port;
+        if (!connType || groupId == null) return;
+        const label = `${group.deviceLabel}${group.locator ? ` · ${group.locator}` : ''}`;
+        router.delete(`/loggers/${loggerId}/sensor-devices/${connType}/${groupId}`, {
+            preserveScroll: true,
+            onBefore: () => window.confirm(`Hapus seluruh device "${label}" beserta ${group.members.length} parameter-nya?`),
+        });
+    };
+
     // DIGITAL CTRL — toggle a configured Mode-3 output channel (spec §3.2.11).
     const [ctrlBusy, setCtrlBusy] = useState<0 | 1 | null>(null);
     const [ctrlResult, setCtrlResult] = useState<string | null>(null);
@@ -1443,12 +1485,36 @@ function SensorCrudPanel({
                                     {group.interfaceLabel && (
                                         <TableRow className="bg-muted/40 hover:bg-muted/40">
                                             <TableCell colSpan={8} className="py-2">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-semibold">{group.deviceLabel}</span>
-                                                    {group.locator && <span className="text-xs text-muted-foreground">· {group.locator}</span>}
-                                                    <Badge variant="outline" className="text-[10px] uppercase">{group.interfaceLabel}</Badge>
-                                                    {group.members.length > 1 && (
-                                                        <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="font-semibold">{group.deviceLabel}</span>
+                                                        {group.locator && <span className="text-xs text-muted-foreground">· {group.locator}</span>}
+                                                        <Badge variant="outline" className="text-[10px] uppercase">{group.interfaceLabel}</Badge>
+                                                        {group.members.length > 1 && (
+                                                            <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
+                                                        )}
+                                                    </div>
+                                                    {isDeviceGroupType(group.members[0].connectionType) && (
+                                                        <div className="flex items-center gap-1">
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="size-7"
+                                                                title="Tambah parameter ke device ini"
+                                                                onClick={() => openAddParam(group)}
+                                                            >
+                                                                <Plus className="size-3.5" />
+                                                            </Button>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="size-7 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                                title="Hapus device (semua parameter)"
+                                                                onClick={() => deleteDevice(group)}
+                                                            >
+                                                                <Trash2 className="size-3.5" />
+                                                            </Button>
+                                                        </div>
                                                     )}
                                                 </div>
                                             </TableCell>

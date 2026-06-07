@@ -353,6 +353,76 @@ it('keeps waiting on OTA intermediate frames', function () {
         ->and(MqttService::interpretOtaMessage(['OTA' => 'GET_OK']))->toBeNull();
 });
 
+// =====================================================================
+// Device-as-unit group SET (spec §3.2.3/§3.2.5) — a SET carries the slave's/
+// port's FULL param list, so removing one param is a re-SET without it.
+// =====================================================================
+
+it('builds an RS485 group SET with all params of the slave', function () {
+    $payload = MqttService::buildGroupSetPayload('rs485', [
+        'modbus_slave_id' => 1,
+        'device_name' => 'RainGauge',
+        'function_code' => 3,
+        'register_address' => 0,
+        'baudrate' => 9600,
+        'serial_format' => '8N1',
+    ], [
+        ['name' => 'rain_day', 'scale_factor' => 0.1, 'unit' => 'mm', 'register_address' => 0, 'reg_count' => 1, 'fast_poll' => false],
+        ['name' => 'rain_min', 'scale_factor' => 0.1, 'unit' => 'mm', 'register_address' => 1, 'reg_count' => 1, 'fast_poll' => false],
+        ['name' => 'rain_hour', 'scale_factor' => 0.1, 'unit' => 'mm', 'register_address' => 2, 'reg_count' => 1, 'fast_poll' => false],
+    ]);
+
+    expect($payload)->toBe([
+        'SENSORS' => [
+            'cmd' => 'SET',
+            'type' => 'RS485',
+            'd' => [[
+                'cfg' => [1, 'RainGauge', 3, 0, 9600, '8N1'],
+                's' => [
+                    ['rain_day', 0.1, 'mm', 0, 1, 0],
+                    ['rain_min', 0.1, 'mm', 1, 1, 0],
+                    ['rain_hour', 0.1, 'mm', 2, 1, 0],
+                ],
+            ]],
+        ],
+    ]);
+});
+
+it('builds an RS485 group SET excluding a removed param (re-SET on delete)', function () {
+    // 3 params minus rain_min → re-SET carries the remaining 2.
+    $payload = MqttService::buildGroupSetPayload('rs485', [
+        'modbus_slave_id' => 1, 'device_name' => 'RainGauge', 'function_code' => 3,
+        'register_address' => 0, 'baudrate' => 9600, 'serial_format' => '8N1',
+    ], [
+        ['name' => 'rain_day', 'scale_factor' => 0.1, 'unit' => 'mm', 'register_address' => 0, 'reg_count' => 1, 'fast_poll' => false],
+        ['name' => 'rain_hour', 'scale_factor' => 0.1, 'unit' => 'mm', 'register_address' => 2, 'reg_count' => 1, 'fast_poll' => false],
+    ]);
+
+    $s = $payload['SENSORS']['d'][0]['s'];
+    expect($s)->toHaveCount(2)
+        ->and($s[0][0])->toBe('rain_day')
+        ->and($s[1][0])->toBe('rain_hour');
+});
+
+it('builds an RS232 group SET with all params of the port', function () {
+    $payload = MqttService::buildGroupSetPayload('rs232', ['port' => 2], [
+        ['name' => 'RainGauge', 'scale_factor' => 1, 'unit' => 'mm'],
+        ['name' => 'WindSpeed', 'scale_factor' => 0.5, 'unit' => 'm/s'],
+    ]);
+
+    expect($payload)->toBe([
+        'SENSORS' => [
+            'cmd' => 'SET',
+            'type' => 'RS232',
+            'p' => 2,
+            's' => [
+                ['RainGauge', 1.0, 'mm'],
+                ['WindSpeed', 0.5, 'm/s'],
+            ],
+        ],
+    ]);
+});
+
 it('resolves OTA terminal success and failure frames correctly', function () {
     expect(MqttService::interpretOtaMessage(['OTA' => ['status' => 'OK']])['success'])->toBeTrue()
         ->and(MqttService::interpretOtaMessage(['OTA_INSTALL' => ['status' => 'PROCESS']])['success'])->toBeTrue()
