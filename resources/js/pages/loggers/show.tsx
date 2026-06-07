@@ -289,7 +289,8 @@ const EMPTY_FORM = {
     reg_count: 1,
     baudrate: 9600,
     serial_format: '8N1',
-    scale_factor: 1.0,
+    scale_factor: '1' as string, // string-backed so float entry (e.g. 0.1) isn't clobbered
+
     channel: 1,
     analog_mode: 1,
     port: 1,
@@ -1385,7 +1386,7 @@ function SensorCrudPanel({
             reg_count: sensor.regCount ?? sensor.quantity ?? 1,
             baudrate: sensor.baudrate || 9600,
             serial_format: sensor.serialFormat || '8N1',
-            scale_factor: sensor.scaleFactor || 1.0,
+            scale_factor: String(sensor.scaleFactor ?? 1),
             channel: sensor.channel || 1,
             analog_mode: sensor.analogMode ?? 1,
             port: sensor.port || 1,
@@ -1593,7 +1594,7 @@ function SensorCrudPanel({
                                                 )}
                                             </TableCell>
                                             <TableCell className="font-mono font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></TableCell>
-                                            <TableCell className="font-mono text-xs text-muted-foreground">{sensor.min} – {sensor.max} {sensor.unit}</TableCell>
+                                            <TableCell className="font-mono text-xs text-muted-foreground">{sensor.connectionType === 'analog' ? `${sensor.min} – ${sensor.max} ${sensor.unit}` : '—'}</TableCell>
                                             <TableCell>
                                                 <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
                                                     {sensor.status}
@@ -1876,7 +1877,7 @@ function SensorCrudPanel({
                                         </div>
                                         <div className="grid gap-1.5">
                                             <Label className="text-xs">Scale</Label>
-                                            <Input type="number" step="any" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: parseFloat(e.target.value) || 1 })} />
+                                            <Input inputMode="decimal" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: e.target.value })} placeholder="1.0" />
                                         </div>
                                         <div className="grid gap-1.5">
                                             <Label className="text-xs">Timeout (s)</Label>
@@ -1922,37 +1923,14 @@ function SensorCrudPanel({
                             </div>
                         )}
 
-                        {/* Scaling & Range — only for RS485 / RS232 (analog uses its own in the Analog Config block) */}
+                        {/* Scaling — only for RS485 / RS232 (min/max range only applies to Analog). */}
                         {(form.connection_type === 'rs485' || form.connection_type === 'rs232') && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Scaling & Range</p>
-                                <div className="grid gap-3 sm:grid-cols-3">
-                                    <div className="grid gap-1.5">
-                                        <Label className="text-xs">Scale Factor</Label>
-                                        <Input type="number" step="any" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: parseFloat(e.target.value) || 1 })} />
-                                    </div>
-                                    <div className="grid gap-1.5">
-                                        <Label className="text-xs" htmlFor="sensor-min">{t('loggerDetail.min_value')}</Label>
-                                        <Input
-                                            id="sensor-min"
-                                            type="number"
-                                            step="any"
-                                            value={form.min_value}
-                                            onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })}
-                                        />
-                                        {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
-                                    </div>
-                                    <div className="grid gap-1.5">
-                                        <Label className="text-xs" htmlFor="sensor-max">{t('loggerDetail.max_value')}</Label>
-                                        <Input
-                                            id="sensor-max"
-                                            type="number"
-                                            step="any"
-                                            value={form.max_value}
-                                            onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 0 })}
-                                        />
-                                        {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
-                                    </div>
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Scaling</p>
+                                <div className="grid gap-1.5 sm:max-w-[200px]">
+                                    <Label className="text-xs">Scale Factor</Label>
+                                    <Input inputMode="decimal" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: e.target.value })} placeholder="1.0" />
+                                    <p className="text-[10px] text-muted-foreground">Nilai akhir = raw × scale (desimal, mis. 0.1).</p>
                                 </div>
                             </div>
                         )}
