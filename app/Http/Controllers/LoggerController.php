@@ -96,7 +96,7 @@ class LoggerController extends Controller
         $deviceModel = $logger->model
             ? DeviceModel::where('name', $logger->model)->first()
             : null;
-        $allowedConfiguratorModes = ['DEFAULT', 'WEATHER', 'AWLR_TD', 'AWLR_US'];
+        $allowedConfiguratorModes = ['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS'];
 
         $loggerData = [
             'id' => IdHasher::encode($logger->id),
@@ -168,6 +168,7 @@ class LoggerController extends Controller
                 'functionCode' => $s->function_code,
                 'registerAddress' => $s->register_address,
                 'quantity' => $s->quantity,
+                'regCount' => $s->quantity, // 'quantity' column stores reg_count (1=U16, 2=FLOAT32, 4=U32)
                 'baudrate' => $s->baudrate,
                 'serialFormat' => $s->serial_format,
                 'scaleFactor' => $s->scale_factor,

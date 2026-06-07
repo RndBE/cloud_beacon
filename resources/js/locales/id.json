@@ -307,6 +307,7 @@
         "error": "Error",
         "device_configuration": "Konfigurasi Perangkat",
         "data_acquisition_settings": "Pengaturan akuisisi data dan watchdog",
+        "interval_locked_note": "Interval baca/kirim dikunci 1 menit oleh firmware (hanya-baca).",
         "interval_read": "Interval Baca",
         "interval_send": "Interval Kirim",
         "max_reset_watchdog": "Maks Reset (Watchdog)",

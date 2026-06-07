@@ -307,6 +307,7 @@
         "error": "Error",
         "device_configuration": "Device Configuration",
         "data_acquisition_settings": "Data acquisition and watchdog settings",
+        "interval_locked_note": "Read/send interval is locked to 1 minute in firmware (read-only).",
         "interval_read": "Read Interval",
         "interval_send": "Send Interval",
         "max_reset_watchdog": "Max Reset (Watchdog)",

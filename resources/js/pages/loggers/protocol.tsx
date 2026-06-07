@@ -4,15 +4,19 @@ import {
     ArrowLeft,
     Bell,
     Clock,
+    CloudRain,
     Cpu,
     DoorOpen,
+    Download,
+    Droplets,
     Gauge,
+    Layers,
     Loader2,
     Network,
     Plus,
-    PlugZap,
     Power,
     RefreshCw,
+    Satellite,
     Send,
     Server,
     ShieldAlert,
@@ -205,6 +209,20 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     });
     const [ftpLogFile, setFtpLogFile] = useState('20260502.txt');
 
+    // ── Protocol v3 modules: ARR / GCM / GCM_PUMP / GCM_MAP / OTA ──
+    const [arrId, setArrId] = useState('1');
+    const [gcm, setGcm] = useState({ enable: '1', id1: '0', id2: '0', id3: '0', id4: '0', id5: '0' });
+    const [gcmPumpId, setGcmPumpId] = useState('1');
+    const [gcmMapId, setGcmMapId] = useState('1');
+    const [gcmMapRows, setGcmMapRows] = useState<{ reg: string; slot: string }[]>([
+        { reg: '16', slot: '0' },
+        { reg: '17', slot: '0' },
+        { reg: '18', slot: '0' },
+        { reg: '19', slot: '0' },
+        { reg: '20', slot: '0' },
+    ]);
+    const [ota, setOta] = useState({ ver: '', file: '' });
+
     type EwsSourceType = 'RS485' | 'RS232' | 'ANALOG' | 'DIGITAL' | 'CALC';
     type EwsRuleRow = { min: string; max: string; level: string };
     const [ewsMode, setEwsMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
@@ -228,7 +246,10 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     const variant = inferBoardVariant(logger);
     const isCellularBoard = variant === 'BL11';
     const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
-    const isAwlrMode = logger.loggerMode === 'AWLR_TD' || logger.loggerMode === 'AWLR_US';
+    const isArrMode = logger.loggerMode === 'ARR';
+    const isGnssMode = logger.loggerMode === 'GNSS';
+    const slotTotal = variant === 'BL1100' ? 50 : 16;
+    const gcmEnabled = numberValue(gcm.enable) === 1;
 
     const ewsCalcNames = useMemo<string[]>(() => {
         if (logger.loggerMode === 'AWLR_TD') return ['AWLR_TD.TMA', 'AWLR_TD.KEDALAMAN'];
@@ -561,6 +582,9 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                         <TabsTrigger value="power">Power</TabsTrigger>
                         <TabsTrigger value="logs">Logs</TabsTrigger>
                         <TabsTrigger value="ews">EWS</TabsTrigger>
+                        <TabsTrigger value="mode">Mode</TabsTrigger>
+                        <TabsTrigger value="gcm">GCM</TabsTrigger>
+                        <TabsTrigger value="ota">OTA</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="system" className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -709,20 +733,7 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                     </TabsContent>
 
                     <TabsContent value="io" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        {isAwlrMode && (
-                            <CommandCard title="AWLR_PUMP" description="Kontrol relay pompa via Modbus RTU." icon={PlugZap} result={responses.AWLR_PUMP}>
-                            <Field label="State">
-                                <select className={selectClass} value={pumpState} onChange={(event) => setPumpState(event.target.value)}>
-                                    <option value="1">ON</option>
-                                    <option value="0">OFF</option>
-                                </select>
-                            </Field>
-                            <ButtonRow>
-                                {actionButton('GET', 'AWLR_PUMP', () => send('AWLR_PUMP', { AWLR_PUMP: { cmd: 'GET' } }, 'AWLR_PUMP'))}
-                                {actionButton('SET', 'AWLR_PUMP', () => send('AWLR_PUMP', { AWLR_PUMP: { cmd: 'SET', state: numberValue(pumpState) } }, 'AWLR_PUMP'), 'destructive', 'Ubah status pompa AWLR?')}
-                            </ButtonRow>
-                            </CommandCard>
-                        )}
+                        {/* AWLR_PUMP renamed to GCM_PUMP (spec §3.17) — see the GCM tab. */}
 
                         <CommandCard title="Power Output" description="Kontrol output 24V dan 12V active-low." icon={Zap} result={responses.P_OUT}>
                             <div className="grid gap-3 sm:grid-cols-2">
@@ -1051,6 +1062,137 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                                     </p>
                                 </div>
                             )}
+                        </CommandCard>
+                    </TabsContent>
+
+                    {/* ── Mode-gated: ARR source select + GNSS telemetry info (spec §3.16.1 / §3.27) ── */}
+                    <TabsContent value="mode" className="mt-4 grid gap-4 lg:grid-cols-2">
+                        <CommandCard title="ARR" description="Pilih slave RS485 sumber data curah hujan (mode ARR)." icon={CloudRain} result={responses.ARR}>
+                            {!isArrMode && (
+                                <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
+                                    Logger belum di mode ARR — set mode ARR dulu agar command ini diterima firmware.
+                                </p>
+                            )}
+                            <Field label="Slave ID (1–5)">
+                                <select className={selectClass} value={arrId} onChange={(event) => setArrId(event.target.value)}>
+                                    {[1, 2, 3, 4, 5].map((id) => <option key={id} value={id}>{id}</option>)}
+                                </select>
+                            </Field>
+                            <ButtonRow>
+                                {actionButton('GET', 'ARR', () => send('ARR', { ARR: { cmd: 'GET' } }, 'ARR'))}
+                                {actionButton('SET', 'ARR', () => send('ARR', { ARR: { cmd: 'SET', id: numberValue(arrId) } }, 'ARR'))}
+                            </ButtonRow>
+                        </CommandCard>
+
+                        <CommandCard title="GNSS" description="Profil telemetry NMEA (info)." icon={Satellite} result={undefined}>
+                            <p className="text-xs text-muted-foreground">
+                                GNSS bukan command MQTT — aktifkan via <strong>System &rarr; SET_MODE &ldquo;GNSS&rdquo;</strong>. Saat aktif, slot
+                                telemetry <code>sensor1</code>–<code>sensor9</code> di-reserve untuk UTC, posisi, satelit, HDOP, fix quality, dan geoid
+                                dari receiver NMEA di RS232 port 1 (9600 8N1). Sensor user digeser mulai <code>sensor10</code>.
+                            </p>
+                            {isGnssMode
+                                ? <Badge className="w-fit bg-emerald-500/15 text-emerald-600">Mode GNSS aktif</Badge>
+                                : <Badge variant="outline" className="w-fit">Mode GNSS tidak aktif</Badge>}
+                        </CommandCard>
+                    </TabsContent>
+
+                    {/* ── GCM family (spec §3.17 / §3.17.1) ── */}
+                    <TabsContent value="gcm" className="mt-4 grid gap-4 lg:grid-cols-2">
+                        <CommandCard title="GCM" description="Master switch + binding hingga 5 slave Modbus RTU." icon={Layers} result={responses.GCM}>
+                            <Field label="Enable">
+                                <select className={selectClass} value={gcm.enable} onChange={(event) => setGcm({ ...gcm, enable: event.target.value })}>
+                                    <option value="1">Enabled</option>
+                                    <option value="0">Disabled</option>
+                                </select>
+                            </Field>
+                            <div className="grid gap-3 sm:grid-cols-5">
+                                {(['id1', 'id2', 'id3', 'id4', 'id5'] as const).map((key, idx) => (
+                                    <Field key={key} label={`Slave id${idx + 1}`}>
+                                        <Input className={inputClass} type="number" min="0" max="247" value={gcm[key]} onChange={(event) => setGcm({ ...gcm, [key]: event.target.value })} />
+                                    </Field>
+                                ))}
+                            </div>
+                            <ButtonRow>
+                                {actionButton('GET', 'GCM', () => send('GCM', { GCM: { cmd: 'GET' } }, 'GCM'))}
+                                {actionButton('SET', 'GCM', () => send('GCM', { GCM: { cmd: 'SET', enable: numberValue(gcm.enable), id1: numberValue(gcm.id1), id2: numberValue(gcm.id2), id3: numberValue(gcm.id3), id4: numberValue(gcm.id4), id5: numberValue(gcm.id5) } }, 'GCM'))}
+                                {actionButton('RST', 'GCM', () => send('GCM', { GCM: { cmd: 'RST' } }, 'GCM'), 'destructive', 'Reset semua konfigurasi GCM?')}
+                            </ButtonRow>
+                        </CommandCard>
+
+                        <CommandCard title="GCM_PUMP" description="Kontrol pompa per-modul via Modbus RTU (butuh GCM aktif)." icon={Droplets} result={responses.GCM_PUMP}>
+                            {!gcmEnabled && <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">GCM.enable harus 1 agar command ini diterima.</p>}
+                            <div className="grid gap-3 sm:grid-cols-2">
+                                <Field label="Modul (1–5)">
+                                    <select className={selectClass} value={gcmPumpId} onChange={(event) => setGcmPumpId(event.target.value)}>
+                                        {[1, 2, 3, 4, 5].map((id) => <option key={id} value={id}>{id}</option>)}
+                                    </select>
+                                </Field>
+                                <Field label="State">
+                                    <select className={selectClass} value={pumpState} onChange={(event) => setPumpState(event.target.value)}>
+                                        <option value="1">ON</option>
+                                        <option value="0">OFF</option>
+                                    </select>
+                                </Field>
+                            </div>
+                            <ButtonRow>
+                                {actionButton('GET', 'GCM_PUMP', () => send('GCM_PUMP', { GCM_PUMP: { cmd: 'GET', id: numberValue(gcmPumpId) } }, 'GCM_PUMP'))}
+                                {actionButton('SET', 'GCM_PUMP', () => send('GCM_PUMP', { GCM_PUMP: { cmd: 'SET', id: numberValue(gcmPumpId), state: numberValue(pumpState) } }, 'GCM_PUMP'), 'destructive', 'Ubah status pompa GCM?')}
+                            </ButtonRow>
+                            <p className="text-xs text-muted-foreground">SET bersifat queued — tekan GET untuk verifikasi status aktual.</p>
+                        </CommandCard>
+
+                        <CommandCard title="GCM_MAP" description="Pemetaan slot telemetry ke register GCM 16–20 (per modul)." icon={Network} result={responses.GCM_MAP}>
+                            <Field label="Modul (1–5)">
+                                <select className={selectClass} value={gcmMapId} onChange={(event) => setGcmMapId(event.target.value)}>
+                                    {[1, 2, 3, 4, 5].map((id) => <option key={id} value={id}>{id}</option>)}
+                                </select>
+                            </Field>
+                            <div className="grid gap-2">
+                                {gcmMapRows.map((row, idx) => (
+                                    <div key={row.reg} className="grid grid-cols-2 items-center gap-3">
+                                        <span className="text-xs text-muted-foreground">Register {row.reg}</span>
+                                        <Input
+                                            className={inputClass}
+                                            type="number"
+                                            min="0"
+                                            max={slotTotal}
+                                            value={row.slot}
+                                            onChange={(event) => setGcmMapRows(gcmMapRows.map((r, i) => i === idx ? { ...r, slot: event.target.value } : r))}
+                                            placeholder={`slot 0–${slotTotal}`}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                            <ButtonRow>
+                                {actionButton('GET', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'GET', id: numberValue(gcmMapId) } }, 'GCM_MAP'))}
+                                {actionButton('SET', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'SET', id: numberValue(gcmMapId), m: gcmMapRows.map((r) => [numberValue(r.reg), numberValue(r.slot)]) } }, 'GCM_MAP'))}
+                                {actionButton('RST', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'RST', id: numberValue(gcmMapId) } }, 'GCM_MAP'), 'destructive', 'Reset pemetaan GCM modul ini?')}
+                            </ButtonRow>
+                            <p className="text-xs text-muted-foreground">Slot 0 = nonaktif. Rentang slot 0–{slotTotal} sesuai varian perangkat.</p>
+                        </CommandCard>
+                    </TabsContent>
+
+                    {/* ── OTA firmware update (spec §3.26) ── */}
+                    <TabsContent value="ota" className="mt-4 grid gap-4 lg:grid-cols-2">
+                        <CommandCard title="OTA" description="Download & install firmware (board bermodem)." icon={Download} result={responses.OTA}>
+                            <div className="grid gap-3">
+                                <Field label="Version (mis. BL-1100-v2.0.4)">
+                                    <Input className={inputClass} value={ota.ver} onChange={(event) => setOta({ ...ota, ver: event.target.value })} placeholder="BL-1100-v2.0.4" />
+                                </Field>
+                                <Field label="File (.bin)">
+                                    <Input className={inputClass} value={ota.file} onChange={(event) => setOta({ ...ota, file: event.target.value })} placeholder="BL-1100-v2.0.4.bin" />
+                                </Field>
+                            </div>
+                            <ButtonRow>
+                                {actionButton('GET (download)', 'OTA', () => {
+                                    if (!ota.ver.trim() || !ota.file.trim()) { localError('OTA', 'Isi version dan file .bin.'); return; }
+                                    send('OTA', { OTA: { cmd: 'GET', ver: ota.ver.trim(), file: ota.file.trim() } }, 'OTA');
+                                })}
+                                {actionButton('INSTALL', 'OTA', () => send('OTA', { OTA: { cmd: 'INSTALL' } }, 'OTA'), 'destructive', 'Install firmware & reboot perangkat?')}
+                            </ButtonRow>
+                            <p className="text-xs text-muted-foreground">
+                                Format strict: <code>BL-11</code>/<code>BL-110</code>/<code>BL-1100</code>. INSTALL hanya setelah GET selesai. Board tanpa modem membalas <code>INVALID</code>.
+                            </p>
                         </CommandCard>
                     </TabsContent>
                 </Tabs>

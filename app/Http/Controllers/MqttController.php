@@ -168,107 +168,9 @@ class MqttController extends Controller
         return response()->json($result);
     }
 
-    /**
-     * Send INTERVAL SET command to configure intervals on the logger.
-     */
-    public function setInterval(Request $request): JsonResponse
-    {
-        $request->validate([
-            'id_logger' => 'required|string',
-            'interval_send' => 'required|integer|min:1|max:1440',
-            'interval_read' => 'required|integer|min:1|max:1440',
-            'max_reset' => 'required|integer|min:0|max:100',
-        ]);
-
-        $idLogger = $request->input('id_logger');
-        $logger = $this->resolveLogger($idLogger);
-
-        if (!$logger) {
-            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
-        }
-
-        $mqtt = new MqttService();
-        $result = $mqtt->sendIntervalSet(
-            $idLogger,
-            $request->input('interval_send'),
-            $request->input('interval_read'),
-            $request->input('max_reset'),
-        );
-
-        if ($result['success']) {
-            $logger->update([
-                'interval_send' => $request->input('interval_send'),
-                'interval_read' => $request->input('interval_read'),
-                'max_reset' => $request->input('max_reset'),
-            ]);
-
-            \App\Models\ActivityLog::create([
-                'logger_id' => $logger->id,
-                'action' => 'interval_set',
-                'status' => 'success',
-                'level' => 'info',
-                'message' => 'Interval diubah via MQTT — SEND: ' . $request->input('interval_send') . ', SENS: ' . $request->input('interval_read') . ', WDT: ' . $request->input('max_reset'),
-                'created_at' => now(),
-            ]);
-        } else {
-            \App\Models\ActivityLog::create([
-                'logger_id' => $logger->id,
-                'action' => 'interval_set',
-                'status' => 'failed',
-                'level' => 'warning',
-                'message' => 'Gagal set interval via MQTT: ' . ($result['message'] ?? 'Unknown error'),
-                'created_at' => now(),
-            ]);
-        }
-
-        return response()->json($result);
-    }
-
-    /**
-     * Read INTERVAL config from the logger via MQTT.
-     */
-    public function getInterval(Request $request): JsonResponse
-    {
-        $request->validate(['id_logger' => 'required|string']);
-
-        $idLogger = $request->input('id_logger');
-        $logger = $this->resolveLogger($idLogger);
-
-        if (!$logger) {
-            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
-        }
-
-        $mqtt = new MqttService();
-        $result = $mqtt->sendIntervalGet($idLogger);
-
-        if ($result['success'] && isset($result['data'])) {
-            $logger->update([
-                'interval_send' => $result['data']['interval_send'],
-                'interval_read' => $result['data']['interval_read'],
-                'max_reset' => $result['data']['max_reset'],
-            ]);
-
-            \App\Models\ActivityLog::create([
-                'logger_id' => $logger->id,
-                'action' => 'interval_get',
-                'status' => 'success',
-                'level' => 'info',
-                'message' => 'Sync interval dari device — SEND: ' . $result['data']['interval_send'] . ', SENS: ' . $result['data']['interval_read'] . ', WDT: ' . $result['data']['max_reset'],
-                'created_at' => now(),
-            ]);
-        } else {
-            \App\Models\ActivityLog::create([
-                'logger_id' => $logger->id,
-                'action' => 'interval_get',
-                'status' => 'failed',
-                'level' => 'warning',
-                'message' => 'Gagal sync interval dari device: ' . ($result['message'] ?? 'Unknown error'),
-                'created_at' => now(),
-            ]);
-        }
-
-        return response()->json($result);
-    }
+    // NOTE: INTERVAL SET/GET commands removed — firmware locks read/send interval to
+    // 1 minute (WDT 5) and no longer exposes an INTERVAL command (spec §2). The fixed
+    // values are surfaced read-only via INFO sync (parseInfoResponse).
 
     // =========================================================================
     // SENSOR COMMANDS (Protocol-based)
@@ -546,15 +448,23 @@ class MqttController extends Controller
             'device_name'     => 'nullable|string|max:50',
             'function_code'   => 'required_if:connection_type,rs485|integer|in:3,4',
             'register_address'=> 'required_if:connection_type,rs485|integer|min:0',
-            'quantity'        => 'required_if:connection_type,rs485|integer|min:1|max:16',
+            // reg_count: 1=U16, 2=FLOAT32 (2 reg), 4=U32 (4 reg). Replaces the old item_count "quantity".
+            'reg_count'       => 'required_if:connection_type,rs485|integer|in:1,2,4',
+            'quantity'        => 'nullable|integer|in:1,2,4', // legacy alias, accepted for backward-compat
             'baudrate'        => 'nullable|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
             'serial_format'   => 'nullable|string|in:8N1,8E1,8O1',
             'fast_poll'       => 'nullable|boolean',
             // RS232-specific
             'port'            => 'required_if:connection_type,rs232|integer|min:1|max:2',
-            // Analog / Digital specific
-            'channel'         => 'required_if:connection_type,analog,digital|integer|min:1|max:8',
-            'analog_mode'     => 'required_if:connection_type,analog|integer|min:0|max:3',
+            // Analog / Digital specific. Digital caps at 4 channels (BL1100) / 2 (others);
+            // analog goes up to 8 (BL1100) — so the upper bound depends on connection_type.
+            'channel'         => ['required_if:connection_type,analog,digital', 'integer', 'min:1', function ($attr, $value, $fail) use ($request) {
+                $max = $request->input('connection_type') === 'digital' ? 4 : 8;
+                if ((int) $value > $max) {
+                    $fail("channel maksimum {$max} untuk tipe {$request->input('connection_type')}.");
+                }
+            }],
+            'analog_mode'     => 'required_if:connection_type,analog|integer|in:0,1',
             'digital_mode'    => 'required_if:connection_type,digital|integer|in:0,1,2,3',
             'label_high'      => 'nullable|string|max:32',
             'label_low'       => 'nullable|string|max:32',
@@ -596,7 +506,8 @@ class MqttController extends Controller
                 $sensorData['device_name']      = $request->input('device_name');
                 $sensorData['function_code']    = $request->input('function_code');
                 $sensorData['register_address'] = $request->input('register_address');
-                $sensorData['quantity']         = $request->input('quantity');
+                // 'quantity' column now stores reg_count (1=U16, 2=FLOAT32, 4=U32)
+                $sensorData['quantity']         = $request->input('reg_count', $request->input('quantity', 1));
                 $sensorData['baudrate']         = $request->input('baudrate');
                 $sensorData['serial_format']    = $request->input('serial_format');
             } elseif ($connType === 'rs232') {
@@ -671,6 +582,56 @@ class MqttController extends Controller
             'success' => true,
             'message' => 'Sensor config deleted successfully.',
         ]);
+    }
+
+    /**
+     * Send SENSORS DIGITAL CTRL command to toggle a configured output channel (spec §3.2.11).
+     *
+     * Only valid for a digital sensor configured as Mode 3 (Logic Level Output).
+     */
+    public function ctrlSensorConfig(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'sensor_id' => 'required|integer',
+            'state'     => 'required|integer|in:0,1',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $state    = (int) $request->input('state');
+        $sensor   = Sensor::findOrFail($request->input('sensor_id'));
+
+        // Guard: must be a digital output (mode 3) so we don't waste a round-trip.
+        if ($sensor->connection_type !== 'digital' || (int) $sensor->analog_mode !== 3) {
+            return response()->json([
+                'success' => false,
+                'message' => 'CTRL hanya untuk sensor digital output (mode 3).',
+            ], 422);
+        }
+
+        $logger = $this->resolveLogger($idLogger);
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
+        $mqtt = new MqttService();
+        $result = $mqtt->sendSensorCtrl($idLogger, (int) $sensor->channel, $state);
+
+        if ($result['success']) {
+            // Reflect the commanded state in the cached value; overwritten on next GET_ALL.
+            $sensor->update(['value' => $state]);
+
+            \App\Models\ActivityLog::create([
+                'logger_id' => $logger->id,
+                'action'    => 'sensor_ctrl',
+                'status'    => 'success',
+                'level'     => 'info',
+                'message'   => "Output {$sensor->name} (ch {$sensor->channel}) di-set ke " . ($state ? 'ON' : 'OFF'),
+                'created_at' => now(),
+            ]);
+        }
+
+        return response()->json($result);
     }
 
     // =========================================================================
@@ -855,7 +816,10 @@ class MqttController extends Controller
         ]);
 
         $module = strtoupper($request->input('module'));
-        $blockedModules = ['PRODUCTION', 'FAC', 'AUTH', 'CONTROL', 'BT', 'USB', 'OTA', 'SDCARD'];
+        // MQTT only rejects PRODUCTION & FAC for security (spec §1). CONTROL/BT/USB are
+        // physically-local hardware ops kept blocked by policy. SDCARD command was removed
+        // from the active protocol, so it is simply absent from the allowlist.
+        $blockedModules = ['PRODUCTION', 'FAC', 'AUTH', 'CONTROL', 'BT', 'USB'];
         $allowedModules = [
             'RTC',
             'NET',
@@ -863,7 +827,10 @@ class MqttController extends Controller
             'SIM',
             'CAL',
             'STATUS',
-            'AWLR_PUMP',
+            'ARR',          // §3.16.1 — ARR source slave select (mode-gated)
+            'GCM',          // §3.17 — GCM master switch + slave binding
+            'GCM_PUMP',     // §3.17 — pump control per module (renamed from AWLR_PUMP)
+            'GCM_MAP',      // §3.17.1 — telemetry-slot -> GCM register mapping
             'P_OUT24',
             'P_OUT12',
             'SENS_DOOR',
@@ -873,6 +840,7 @@ class MqttController extends Controller
             'POWER_CAL',
             'FTP',
             'EWS',
+            'OTA',          // §3.26 — firmware update (firmware returns INVALID on non-modem boards)
         ];
 
         if (in_array($module, $blockedModules, true)) {
@@ -905,7 +873,9 @@ class MqttController extends Controller
         }
 
         $mqtt = new MqttService();
-        $result = $mqtt->sendProtocolCommand($idLogger, $payload, $module);
+        // OTA GET streams a multi-minute firmware download (spec §3.26) — allow up to ~5.5 min.
+        $protocolTimeout = $module === 'OTA' ? 330 : null;
+        $result = $mqtt->sendProtocolCommand($idLogger, $payload, $module, $protocolTimeout);
 
         \App\Models\ActivityLog::create([
             'logger_id' => $logger->id,
@@ -1059,7 +1029,9 @@ class MqttController extends Controller
     {
         $request->validate([
             'id_logger' => 'required|string',
-            'mode'      => 'required|string|in:AWLR_TD,AWLR_US,WEATHER,DEFAULT',
+            // Canonical mode set lives in the logger_modes table (DEFAULT/AWLR_TD/AWLR_US/ARR/GNSS),
+            // matching the mobile sync endpoint and avoiding a hardcoded list that drifts.
+            'mode'      => 'required|string|exists:logger_modes,slug',
         ]);
 
         $idLogger = $request->input('id_logger');

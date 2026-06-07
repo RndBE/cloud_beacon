@@ -44,11 +44,22 @@ class SensorController extends Controller
             'device_name' => 'nullable|string|max:50',
             'function_code' => 'nullable|integer|in:3,4',
             'register_address' => 'nullable|integer|min:0|max:65535',
-            'quantity' => 'nullable|integer|min:1|max:16',
+            // reg_count: 1=U16, 2=FLOAT32 (2 reg), 4=U32 (4 reg). Replaces the old item_count "quantity".
+            'reg_count' => 'nullable|integer|in:1,2,4',
+            'quantity' => 'nullable|integer|in:1,2,4', // legacy alias
             'baudrate' => 'nullable|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
             'serial_format' => 'nullable|string|in:8N1,8E1,8O1',
             'scale_factor' => 'nullable|numeric',
-            'channel' => 'nullable|integer|min:1|max:8',
+            // Digital caps at 4 channels (BL1100) / 2 (others); analog up to 8 (BL1100).
+            'channel' => ['nullable', 'integer', 'min:1', function ($attr, $value, $fail) {
+                if ($value === null) {
+                    return;
+                }
+                $max = request()->input('connection_type') === 'digital' ? 4 : 8;
+                if ((int) $value > $max) {
+                    $fail("channel maksimum {$max} untuk tipe " . request()->input('connection_type') . '.');
+                }
+            }],
             'analog_mode' => 'nullable|integer|min:0|max:3',
             'port' => 'nullable|integer|min:1|max:2',
             'digital_mode' => 'nullable|integer|in:0,1,2,3',
@@ -168,7 +179,13 @@ class SensorController extends Controller
             $data['analog_mode'] = (int) ($data['digital_mode'] ?? $data['analog_mode'] ?? 0);
         }
 
+        // The DB `quantity` column now stores reg_count (1=U16, 2=FLOAT32, 4=U32).
+        if (($data['connection_type'] ?? null) === 'rs485') {
+            $data['quantity'] = $data['reg_count'] ?? $data['quantity'] ?? 1;
+        }
+
         foreach ([
+            'reg_count',
             'digital_mode',
             'label_high',
             'label_low',

@@ -107,6 +107,7 @@ interface SensorItem {
     functionCode: number | null;
     registerAddress: number | null;
     quantity: number | null;
+    regCount: number | null;
     baudrate: number | null;
     serialFormat: string | null;
     scaleFactor: number | null;
@@ -271,7 +272,7 @@ const SENSOR_TYPES = [
     { value: 'digital-output', label: 'Digital Output', defaultUnit: '-' },
 ] as const;
 
-const CONFIGURATOR_MODES = new Set(['DEFAULT', 'WEATHER', 'AWLR_TD', 'AWLR_US']);
+const CONFIGURATOR_MODES = new Set(['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS']);
 
 const EMPTY_FORM = {
     name: '',
@@ -285,7 +286,7 @@ const EMPTY_FORM = {
     device_name: '',
     function_code: 3,
     register_address: 0,
-    quantity: 1,
+    reg_count: 1,
     baudrate: 9600,
     serial_format: '8N1',
     scale_factor: 1.0,
@@ -301,9 +302,6 @@ const EMPTY_FORM = {
     timeout_sec: 5,
     default_state: 0,
     failsafe: 0,
-    lcd_enabled: true,
-    log_enabled: true,
-    send_enabled: true,
     fast_poll: false,
 };
 
@@ -328,6 +326,11 @@ function maxAnalogChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' 
     if (variant === 'BL1100') return 8;
     if (variant === 'BL11' || variant === 'BL110') return 2;
     return 2;
+}
+
+function maxDigitalChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>): number {
+    // Spec §3.2.9: digital channels 1–2 (BL11/BL110), 1–4 (BL1100).
+    return inferBoardVariant(logger) === 'BL1100' ? 4 : 2;
 }
 
 // Helper: fetch with CSRF
@@ -1114,11 +1117,13 @@ function SensorCrudPanel({
     sensors,
     deviceIdentifier,
     analogChannelMax,
+    digitalChannelMax,
 }: {
     loggerId: string;
     sensors: SensorItem[];
     deviceIdentifier?: string | null;
     analogChannelMax: number;
+    digitalChannelMax: number;
 }) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -1150,7 +1155,7 @@ function SensorCrudPanel({
             device_name: sensor.deviceName || '',
             function_code: sensor.functionCode || 3,
             register_address: sensor.registerAddress || 0,
-            quantity: sensor.quantity || 1,
+            reg_count: sensor.regCount ?? sensor.quantity ?? 1,
             baudrate: sensor.baudrate || 9600,
             serial_format: sensor.serialFormat || '8N1',
             scale_factor: sensor.scaleFactor || 1.0,
@@ -1166,9 +1171,6 @@ function SensorCrudPanel({
             timeout_sec: 5,
             default_state: 0,
             failsafe: 0,
-            lcd_enabled: sensor.lcdEnabled ?? true,
-            log_enabled: sensor.logEnabled ?? true,
-            send_enabled: sensor.sendEnabled ?? true,
             fast_poll: sensor.fastPoll ?? false,
         });
         setErrors({});
@@ -1222,6 +1224,33 @@ function SensorCrudPanel({
             },
             onFinish: () => setProcessing(false),
         });
+    };
+
+    // DIGITAL CTRL — toggle a configured Mode-3 output channel (spec §3.2.11).
+    const [ctrlBusy, setCtrlBusy] = useState<0 | 1 | null>(null);
+    const [ctrlResult, setCtrlResult] = useState<string | null>(null);
+
+    const sendDigitalCtrl = async (state: 0 | 1) => {
+        if (!editingSensor) return;
+        if (!deviceIdentifier) {
+            setCtrlResult('Logger belum punya device identifier.');
+            return;
+        }
+        setCtrlBusy(state);
+        setCtrlResult(null);
+        try {
+            const res = await apiFetch('/api/mqtt/sensors/ctrl', {
+                id_logger: deviceIdentifier,
+                sensor_id: editingSensor.id,
+                state,
+            });
+            const data = await res.json();
+            setCtrlResult(data?.message ?? (data?.success ? 'OK' : 'Gagal'));
+        } catch (e) {
+            setCtrlResult(e instanceof Error ? e.message : 'Request gagal.');
+        } finally {
+            setCtrlBusy(null);
+        }
     };
 
     return (
@@ -1413,8 +1442,12 @@ function SensorCrudPanel({
                                         <Input type="number" min={0} max={65535} value={form.register_address} onChange={e => setForm({ ...form, register_address: parseInt(e.target.value) || 0 })} />
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Item Count</Label>
-                                        <Input type="number" min={1} max={16} value={form.quantity} onChange={e => setForm({ ...form, quantity: parseInt(e.target.value) || 1 })} />
+                                        <Label className="text-xs">Register Count</Label>
+                                        <select value={form.reg_count} onChange={e => setForm({ ...form, reg_count: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            <option value={1}>1 — U16</option>
+                                            <option value={2}>2 — FLOAT32 (ABCD)</option>
+                                            <option value={4}>4 — U32 (bulat.pecahan)</option>
+                                        </select>
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-3 gap-3">
@@ -1492,7 +1525,8 @@ function SensorCrudPanel({
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Channel</Label>
-                                        <Input type="number" min={1} max={8} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
+                                        <Input type="number" min={1} max={digitalChannelMax} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
+                                        <p className="text-[10px] text-muted-foreground">Channel 1-based, maksimum {digitalChannelMax} sesuai varian perangkat</p>
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Mode</Label>
@@ -1565,6 +1599,22 @@ function SensorCrudPanel({
                                         </div>
                                     </div>
                                 )}
+
+                                {/* Live output control — only for an already-saved Mode-3 output (spec §3.2.11) */}
+                                {form.digital_mode === 3 && editingSensor && (
+                                    <div className="grid gap-2 rounded-md border border-dashed p-3">
+                                        <Label className="text-xs">Kontrol Output (live)</Label>
+                                        <div className="flex items-center gap-2">
+                                            <Button type="button" size="sm" variant="outline" disabled={ctrlBusy !== null} onClick={() => sendDigitalCtrl(1)}>
+                                                {ctrlBusy === 1 ? <Loader2 className="size-3.5 animate-spin" /> : null} ON
+                                            </Button>
+                                            <Button type="button" size="sm" variant="outline" disabled={ctrlBusy !== null} onClick={() => sendDigitalCtrl(0)}>
+                                                {ctrlBusy === 0 ? <Loader2 className="size-3.5 animate-spin" /> : null} OFF
+                                            </Button>
+                                        </div>
+                                        {ctrlResult && <p className="text-[10px] text-muted-foreground">{ctrlResult}</p>}
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -1578,25 +1628,7 @@ function SensorCrudPanel({
                             </div>
                         )}
 
-                        {/* Flags: Map LCD / Map SD / Map Server (for all protocol types) */}
-                        {form.connection_type && (
-                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <div className="flex items-center gap-4">
-                                    <label className="flex items-center gap-1.5 text-xs">
-                                        <input type="checkbox" checked={form.lcd_enabled} onChange={e => setForm({ ...form, lcd_enabled: e.target.checked })} className="rounded" />
-                                        Map LCD
-                                    </label>
-                                    <label className="flex items-center gap-1.5 text-xs">
-                                        <input type="checkbox" checked={form.log_enabled} onChange={e => setForm({ ...form, log_enabled: e.target.checked })} className="rounded" />
-                                        Map SD Card
-                                    </label>
-                                    <label className="flex items-center gap-1.5 text-xs">
-                                        <input type="checkbox" checked={form.send_enabled} onChange={e => setForm({ ...form, send_enabled: e.target.checked })} className="rounded" />
-                                        Map Server
-                                    </label>
-                                </div>
-                            </div>
-                        )}
+                        {/* LCD/SD/Server map flags removed — firmware always shows, stores, and sends every configured sensor (spec §3.2). */}
 
                         {/* Min / Max — only for RS485 / RS232 (analog uses its own in the Analog Config block) */}
                         {(form.connection_type === 'rs485' || form.connection_type === 'rs232') && (
@@ -1674,383 +1706,37 @@ function getLogLevelColor(level: string) {
     }
 }
 
-function DeviceConfigCard({ loggerId, intervalRead, intervalSend, maxReset, disabled, deviceIdentifier }: {
-    loggerId: string;
+function DeviceConfigCard({ intervalRead, intervalSend, maxReset }: {
     intervalRead: number;
     intervalSend: number;
     maxReset: number;
-    disabled: boolean;
-    deviceIdentifier?: string | null;
 }) {
-    const [editing, setEditing] = useState(false);
-    const [values, setValues] = useState({
-        interval_read: intervalRead,
-        interval_send: intervalSend,
-        max_reset: maxReset,
-    });
-    const [saving, setSaving] = useState(false);
-    const [dialogOpen, setDialogOpen] = useState(false);
-    const [dialogPhase, setDialogPhase] = useState<'sending' | 'waiting' | 'success' | 'error'>('sending');
-    const [errorMsg, setErrorMsg] = useState('');
-    const [elapsed, setElapsed] = useState(0);
-    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    // GET modal state
-    const [getDialogOpen, setGetDialogOpen] = useState(false);
-    const [getPhase, setGetPhase] = useState<'sending' | 'waiting' | 'success' | 'error'>('sending');
-    const [getError, setGetError] = useState('');
-    const [getElapsed, setGetElapsed] = useState(0);
-    const getTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const { t } = useTranslation();
 
-    function stopTimer() {
-        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    }
-
-    function formatElapsed(seconds: number) {
-        const m = Math.floor(seconds / 60);
-        const s = seconds % 60;
-        return m > 0 ? `${m}m ${s}s` : `${s}s`;
-    }
-
-    const handleSave = async () => {
-        setSaving(true);
-
-        if (deviceIdentifier) {
-            setDialogPhase('sending');
-            setErrorMsg('');
-            setElapsed(0);
-            setDialogOpen(true);
-
-            const start = Date.now();
-            timerRef.current = setInterval(() => {
-                setElapsed(Math.floor((Date.now() - start) / 1000));
-            }, 1000);
-
-            setTimeout(() => {
-                setDialogPhase(prev => prev === 'sending' ? 'waiting' : prev);
-            }, 1500);
-
-            try {
-                const res = await apiFetch('/api/mqtt/interval', {
-                    id_logger: deviceIdentifier,
-                    interval_send: values.interval_send,
-                    interval_read: values.interval_read,
-                    max_reset: values.max_reset,
-                });
-                const data = await res.json();
-                stopTimer();
-
-                if (data.success) {
-                    setDialogPhase('success');
-                    setEditing(false);
-                    setTimeout(() => { setDialogOpen(false); router.reload(); }, 2000);
-                } else {
-                    setErrorMsg(data.message || 'Gagal mengirim konfigurasi');
-                    setDialogPhase('error');
-                }
-            } catch {
-                stopTimer();
-                setErrorMsg('Network error — tidak dapat terhubung ke server');
-                setDialogPhase('error');
-            } finally {
-                setSaving(false);
-            }
-        } else {
-            router.put(`/loggers/${loggerId}/config`, values, {
-                preserveScroll: true,
-                onSuccess: () => { setEditing(false); },
-                onFinish: () => setSaving(false),
-            });
-        }
-    };
-
-    function handleRetry() { stopTimer(); handleSave(); }
-
-    function handleDialogClose() { stopTimer(); setDialogOpen(false); setSaving(false); }
-
-    // ── GET handler ──
-    function stopGetTimer() {
-        if (getTimerRef.current) { clearInterval(getTimerRef.current); getTimerRef.current = null; }
-    }
-
-    async function handleGetInterval() {
-        if (!deviceIdentifier) return;
-        setGetPhase('sending');
-        setGetError('');
-        setGetElapsed(0);
-        setGetDialogOpen(true);
-
-        const start = Date.now();
-        getTimerRef.current = setInterval(() => {
-            setGetElapsed(Math.floor((Date.now() - start) / 1000));
-        }, 1000);
-
-        setTimeout(() => {
-            setGetPhase(prev => prev === 'sending' ? 'waiting' : prev);
-        }, 1500);
-
-        try {
-            const res = await apiFetch('/api/mqtt/interval/get', { id_logger: deviceIdentifier });
-            const data = await res.json();
-            stopGetTimer();
-
-            if (data.success && data.data) {
-                setGetPhase('success');
-                setTimeout(() => { setGetDialogOpen(false); router.reload(); }, 2000);
-            } else {
-                setGetError(data.message || 'Gagal membaca konfigurasi');
-                setGetPhase('error');
-            }
-        } catch {
-            stopGetTimer();
-            setGetError('Network error — tidak dapat terhubung ke server');
-            setGetPhase('error');
-        }
-    }
-
-    function handleGetDialogClose() { stopGetTimer(); setGetDialogOpen(false); }
-
-    const handleCancel = () => {
-        setValues({ interval_read: intervalRead, interval_send: intervalSend, max_reset: maxReset });
-        setEditing(false);
-    };
-
+    // Read/send interval and watchdog are locked in firmware (1/1/5) and no longer
+    // settable via protocol (spec §2). Values shown come from INFO sync, read-only.
     return (
         <Card>
             <CardHeader>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="size-5" /> {t('loggerDetail.device_configuration')}</CardTitle>
-                    </div>
-                    <div className="flex items-center gap-1">
-                        {!editing && !disabled && deviceIdentifier && (
-                            <Button variant="ghost" size="icon" onClick={handleGetInterval} className="size-8" title="Sync dari device">
-                                <RefreshCw className="size-4" />
-                            </Button>
-                        )}
-                        {!editing && !disabled && (
-                            <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8">
-                                <Pencil className="size-4" />
-                            </Button>
-                        )}
-                    </div>
-                </div>
+                <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="size-5" /> {t('loggerDetail.device_configuration')}</CardTitle>
+                <CardDescription>{t('loggerDetail.interval_locked_note')}</CardDescription>
             </CardHeader>
             <CardContent>
-                {!editing ? (
-                    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                        <dt className="text-muted-foreground flex items-center gap-1.5">
-                            <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_read')}
-                        </dt>
-                        <dd className="font-medium">{intervalRead} {t('loggerDetail.minutes')}</dd>
-                        <dt className="text-muted-foreground flex items-center gap-1.5">
-                            <Upload className="size-3.5 text-emerald-500" /> {t('loggerDetail.interval_send')}
-                        </dt>
-                        <dd className="font-medium">{intervalSend} {t('loggerDetail.minutes')}</dd>
-                        <dt className="text-muted-foreground flex items-center gap-1.5">
-                            <RotateCcw className="size-3.5 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
-                        </dt>
-                        <dd className="font-medium">{maxReset} {t('loggerDetail.times')}</dd>
-                    </dl>
-                ) : (
-                    <div className="space-y-4">
-                        <div className="grid gap-4 sm:grid-cols-3">
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Timer className="size-4 text-blue-500" /> {t('loggerDetail.interval_read')}
-                                </label>
-                                <div className="flex items-center gap-2">
-                                    <input type="number" min={1} max={1440} value={values.interval_read}
-                                        onChange={(e) => setValues({ ...values, interval_read: parseInt(e.target.value) || 1 })}
-                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        disabled={saving} />
-                                    <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
-                                </div>
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Upload className="size-4 text-emerald-500" /> {t('loggerDetail.interval_send')}
-                                </label>
-                                <div className="flex items-center gap-2">
-                                    <input type="number" min={1} max={1440} value={values.interval_send}
-                                        onChange={(e) => setValues({ ...values, interval_send: parseInt(e.target.value) || 1 })}
-                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        disabled={saving} />
-                                    <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
-                                </div>
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <RotateCcw className="size-4 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
-                                </label>
-                                <div className="flex items-center gap-2">
-                                    <input type="number" min={0} max={100} value={values.max_reset}
-                                        onChange={(e) => setValues({ ...values, max_reset: parseInt(e.target.value) || 0 })}
-                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        disabled={saving} />
-                                    <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.times')}</span>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <Button onClick={handleSave} disabled={saving} size="sm" className="gap-2">
-                                {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                                {saving ? t('loggerDetail.saving_dots') : t('common.save')}
-                            </Button>
-                            <Button onClick={handleCancel} variant="outline" size="sm" className="gap-2" disabled={saving}>
-                                <XCircle className="size-4" /> {t('common.cancel')}
-                            </Button>
-                            {deviceIdentifier && <span className="text-[10px] text-muted-foreground ml-auto">via perangkat</span>}
-                        </div>
-                    </div>
-                )}
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                    <dt className="text-muted-foreground flex items-center gap-1.5">
+                        <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_read')}
+                    </dt>
+                    <dd className="font-medium">{intervalRead} {t('loggerDetail.minutes')}</dd>
+                    <dt className="text-muted-foreground flex items-center gap-1.5">
+                        <Upload className="size-3.5 text-emerald-500" /> {t('loggerDetail.interval_send')}
+                    </dt>
+                    <dd className="font-medium">{intervalSend} {t('loggerDetail.minutes')}</dd>
+                    <dt className="text-muted-foreground flex items-center gap-1.5">
+                        <RotateCcw className="size-3.5 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
+                    </dt>
+                    <dd className="font-medium">{maxReset} {t('loggerDetail.times')}</dd>
+                </dl>
             </CardContent>
-
-            {/* ══════ Save to Device Modal ══════ */}
-            <Dialog open={dialogOpen} onOpenChange={(v) => { if (!v && dialogPhase !== 'sending' && dialogPhase !== 'waiting') handleDialogClose(); }}>
-                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (dialogPhase === 'sending' || dialogPhase === 'waiting') e.preventDefault(); }}>
-                    {(dialogPhase === 'sending' || dialogPhase === 'waiting') && (
-                        <div className="flex flex-col items-center gap-6 py-8">
-                            <div className="relative">
-                                <div className={`flex h-20 w-20 items-center justify-center rounded-full ${dialogPhase === 'sending' ? 'bg-amber-500/10' : 'bg-blue-500/10 animate-pulse'}`}>
-                                    {dialogPhase === 'sending'
-                                        ? <Loader2 className="size-10 animate-spin text-amber-500" />
-                                        : <SlidersHorizontal className="size-10 text-blue-500 animate-pulse" />}
-                                </div>
-                                {dialogPhase === 'waiting' && (
-                                    <>
-                                        <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
-                                        <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
-                                    </>
-                                )}
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">
-                                    {dialogPhase === 'sending' ? 'Mengirim Konfigurasi...' : 'Menunggu Respons Device...'}
-                                </h3>
-                                <p className="mt-1 text-sm text-muted-foreground">
-                                    {dialogPhase === 'sending' ? 'Mengirim perintah INTERVAL SET ke device...' : 'Menunggu konfirmasi dari device...'}
-                                </p>
-                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(elapsed)}</p>
-                            </div>
-                            <div className="w-full max-w-xs space-y-2">
-                                <div className={`flex items-center gap-3 text-sm ${dialogPhase === 'sending' ? 'text-foreground' : 'text-muted-foreground'}`}>
-                                    {dialogPhase === 'sending' ? <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" /> : <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />}
-                                    <span>Mengirim INTERVAL SET</span>
-                                </div>
-                                <div className={`flex items-center gap-3 text-sm ${dialogPhase === 'waiting' ? 'text-foreground' : 'text-muted-foreground/50'}`}>
-                                    {dialogPhase === 'waiting' ? <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" /> : <div className="size-4 rounded-full border-2 border-muted shrink-0" />}
-                                    <span>Menunggu INTERVAL OK</span>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                    {dialogPhase === 'success' && (
-                        <div className="flex flex-col items-center gap-4 py-8">
-                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
-                                <CheckCircle2 className="size-8 text-emerald-500" />
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">Konfigurasi Berhasil!</h3>
-                                <p className="mt-1 text-sm text-muted-foreground">Device mengkonfirmasi perubahan dalam <strong>{formatElapsed(elapsed)}</strong></p>
-                            </div>
-                            <DialogFooter>
-                                <Button onClick={handleDialogClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">Done</Button>
-                            </DialogFooter>
-                        </div>
-                    )}
-                    {dialogPhase === 'error' && (
-                        <>
-                            <div className="flex flex-col items-center gap-4 py-8">
-                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
-                                    <XCircle className="size-8 text-red-500" />
-                                </div>
-                                <div className="text-center">
-                                    <h3 className="text-lg font-semibold">Gagal Mengirim Konfigurasi</h3>
-                                    <p className="mt-1 text-sm text-muted-foreground">{errorMsg}</p>
-                                </div>
-                            </div>
-                            <DialogFooter>
-                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
-                                <Button onClick={handleRetry} className="gap-1.5"><SlidersHorizontal className="size-4" /> Coba Lagi</Button>
-                            </DialogFooter>
-                        </>
-                    )}
-                </DialogContent>
-            </Dialog>
-
-            {/* ══════ Read from Device Modal ══════ */}
-            <Dialog open={getDialogOpen} onOpenChange={(v) => { if (!v && getPhase !== 'sending' && getPhase !== 'waiting') handleGetDialogClose(); }}>
-                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (getPhase === 'sending' || getPhase === 'waiting') e.preventDefault(); }}>
-                    {(getPhase === 'sending' || getPhase === 'waiting') && (
-                        <div className="flex flex-col items-center gap-6 py-8">
-                            <div className="relative">
-                                <div className={`flex h-20 w-20 items-center justify-center rounded-full ${getPhase === 'sending' ? 'bg-amber-500/10' : 'bg-blue-500/10 animate-pulse'}`}>
-                                    {getPhase === 'sending'
-                                        ? <Loader2 className="size-10 animate-spin text-amber-500" />
-                                        : <RefreshCw className="size-10 text-blue-500 animate-spin" style={{ animationDuration: '2s' }} />}
-                                </div>
-                                {getPhase === 'waiting' && (
-                                    <>
-                                        <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
-                                        <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
-                                    </>
-                                )}
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">
-                                    {getPhase === 'sending' ? 'Meminta Konfigurasi...' : 'Menunggu Respons Device...'}
-                                </h3>
-                                <p className="mt-1 text-sm text-muted-foreground">
-                                    {getPhase === 'sending' ? 'Mengirim perintah INTERVAL GET ke device...' : 'Menunggu data dari device...'}
-                                </p>
-                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(getElapsed)}</p>
-                            </div>
-                            <div className="w-full max-w-xs space-y-2">
-                                <div className={`flex items-center gap-3 text-sm ${getPhase === 'sending' ? 'text-foreground' : 'text-muted-foreground'}`}>
-                                    {getPhase === 'sending' ? <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" /> : <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />}
-                                    <span>Mengirim INTERVAL GET</span>
-                                </div>
-                                <div className={`flex items-center gap-3 text-sm ${getPhase === 'waiting' ? 'text-foreground' : 'text-muted-foreground/50'}`}>
-                                    {getPhase === 'waiting' ? <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" /> : <div className="size-4 rounded-full border-2 border-muted shrink-0" />}
-                                    <span>Menerima data interval</span>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                    {getPhase === 'success' && (
-                        <div className="flex flex-col items-center gap-4 py-8">
-                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
-                                <CheckCircle2 className="size-8 text-emerald-500" />
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">Sync Berhasil!</h3>
-                                <p className="mt-1 text-sm text-muted-foreground">Data interval berhasil diambil dari device dalam <strong>{formatElapsed(getElapsed)}</strong></p>
-                            </div>
-                            <DialogFooter>
-                                <Button onClick={handleGetDialogClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">Done</Button>
-                            </DialogFooter>
-                        </div>
-                    )}
-                    {getPhase === 'error' && (
-                        <>
-                            <div className="flex flex-col items-center gap-4 py-8">
-                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
-                                    <XCircle className="size-8 text-red-500" />
-                                </div>
-                                <div className="text-center">
-                                    <h3 className="text-lg font-semibold">Gagal Membaca Konfigurasi</h3>
-                                    <p className="mt-1 text-sm text-muted-foreground">{getError}</p>
-                                </div>
-                            </div>
-                            <DialogFooter>
-                                <Button variant="outline" onClick={handleGetDialogClose}>{t('common.cancel')}</Button>
-                                <Button onClick={() => { stopGetTimer(); handleGetInterval(); }} className="gap-1.5"><RefreshCw className="size-4" /> Coba Lagi</Button>
-                            </DialogFooter>
-                        </>
-                    )}
-                </DialogContent>
-            </Dialog>
         </Card>
     );
 }
@@ -4298,6 +3984,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             sensors={logger.sensors}
                             deviceIdentifier={logger.deviceIdentifier}
                             analogChannelMax={maxAnalogChannel(logger)}
+                            digitalChannelMax={maxDigitalChannel(logger)}
                         />
                     </TabsContent>
 
@@ -4398,12 +4085,9 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             </Card>
                         </div>
                         <DeviceConfigCard
-                            loggerId={logger.id}
                             intervalRead={logger.intervalRead}
                             intervalSend={logger.intervalSend}
                             maxReset={logger.maxReset}
-                            disabled={logger.status === 'offline'}
-                            deviceIdentifier={logger.deviceIdentifier}
                         />
                         <PlatformIntegrationCard
                             loggerId={logger.id}

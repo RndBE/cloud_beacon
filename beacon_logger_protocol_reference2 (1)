@@ -1,8 +1,8 @@
 ﻿# Beacon Logger Configuration Protocol — Complete Reference
 
-> **Firmware**: STM32F4 Beacon Logger  
-> **Variants**: BL11 (Cellular), BL110 (Ethernet), BL1100 (Ethernet + 8ch Analog)  
-> **Last Updated**: 2026-05-04
+> **Firmware**: STM32F4 Beacon Logger
+> **Variants**: BL11 (Cellular), BL110 (Ethernet), BL1100 (Ethernet + 8ch Analog)
+> **Last Updated**: 2026-06-07
 
 ---
 
@@ -27,11 +27,11 @@ graph LR
 | **UART** | — (via SIM7600/Ethernet) | UART1 115200 8N1 | UART2 9600 8N1 |
 | **Handshake** | Tidak perlu | `0xC0` → `0xC3` *(saat ini di-bypass)* | Tidak perlu |
 | **Max Buffer** | 2048 byte | 2048 byte | 2048 byte (chunked 64B) |
-| **Restricsi** | `PRODUCTION`, `FAC` ❌ ditolak | `PRODUCTION`, `FAC` wajib `AUTH` | `FAC` ❌ ditolak |
+| **Restricsi** | `PRODUCTION`, `FAC` ❌ ditolak | `PRODUCTION`, `FAC` wajib `AUTH` | `FAC` ❌ ditolak, `PRODUCTION` wajib `AUTH` |
 | **Response** | Publish ke `pub_topic` | TX langsung ke UART1 | TX langsung ke UART2 |
 
 > [!NOTE]
-> MQTT **menolak** module `PRODUCTION` dan `FAC` untuk alasan keamanan. `FAC` hanya diterima dari UART setelah `AUTH`. Module `SDCARD` command lama sudah dihapus dari protokol aktif.
+> MQTT **menolak** module `PRODUCTION` dan `FAC` untuk alasan keamanan. `FAC` hanya diterima dari UART setelah `AUTH`; `PRODUCTION` diterima dari UART/Bluetooth setelah `AUTH`. Module `SDCARD` command lama sudah dihapus dari protokol aktif.
 
 ---
 
@@ -40,33 +40,42 @@ graph LR
 | # | Module Key | Commands | Deskripsi |
 |---|-----------|----------|-----------|
 | 1 | RTC | SET, GET | Real-Time Clock (tanggal, waktu, timezone) |
-| 2 | SENSORS | SET, GET, GET_ALL, DEL | Konfigurasi sensor RS485/RS232/Analog |
-| 3 | INTERVAL | SET, GET | Interval baca sensor, kirim data, WDT |
-| 4 | NET | SET, GET | Konfigurasi Ethernet (BL110/BL1100 only) |
-| 5 | INFO | GET | Informasi sistem (SD, GPS, baterai, dll) |
-| 6 | AUTH | — | Otentikasi Keamanan |
-| 7 | PRODUCTION | SET | Provisioning: SN, Device ID, MQTT topics |
-| 8 | WDT | SET, GET, SET_REBOOT | External Watchdog Timer |
-| 9 | FTP | SET, GET, TES, READ, GETLOG, READLOGS | Konfigurasi & upload FTP/FTPS + akses System Log |
-| 10 | SYSTEM LOGS | — | Black Box Recorder (non-command) |
-| 11 | SIM | SET, GET | SIM Card / APN (BL11 only) |
-| 12 | CAL | SET, GET, RST, OFFSET, RSTSET | Kalibrasi Sensor & ADC Analog |
-| 14 | STATUS | GET | Cek koneksi / heartbeat |
-| 15 | REBOOT | — | Remote reboot via External WDT |
-| 16 | FAC | RST | Factory Reset (hapus konfigurasi) |
-| 17 | SYSTEM | SET_MODE | Perpindahan mode sistem (AWLR_TD, AWLR_US, WEATHER, DEF) |
-| 18 | AWLR_TD | SET, GET | Kalibrasi mode Tape Draw (Sumur, Muka Air) |
-| 19 | AWLR_US | SET, GET | Kalibrasi mode Ultrasonic (Sensor Height, Water Depth) |
-| 20 | AWLR_PUMP| SET, GET | Kontrol Relay Pompa via Modbus RTU |
-| 21 | P_OUT24 | SET | Kontrol Power Output 24V |
-| 22 | P_OUT12 | SET | Kontrol Power Output 12V |
-| 23 | SENS_DOOR| SET, GET | Konfigurasi polaritas sensor pintu (PB9) — BL11, BL110, BL1100 |
-| 24 | ALERT | SET, GET | Konfigurasi aktif/nonaktif suara buzzer (global) |
-| 25 | MODBUSTCP | SET, GET | Modbus TCP Server — SCADA/HMI via Ethernet (BL110/BL1100 only) |
-| 26 | POWER | READ | Baca live data daya sensor INA219 (Baterai & Output Power) |
-| 27 | POWER_CAL | SET, GET, RST | Kalibrasi per-sensor INA219 — voltase & arus |
+| 2 | SENSORS | SET, GET, GET_ALL, DEL, CTRL | Konfigurasi sensor RS485/RS232/Analog/Digital |
+| 3 | NET | SET, GET | Konfigurasi Ethernet (BL110/BL1100 only) |
+| 4 | INFO | GET | Informasi sistem (SD, GPS, baterai, dll) |
+| 5 | AUTH | — | Otentikasi Keamanan |
+| 6 | PRODUCTION | SET | Provisioning: SN, Device ID, MQTT topics |
+| 7 | FTP | SET, GET, TES, READ, GETLOG, READLOGS | Konfigurasi & upload FTP/FTPS + akses System Log |
+| 8 | SYSTEM LOGS | — | Black Box Recorder (non-command) |
+| 9 | SIM | SET, GET | SIM Card / APN (BL11 only) |
+| 10 | CAL | SET, GET, RST, OFFSET, RSTSET | Kalibrasi Sensor & ADC Analog |
+| 11 | STATUS | GET | Cek koneksi / heartbeat |
+| 12 | REBOOT | — | Remote reboot via reset internal firmware |
+| 13 | FAC | RST | Factory Reset (hapus konfigurasi) |
+| 14 | SYSTEM | SET_MODE | Perpindahan mode sistem (AWLR_TD, AWLR_US, ARR, GNSS, DEFAULT) |
+| 15 | AWLR_TD | SET, GET | Kalibrasi mode Tape Draw (Sumur, Muka Air) |
+| 16 | AWLR_US | SET, GET | Kalibrasi mode Ultrasonic (Sensor Height, Water Depth) |
+| 17 | GCM / GCM_PUMP | SET, GET, RST | Enable GCM + binding hingga 5 slave Modbus (`id1`–`id5`); GCM_PUMP kontrol pompa per-modul via Modbus RTU |
+| 18 | P_OUT24 | SET | Kontrol Power Output 24V |
+| 19 | P_OUT12 | SET | Kontrol Power Output 12V |
+| 20 | SENS_DOOR| SET, GET | Konfigurasi polaritas sensor pintu (PB9) — BL11, BL110, BL1100 |
+| 21 | ALERT | SET, GET | Konfigurasi aktif/nonaktif suara buzzer (global) |
+| 22 | MODBUSTCP | SET, GET | Modbus TCP Server — SCADA/HMI via Ethernet (BL110/BL1100 only) |
+| 23 | POWER | READ | Baca live data daya sensor INA219 (Baterai & Output Power) |
+| 24 | POWER_CAL | SET, GET, RST | Kalibrasi per-sensor INA219 — voltase & arus |
+| 25 | EWS | SET, CTRL, CHECK | Early Warning System via RS232 ch1 — level 0–8, mode MANUAL/AUTO |
+| 26 | OTA | GET, INSTALL | OTA Firmware Update — download via HTTP, install via bootloader trigger (BL110/BL1100 only) |
+| 27 | CONTROL | WRITE | Write register kontrol RS485 |
+| 28 | BT | SET, GET | Mode parser Bluetooth (`raw` / `framed`) |
+| 29 | USB | GET, LIST, COPY, COPY_ALL | USB flashdisk via CH376 |
+| 30 | ARR | SET, GET | Pilih slave RS485 sumber untuk mode ARR (Automatic Rainfall Recorder) — hanya saat sistem di mode ARR |
+| 31 | GCM_MAP | SET, GET, RST | Pemetaan slot telemetry sensor ke register tulis GCM (Modbus) — butuh `GCM.enable=1` |
 
-> **Catatan:** Modul SENSORS mendukung empat sub-tipe: **RS485** (Modbus RTU), **RS232**, **ANALOG** (4-20mA / 0-10V), dan **DIGITAL** (Logic Input, Pulse Counter, Logic Output). Sub-tipe DIGITAL dikonfigurasi dengan `"type": "DIGITAL"` pada command SET/DEL - lihat section 3.2.9 dan 3.2.10.
+> **Catatan:** Modul SENSORS mendukung empat sub-tipe: **RS485** (Modbus RTU), **RS232**, **ANALOG** (4-20mA / 0-10V), dan **DIGITAL** (Logic Input, Pulse Counter, Logic Output). Sub-tipe DIGITAL dikonfigurasi dengan `"type": "DIGITAL"` pada command SET/DEL/CTRL - lihat section 3.2.9 sampai 3.2.11.
+>
+> Interval pembacaan sensor dan pengiriman data dikunci **1 menit** oleh firmware, sehingga tidak memiliki command konfigurasi. `INFO GET` tetap mengembalikan nilai legacy `SENS=1`, `SEND=1`, dan `WDT=5` untuk kompatibilitas. Proteksi hang memakai watchdog internal STM32.
+>
+> **Pengecualian — sensor ANALOG dibaca setiap 1 detik.** Karena nilai analog (4–20mA / 0–10V) dapat berubah cepat, firmware me-refresh nilai ADC tiap detik untuk update real-time ke **LCD** dan **Modbus TCP**. Telemetri (MQTT) dan penyimpanan ke SD Card tetap mengambil snapshot per menit seperti sensor lain.
 
 ---
 
@@ -95,19 +104,26 @@ graph LR
 | `command` | string | `"SET"` |
 | `date` | string | Format `YYYY-MM-DD` (2000–2099) |
 | `time` | string | Format `HH:MM:SS` (24-hour) |
-| `timezone` | string | GMT offset, contoh: `"+7"`, `"-5"`, `"+0"` |
+| `timezone` | string | GMT offset **satu digit**, contoh: `"+7"`, `"-5"`, `"7"`, `"+0"`. Offset dua digit (`"+10"`) ditolak. Error literal: `"GMT must be +7 or -7"` |
 
 **Response Sukses:**
 ```json
-{"RTC_SET":"OK"}
+{"RTC":{"status":"OK","date":"31-03-2026","time":"09:30:00"}}
 ```
 
 **Response Error:**
-```
-ERR: RTC missing date
-ERR: RTC date format must be YYYY-MM-DD
-ERR: RTC GMT must be like "+7" or "-7"
-ERR: RTC I2C write failed
+```json
+{"RTC":{"status":"ERR","msg":"missing command"}}
+{"RTC":{"status":"ERR","msg":"missing date"}}
+{"RTC":{"status":"ERR","msg":"missing time"}}
+{"RTC":{"status":"ERR","msg":"missing GMT"}}
+{"RTC":{"status":"ERR","msg":"GMT must be +7 or -7"}}
+{"RTC":{"status":"ERR","msg":"date format must be YYYY-MM-DD"}}
+{"RTC":{"status":"ERR","msg":"time format must be HH:MM:SS"}}
+{"RTC":{"status":"ERR","msg":"date invalid"}}
+{"RTC":{"status":"ERR","msg":"time invalid"}}
+{"RTC":{"status":"ERR","msg":"I2C write failed"}}
+{"RTC":{"status":"ERR","msg":"command not supported"}}
 ```
 
 #### GET (Baca Waktu)
@@ -136,7 +152,7 @@ ERR: RTC I2C write failed
 
 ### 3.2 SENSORS — Konfigurasi Sensor
 
-Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (4–20mA)**.
+Empat sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, **Analog (4–20mA / 0–10V)**, dan **Digital**.
 
 #### 3.2.1 SENSORS GET — Baca Semua Konfigurasi
 
@@ -151,24 +167,31 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
   "SENSORS": {
     "rs485": [
       {
-        "cfg": [1, "FlowMeter", 3, 0, 2, 19200, "8E1"],
+        "cfg": [1, "FlowMeter", 3, 0, 19200, "8E1"],
         "s": [
-          ["Debit_Air", 0.1, "L/s", 1, 1, 1, 2, 1],
-          ["Total_Vol", 1.0, "m3", 1, 1, 1, 4, 0]
+          ["Level1", 0.01, "m", 0, 1, 0],
+          ["Level2", 0.01, "m", 0, 2, 0]
         ]
       }
     ],
     "rs232": [
       {
         "p": 1,
-        "s": [["RainGauge", 1, "mm", 1, 1, 1]]
+        "s": [["RainGauge", 1, "mm"]]
       }
     ],
     "analog": [
       {
         "ch": 1,
         "mode": 1,
-        "s": [["WaterLevel", 0, 100, "cm", 1, 1, 1]]
+        "s": [["WaterLevel", 0, 100, "cm"]]
+      }
+    ],
+    "digital": [
+      {
+        "ch": 1,
+        "mode": 0,
+        "s": ["Status Pintu", "TERBUKA", "TERTUTUP", 50, 0]
       }
     ]
   }
@@ -183,9 +206,12 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 | 1 | string | `name` — Nama perangkat (max 12 char) |
 | 2 | number | `function` — Modbus function code (3 = Holding, 4 = Input) |
 | 3 | number | `address` — Default/fallback register start address |
-| 4 | number | `item_count` — Jumlah sensor/parameter yang dibaca (maksimum 16) |
-| 5 | number | `baudrate` — *(Opsional)* Baudrate spesifik untuk slave ini (contoh: 9600, 19200). Default: 9600 |
-| 6 | string | `format` — *(Opsional)* Format komunikasi UART (contoh: `"8N1"`, `"8E1"`, `"8O1"`). Default: `"8N1"` |
+| 4 | number | `baudrate` — *(Opsional)* Baudrate spesifik untuk slave ini (contoh: 9600, 19200). Default: 9600 |
+| 5 | string | `format` — *(Opsional)* Format komunikasi UART (contoh: `"8N1"`, `"8E1"`, `"8O1"`). Default: `"8N1"` |
+
+> [!NOTE]
+> Sejak versi terbaru, `item_count` **tidak lagi** ada di `cfg` — jumlah sensor diambil otomatis dari panjang array `s`.
+> Field mapping LCD/SD/server tidak lagi dikirim di protokol. Semua sensor terkonfigurasi otomatis tampil di LCD, disimpan ke SD Card, dan dikirim ke server.
 
 **Struktur Array `s` untuk RS485 (per parameter sensor):**
 
@@ -194,11 +220,9 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 | 0 | string | `sensor_type` — Nama/tipe sensor (max 12 char) |
 | 1 | float | `scale` — Faktor skala (raw × scale = nilai aktual) |
 | 2 | string | `unit` — Satuan (max 5 char) |
-| 3 | number | `map_lcd` — Tampilkan di LCD (1=ya, 0=tidak) |
-| 4 | number | `map_sd` — Simpan ke SD Card (1=ya, 0=tidak) |
-| 5 | number | `map_server` — Kirim ke server MQTT (1=ya, 0=tidak) |
-| 6 | number | `register_address` — *(Opsional)* Alamat spesifik register sensor ini (untuk non-contiguous addressing) |
-| 7 | number | `fast_poll` — *(Opsional)* Mode aquisisi cepat (0=1 menit, 1=1 detik). Update ke LCD dan Modbus TCP setiap 1 detik. Telemetri dan simpan data SD tetap diambil data menitannya secara periodik. |
+| 3 | number | `register_address` — Alamat spesifik register sensor ini (untuk non-contiguous addressing) |
+| 4 | number | `reg_count` — Jumlah register yang dibaca: `1` = U16, `2` = FLOAT32 32-bit ABCD (big-endian word, reg pertama = high word), `4` = U32 "bulat.pecahan" 4-register ABCD (lihat catatan di bawah) |
+| 5 | number | `fast_poll` — Mode akuisisi cepat: `0` = normal 1 menit, `1` = baca cepat 1 detik. Update ke LCD dan Modbus TCP setiap 1 detik. Telemetri dan simpan data SD tetap diambil data menitannya secara periodik. |
 
 **Struktur Array `s` untuk RS232:**
 
@@ -207,9 +231,6 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 | 0 | string | `sensor_type` — Nama/tipe sensor (max 12 char) |
 | 1 | float | `scale` — Faktor skala |
 | 2 | string | `unit` — Satuan (max 5 char) |
-| 3 | number | `map_lcd` — Tampilkan di LCD |
-| 4 | number | `map_sd` — Simpan ke SD Card |
-| 5 | number | `map_server` — Kirim ke server |
 
 **Field `mode` untuk ANALOG:**
 
@@ -217,6 +238,8 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 |-------|-----------|-----------|
 | `0` | `ANALOG_MODE_VOLTAGE` | Input tegangan **0–10V** melalui voltage divider |
 | `1` | `ANALOG_MODE_CURRENT` | Input arus **4–20mA** current loop melalui shunt resistor 100Ω |
+
+> Pada `ANALOG_MODE_CURRENT`, firmware membaca arus raw dari tegangan ADC melalui shunt 100Ω. Jika raw current `< 3.00mA`, sensor dianggap tidak terkoneksi. Boot check menampilkan `ERR`, runtime mengisi nilai sensor `0.0`, dan event dicatat ke System Logs.
 
 **Struktur Array `s` untuk ANALOG:**
 
@@ -226,9 +249,6 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 | 1 | float | `min_val` — Nilai minimum range sensor (dikaitkan dengan batas bawah input) |
 | 2 | float | `max_val` — Nilai maximum range sensor (dikaitkan dengan batas atas input) |
 | 3 | string | `unit` — Satuan (max 5 char) |
-| 4 | number | `map_lcd` — Tampilkan di LCD |
-| 5 | number | `map_sd` — Simpan ke SD Card |
-| 6 | number | `map_server` — Kirim ke server |
 
 ---
 
@@ -266,8 +286,16 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
       "name_sensor": "WaterLevel",
       "channel": 0,
       "sensor_type": "WaterLevel",
-      "value": 45.200,
+      "value": 45.20000,
       "unit": "cm"
+    },
+    {
+      "nama_protocol": "DIGITAL",
+      "name_sensor": "Door",
+      "channel": 0,
+      "mode": 0,
+      "value": 1.000,
+      "unit": ""
     }
   ]
 }
@@ -275,15 +303,16 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 
 | Field | Tipe | Deskripsi |
 |-------|------|-----------|
-| `nama_protocol` | string | Protokol: `"RS485"`, `"RS232"`, `"ANALOG"` |
+| `nama_protocol` | string | Protokol: `"RS485"`, `"RS232"`, `"ANALOG"`, `"DIGITAL"` |
 | `slave_id` | number | (RS485 only) Modbus slave ID |
 | `name_sensor` | string | Nama sensor dari konfigurasi |
 | `baudrate` | number | (RS485 only) Baudrate yang digunakan |
 | `format` | string | (RS485 only) Format UART (contoh: "8E1") |
 | `port` | number | (RS232 only) Nomor port (1–2) |
-| `channel` | number | (ANALOG only) Channel ADC (0-based) |
-| `sensor_type` | string | Tipe sensor |
-| `value` | float | Nilai terakhir yang dibaca (3 desimal) |
+| `channel` | number | (ANALOG/DIGITAL only) Channel ADC/digital — **0-based** (AIN/index, mis. ch SET=1 → `channel`=0). Berbeda dari field `ch` di GET/SET yang 1-based |
+| `mode` | number | (DIGITAL only) Mode digital |
+| `sensor_type` | string | Tipe sensor. Untuk RS232/ANALOG, `name_sensor` == `sensor_type`; hanya RS485 yang punya nama device terpisah |
+| `value` | float | Nilai terakhir yang dibaca (3 desimal; khusus **ANALOG** 5 desimal) |
 | `unit` | string | Satuan |
 
 ---
@@ -298,15 +327,63 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
     "type": "RS485",
     "d": [
       {
-        "cfg": [1, "FlowMeter", 3, 0, 2, 19200, "8E1"],
+        "cfg": [1, "FlowMeter", 3, 0, 19200, "8E1"],
         "s": [
-          ["Debit_Air", 0.1, "L/s", 1, 1, 1, 2, 1],
-          ["Total_Vol", 1.0, "m3", 1, 1, 1, 4, 0]
+          ["Level1", 0.01, "m", 0, 1, 0],
+          ["Level2", 0.01, "m", 0, 2, 0]
         ]
       }
     ]
   }
 }
+```
+
+**Cara set sensor RS485:**
+
+1. Isi `cmd` dengan `"SET"` dan `type` dengan `"RS485"`.
+2. Masukkan satu atau beberapa device ke array `d`.
+3. Setiap item di `d` mewakili satu slave Modbus.
+4. Di dalam setiap device, isi `cfg` untuk konfigurasi komunikasi slave.
+5. Isi `s` dengan daftar parameter/register yang akan dibaca dari slave tersebut.
+
+**Penjelasan array pada contoh request:**
+
+```json
+"cfg": [1, "FlowMeter", 3, 0, 19200, "8E1"]
+```
+
+| Posisi | Isi | Arti |
+|--------|-----|------|
+| 0 | `1` | `slave_id` Modbus |
+| 1 | `"FlowMeter"` | Nama device/slave |
+| 2 | `3` | Function code Modbus: `3` = Holding Register, `4` = Input Register |
+| 3 | `0` | Fallback register address jika item di `s` tidak punya address sendiri |
+| 4 | `19200` | Baudrate RS485 |
+| 5 | `"8E1"` | Format UART: data bit, parity, stop bit |
+
+```json
+["Level1", 0.01, "m", 0, 1, 0]
+```
+
+| Posisi | Isi | Arti |
+|--------|-----|------|
+| 0 | `"Level1"` | Nama parameter sensor |
+| 1 | `0.01` | Scale. Nilai akhir = raw sensor x scale + offset |
+| 2 | `"m"` | Unit/satuan |
+| 3 | `0` | Register address parameter ini |
+| 4 | `1` | Jumlah register: `1` = U16, `2` = FLOAT32 ABCD, `4` = U32 bulat.pecahan ABCD |
+| 5 | `0` | Fast poll: `0` = normal, `1` = baca cepat 1 detik |
+
+Contoh parameter U16 satu register:
+
+```json
+["Level", 0.01, "m", 0, 1, 0]
+```
+
+Contoh parameter FLOAT32 dua register:
+
+```json
+["Debit_Air", 1.0, "L/s", 2, 2, 1]
 ```
 
 | Field | Tipe | Deskripsi |
@@ -320,7 +397,15 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 > [!IMPORTANT]
 > `slave_id` harus 1–5. Maksimum 5 slave Modbus didukung.
 > Maksimum 16 parameter sensor per slave (`MAX_SENSORS_PER_SLAVE = 16`).
-> Jika parameter `register_address` (index ke-6 di array `s`) tidak diisi, logger akan otomatis menggunakan *fallback* address berurutan (sequential) mulai dari `address` utama di tabel `cfg` ditambah index sensor (sesuai backward-compatibility firmware sebelumnya).
+> Jika parameter `register_address` (index ke-3 di array `s`) tidak diisi, logger akan otomatis menggunakan *fallback* address berurutan (sequential) mulai dari `address` utama di tabel `cfg` ditambah index sensor (sesuai backward-compatibility firmware sebelumnya).
+>
+> **BREAKING CHANGE:** Format `s` RS485 sekarang menjadi `[sensor_type, scale, unit, register_address, reg_count, fast_poll]`. Field mapping LCD/SD/server dihapus dari protokol; firmware selalu menampilkan, menyimpan, dan mengirim semua sensor terkonfigurasi.
+>
+> **FLOAT32 multi-register:** Untuk sensor yang nilainya menempati 2 register Modbus (mis. flowrate 32-bit di register `0x0001-0x0002`), set `reg_count` = `2`. Logger akan baca 2 register sekaligus dan merakit float IEEE-754 dengan word-order **ABCD** (big-endian: register pertama = high word). Untuk sensor U16 biasa, kosongkan atau isi `1`.
+>
+> **Urutan baca otomatis:** Firmware membaca parameter sensor **urut alamat register menaik (ascending)**, terlepas dari urutan penulisan di array `s`. Ini untuk kompatibilitas dengan slave Modbus yang menolak akses alamat "mundur". Jadi urutan item di `s` bebas — nilai tetap dipetakan ke sensor yang benar.
+>
+> **U32 bulat.pecahan (4-register):** Untuk sensor yang memisahkan nilai jadi dua bagian U32 — bagian bulat di 2 register pertama dan bagian pecahan di 2 register berikutnya — set `reg_count` = `4`. Logger baca **4 register berurutan** mulai dari `register_address`, lalu menghitung `nilai = bagian_bulat + bagian_pecahan / 1.000.000.000`. Kedua bagian U32 memakai word-order **ABCD** (big-endian: register pertama tiap pasangan = high word). Contoh: register `17-18` = bagian bulat, register `19-20` = bagian pecahan (9 digit di belakang koma). `scale` & `offset` tetap berlaku pada hasil akhir (`nilai × scale + offset`). **Catatan presisi:** nilai akhir disimpan sebagai `float` (≈7 digit signifikan), jadi untuk bagian bulat yang sangat besar (miliaran) presisi pecahan dapat berkurang.
 
 **Response:**
 ```json
@@ -369,7 +454,7 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
     "cmd": "SET",
     "type": "RS232",
     "p": 1,
-    "s": [["RainGauge", 1, "mm", 1, 1, 1]]
+    "s": [["RainGauge", 1, "mm"]]
   }
 }
 ```
@@ -388,6 +473,13 @@ Tiga sub-tipe sensor didukung: **RS485 (Modbus RTU)**, **RS232**, dan **Analog (
 ```json
 {"RS232 SET":"OK"}
 ```
+
+**Response error:**
+```json
+{"RS232 SET":"ERR"}
+{"RS232 SET":"ERR","msg":"port 1 used by EWS"}
+```
+> Port 1 ditolak (`"port 1 used by EWS"`) jika Early Warning System sedang aktif — port 1 (UART3) di-reserve untuk EWS.
 
 #### 3.2.6 SENSORS RS232 DEL
 
@@ -415,6 +507,9 @@ Mendukung dua mode input yang dikonfigurasi via field `mode`:
 - **Mode 0** — Tegangan: sensor output 0–10V (voltage)
 - **Mode 1** — Arus: sensor output 4–20mA (current loop, 2-wire)
 
+> [!NOTE]
+> **Sensor ANALOG dibaca setiap 1 detik** (bukan 1 menit seperti sensor lain) agar nilai yang berubah cepat selalu real-time di LCD dan Modbus TCP. Telemetri MQTT dan simpan SD tetap memakai snapshot menitan. Log `ANALOG ... CURRENT ERR` (mode current saat raw `<3mA`) dibatasi maksimum sekali per menit agar System Log tidak banjir.
+
 **Contoh 1 — Sensor Tekanan 0–10 Bar, Current Loop (4–20mA), ch 1:**
 ```json
 {
@@ -423,7 +518,7 @@ Mendukung dua mode input yang dikonfigurasi via field `mode`:
     "type": "ANALOG",
     "ch": 1,
     "mode": 1,
-    "s": [["Tekanan Pipa", 0.0, 10.0, "Bar", 1, 1, 1]]
+    "s": [["Tekanan Pipa", 0.0, 10.0, "Bar"]]
   }
 }
 ```
@@ -438,7 +533,7 @@ Mendukung dua mode input yang dikonfigurasi via field `mode`:
     "type": "ANALOG",
     "ch": 2,
     "mode": 1,
-    "s": [["Suhu Mesin", -20.0, 80.0, "C", 1, 1, 1]]
+    "s": [["Suhu Mesin", -20.0, 80.0, "C"]]
   }
 }
 ```
@@ -453,7 +548,7 @@ Mendukung dua mode input yang dikonfigurasi via field `mode`:
     "type": "ANALOG",
     "ch": 1,
     "mode": 0,
-    "s": [["Level Air", 0.0, 5.0, "m", 1, 1, 1]]
+    "s": [["Level Air", 0.0, 5.0, "m"]]
   }
 }
 ```
@@ -470,7 +565,7 @@ Mendukung dua mode input yang dikonfigurasi via field `mode`:
 | `type` | string | `"ANALOG"` atau `"analog"` |
 | `ch` | number | Channel **1-based** (1–2 untuk BL11/BL110, 1–8 untuk BL1100) |
 | `mode` | number | `0` = Voltage (0–10V), `1` = Current Loop (4–20mA). Default: `0` |
-| `s` | array | `[[nama, min_val, max_val, unit, lcd, sd, server]]` — lihat tabel di bawah |
+| `s` | array | `[[nama, min_val, max_val, unit]]` — lihat tabel di bawah |
 
 **Struktur array `s`:**
 
@@ -480,9 +575,6 @@ Mendukung dua mode input yang dikonfigurasi via field `mode`:
 | 1 | `min_val` | float | Nilai fisik saat sinyal di batas bawah (0V / 4mA) |
 | 2 | `max_val` | float | Nilai fisik saat sinyal di batas atas (10V / 20mA) |
 | 3 | `unit` | string | Satuan (max 5 char), contoh: `"Bar"`, `"C"`, `"m"` |
-| 4 | `map_lcd` | number | `1` = tampilkan di LCD, `0` = sembunyikan |
-| 5 | `map_sd` | number | `1` = simpan ke SD Card, `0` = tidak |
-| 6 | `map_server` | number | `1` = kirim ke server MQTT, `0` = tidak |
 
 > [!IMPORTANT]
 > **`min_val` dan `max_val` adalah range pengukuran fisik sensor dari datasheet — bukan nilai Volt atau mA.**
@@ -528,6 +620,8 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
 - **Mode 2** — Pulse-Based Input Persistent (Counter/RPM, tersimpan di Flash)
 - **Mode 3** — Logic Level Output (Remote Switch)
 
+> Channel `ch` bersifat **1-based**: **1–2** (BL11/BL110), **1–4** (BL1100), sesuai `MAX_DIGITAL_CHANNELS` per varian.
+
 **Contoh 1 — Mode 0 (Logic Input / Status Pintu):**
 ```json
 {
@@ -536,12 +630,12 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
     "type": "DIGITAL",
     "ch": 1,
     "mode": 0,
-    "s": ["Status Pintu", "TERBUKA", "TERTUTUP", 50, 0, 1, 1, 1]
+    "s": ["Status Pintu", "TERBUKA", "TERTUTUP", 50, 0]
   }
 }
 ```
 *Struktur Array `s` (Mode 0):*
-`[nama, label_high, label_low, debounce_ms, invert_logic, map_lcd, map_sd, map_server]`
+`[nama, label_high, label_low, debounce_ms, invert_logic]`
 
 **Contoh 2 — Mode 1 / 2 (Pulse Input / Curah Hujan):**
 ```json
@@ -551,12 +645,12 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
     "type": "DIGITAL",
     "ch": 2,
     "mode": 2,
-    "s": ["Curah Hujan", 2, 0.2, "mm", 5, 1, 1, 1]
+    "s": ["Curah Hujan", 2, 0.2, "mm", 5]
   }
 }
 ```
 *Struktur Array `s` (Mode 1 & 2):*
-`[nama, pulse_submode, scale, unit, timeout_sec, map_lcd, map_sd, map_server]`
+`[nama, pulse_submode, scale, unit, timeout_sec]`
 *Catatan `pulse_submode`: 0=Counter (Akumulasi), 1=Rate (RPM/Freq), 2=Auto-Reset (Kembali ke 0 tiap menit).*
 
 **Contoh 3 — Mode 3 (Output / Relay):**
@@ -567,17 +661,24 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
     "type": "DIGITAL",
     "ch": 3,
     "mode": 3,
-    "s": ["Pompa", 0, 0, "-", 1, 1, 1]
+    "s": ["Pompa", 0, 0]
   }
 }
 ```
 *Struktur Array `s` (Mode 3):*
-`[nama, default_state, failsafe, unit_bebas, map_lcd, map_sd, map_server]`
+`[nama, default_state, failsafe]`
 
 **Response:**
 ```json
 {"DIGITAL SET":"OK"}
 ```
+
+**Response error:**
+```json
+{"DIGITAL SET":"ERR"}
+{"DIGITAL SET":"ERR mode"}
+```
+> `"ERR mode"` dikembalikan jika field `mode` tidak ada atau di luar jangkauan `0–3`.
 
 #### 3.2.10 SENSORS DIGITAL DEL
 
@@ -597,68 +698,69 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
 {"DIGITAL DEL":"OK"}
 ```
 
----
+#### 3.2.11 SENSORS DIGITAL CTRL — Kontrol Output Digital
 
-### 3.3 INTERVAL — Konfigurasi Interval
-
-#### SET
+Hanya berlaku untuk channel digital yang sudah dikonfigurasi sebagai **Mode 3** (`Logic Level Output`).
 
 **Request:**
 ```json
 {
-  "INTERVAL": {
-    "cmd": "SET",
-    "SEND": 5,
-    "SENS": 1,
-    "WDT": 30
+  "SENSORS": {
+    "cmd": "CTRL",
+    "type": "DIGITAL",
+    "ch": 3,
+    "state": 1
   }
 }
 ```
 
-| Field | Tipe | Range | Deskripsi |
-|-------|------|-------|-----------|
-| `cmd` | string | — | `"SET"` |
-| `SEND` | number | 1–∞ | Interval pengiriman data ke server (menit). Opsional. |
-| `SENS` | number | 1–60 | Interval pembacaan sensor (menit). Opsional. |
-| `WDT` | number | 5/10/15/30/60 | Interval watchdog timer (menit). Opsional. |
-
-> [!TIP]
-> Setiap field bersifat opsional — hanya field yang dikirim yang akan di-update.
-> WDT mengirim command B1–B5 ke External WDT via SoftUART.
-
-**Response Sukses:**
-```json
-{"INTERVAL":{"status":"OK"}}
-```
-
-**Response Error:**
-```json
-{"INTERVAL":{"status":"ERR","msg":"SENS 1-60"}}
-{"INTERVAL":{"status":"ERR","msg":"WDT must be 5/10/15/30/60"}}
-{"INTERVAL":{"status":"ERR","msg":"no field"}}
-```
-
-#### GET
-
-**Request:**
-```json
-{"INTERVAL": {"cmd": "GET"}}
-```
-
-**Response:**
-```json
-{"INTERVAL": {"SEND": 5, "SENS": 1, "WDT": 30}}
-```
-
 | Field | Tipe | Deskripsi |
 |-------|------|-----------|
-| `SEND` | number | Interval kirim data ke server (menit) |
-| `SENS` | number | Interval baca sensor (menit) |
-| `WDT` | number | Timeout watchdog (menit) |
+| `cmd` | string | `"CTRL"` |
+| `type` | string | `"DIGITAL"` atau `"digital"` |
+| `ch` | number | Channel digital — **1–2** (BL11/BL110), **1–4** (BL1100). Sesuai `MAX_DIGITAL_CHANNELS` per varian |
+| `state` | number | `0` = LOW/OFF, `1` = HIGH/ON |
+
+**Response sukses:**
+```json
+{"DIGITAL CTRL":"OK","ch":3,"state":1}
+```
+
+**Response error:**
+```json
+{"DIGITAL CTRL":"ERR ch"}
+{"DIGITAL CTRL":"ERR not output"}
+{"DIGITAL CTRL":"ERR state"}
+{"DIGITAL CTRL":"ERR set failed"}
+```
 
 ---
 
-### 3.4 NET — Konfigurasi Ethernet
+### 3.2.12 Indikator Sensor Error (Runtime)
+
+Saat sebuah sensor **tidak merespons** pada saat runtime (sama konsepnya seperti cek saat booting — request tanpa balasan = error), logger menandainya sebagai error. Berlaku untuk:
+
+- **RS485 (Modbus)** — slave/register tidak merespons request (timeout).
+- **ANALOG (4–20mA)** — current loop putus (raw `<3mA`) atau ADC gagal dibaca.
+
+> [!NOTE]
+> Sensor RS232 dan Digital tidak memiliki konsep "tidak merespons request", sehingga tidak ikut menampilkan status error ini.
+
+**Perilaku saat sensor error:**
+
+| Aspek | Normal | Saat Error |
+|-------|--------|-----------|
+| Nilai di **LCD** | mis. `A 30.4 C` | `A S_ERR` |
+| **Catatan `<NAMA> !!!`** | — | Catatan nama sensor error (maks **12 karakter**, contoh: `TIPPING !!!`) muncul **hanya saat halaman TANGGAL standby aktif** (±5 detik per siklus), lalu kembali ke tampilan normal — bukan halaman rotasi tambahan & bukan banner permanen. Jika beberapa sensor error, namanya bergiliran tiap kemunculan. **BL11/BL110**: tampil di baris 2 (sementara menimpa indikator W/S). **BL1100**: tampil di baris 3 (sementara menggantikan baris suhu/status). |
+| **Buzzer** | sesuai status lain | Pola **sensor error**: 1 beep panjang + 2 beep pendek, jeda ±1.2 detik (berbeda dari pola SD/offline/SIM). Prioritas: SD-fail > **sensor-error** > offline > SIM. Dapat dimatikan global via `ALERT` (lihat 3.21). |
+| **Telemetri (MQTT) & SD/CSV** | nilai aktual | **tetap `0`** (kontrak data ke server/SD tidak berubah; status error hanya tampil di LCD & buzzer). |
+
+> [!NOTE]
+> Status error **runtime-only**, tidak disimpan ke flash. Saat boot belum ada flag error (tidak ada alarm palsu) sampai sebuah pembacaan benar-benar gagal. Begitu sensor merespons lagi, status kembali normal otomatis. Event timeout RS485 dan current-loop ANALOG juga tercatat di System Logs (lihat 3.8).
+
+---
+
+### 3.3 NET — Konfigurasi Ethernet
 
 > [!WARNING]
 > **Hanya tersedia pada BL110 dan BL1100** (HAS_ETHERNET=1).
@@ -719,9 +821,16 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
 {"NET SET":"OK"}
 ```
 
+**Response error:**
+```json
+{"NET":{"status":"ERR","msg":"missing cmd"}}
+{"NET SET":"ERR: missing d[0] dhcp"}
+{"NET":{"status":"ERR","msg":"unknown cmd"}}
+```
+
 ---
 
-### 3.5 INFO — Informasi Sistem
+### 3.4 INFO — Informasi Sistem
 
 #### GET
 
@@ -756,11 +865,13 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
     65.3,
     42,
     1,
+    1,
+    1,
     5,
-    30,
     1,
     100,
-    "DEF"
+    "DEF",
+    "BL110-v2.0.0"
   ]
 }
 ```
@@ -777,7 +888,7 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
 | 5 | string | Subnet Mask *(kosong `""` pada BL11)* |
 | 6 | string | Gateway *(kosong `""` pada BL11)* |
 | 7 | string | DNS Server *(kosong `""` pada BL11)* |
-| 8 | number | DHCP mode: 0=Static, 1=DHCP *(0 pada BL11)* |
+| 8 | number | BL110/BL1100: DHCP mode 0=Static, 1=DHCP. BL11: connection mode `2`=Cellular |
 | 9 | number | SD Card total (KB) |
 | 10 | number | SD Card used (KB) |
 | 11 | number | Uptime — Hari |
@@ -791,21 +902,23 @@ Mendukung empat mode input/output yang dikonfigurasi via field `mode`:
 | 19 | float | Kelembaban (%) — SHT30 |
 | 20 | number | Reboot Count Harian (reset setiap hari) |
 | 21 | number | Reboot Count Total (persistent) |
-| 22 | number | Read Interval (menit) |
-| 23 | number | Send Interval (menit) |
-| 24 | number | WDT Timeout (menit) |
-| 25 | number | Connection Mode: 0=Cellular, 1=Ethernet |
+| 22 | number | Read Interval fixed `1` menit |
+| 23 | number | Send Interval fixed `1` menit |
+| 24 | number | WDT legacy fixed `5` menit |
+| 25 | number | Connection Mode: `1`=Ethernet, `2`=Cellular, `3`=WiFi/reserved |
 | 26 | number | Signal Strength (0–100%) |
-| 27 | string | System Mode: `"DEF"`, `"AWLR_TD"`, `"AWLR_US"`, `"WEATHER"` |
+| 27 | string | System Mode: `"DEF"`, `"AWLR_TD"`, `"AWLR_US"`, `"ARR"`, `"GNSS"` |
+| 28 | string | Firmware Version, contoh: `"BL110-v2.0.0"` atau `"BL1100-v2.0.0"` |
 
 > [!NOTE]
-> Pada **BL11 (Cellular)**: Index 3–7 bernilai `""` (string kosong), index 8 selalu `0`. Signal dihitung dari CSQ (0–31 → 0–100%).
-> Pada **BL110/BL1100 (Ethernet)**: Signal selalu `100`. Battery dibaca dari INA219 (BL110) atau `battery_set` config (BL1100).
+> Pada **BL11 (Cellular)**: Index 3–7 bernilai `""` (string kosong), index 8 dan 25 bernilai `2`. Signal dihitung dari CSQ (0–31 → 0–100%).
+> Pada **BL110/BL1100 (Ethernet)**: Index 25 bernilai `1`. Signal dihitung dari register RSSI eksternal Modbus TCP (`rssi + 100`, clamp 0–100%). Battery dibaca dari INA219 pada BL11/BL110/**BL1100**; `battery_set` hanya fallback untuk board tanpa INA219.
 > **Uptime** dipecah menjadi 3 field terpisah (index 11–13) untuk mencegah overflow nilai menit pada uptime panjang.
+> Firmware version selalu berada pada index terakhir.
 
 ---
 
-### 3.6 AUTH — Otentikasi Keamanan
+### 3.5 AUTH — Otentikasi Keamanan
 
 Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses terkunci, perintah `PRODUCTION` akan ditolak.
 
@@ -830,12 +943,12 @@ Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses
 
 **Response (Gagal):**
 ```json
-{"AUTH":"ERR","msg":"Invalid PIN"}
+{"AUTH":"ERR"}
 ```
 
 ---
 
-### 3.7 PRODUCTION — Provisioning Perangkat
+### 3.6 PRODUCTION — Provisioning Perangkat
 
 > [!CAUTION]
 > **Wajib AUTH Terlebih Dahulu** — Jika gembok belum dibuka dengan `AUTH`, perintah ini akan ditolak dengan pesan *Unauthorized*.
@@ -849,9 +962,9 @@ Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses
 {
   "PRODUCTION": {
     "cmd": "SET",
-    "sn": "BL110-001",
+    "sn": "2604010601006006",
     "id": "30001",
-    "bt_name": "Logger_Project_A"
+    "bt_name": "BL-1100-v2_016"
   }
 }
 ```
@@ -859,7 +972,7 @@ Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses
 | Field | Tipe | Deskripsi |
 |-------|------|-----------|
 | `cmd` | string | `"SET"` |
-| `sn` | string | Serial Number (max 31 char) |
+| `sn` | string | Serial Number (efektif max **19 char** via PRODUCTION SET — buffer input `snBuf[20]`; field penyimpanan menampung 31) |
 | `id` | string | Device numeric ID — auto-generate MQTT topics |
 | `bt_name` | string | *(Opsional)* Nama Bluetooth. Jika tidak dikirim, fallback ke `Logger_{id}` |
 
@@ -883,92 +996,18 @@ Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses
 
 **Error (via MQTT):**
 ```json
-{"PRODUCTION":{"status":"ERR","msg":"UART only, MQTT not allowed"}}
+{"PRODUCTION":{"status":"ERR"}}
+```
+
+**Error lain:**
+```json
+{"PRODUCTION":{"status":"ERR","msg":"Unauthorized. Send AUTH first"}}
+{"PRODUCTION":{"status":"ERR","msg":"cmd must be SET"}}
 ```
 
 ---
 
-### 3.8 WDT — External Watchdog Timer
-
-#### SET
-
-**Request:**
-```json
-{
-  "WDT": {
-    "command": "SET",
-    "time": "30"
-  }
-}
-```
-
-| Field | Tipe | Deskripsi |
-|-------|------|-----------|
-| `command` | string | `"SET"` |
-| `time` | string | Timeout dalam menit: `"5"`, `"10"`, `"15"`, `"30"`, `"60"` |
-
-**Mapping Internal:**
-
-| Time | SoftUART Command |
-|------|-----------------|
-| 5 | `B1\r\n` |
-| 10 | `B2\r\n` |
-| 15 | `B3\r\n` |
-| 30 | `B4\r\n` |
-| 60 | `B5\r\n` |
-
-**Response:**
-```json
-{"WDT":{"status":"SET OK","time":"30"}}
-```
-
-#### GET
-
-**Request:**
-```json
-{"WDT": {"command": "GET"}}
-```
-
-**Response:** (async — dikirim setelah External WDT membalas)
-```json
-{"WDT":{"Time":"...(from WDT board)"}}
-```
-
-**Timeout (3 detik tanpa balasan):**
-```json
-{"WDT":{"status":"error","message":"timeout"}}
-```
-
-> [!NOTE]
-> GET bersifat **asinkron**: command `A\r\n` dikirim via SoftUART, lalu response dikembalikan saat External WDT membalas dengan format `{"WDT":{"Time":"..."}}`. Timeout 3 detik.
-
-#### SET_REBOOT
-
-**Request:**
-```json
-{
-  "WDT": {
-    "command": "SET_REBOOT",
-    "value": 1
-  }
-}
-```
-
-| Field | Tipe | Deskripsi |
-|-------|------|-----------|
-| `command` | string | `"SET_REBOOT"` |
-| `value` | number | Harus `1` |
-
-**Response:**
-```json
-{"WDT":{"status":"REBOOT CMD SENT"}}
-```
-
-> Mengirim `C\r\n` via SoftUART ke External WDT — memicu hard reboot device.
-
----
-
-### 3.9 FTP — File Transfer Protocol
+### 3.7 FTP — File Transfer Protocol
 
 #### SET (Konfigurasi Server FTP)
 
@@ -1004,17 +1043,32 @@ Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses
 ```
 
 **Behavior:**
-- **BL11 (SIM7600)**: Non-blocking FTPS streaming via `AT+CFTPSPUT`. Status dikirim via MQTT saat selesai.
-- **BL110/BL1100 (W5500)**: Blocking upload file test.
+- **BL11 (SIM7600)**: Non-blocking FTPS streaming via `AT+CFTPSPUT`. Jika trigger berhasil, tidak ada JSON `OK` langsung; status dikirim dari state machine FTP.
+- **BL110/BL1100 (W5500)**: Blocking upload file test. Jika sukses, lifecycle upload dan status akhir dikirim oleh FTP client.
 
-**Response (BL110/BL1100):**
+**Response sequence sukses (BL110/BL1100):**
 ```json
-{"FTP":{"status":"OK","cmd":"TES"}}
+{"FTP_UPLOAD":"BEGIN"}
+{"FTP_PROGRESS":"0%"}
+...
+{"FTP_PROGRESS":"100%"}
+{"FTP_UPLOAD":"END"}
+{"FTP":{"status":"OK"}}
 ```
 
-**Response jika busy (BL11):**
+**Response sequence sukses (BL11):**
+```json
+{"FTP UPLOAD":"BEGIN"}
+...
+{"FTP UPLOAD":"END"}
+{"FTP":{"status":"OK"}}
+```
+
+**Response error/busy:**
 ```json
 {"FTP":{"status":"BUSY","msg":"upload in progress"}}
+{"FTP":{"status":"ERR","msg":"no server config"}}
+{"FTP":{"status":"FAIL"}}
 ```
 
 #### GET (Upload File CSV)
@@ -1034,9 +1088,30 @@ Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses
 | `cmd` | string | `"GET"` |
 | `f` | string | Nama file di folder `LOGS/` |
 
-**Response (BL110/BL1100):**
+**Response sequence sukses (BL110/BL1100):**
 ```json
-{"FTP":{"status":"OK","cmd":"GET","f":"2026-03-28.csv"}}
+{"FTP_UPLOAD":"BEGIN"}
+{"FTP_PROGRESS":"0%"}
+...
+{"FTP_PROGRESS":"100%"}
+{"FTP_UPLOAD":"END"}
+{"FTP":{"status":"OK"}}
+```
+
+**Response sequence sukses (BL11):**
+```json
+{"FTP UPLOAD":"BEGIN"}
+...
+{"FTP UPLOAD":"END"}
+{"FTP":{"status":"OK"}}
+```
+
+**Response error/busy:**
+```json
+{"FTP":{"status":"BUSY","msg":"upload in progress"}}
+{"FTP":{"status":"ERR","msg":"no server config"}}
+{"FTP":{"status":"ERR","msg":"missing filename"}}
+{"FTP":{"status":"FAIL"}}
 ```
 
 #### READ — List File di SD Card
@@ -1079,7 +1154,7 @@ Digunakan untuk membuka akses perintah kritis (seperti `PRODUCTION`). Jika akses
 
 ---
 
-### 3.10 System Logs — Black Box Recorder
+### 3.8 System Logs — Black Box Recorder
 
 > [!NOTE]
 > Semua event sistem dicatat secara otomatis ke file harian `.filesystem/logs_sys/YYYYMMDD.txt`. Tidak ada command yang perlu dikirim — logging berjalan non-blocking di background.
@@ -1144,10 +1219,14 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 |:------|:------|:------------------|:-------------|
 | `INFO/ERROR` | `CHECK` | RTC hardware saat boot | `RTC OK` / `RTC ERR` |
 | `INFO/ERROR` | `CHECK` | SD Card mount saat boot | `SD Card OK` / `SD Card ERR` |
-| `INFO/ERROR` | `CHECK` | ETH atau SIM MQTT saat boot | `ETH OK` / `SIM MQTT OK` / `SIM MQTT ERR` |
+| `INFO/ERROR` | `CHECK` | ETH/MQTT saat boot (BL110/BL1100) | `ETH OK IP 192.168.1.100` / `ETH ERR` / `INTERNET MQTT OK` / `INTERNET MQTT ERR` / `INTERNET OFF` |
+| `INFO/ERROR` | `CHECK` | SIM MQTT saat boot (BL11) | `SIM MQTT OK` / `SIM MQTT ERR` / `MQTT OFF` |
 | `INFO/WARN` | `CHECK` | GPS modul saat boot | `GPS OK` / `GPS ERR` |
 | `INFO/ERROR` | `CHECK` | SHT30 internal sensor saat boot | `SHT30 OK` / `SHT30 ERR` |
 | `INFO/ERROR` | `CHECK` | INA219 sensor saat boot | `INA219 BATT OK` / `INA219 5V ERR` |
+| `INFO/ERROR` | `CHECK` | Analog current mode saat boot | `ANALOG CH1 CURRENT OK 4.20mA` / `ANALOG CH1 CURRENT ERR 2.50mA` |
+| `INFO` | `CHECK` | Analog voltage mode saat boot | `ANALOG CH1 VOLTAGE OK` |
+| `ERROR` | `CHECK` | Analog ADC gagal dibaca saat boot | `ANALOG CH1 READ ERR` |
 | `INFO/ERROR` | `CHECK` | NTP sync saat boot | `NTP OK` / `NTP ERR` |
 | `INFO` | `BOOT` | Reboot counter *(setelah semua CHECK selesai)* | `Reboot #47` |
 | `WARN` | `BOOT` | RTC tidak dikonfigurasi | `RTC not set, Reboot #47` |
@@ -1166,8 +1245,11 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 | `INFO` | `NET` | Koneksi pulih — dengan IP (BL110/1100) | `Online IP 192.168.1.100` |
 | `INFO` | `NET` | Koneksi pulih — tanpa IP (BL11) | `Online` |
 | `ERROR` | `NET` | Koneksi terputus | `Offline` |
+| `WARN` | `ETH` | Eskalasi: router di-power-cycle (BL110/1100) | `Router power-cycle (streak=12)` |
+| `WARN` | `ETH` | Eskalasi: W5500 di-HW-reset (BL110/1100) | `W5500 HW reset (streak=24)` |
 | `INFO` | `NTP` | Boot sync / periodik berhasil | `Boot UPDATED` / `UPDATED` |
-| `ERROR` | `NTP` | Sync gagal | `HTTP_FAIL` / `PARSE_FAIL` |
+| `INFO` | `NTP` | Sync tidak mengubah waktu / belum waktunya | `NO_CHANGE` / `Boot NO_CHANGE` / `NOT_DUE` |
+| `ERROR` | `NTP` | Sync gagal | `HTTP_FAIL` / `PARSE_FAIL` / `GMT_INVALID` / `Boot FAIL` |
 | `INFO` | `BT` | Bluetooth terhubung / lepas | `Connected` / `Disconnected` |
 | `INFO` | `USB` | Flashdisk masuk / dicabut | `Connected` / `Disconnected` |
 | `INFO` | `SIMMQT` | MQTT broker berhasil terhubung | `Connected: broker.com:8383` |
@@ -1182,8 +1264,8 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 |:------|:------|:------------------|:-------------|
 | `INFO` | `DOOR` | Pintu panel ditutup | `close` |
 | `WARN` | `DOOR` | Pintu panel dibuka | `open` |
-| `INFO` | `SHT30` | Sensor internal baca OK / ERR | `OK` / `ERR` |
-| `INFO` | `INA219 BATT` | INA219 Baterai init OK | `OK` |
+| `INFO/ERROR` | `SHT30` | Sensor internal baca OK / ERR | `OK` / `ERR` |
+| `INFO` | `INA219 BATT` | INA219 Baterai init OK (boot) / runtime periodik | boot: `OK` · runtime: `OK 12.1V 350mA 4.24Watt` |
 | `WARN` | `INA219 BATT` | Tegangan anjlok | `DROP 10.20V` |
 | `INFO` | `INA219 BATT` | Tegangan kembali normal | `NORMAL 12.10V` |
 | `INFO/WARN` | `INA219 5V` `INA219 12V` `INA219 24V` | Sama seperti BATT *(BL110/BL1100)* | `OK` / `DROP 11.80V` / `NORMAL` |
@@ -1191,15 +1273,15 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 | `ERROR` | `RS485` | Slave tidak merespons (timeout) | `Slave 2 Timeout` |
 | `INFO` | `RS232` | Data diterima dari port | `Port 1 Read Event` |
 | `INFO` | `ANALOG` | Data dibaca dari channel | `Ch 1 Read Event` |
+| `ERROR` | `ANALOG` | Current mode raw `<3mA` saat runtime | `Ch 1 CURRENT ERR 2.50mA` |
 | `INFO` | `DIGITAL` | Data dibaca (Mode 0) | `Ch 1 TERBUKA` |
 | `INFO` | `DIGITAL` | Data dibaca (Mode 1 & 2) | `Ch 2 OK` |
 | `INFO` | `DIGITAL` | Data dibaca (Mode 3) | `Ch 3 HIGH` / `LOW` |
 | `INFO` | `GPS` | Modul GPS mengirim NMEA | `Module OK (NMEA received)` |
+| | | | *(Catatan: pada event runtime Read-Event, indeks `Ch`/`Port` untuk ANALOG/DIGITAL/RS232 bersifat **0-based** — channel SET=1 tercatat sebagai `Ch 0`. Event boot CHECK memakai 1-based.)* |
 | `WARN` | `GPS` | Modul GPS tidak merespons (4 detik) | `Module timeout (no NMEA)` |
 | `INFO` | `GPS` | Fix GPS diperoleh | `Fix OK: -6.175110,106.865039 alt=15.0m` |
 | `WARN` | `GPS` | Timeout mendapatkan fix GPS | `Fix timeout (no valid NMEA)` |
-| `INFO` | `PUMP` | Pompa AWLR berhasil dinyalakan/dimatikan | `ON` / `OFF` |
-| `ERROR` | `PUMP` | Pompa AWLR gagal merespons | `ON ERR` / `OFF ERR` |
 
 ##### Penyimpanan & Pengiriman Data
 
@@ -1210,6 +1292,7 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 | `INFO` | `MQTT` | Publish berhasil | `Publish OK` |
 | `ERROR` | `MQTT` | Publish gagal | `Publish ERR` |
 | `INFO` | `RETRY` | Index SNDIDX.DAT berhasil dimuat | `Loaded idx: 2026-05-02 off=18432` |
+| `ERROR` | `RETRY` | Baris CSV melebihi ukuran buffer saat flush | `CSV row too long: 2026-05-02 off=18432` |
 | `ERROR` | `RETRY` | Publish dari retry FIFO gagal | `Publish FAIL: 2026-05-02 off=18432` |
 | `WARN` | `RETRY` | Ghost success terdeteksi (koneksi putus) | `Ghost abort: 2026-05-02 off=18432` |
 | `INFO` | `RETRY` | Pointer retry di-commit setelah 5 detik sustained | `Committed: 2026-05-02 off=18944 (sustained 5s)` |
@@ -1218,6 +1301,9 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 
 | Level | Modul | Kondisi / Trigger | Contoh Pesan |
 |:------|:------|:------------------|:-------------|
+| `INFO/ERROR` | `FTP` | Hasil command `FTP TES` | `TES OK` / `TES ERR` |
+| `INFO/ERROR` | `FTP` | Hasil command `FTP GET` (upload CSV) | `GET 2026-05-02.csv OK` / `GET 2026-05-02.csv ERR` |
+| `INFO/ERROR` | `FTP` | Hasil command `FTP GETLOG` (upload syslog) | `GETLOG 20260502.txt OK` / `GETLOG 20260502.txt ERR` |
 | `INFO` | `FTP` | Upload dimulai — W5500 Ethernet | `Upload begin: 2026-05-02.csv` |
 | `INFO` | `FTP` | Upload sukses — W5500 | `Upload OK: 2026-05-02.csv` |
 | `ERROR` | `FTP` | Koneksi FTP gagal | `Connect fail: ftp.server.com:21` |
@@ -1231,15 +1317,38 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 | `WARN` | `SIMFTP` | Retry upload | `Retry 2/3: 2026-05-02.csv` |
 | `ERROR` | `SIMFTP` | Max retry tercapai | `Max retry reached: 2026-05-02.csv` |
 
+##### OTA Firmware Update
+
+> [!NOTE]
+> Semua varian (BL11 SIM7600 maupun BL110/BL1100 W5500) mencatat event OTA dengan modul **`OTA`**. Beberapa pesan khusus BL11 ditandai *(BL11)* di tabel.
+
+| Level | Modul | Kondisi / Trigger | Contoh Pesan |
+|:------|:------|:------------------|:-------------|
+| `INFO` | `OTA` | Download firmware dimulai | `Download BL110-v2.0.0 -> BL-110-v2.0.1 file=BL-110-v2.0.1.bin` |
+| `INFO` | `OTA` | Ukuran file diterima dari HTTP `Content-Length` | `Size 307200 bytes target=BL-110-v2.0.1` |
+| `INFO` | `OTA` | Download selesai dan file sudah di-commit ke SD | `Download OK 307200 bytes target=BL-110-v2.0.1` |
+| `INFO` | `OTA` | Request download versi yang sudah terpasang | `GET existing version=BL-110-v2.0.1` |
+| `WARN` | `OTA` | GET ditolak karena versi/model/file tidak valid | `GET rejected current=BL110-v2.0.0 req=BL-1100-v2.0.1 file=BL-1100-v2.0.1.bin` |
+| `WARN` | `OTA` | GET ditolak karena masih ada download berjalan | `GET rejected: download in progress` |
+| `WARN` | `OTA` | (BL11) GET ditolak: state busy / parameter kurang | `GET rejected: busy` / `Invalid GET: missing version` / `Invalid GET: missing file` |
+| `INFO` | `OTA` | (BL11) MQTT diputus, mulai download HTTP | `Stop MQTT, begin HTTP download` |
+| `ERROR` | `OTA` | Download gagal karena jaringan/server/SD/timeout | `DNS fail` / `connect fail` / `HTTP not 200` / `SD write fail` / `Body timeout` |
+| `ERROR` | `OTA` | Download tidak lengkap | `Incomplete 204800/307200` |
+| `ERROR` | `OTA` | Commit file ke SD gagal | `SD commit fail 307200 bytes` |
+| `INFO` | `OTA` | INSTALL akan memicu reset ke bootloader | `Install event BL110-v2.0.0 -> BL-110-v2.0.1` |
+| `WARN` | `OTA` | INSTALL ditolak: versi target ≠ valid / download berjalan | `Install rejected current=BL110-v2.0.0 target=BL-1100-v2.0.1` / `Install rejected: download in progress` |
+| `ERROR` | `OTA` | INSTALL ditolak: file/metadata tidak ada | `Install rejected: file not found` / `empty file` / `no version metadata` |
+
 ##### Konfigurasi
 
 | Level | Modul | Kondisi / Trigger | Contoh Pesan |
 |:------|:------|:------------------|:-------------|
-| `CFG` | `INTERVAL` | Interval diubah | `SEND=5min SENS=1min WDT=10min` |
 | `CFG` | `ALERT` | Buzzer alert diubah | `ON` / `OFF` |
 | `CFG` | `RELAY` | P_OUT12 / P_OUT24 diubah | `P_OUT12 diubah menjadi ON` |
 | `CFG` | `DIGITAL` | Command konfigurasi DIGITAL | `SET CH1 Mode 2` / `DEL CH1` |
-| `CFG` | `UART` `MQTT` `BT` | Command konfigurasi diterima & disimpan | `NET SET` / `RS485 SET` |
+| `CFG` | `CAL` | Offset sensor diatur | `OFFSET RS485 slave1 item0 off=0.500` / `OFFSET RS232 p1 off=0.200` / `OFFSET Analog ch1 off=0.100` |
+| `CFG` | `CAL` | Offset sensor direset | `RSTSET RS485 slave1 item0` / `RSTSET RS232 p1` / `RSTSET Analog ch1` |
+| `CFG` | *(nama modul)* | Command konfigurasi generik diterima & disimpan (modul = nama command) | `NET SET` / `RS485 SET` |
 
 #### Akses via FTP
 
@@ -1252,7 +1361,7 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 
 **Response:**
 ```json
-{"FTP":{"cmd":"READLOGS","files":["20260501.txt","20260502.txt"]}}
+{"FTP":{"files":["20260501.txt","20260502.txt"]}}
 ```
 
 ##### GETLOG — Upload satu file log ke server FTP
@@ -1268,8 +1377,11 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 | `f` | string | Nama file: format `YYYYMMDD.txt` |
 
 **Response Sequence:**
+
+BL110/BL1100 (W5500):
 ```json
 {"FTP_UPLOAD":"BEGIN"}
+{"FTP_PROGRESS":"0%"}
 {"FTP_PROGRESS":"25%"}
 .
 .
@@ -1279,9 +1391,19 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 {"FTP":{"status":"OK"}}
 ```
 
+BL11 (SIM7600):
+```json
+{"FTP UPLOAD":"BEGIN"}
+.
+.
+.
+{"FTP UPLOAD":"END"}
+{"FTP":{"status":"OK"}}
+```
+
 **Response (gagal):**
 ```json
-{"FTP":{"status":"ERR","msg":"upload failed"}}
+{"FTP":{"status":"FAIL"}}
 ```
 
 > [!NOTE]
@@ -1320,15 +1442,13 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 [14:18:10] [INFO ] [SIMFTP     ] Upload begin: 2026-05-04.csv (18432 bytes)
 [14:19:05] [INFO ] [SIMFTP     ] Upload OK: 2026-05-04.csv (18432 bytes)
 [16:00:00] [INFO ] [INA219 BATT] NORMAL 12.50V
-[17:45:00] [CFG  ] [UART       ] INTERVAL SET
-[17:45:00] [CFG  ] [INTERVAL   ] SEND=5min SENS=1min WDT=10min
 [18:00:00] [WARN ] [SYSTEM     ] Reboot commanded
 [SYSLOG] Daily flush summary: 18432 bytes written to SD.
 ```
 
 ---
 
-### 3.11 SIM — Konfigurasi SIM Card / APN
+### 3.9 SIM — Konfigurasi SIM Card / APN
 
 > [!NOTE]
 > Hanya relevan pada **BL11** (HAS_SIM7600=1). BL110/BL1100 merespon `{"SIM":{"status":"NOT_SUPPORTED"}}`.
@@ -1383,7 +1503,7 @@ Setiap pergantian hari (00:00), sebuah baris summary otomatis ditulis ke log seb
 
 ---
 
-### 3.12 CAL — Auto-Kalibrasi ADC Analog
+### 3.10 CAL — Auto-Kalibrasi ADC Analog
 
 Sistem kalibrasi bekerja secara **otomatis** dan **mode-aware**. Tugas teknisi hanya menyambungkan sinyal referensi yang akurat dan melaporkan nilai aktualnya ke logger — logger yang menghitung dan menyimpan faktor koreksi `gain` secara mandiri.
 
@@ -1445,6 +1565,8 @@ Set alat ke output **20.00 mA**. Pastikan arus stabil.
 
 **Step 4 — Verifikasi di titik 4mA (opsional, untuk akurasi lebih tinggi):**
 Set alat ke 4.00 mA, lalu cek nilai `GET_ALL` — sensor harus menampilkan nilai = `min_val`.
+
+> Current raw di bawah `3.00mA` dianggap sensor tidak terkoneksi. Nilai `4.00mA` tetap dipakai sebagai batas bawah normal untuk mapping `min_val`.
 
 > [!TIP]
 > Kalibrasi satu titik (20mA) sudah cukup untuk akurasi ±0.5%. Untuk akurasi lebih tinggi, gunakan titik kalibrasi di tengah range (12mA).
@@ -1512,10 +1634,13 @@ Gunakan tegangan yang mudah diukur akurat, misal **10.00V**.
 **Error responses:**
 ```json
 {"CAL":{"status":"ERR","msg":"missing ch"}}
+{"CAL":{"status":"ERR","msg":"ch 1-2"}}
 {"CAL":{"status":"ERR","msg":"missing actual_val"}}
 {"CAL":{"status":"ERR","msg":"ADC read fail or no signal"}}
 {"CAL":{"status":"ERR","msg":"actual_val out of range"}}
 ```
+
+> Pesan `"ch 1-2"` muncul saat `ch` di luar jangkauan pada BL11/BL110; pada **BL1100** pesannya `"ch 1-8"` (8 channel).
 
 #### GET (Baca Status Kalibrasi Semua Channel)
 
@@ -1594,7 +1719,7 @@ Mengubah nilai akhir (tampilan di LCD, SD Card, dan MQTT) dengan menambahkan nil
 |-------|------|-----------|
 | `cmd` | string | `"OFFSET"` |
 | `Sens` | string | Jenis koneksi sensor (`"RS485"`, `"RS232"`, atau `"Analog"`) |
-| `slave` / `p` / `ch` | number | Identifier target. `slave` (1-5) untuk RS485, `p` port (1) untuk RS232, `ch` (1-8/1-2) untuk Analog |
+| `slave` / `p` / `ch` | number | Identifier target. `slave` (1-5) untuk RS485, `p` port (1-2) untuk RS232, `ch` (1-8/1-2) untuk Analog |
 | `item` | number | Index parameter di RS485 (0 = param pertama). Hanya wajib untuk RS485. |
 | `actual_val` | number | Nilai aktual yang terukur di alat ukur terkalibrasi / eksternal |
 
@@ -1641,7 +1766,7 @@ Mereset parameter `offset` kembali ke `0.0` untuk sensor tertentu tanpa memengar
 ---
 
 
-### 3.14 STATUS — Heartbeat / Connection Check
+### 3.11 STATUS — Heartbeat / Connection Check
 
 #### GET
 
@@ -1656,10 +1781,11 @@ Mereset parameter `offset` kembali ke `0.0` untuk sensor tertentu tanpa memengar
 ```
 
 > Digunakan untuk mengecek apakah logger online dan responsif. Selalu mengembalikan `1` jika terhubung.
+> Jika `cmd` tidak ada / bukan `"GET"` → `{"STATUS":"ERR"}`.
 
 ---
 
-### 3.15 REBOOT — Remote Reboot
+### 3.12 REBOOT — Remote Reboot
 
 **Request:**
 ```json
@@ -1675,11 +1801,12 @@ Mereset parameter `offset` kembali ke `0.0` untuk sensor tertentu tanpa memengar
 {"REBOOT":{"status":"OK"}}
 ```
 
-> Menggunakan fungsi internal STM32 `NVIC_SystemReset()` untuk trigger hard reboot langsung dari firmware.
+> Jika nilai `REBOOT` ≠ `1` → `{"REBOOT":{"status":"ERR"}}`.
+> Menggunakan fungsi internal STM32 `NVIC_SystemReset()` untuk trigger hard reboot langsung dari firmware. Pada BL110/BL1100, flag `BKP4R` ditulis agar relay router tetap ON setelah reboot.
 
 ---
 
-### 3.16 FAC — Factory Reset
+### 3.13 FAC — Factory Reset
 
 > [!CAUTION]
 > **UART only** — ditolak via MQTT dan Bluetooth. Wajib melakukan otentikasi `AUTH` terlebih dahulu sebelum command ini diterima.
@@ -1705,8 +1832,15 @@ Jika belum otentikasi atau sesi `AUTH` sudah kedaluwarsa:
 
 Jika dikirim selain via UART:
 ```json
-{"FAC":{"status":"ERR","msg":"UART only"}}
+{"FAC":{"status":"ERR"}}
 ```
+
+Jika nilai field `FAC` bukan `"RST"`:
+```json
+{"FAC":"ERR"}
+```
+
+> Urutan pengecekan di firmware: **transport (UART-only) dicek lebih dulu**, baru `AUTH`. Jadi request non-UART selalu mendapat `{"FAC":{"status":"ERR"}}` terlepas dari status auth.
 
 **Response Sequence:**
 ```json
@@ -1725,17 +1859,23 @@ diikuti **automatic reboot (`NVIC_SystemReset`)**
 | RS485 Slave 1–5 | Konfigurasi sensor Modbus |
 | RS232 Port 1–2 | Konfigurasi sensor RS232 |
 | Analog Ch 1–8 | Konfigurasi sensor Analog |
+| Digital Ch 1–4 | Konfigurasi sensor Digital |
 | Ethernet | Konfigurasi jaringan → direset ke DHCP=1 |
-| HTTP | Konfigurasi HTTP endpoint |
 | FTP | Konfigurasi FTP server |
 | SIM | Konfigurasi APN |
-| Calibration | Gain semua channel → direset ke `1.0` |
+| EWS | Konfigurasi Early Warning System |
+| MODBUSTCP | Konfigurasi Modbus TCP Server |
+| GCM | Master switch + binding slave (enable, id1–id5) |
+| GCM_MAP | Pemetaan slot telemetry → register GCM |
+| CAL | Gain semua channel analog → direset ke `1.0` |
+| SYSTEM/Profile | Mode sistem dikembalikan ke `DEFAULT` |
+| Logger runtime fields | `send_interval_min=1`, legacy interval `0`, reboot count `0`, alert enabled `1` |
 
 **Yang dipertahankan (preserved):**
 
 | Sektor | Deskripsi |
 |--------|-----------|
-| Logger Info | Serial Number, Device ID, Reboot Count |
+| Logger Info | Serial Number dan Device ID dipertahankan; reboot count direset ke `0` |
 | MQTT Config | Broker, Topics, Credentials |
 
 **Default Values setelah Factory Reset:**
@@ -1749,7 +1889,7 @@ diikuti **automatic reboot (`NVIC_SystemReset`)**
 
 ---
 
-### 3.17 SYSTEM — Perpindahan Mode Logger
+### 3.14 SYSTEM — Perpindahan Mode Logger
 
 #### SET_MODE
 
@@ -1768,19 +1908,29 @@ Mengubah mode keseluruhan logger (akan menghapus sektor flash profile lama dan m
 | Field | Tipe | Deskripsi |
 |-------|------|-----------|
 | `cmd` | string | Harus `"SET_MODE"` |
-| `mode` | string | Mode target: `"AWLR_TD"`, `"AWLR_US"`, `"WEATHER"`, atau `"DEFAULT"` |
+| `mode` | string | Mode target: `"AWLR_TD"`, `"AWLR_US"`, `"ARR"`, `"GNSS"`, atau `"DEFAULT"` |
 
 **Response Sukses:**
 ```json
 {"SYSTEM":{"status":"OK","mode":"AWLR_TD"}}
 ```
 
+**Response Error:**
+```json
+{"SYSTEM":{"status":"ERR"}}
+{"SYSTEM":{"status":"ERR","msg":"missing cmd"}}
+{"SYSTEM":{"status":"ERR","msg":"missing mode"}}
+{"SYSTEM":{"status":"ERR","msg":"Switch gagal"}}
+{"SYSTEM":{"status":"ERR","msg":"unknown cmd"}}
+```
+
 > [!NOTE]
-> Command `GET_MODE` telah dihapus. Untuk melihat mode saat ini, gunakan `INFO GET` (terdapat pada index array terakhir).
+> Command `GET_MODE` telah dihapus. Untuk melihat mode saat ini, gunakan `INFO GET` pada index 27.
+> Mode `GNSS` mereservasi RS232 port 1 (UART3) untuk receiver NMEA pada baudrate 9600 8N1 — lihat **section 3.27** untuk detail telemetry mapping.
 
 ---
 
-### 3.18 AWLR_TD — Kalibrasi Mode Tape Draw
+### 3.15 AWLR_TD — Kalibrasi Mode Tape Draw
 
 Hanya dapat digunakan jika sistem sedang berada di mode `AWLR_TD`. Jika tidak, akan mengembalikan pesan error.
 
@@ -1791,6 +1941,7 @@ Hanya dapat digunakan jika sistem sedang berada di mode `AWLR_TD`. Jika tidak, a
 {
   "AWLR_TD": {
     "cmd": "SET",
+    "id": 1,
     "sumur": 25.5,
     "muka_air": 12.0
   }
@@ -1800,15 +1951,25 @@ Hanya dapat digunakan jika sistem sedang berada di mode `AWLR_TD`. Jika tidak, a
 | Field | Tipe | Deskripsi |
 |-------|------|-----------|
 | `cmd` | string | Harus `"SET"` |
+| `id` | number | *(Opsional)* `slave_id` dari sensor RS485 yang dipakai sebagai transducer (1–5). Kalau tidak dikirim, pakai nilai yang sudah tersimpan; default `1` saat pertama kali. |
 | `sumur` | float | Kedalaman sumur total (meter) |
 | `muka_air`| float | Kedalaman muka air dari atas sumur (meter) |
 
+> [!IMPORTANT]
+> **`id` menentukan slave Modbus mana yang dianggap transducer AWLR.** Misal `id=3` → firmware membaca sensor dari slave yang sudah di-SET di `SENSORS RS485` dengan `slave_id=3`. Pakai per-sensor `register_address` (s[q][6]) dan `reg_count` (s[q][7]) dari slave tersebut.
+> Setelah `id` di-SET sekali, firmware menyimpannya ke flash dan otomatis dipakai oleh pembacaan background (round-robin Modbus) dan command `AWLR_TD SET` berikutnya.
+
 *Proses internal:*
-Otomatis membaca jarak sensor aktual (`sensor_awal`) dari sensor RS485 yang terkoneksi. Jika gagal baca, kalibrasi dibatalkan.
+Otomatis membaca jarak sensor aktual (`sensor_awal`) dari sensor RS485 yang terkoneksi di slave `id`. Jika gagal baca, kalibrasi dibatalkan.
 
 **Response Sukses:**
 ```json
-{"AWLR_TD":{"status":"OK","sumur":25.50,"muka_air":12.00,"sensor_rekam":0.55}}
+{"AWLR_TD":{"status":"OK","id":1,"sumur":25.50,"muka_air":12.00,"sensor_rekam":0.55}}
+```
+
+**Response Error (id invalid):**
+```json
+{"AWLR_TD":{"status":"ERR","msg":"id must be 1-5"}}
 ```
 
 #### GET (Lihat Kalibrasi)
@@ -1820,12 +1981,12 @@ Otomatis membaca jarak sensor aktual (`sensor_awal`) dari sensor RS485 yang terk
 
 **Response:**
 ```json
-{"AWLR_TD":{"status":"OK","sumur":25.50,"muka_air":12.00,"sensor_awal":0.55}}
+{"AWLR_TD":{"status":"OK","id":1,"sumur":25.50,"muka_air":12.00,"sensor_awal":0.55}}
 ```
 
 ---
 
-### 3.19 AWLR_US — Kalibrasi Mode Ultrasonic
+### 3.16 AWLR_US — Kalibrasi Mode Ultrasonic
 
 Hanya dapat digunakan jika sistem berada di mode `AWLR_US`.
 
@@ -1867,20 +2028,136 @@ Sama seperti sukses SET di atas.
 
 ---
 
-### 3.20 AWLR_PUMP — Kontrol Pompa Modbus (Slave 2)
+### 3.16.1 ARR — Pemilihan Sumber Data (Mode ARR)
 
-Hanya beroperasi di mode `AWLR_TD` atau `AWLR_US`. Mengirim instruksi lewat Modbus RTU ke Slave ID 2.
+Mode **ARR** (*Automatic Rainfall Recorder*) memilih satu slave Modbus RS485 sebagai sumber data curah hujan. Command `ARR` hanya dapat digunakan jika sistem sedang berada di mode `ARR` (set via `SYSTEM SET_MODE` `"mode":"ARR"`); jika tidak, dikembalikan error.
+
+#### SET — Pilih Slave Sumber
+
+**Request:**
+```json
+{
+  "ARR": {
+    "cmd": "SET",
+    "id": 1
+  }
+}
+```
+
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | Harus `"SET"` |
+| `id` | number | `slave_id` RS485 (1–5) yang dipakai sebagai sumber data ARR |
+
+**Response Sukses:**
+```json
+{"ARR":{"status":"OK","id":1}}
+```
+
+#### GET — Baca Slave Sumber
+
+**Request:**
+```json
+{"ARR": {"cmd": "GET"}}
+```
+
+**Response:**
+```json
+{"ARR":{"status":"OK","id":1}}
+```
+
+**Response Error:**
+```json
+{"ARR":{"status":"ERR","msg":"Logger bukan mode ARR"}}
+{"ARR":{"status":"ERR","msg":"missing cmd"}}
+{"ARR":{"status":"ERR","msg":"id must be 1-5"}}
+{"ARR":{"status":"ERR","msg":"unknown cmd"}}
+```
+
+---
+
+### 3.17 GCM / GCM_PUMP — Enable GCM dan Kontrol Pompa Modbus (Multi-Modul)
+
+`GCM` adalah master switch sekaligus *binding* hingga **5 modul GCM** ke slave Modbus RTU. `GCM_PUMP` dan `GCM_MAP` hanya dapat diakses setelah `GCM.enable=1`.
+
+> [!IMPORTANT]
+> GCM mendukung **5 modul** (`id1`–`id5`), masing-masing dipetakan ke satu Modbus slave ID (bukan lagi hardcode "Slave 2"). Command `GCM_PUMP`/`GCM_MAP` wajib menyertakan field `id` (1–5) untuk memilih modul; slave RTU yang dipakai = `GCM.id{N}` yang dikonfigurasi.
+
+#### SET — Enable + Binding Slave
+
+**Request:**
+```json
+{"GCM":{"cmd":"SET","enable":1,"id1":4,"id2":5}}
+```
+
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | `"SET"` |
+| `enable` | number | `1` aktif, `0` nonaktif |
+| `id1`–`id5` | number | *(Opsional)* Slave Modbus RTU untuk modul 1–5 (`0`–`247`, `0` = tidak dipakai). ID non-nol tidak boleh duplikat |
+
+**Response:**
+```json
+{"GCM":{"status":"OK","enable":1,"id1":4,"id2":5,"id3":0,"id4":0,"id5":0}}
+```
+
+#### GET — Baca Konfigurasi GCM
+
+**Request:**
+```json
+{"GCM":{"cmd":"GET"}}
+```
+
+**Response:** *(tanpa `status`)*
+```json
+{"GCM":{"enable":1,"id1":4,"id2":5,"id3":0,"id4":0,"id5":0}}
+```
+
+#### RST — Reset Konfigurasi GCM
+
+**Request:**
+```json
+{"GCM":{"cmd":"RST"}}
+```
+
+**Response:**
+```json
+{"GCM":{"status":"OK","enable":0,"id1":0,"id2":0,"id3":0,"id4":0,"id5":0}}
+```
+
+**Response error:**
+```json
+{"GCM":{"status":"ERR","msg":"missing cmd"}}
+{"GCM":{"status":"ERR","msg":"missing enable"}}
+{"GCM":{"status":"ERR","msg":"enable must be 0 or 1"}}
+{"GCM":{"status":"ERR","msg":"id must be 0..247"}}
+{"GCM":{"status":"ERR","msg":"duplicate slave id"}}
+{"GCM":{"status":"ERR","msg":"unknown cmd"}}
+```
+
+Saat `GCM.enable=0`, command `GCM_PUMP` dan `GCM_MAP` mengembalikan `{"...":{"status":"ERR","msg":"disabled"}}`.
+
+---
+
+#### GCM_PUMP — Kontrol Pompa
+
+`GCM_PUMP` mengirim instruksi pompa via Modbus RTU ke slave yang terikat pada modul `id`. **Tidak ada batasan mode** (dapat dipakai di mode mana pun selama `GCM.enable=1` dan `id` punya slave terkonfigurasi).
 
 #### GET (Baca Status Pompa)
 
 **Request:**
 ```json
-{"AWLR_PUMP": {"cmd": "GET"}}
+{"GCM_PUMP": {"cmd": "GET", "id": 1}}
 ```
 
-**Response:**
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | `"GET"` |
+| `id` | number | Modul GCM (1–5) |
+
+**Response:** *(baca register status / Address 2 via Modbus RTU)*
 ```json
-{"AWLR_PUMP":{"status":"OK","state":1,"msg":"Pump ON"}}
+{"GCM_PUMP":{"status":"OK","id":1,"slave":4,"state":1,"msg":"Pump ON"}}
 ```
 
 #### SET (Nyalakan / Matikan)
@@ -1888,8 +2165,9 @@ Hanya beroperasi di mode `AWLR_TD` atau `AWLR_US`. Mengirim instruksi lewat Modb
 **Request:**
 ```json
 {
-  "AWLR_PUMP": {
+  "GCM_PUMP": {
     "cmd": "SET",
+    "id": 1,
     "state": 1
   }
 }
@@ -1898,19 +2176,88 @@ Hanya beroperasi di mode `AWLR_TD` atau `AWLR_US`. Mengirim instruksi lewat Modb
 | Field | Tipe | Deskripsi |
 |-------|------|-----------|
 | `cmd` | string | Harus `"SET"` |
+| `id` | number | Modul GCM (1–5) |
 | `state` | number | `1` untuk ON, `0` untuk OFF |
 
 > [!NOTE]
-> Waktu respons agak lambat (bisa memakan 1-2 detik) karena logger akan memberikan instruksi ke relay dan kemudian *polling* kembali status balasan (Address 2) via Modbus RTU untuk memastikan pompa benar-benar merespons.
+> SET bersifat **asynchronous/queued** — handler hanya mengantrekan aksi dan langsung membalas `"QUEUED"`. Status ON/OFF aktual dipublish kemudian oleh `GCM_Task` setelah register status berubah / timeout. Untuk verifikasi gunakan `GCM_PUMP GET`.
 
-**Response:**
+**Response (SET):**
 ```json
-{"AWLR_PUMP":{"status":"OK","state":1,"msg":"Pump ON"}}
+{"GCM_PUMP":{"status":"OK","id":1,"slave":4,"msg":"QUEUED"}}
+```
+
+**Response error:**
+```json
+{"GCM_PUMP":{"status":"ERR","msg":"disabled"}}
+{"GCM_PUMP":{"status":"ERR","msg":"missing cmd"}}
+{"GCM_PUMP":{"status":"ERR","msg":"invalid id"}}
+{"GCM_PUMP":{"status":"ERR","msg":"id not configured"}}
+{"GCM_PUMP":{"status":"ERR","msg":"missing param state"}}
+{"GCM_PUMP":{"status":"ERR","msg":"state must be 0 or 1"}}
+{"GCM_PUMP":{"status":"ERR","id":1,"slave":4,"msg":"busy"}}
+{"GCM_PUMP":{"status":"ERR","id":1,"slave":4,"msg":"Modbus read fail"}}
+{"GCM_PUMP":{"status":"ERR","msg":"unknown cmd. Gunakan GET atau SET"}}
 ```
 
 ---
 
-### 3.21 P_OUT24 — Kontrol Power Output 24V
+### 3.17.1 GCM_MAP — Pemetaan Slot Telemetry ke Register GCM
+
+Memetakan slot sensor telemetry ke register tulis GCM (`16`–`20`) yang dikirim ke perangkat GCM via Modbus RTU. Pemetaan bersifat **per-modul** sehingga setiap request wajib menyertakan field `id` (1–5). Hanya dapat diakses saat `GCM.enable=1` dan modul `id` punya slave terkonfigurasi (`GCM.id{N}` ≠ 0).
+
+#### SET — Atur Pemetaan
+
+**Request:**
+```json
+{"GCM_MAP":{"cmd":"SET","id":1,"m":[[16,4],[17,6],[18,11]]}}
+```
+
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | `"SET"` |
+| `id` | number | Modul GCM (1–5) |
+| `m` | array | Array pasangan `[reg, slot]`. `reg` = register tujuan (**16–20**), `slot` = nomor slot sensor telemetry (`0` = kosong/nonaktif; rentang valid `0..SLOT_TOTAL`, di mana SLOT_TOTAL = 50 untuk BL1100 / 16 untuk varian lain). Pasangan yang tidak disebut otomatis di-reset ke `0`. |
+
+**Response:**
+```json
+{"GCM_MAP":"OK"}
+```
+
+#### GET — Baca Pemetaan
+
+**Request:**
+```json
+{"GCM_MAP":{"cmd":"GET","id":1}}
+```
+
+**Response:** (selalu mengembalikan kelima register 16–20, plus `id` & `slave`)
+```json
+{"GCM_MAP":{"id":1,"slave":4,"m":[[16,4],[17,6],[18,11],[19,0],[20,0]]}}
+```
+
+#### RST — Reset Pemetaan
+
+**Request:**
+```json
+{"GCM_MAP":{"cmd":"RST","id":1}}
+```
+
+**Response:**
+```json
+{"GCM_MAP":"OK"}
+```
+
+**Response Error / Disabled:**
+```json
+{"GCM_MAP":{"status":"ERR","msg":"disabled"}}
+{"GCM_MAP":"ERR"}
+```
+> `"disabled"` dikembalikan jika `GCM.enable=0`. Bare `{"GCM_MAP":"ERR"}` dikembalikan jika: `cmd` tidak ada/tidak dikenal, `id` di luar 1–5, modul `id` tidak punya slave terkonfigurasi (`GCM.id{N}=0`), atau pasangan `[reg, slot]` di luar jangkauan (`reg` harus 16–20, `slot` harus `0..SLOT_TOTAL`).
+
+---
+
+### 3.18 P_OUT24 — Kontrol Power Output 24V
 
 **Request:**
 ```json
@@ -1936,7 +2283,7 @@ Hanya beroperasi di mode `AWLR_TD` atau `AWLR_US`. Mengirim instruksi lewat Modb
 
 ---
 
-### 3.22 P_OUT12 — Kontrol Power Output 12V
+### 3.19 P_OUT12 — Kontrol Power Output 12V
 
 **Request:**
 ```json
@@ -1962,7 +2309,7 @@ Hanya beroperasi di mode `AWLR_TD` atau `AWLR_US`. Mengirim instruksi lewat Modb
 
 ---
 
-### 3.23 SENS_DOOR — Polaritas Sensor Pintu
+### 3.20 SENS_DOOR — Polaritas Sensor Pintu
 
 Mengatur *logic* yang dianggap sebagai "pintu tertutup". Tersedia pada **semua varian** (BL11, BL110, BL1100).
 
@@ -2004,9 +2351,9 @@ Mengatur *logic* yang dianggap sebagai "pintu tertutup". Tersedia pada **semua v
 
 ---
 
-### 3.24 ALERT — Konfigurasi Buzzer (Global)
+### 3.21 ALERT — Konfigurasi Buzzer (Global)
 
-Modul ini digunakan untuk mengaktifkan atau menonaktifkan suara buzzer secara keseluruhan pada logger. Misalnya, Anda dapat mematikan suara buzzer jika SD Card tidak terpasang atau saat koneksi internet terputus.
+Modul ini digunakan untuk mengaktifkan atau menonaktifkan suara buzzer secara keseluruhan pada logger. Misalnya, Anda dapat mematikan suara buzzer jika SD Card tidak terpasang, koneksi internet terputus, atau ada sensor yang error (lihat 3.2.12). `state:0` mematikan **semua** pola peringatan (kecuali beep boot).
 
 #### SET (Aktif / Nonaktif)
 
@@ -2047,7 +2394,7 @@ Modul ini digunakan untuk mengaktifkan atau menonaktifkan suara buzzer secara ke
 
 ---
 
-### 3.25 MODBUSTCP — Modbus TCP Server
+### 3.22 MODBUSTCP — Modbus TCP Server
 
 > [!IMPORTANT]
 > Hanya tersedia pada **BL110** dan **BL1100** (varian dengan Ethernet W5500).
@@ -2063,19 +2410,27 @@ Modul ini digunakan untuk mengaktifkan atau menonaktifkan suara buzzer secara ke
 | Field | Tipe | Keterangan |
 |-------|------|------------|
 | `enable` | int | `1` = aktif, `0` = nonaktif |
-| `port` | int | TCP port Modbus (default: `502`) |
+| `port` | int | *(Opsional)* TCP port Modbus (1–65535, default: `502`). Jika tidak dikirim, port lama dipertahankan |
 
 **Response (OK):**
 ```json
 {"MODBUSTCP":{"status":"OK","enable":1,"port":502}}
 ```
 
-**Response (nonaktifkan):**
+**Request (nonaktifkan):**
 ```json
 {"MODBUSTCP":{"cmd":"SET","enable":0}}
 ```
+
+**Response (nonaktifkan):**
 ```json
 {"MODBUSTCP":{"status":"OK","enable":0,"port":502}}
+```
+
+**Response error:**
+```json
+{"MODBUSTCP":{"status":"ERR","msg":"missing cmd"}}
+{"MODBUSTCP":{"status":"ERR","msg":"unknown cmd"}}
 ```
 
 #### GET — Baca Konfigurasi
@@ -2094,59 +2449,34 @@ Modul ini digunakan untuk mengaktifkan atau menonaktifkan suara buzzer secara ke
 
 #### Register Mapping — Holding Register (FC03) & Input Register (FC04)
 
-Semua nilai float dikali **×10** dan disimpan sebagai `int16_t` (signed 16-bit).
+> [!IMPORTANT]
+> Tabel register bersifat **fixed (tidak berubah per mode/profile)** — total **23 register (addr 0–22)**. FC03 dan FC04 mengembalikan tabel yang identik.
+> Hanya register sensor (addr 4–11), kelembaban (17), baterai (18), dan suhu (19) yang merupakan nilai `× 10` (signed `int16_t`); register lainnya adalah nilai mentah (count, status, timestamp, sinyal).
 
-> **Contoh:** Muka air 3.45 m → Register bernilai `345`. Di SCADA, set multiplier `0.1`.
-
-##### Mode AWLR_TD (Transducer RS485)
-
-| Addr | Modbus Poll | Deskripsi | Satuan |
-|------|-------------|-----------|--------|
-| 0 | 40001 | Muka Air Tanah | m ×10 |
-| 1 | 40002 | Kedalaman Air | m ×10 |
-| 2 | 40003 | Jarak Sensor (raw) | m ×10 |
-| 3 | 40004 | Kedalaman Sumur (config) | m ×10 |
-| 4 | 40005 | Muka Air Awal (config) | m ×10 |
-| 5 | 40006 | Status Sensor | 0=error, 1=OK |
-| 6–13 | 40007–40014 | Sensor RS485 generik (slot 6–13) | ×10 |
-| 14 | 40015 | Kelembaban Logger (SHT30) | %Rh ×10 |
-| 15 | 40016 | Suhu Logger (SHT30) | °C ×10 |
-| 16 | 40017 | Tegangan Baterai (INA219) | V ×10 |
-| 17 | 40018 | Sinyal (0 = Ethernet) | — |
-| 18 | 40019 | Jumlah Restart Logger | count |
-| 19 | 40020 | Timestamp **YYMM** (mis. `2604` = Apr 2026) | — |
-| 20 | 40021 | Timestamp **DDHH** (mis. `2911` = tgl 29 jam 11) | — |
-| 21 | 40022 | Timestamp **mmss** (mis. `3005` = mnt 30 dtk 05) | — |
-
-##### Mode AWLR_US (Ultrasonic Senix RS232)
+> **Contoh:** Muka air 3.45 m → Register sensor bernilai `345`. Di SCADA, set multiplier `0.1` hanya untuk register `× 10`.
 
 | Addr | Modbus Poll | Deskripsi | Satuan |
 |------|-------------|-----------|--------|
-| 0 | 40001 | TMA (Tinggi Muka Air) | m ×10 |
-| 1 | 40002 | Jarak Sensor ke Permukaan | m ×10 |
-| 2 | 40003 | Elevasi Sensor (total_ref) | m ×10 |
-| 3 | 40004 | Status Sensor | 0=error, 1=OK |
-| 4–13 | 40005–40014 | Kosong (0) | — |
-| 14 | 40015 | Kelembaban Logger (SHT30) | %Rh ×10 |
-| 15 | 40016 | Suhu Logger (SHT30) | °C ×10 |
-| 16 | 40017 | Tegangan Baterai (INA219) | V ×10 |
-| 17 | 40018 | Sinyal (0 = Ethernet) | — |
-| 18 | 40019 | Jumlah Restart Logger | count |
-| 19 | 40020 | Timestamp **YYMM** (mis. `2604` = Apr 2026) | — |
-| 20 | 40021 | Timestamp **DDHH** (mis. `2911` = tgl 29 jam 11) | — |
-| 21 | 40022 | Timestamp **mmss** (mis. `3005` = mnt 30 dtk 05) | — |
+| 0 | 40001 | SINR — **ditulis router** via FC06/FC16 | dB |
+| 1 | 40002 | RSSI — **ditulis router** via FC06/FC16 | dBm |
+| 2 | 40003 | RSRP — **ditulis router** via FC06/FC16 | dBm |
+| 3 | 40004 | ID Alat (numeric dari `id_logger`) | — |
+| 4–11 | 40005–40012 | Sensor 1–8 (urut: RS485 → RS232 → Analog → Digital yang ditandai untuk dikirim ke server) | ×10 |
+| 12 | 40013 | Jumlah Restart Logger (clamp ≤ 32767) | count |
+| 13 | 40014 | Jumlah Pengiriman Gagal (`count_send_fail`) | count |
+| 14 | 40015 | Jumlah Pengiriman OK (`count_send_ok`) | count |
+| 15 | 40016 | Reserved (0) | — |
+| 16 | 40017 | Status SD Card (`last_save_status`) | 0=fail, 1=OK |
+| 17 | 40018 | Kelembaban Logger (SHT30) | %Rh ×10 |
+| 18 | 40019 | Tegangan Baterai (INA219) | V ×10 |
+| 19 | 40020 | Suhu Logger (SHT30) | °C ×10 |
+| 20 | 40021 | Timestamp **YYMM** (mis. `2604` = Apr 2026) | — |
+| 21 | 40022 | Timestamp **DDHH** (mis. `2911` = tgl 29 jam 11) | — |
+| 22 | 40023 | Timestamp **mmss** (mis. `3005` = mnt 30 dtk 05) | — |
 
-##### Mode Generic / Weather / Default
-
-| Addr | Modbus Poll | Deskripsi | Satuan |
-|------|-------------|-----------|--------|
-| 0–15 | 40001–40016 | Sensor urut (RS485 → RS232, max 16) | ×10 |
-| 16 | 40017 | Tegangan Baterai (INA219) | V ×10 |
-| 17 | 40018 | Sinyal (0 = Ethernet) | — |
-| 18 | 40019 | Jumlah Restart Logger | count |
-| 19 | 40020 | Timestamp **YYMM** (mis. `2604` = Apr 2026) | — |
-| 20 | 40021 | Timestamp **DDHH** (mis. `2911` = tgl 29 jam 11) | — |
-| 21 | 40022 | Timestamp **mmss** (mis. `3005` = mnt 30 dtk 05) | — |
+> [!NOTE]
+> **Addr 0–2 (SINR/RSSI/RSRP)** adalah mirror dari `external_signal_regs[]` yang **ditulis oleh router/modem** ke server (via FC06/FC16). Selain ketiga register tersebut, semua register bersifat read-only (write ke addr > 2 menghasilkan exception 0x02).
+> Slot sensor (addr 4–11) diisi maksimum 8 nilai, urut prioritas: item RS485 (semua slave aktif) → RS232 → Analog → Digital (hanya channel yang ditandai untuk dikirim ke server).
 
 ---
 
@@ -2159,8 +2489,8 @@ Semua nilai float dikali **×10** dan disimpan sebagai `int16_t` (signed 16-bit)
 5. **Setup → Read/Write Definition:**
    - **Function:** `03` Read Holding Registers
    - **Address:** `0` (0-based)
-   - **Count:** `22`
-6. Di kolom **Display**, set **Multiplier = 0.1** untuk register sensor (addr 0–15)
+   - **Count:** `23`
+6. Di kolom **Display**, set **Multiplier = 0.1** untuk register sensor (addr 4–11) dan addr 17/18/19
 
 > [!NOTE]
 > Konfigurasi disimpan ke Flash address `0x031000` dan persisten setelah reboot.
@@ -2175,13 +2505,13 @@ Semua nilai float dikali **×10** dan disimpan sebagai `int16_t` (signed 16-bit)
 |-----|-------|
 | Flash Address | `0x031000` |
 | W5500 Socket | Socket 4 |
-| Supported FC | FC03 (Holding), FC04 (Input) |
-| Max Registers | 22 register (0–21) |
+| Supported FC | FC03 (Holding Read), FC04 (Input Read), FC06 (Write Single — addr 0–2 saja), FC16/0x10 (Write Multiple — addr 0–2 saja) |
+| Max Registers | 23 register (0–22) |
 | Exception FC | 0x01 (Illegal Function), 0x02 (Illegal Address), 0x03 (Illegal Value) |
 
 ---
 
-### 3.26 POWER — Baca Data Daya Real-Time
+### 3.23 POWER — Baca Data Daya Real-Time
 
 > [!IMPORTANT]
 > Tersedia pada **semua varian** (BL11, BL110, BL1100).
@@ -2237,11 +2567,11 @@ Modul ini membaca tegangan (V), arus (A), dan daya (W) secara **live** dari sens
 
 > [!NOTE]
 > Nilai yang ditampilkan sudah menerapkan kalibrasi yang tersimpan di flash (`POWER_CAL`).
-> Kalibrasi default: `v_scale=1.0`, `i_mult=250.0`.
+> Kalibrasi default firmware: `v_scale=1.0`, `v_offset=0.0`, `i_mult=1.0`.
 
 ---
 
-### 3.27 POWER_CAL — Kalibrasi Sensor INA219
+### 3.24 POWER_CAL — Kalibrasi Sensor INA219
 
 > [!IMPORTANT]
 > Tersedia pada **semua varian**.
@@ -2334,9 +2664,9 @@ Nilai `out5.v` harus mendekati `5.02`.
   "POWER_CAL": {
     "status": "OK",
     "bat":   {"v_scale": 1.0248, "i_mult": 263.50},
-    "out5":  {"v_scale": 1.0040, "i_mult": 250.00},
-    "out12": {"v_scale": 1.0000, "i_mult": 250.00},
-    "out24": {"v_scale": 1.0000, "i_mult": 250.00},
+    "out5":  {"v_scale": 1.0040, "i_mult": 1.00},
+    "out12": {"v_scale": 1.0000, "i_mult": 1.00},
+    "out24": {"v_scale": 1.0000, "i_mult": 1.00},
     "valid": 1
   }
 }
@@ -2356,7 +2686,7 @@ Nilai `out5.v` harus mendekati `5.02`.
 | Field | Deskripsi |
 |-------|-----------|
 | `v_scale` | Faktor pengali tegangan (1.0 = tidak dikalibrasi) |
-| `i_mult`  | Multiplier arus dalam mA (default: 250.0) |
+| `i_mult`  | Multiplier arus dalam mA (default firmware: 1.0) |
 | `valid`   | `1` = kalibrasi sudah pernah di-SET dan disimpan ke flash |
 
 ---
@@ -2373,7 +2703,7 @@ Nilai `out5.v` harus mendekati `5.02`.
 {"POWER_CAL": {"status": "OK", "msg": "Reset ke default"}}
 ```
 
-Setelah RST: semua sensor kembali ke `v_scale=1.0`, `v_offset=0.0`, `i_mult=250.0`.
+Setelah RST: semua sensor kembali ke `v_scale=1.0`, `v_offset=0.0`, `i_mult=1.0`.
 
 ---
 
@@ -2381,9 +2711,563 @@ Setelah RST: semua sensor kembali ke `v_scale=1.0`, `v_offset=0.0`, `i_mult=250.
 
 | Key | Nilai |
 |-----|-------|
-| Flash Address | `0x008000` |
+| Flash Address | `0x008000` (`POWER_CAL_FLASH_ADDR`) |
 | Ukuran struct | `PowerCalConfig` — 4×float v_scale + 4×float v_offset + 4×float i_mult + 1×uint8_t valid |
-| Shared dengan | `BATT_CAL` pada BL11 (alamat sama, struct berbeda) |
+| Catatan | Dipakai untuk semua sensor INA219 (BL11/BL110/BL1100). Kalibrasi sensor Analog (`CAL`) memakai alamat terpisah `0x009000` |
+
+---
+
+### 3.25 EWS - Early Warning System
+
+#### 1. CHECK
+
+**Request:**
+```json
+{"EWS":{"cmd":"CHECK"}}
+```
+
+**Response:**
+```json
+{"EWS_EVENT":{"status":"OK"}}
+{"EWS_EVENT":{"status":"ERR"}}
+```
+
+#### 2. Enable EWS
+
+**Request:**
+```json
+{"EWS":{"cmd":"SET","enable":1}}
+```
+
+**Response:**
+```json
+{"EWS":{"status":"OK","enable":1}}
+{"EWS":{"status":"ERR","enable":1}}
+```
+
+#### 3. Disable EWS
+
+**Request:**
+```json
+{"EWS":{"cmd":"SET","enable":0}}
+```
+
+**Response:**
+```json
+{"EWS":{"status":"OK","enable":0}}
+```
+
+#### 4. Response MANUAL
+
+**Response:**
+```json
+{"EWS":{"status":"OK","mode":"MANUAL"}}
+```
+
+#### 5. CTRL Manual Level
+
+**Request:**
+```json
+{"EWS":{"cmd":"CTRL","level":1}}
+```
+
+**Response:**
+```json
+{"EWS_EVENT":{"status":"OK","level":1}}
+{"EWS_EVENT":{"status":"ERR","level":1}}
+```
+
+`CTRL` dipakai untuk mengirim level EWS secara manual. Command ini hanya dipakai saat EWS sudah aktif dan mode operasi sedang `MANUAL`. Field `level` adalah level yang ingin dikirim ke modul.
+
+| Level | Keterangan |
+|-------|------------|
+| 0 | Aman / normal |
+| 1 | Siaga 1 |
+| 2 | Siaga 2 |
+| 3 | Siaga 3 |
+| 4 | Sound off / mute |
+| 5 | Sound off / mode khusus |
+| 6 | Siaga 1 sound off |
+| 7 | Siaga 2 sound off |
+| 8 | Siaga 3 sound off |
+
+> [!NOTE]
+> Firmware hanya memvalidasi `level` 0–8 lalu meneruskan string `EWS>{level}` via serial ke modul EWS eksternal (RS232 port 1 / UART3). **Makna tiap level (Siaga 1/2/3, sound off) ditentukan oleh modul EWS eksternal**, bukan firmware logger.
+
+#### 6. SET AUTO
+
+**Request:**
+```json
+{
+  "EWS": {
+    "cmd": "SET",
+    "mode": "AUTO",
+    "source": {"type": "CALC", "name": "AWLR_TD.KEDALAMAN"},
+    "rules": [
+      {"min": 0.0,  "max": 10.0,   "level": 0},
+      {"min": 10.0, "max": 70.0,   "level": 1},
+      {"min": 70.0, "max": 90.0,   "level": 2},
+      {"min": 90.0, "max": 9999.0, "level": 3}
+    ]
+  }
+}
+```
+
+**Response:**
+```json
+{"EWS":{"status":"OK","mode":"AUTO"}}
+```
+
+`SET AUTO` dipakai agar firmware menentukan level EWS otomatis dari nilai source. Pada contoh ini source memakai hasil kalkulasi `AWLR_TD.KEDALAMAN`. Firmware membaca nilai tersebut lalu mencocokkannya ke `rules`: `0.0` sampai kurang dari `10.0` menjadi level `0`, `10.0` sampai kurang dari `70.0` menjadi level `1`, `70.0` sampai kurang dari `90.0` menjadi level `2`, dan `90.0` sampai kurang dari `9999.0` menjadi level `3`.
+
+> [!NOTE]
+> `source.type` yang didukung: **`RS485`**, **`RS232`**, **`ANALOG`**, **`DIGITAL`**, dan **`CALC`**. Untuk `CALC`, `source.name` dibatasi pada whitelist: `AWLR_TD.TMA`, `AWLR_TD.KEDALAMAN`, `AWLR_US.TMA`, `AWLR_US.JARAK_SENSOR`. Aturan `rules`: dievaluasi `min ≤ value < max`, wajib `min < max`, `level ≤ 8`, maksimum `EWS_MAX_RULES` aturan.
+
+---
+
+### 3.26 OTA — Firmware Update (BL11 / BL110 / BL1100)
+
+> [!CAUTION]
+> Tersedia pada **semua varian dengan modem**: BL110/BL1100 (download HTTP via Ethernet W5500) dan **BL11 (download HTTP via SIM7600)**. Hanya board tanpa modem sama sekali yang merespon `{"OTA":"INVALID"}`.
+> Proses 2 langkah: **GET** (download `.bin` ke SD Card) → **INSTALL** (trigger bootloader untuk flash chip).
+
+> [!NOTE]
+> **Perbedaan BL11 (SIM7600) vs BL110/BL1100 (Ethernet):**
+> - **BL11**: GET membalas ack awal `{"OTA":"GET_OK"}`, lalu MQTT **diputus** selama download (progress hanya tampil di **LCD lokal**, tidak ada `OTA_PROGRESS`/`BEGIN`/`END` via MQTT). Setelah selesai dan MQTT reconnect: `{"OTA":{"status":"OK"}}` (sukses) atau `{"OTA_DOWNLOAD":"ERR"}` (gagal). INSTALL menunggu ≈1.5 detik dan **hanya menulis BKP3R** (tidak menulis BKP4R — power-on modem ditangani `SIM7600_EnsureModuleOn()`).
+> - **BL110/BL1100**: streaming progress `BEGIN` → `OTA_PROGRESS` `0%..100%` → `END` dipublish via MQTT. INSTALL menunggu ≈1 detik dan menulis BKP3R **dan** BKP4R.
+
+#### Fitur Keamanan OTA
+
+| Fitur | Proteksi |
+|-------|----------|
+| Dua tahap update | `GET` hanya download file. Flash firmware baru hanya terjadi setelah command `INSTALL`. |
+| Validasi model dari `ver` | BL11 menerima model `BL-11`, BL110 menerima `BL-110`, BL1100 menerima `BL-1100`. |
+| Validasi model dari `file` | Nama file `.bin` juga harus sesuai model logger, sehingga `ver` dan `file` tidak bisa menunjuk model berbeda. |
+| Validasi versi aktif | Jika versi target sama dengan firmware saat ini, download tidak dijalankan. |
+| Sanitasi nama file | File harus plain filename, tidak boleh mengandung path separator (`/`, `\`, `:`), tidak boleh mengandung `..`, dan wajib berekstensi `.bin`. |
+| Download atomic | Data ditulis dulu ke `.filesystem/update.tmp`. File baru dipakai sebagai `.filesystem/update.bin` hanya setelah ukuran download lengkap. |
+| Validasi ukuran file | `Content-Length` wajib ada dan jumlah byte hasil download harus sama. Jika tidak cocok, update ditolak. |
+| Metadata versi | Versi target disimpan di `.filesystem/update.ver` dan dicek ulang saat `INSTALL`. |
+| Proteksi install saat download | `INSTALL` ditolak jika proses download masih berjalan. |
+| Timeout jaringan | Header, body, dan total download memiliki timeout sehingga logger tidak stuck saat internet/server bermasalah. |
+| IWDG internal tidak direfresh tanpa batas | OTA tidak lagi me-refresh watchdog internal terus-menerus saat download macet, sehingga kondisi hang tetap bisa dipulihkan. |
+| Cleanup saat gagal | File temporary dan metadata pending dihapus jika download gagal atau tidak lengkap. |
+| System log audit | Start download, ukuran file, hasil OK/ERR, alasan reject/error, dan event install versi lama → versi baru dicatat ke system log. |
+| Boot modem setelah OTA | (BL110/BL1100) Sebelum reset install, logger menulis flag `BKP4R` agar boot berikutnya tidak mem-pulse relay modem/router. BL11 tidak menulis BKP4R. |
+
+> [!IMPORTANT]
+> Format OTA bersifat strict. Gunakan `BL-11-v...` untuk BL11, `BL-110-v...` untuk BL110, dan `BL-1100-v...` untuk BL1100. Format tanpa strip seperti `BL1100-v2.0.4` ditolak.
+
+#### GET — Download Firmware
+
+**Request:**
+```json
+{
+  "OTA": {
+    "cmd": "GET",
+    "ver": "BL-1100-v2.0.4",
+    "file": "BL-1100-v2.0.4.bin"
+  }
+}
+```
+
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | `"GET"` |
+| `ver` | string | Versi firmware target. Format: `BL-11-vX.Y.Z`, `BL-110-vX.Y.Z`, atau `BL-1100-vX.Y.Z` |
+| `file` | string | Nama file firmware `.bin`. Harus sama dengan `ver + ".bin"`. URL final: `http://be-stesy.cloud/firmware/models/{file}` |
+
+**Response jika berhasil (BL110/BL1100, via MQTT):**
+```json
+{"OTA_DOWNLOAD":"BEGIN"}
+{"OTA_PROGRESS":"0%"}
+{"OTA_PROGRESS":"1%"}
+...
+{"OTA_PROGRESS":"100%"}
+{"OTA_DOWNLOAD":"END"}
+{"OTA":{"status":"OK"}}
+```
+
+**Response jika gagal (BL110/BL1100):**
+```json
+{"OTA_DOWNLOAD":"BEGIN"}
+{"OTA_PROGRESS":"0%"}
+...
+{"OTA_DOWNLOAD":"ERR"}
+{"OTA":{"status":"ERR"}}
+```
+
+**Response (BL11 / SIM7600):** ack awal, lalu progress hanya di LCD lokal, lalu hasil akhir setelah MQTT reconnect:
+```json
+{"OTA":"GET_OK"}
+... (MQTT diputus selama download — progress di LCD) ...
+{"OTA":{"status":"OK"}}      ← sukses
+{"OTA_DOWNLOAD":"ERR"}        ← gagal
+```
+
+**Response status khusus:**
+```json
+{"OTA":"INVALID"}
+{"OTA":"GET_EXISTING"}
+```
+
+> [!NOTE]
+> Download bersifat **non-blocking** — state machine berjalan di tick foreground dengan batas kerja per loop agar logger tetap membaca sensor, publish MQTT, dan save data ke SD.
+> Data sementara disimpan sebagai `.filesystem/update.tmp`, lalu di-commit menjadi `.filesystem/update.bin` hanya jika ukuran download lengkap dan valid.
+> Versi target disimpan di `.filesystem/update.ver` untuk validasi saat `INSTALL`.
+> Progress dikirim sebagai persen aktual dari `0%` sampai `100%`; firmware menaikkan progress satu-per-satu hingga persentase yang tercapai.
+> Jika gagal, hanya progress yang sudah sempat terkirim yang muncul sebelum `ERR`.
+> Timeout header HTTP = 5s, timeout body tanpa data = 15s, timeout total download = 5 menit.
+
+---
+
+#### INSTALL — Trigger Bootloader Install
+
+**Request:**
+```json
+{"OTA": {"cmd": "INSTALL"}}
+```
+
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | `"INSTALL"` |
+
+**Response jika file ditemukan dan valid:**
+```json
+{"OTA_INSTALL":{"status":"PROCESS"}}
+```
+
+**Response jika tidak ada file atau file tidak valid:**
+```json
+{"OTA_INSTALL":{"status":"ERR"}}
+```
+
+> [!IMPORTANT]
+> Mekanisme:
+> 1. Pastikan tidak ada download yang sedang berjalan.
+> 2. Cek keberadaan `.filesystem/update.bin` di SD Card.
+> 3. Baca `.filesystem/update.ver` dan validasi model/versi terhadap firmware saat ini.
+> 4. Catat system log event update, contoh `Install event BL110-v2.0.0 -> BL-110-v2.0.1`.
+> 5. Tulis magic word `0x07A07A` ke RTC Backup Register **BKP3R**.
+> 6. Tulis flag `0x0A7A55A5` ke **BKP4R** agar boot aplikasi berikutnya tidak mem-pulse relay modem/router.
+> 7. Tunggu ~1 detik (memastikan response MQTT dan system log terproses).
+> 8. `NVIC_SystemReset()` — bootloader baca BKP3R → mulai install dari SD.
+> 9. Logger restart otomatis setelah install selesai.
+
+---
+
+#### State Machine OTA Download
+
+| State | Aksi |
+|-------|------|
+| `IDLE` | Menunggu command GET |
+| `DNS` | Resolve hostname → IP (semi-blocking ~2s) |
+| `CONNECT` | Buka socket TCP + connect |
+| `SEND_REQ` | Kirim HTTP GET request |
+| `RECV_HEADER` | Terima HTTP header, parse `Content-Length` |
+| `RECV_BODY` | Streaming chunk 4KB ke SD Card dengan batas waktu/byte per loop |
+| `DONE` | Validasi ukuran, commit `update.tmp` → `update.bin`, simpan metadata versi, publish OK |
+| `ERROR` | Cleanup socket/file sementara, hapus metadata pending, publish error |
+
+---
+
+### 3.27 GNSS — Profile Telemetry Mapping
+
+Profile **GNSS** dipakai saat logger butuh memancarkan posisi/satellite info dari **receiver NMEA eksternal** ke MQTT sebagai sensor telemetry. Aktifkan via `SYSTEM SET_MODE`:
+
+```json
+{"SYSTEM": {"cmd": "SET_MODE", "mode": "GNSS"}}
+```
+
+> [!IMPORTANT]
+> **Dua sumber GPS terpisah di firmware ini** — jangan tertukar:
+>
+> | Sumber | UART | Dipakai oleh |
+> |--------|------|--------------|
+> | **GPS internal NEO-6M** | UART6 (Serial 6) | `INFO GET` (latitude/longitude/altitude di index 14–16), SD Card CSV save, posisi di Black-Box log |
+> | **NMEA receiver RS232** | UART3 (RS232 port 1) | **HANYA MQTT telemetry slot sensor1–sensor9** saat profile GNSS aktif |
+>
+> Mode GNSS men-*reserve* RS232 port 1 untuk NMEA eksternal (baudrate **9600 8N1**, tidak bisa diubah). Selama mode aktif, port 1 **tidak bisa** dipakai sebagai sensor RS232 biasa.
+> Receiver NMEA RS232 **tidak mempengaruhi** nilai GPS yang tersimpan di SD atau yang dibalas oleh `INFO GET` — itu tetap berasal dari NEO-6M internal di UART6.
+
+#### NMEA Sentence yang Di-parse
+
+| Sentence | Field yang Diambil |
+|----------|--------------------|
+| `$..GGA` | UTC time, latitude, longitude, fix quality, num satellites, HDOP, altitude, geoid separation |
+| `$..RMC` | Status (A/V), latitude, longitude, speed (knots), course (heading), date |
+| `$..ZDA` | UTC time, day, month, year |
+
+Talker ID yang dikenali: `GP` (GPS), `GN` (multi-GNSS), `GL` (GLONASS), `GA` (Galileo).
+
+---
+
+#### MQTT Telemetry Slot — sensor1 s/d sensor9
+
+Saat profile GNSS aktif, **slot sensor1–sensor9 di-reserve** untuk data GNSS. Sensor user (RS485/RS232/Analog/Digital) digeser mulai dari `sensor10`.
+
+```json
+{
+  "id_alat": "logger_001",
+  "jam": "14:30:00",
+  "hari": "2026-05-28",
+  "sensor1": {"nama": "UTC",              "nilai": "14:30:45",  "satuan": "UTC"},
+  "sensor2": {"nama": "Date",             "nilai": "2026-05-28","satuan": "-"},
+  "sensor3": {"nama": "Latitude",         "nilai": -7.250123,   "satuan": "deg"},
+  "sensor4": {"nama": "Longitude",        "nilai": 110.369456,  "satuan": "deg"},
+  "sensor5": {"nama": "Altitude",         "nilai": 125.45,      "satuan": "m"},
+  "sensor6": {"nama": "Satellites",       "nilai": 12,          "satuan": "-"},
+  "sensor7": {"nama": "HDOP",             "nilai": 1.23,        "satuan": "-"},
+  "sensor8": {"nama": "Fix_Quality",      "nilai": 1,           "satuan": "-"},
+  "sensor9": {"nama": "Geoid_Separation", "nilai": -28.50,      "satuan": "m"},
+  "sensor10": { "...": "..." }
+}
+```
+
+| Slot | Field | Deskripsi |
+|------|-------|-----------|
+| `sensor1` | UTC time | Format `HH:MM:SS` dari GGA atau ZDA |
+| `sensor2` | UTC date | Format `YYYY-MM-DD` dari ZDA |
+| `sensor3` | Latitude | Decimal degrees (positif=N, negatif=S) |
+| `sensor4` | Longitude | Decimal degrees (positif=E, negatif=W) |
+| `sensor5` | Altitude | Meter di atas MSL |
+| `sensor6` | Satellites | Jumlah satelit yang dipakai untuk fix |
+| `sensor7` | HDOP | Horizontal Dilution of Precision |
+| `sensor8` | Fix Quality | 0=no fix, 1=GPS, 2=DGPS, 4=RTK Fix, 5=RTK Float, 6=Estimated |
+| `sensor9` | Geoid Separation | Selisih antara ellipsoid WGS-84 dan geoid (meter) |
+
+---
+
+#### Stale Detection
+
+Jika receiver tidak mengirim sentence valid selama **60 detik** (`GNSS_FIX_STALE_MS = 60000`), seluruh slot GNSS di-reset ke `0` / string kosong dan `valid` di-set `false`. Konsumen MQTT akan melihat nilai 0 atau placeholder.
+
+---
+
+### 3.28 CONTROL — Write Register Kontrol RS485
+
+Digunakan untuk menulis single register Modbus RTU melalui RS485.
+
+**Request:**
+```json
+{
+  "CONTROL": {
+    "cmd": "WRITE",
+    "type": "RS485",
+    "slave": 1,
+    "addr": 2,
+    "val": 1
+  }
+}
+```
+
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | `"WRITE"` |
+| `type` | string | `"RS485"` atau `"rs485"` |
+| `slave` | number | Slave ID Modbus |
+| `addr` | number | Register address |
+| `val` | number | Nilai register 16-bit |
+
+**Response sukses:**
+```json
+{"CONTROL WRITE":"OK","type":"RS485","slave":1,"addr":2,"val":1}
+```
+
+**Response error:**
+```json
+{"CONTROL":"ERR param"}
+{"CONTROL WRITE":"ERR param (slave/addr/val)"}
+{"CONTROL WRITE":"ERR status -1"}
+{"CONTROL WRITE":"ERR unknown type"}
+{"CONTROL":"ERR unknown cmd"}
+```
+
+---
+
+### 3.29 BT — Mode Parser Bluetooth
+
+Mengubah cara firmware membaca payload dari Bluetooth SPP.
+
+#### SET
+
+**Request:**
+```json
+{"BT":{"cmd":"SET","mode":"framed"}}
+```
+
+| Field | Tipe | Deskripsi |
+|-------|------|-----------|
+| `cmd` | string | `"SET"` |
+| `mode` | string | `"raw"` atau `"framed"` |
+
+**Response:**
+```json
+{"BT":{"status":"OK","mode":"raw"}}
+{"BT":{"status":"OK","mode":"framed"}}
+```
+
+#### GET
+
+**Request:**
+```json
+{"BT":{"cmd":"GET"}}
+```
+
+**Response:**
+```json
+{"BT":{"mode":"raw"}}
+{"BT":{"mode":"framed"}}
+```
+
+**Response error:**
+```json
+{"BT":{"status":"ERR","msg":"missing cmd"}}
+{"BT":{"status":"ERR","msg":"missing mode"}}
+{"BT":{"status":"ERR","msg":"mode must be raw or framed"}}
+{"BT":{"status":"ERR","msg":"unknown cmd"}}
+```
+
+---
+
+### 3.30 USB — USB Flashdisk via CH376
+
+Module ini mengakses USB flashdisk melalui CH376. File log disalin dari SD Card folder `LOGS/` ke flashdisk.
+
+#### GET
+
+**Request:**
+```json
+{"USB":{"cmd":"GET"}}
+```
+
+**Response:**
+```json
+{"USB":{"status":"CONNECTED"}}
+{"USB":{"status":"DISCONNECTED"}}
+```
+
+#### LIST
+
+**Request:**
+```json
+{"USB":{"cmd":"LIST"}}
+```
+
+**Response:**
+```json
+{"USB":{"cmd":"LIST","files":["2026-05-01.csv","2026-05-02.csv"],"count":2}}
+```
+
+#### COPY
+
+**Request:**
+```json
+{"USB":{"cmd":"COPY","src":"2026-05-01.csv"}}
+```
+
+**Response awal:**
+```json
+{"USB":{"status":"OK","msg":"started"}}
+```
+
+**Event selama proses:**
+```json
+{"USB":{"progress":25}}
+{"USB":{"progress":100}}
+{"USB":{"status":"FILE_OK","file":"2026-05-01.csv","size":"12345"}}
+{"USB":{"status":"DONE","cmd":"COPY","file":"2026-05-01.csv","size":"12345"}}
+```
+
+#### COPY_ALL
+
+**Request:**
+```json
+{"USB":{"cmd":"COPY_ALL"}}
+```
+
+**Response awal:**
+```json
+{"USB":{"status":"OK","msg":"started"}}
+```
+
+**Response selesai:**
+```json
+{"USB":{"status":"DONE","cmd":"COPY_ALL","size":"37035"}}
+```
+
+**Response error umum:**
+```json
+{"USB":{"status":"ERR","msg":"missing cmd"}}
+{"USB":{"status":"ERR","msg":"not connected"}}
+{"USB":{"status":"ERR","msg":"busy"}}
+{"USB":{"status":"ERR","msg":"missing src"}}
+{"USB":{"status":"ERR","msg":"not found: 2026-05-01.csv"}}
+{"USB":{"status":"ERR","msg":"cannot open LOGS"}}
+{"USB":{"status":"ERR","msg":"no files found"}}
+{"USB":{"status":"ERR","msg":"unknown cmd: FORMAT"}}
+```
+
+---
+
+### 3.31 DWIN HMI Display — Panel Status Lokal (Output-Only)
+
+Logger dapat menggerakkan **DWIN serial HMI display** (panel DGUS) sebagai panel status lokal, terpisah dari MQTT/LCD karakter. Panel di-update setiap siklus tampilan main-loop dan menampilkan telemetry live. **Tidak ada command JSON/MQTT** untuk HMI — ini murni output yang didorong firmware.
+
+> Sumber: `Core/Src/hmi_dwin.c` + `Core/Inc/hmi_dwin.h` (layer protokol DWIN), `Core/Src/hmi_softserial.c` + `Core/Inc/hmi_softserial.h` (layer transport bit-bang). Kontrak diuji oleh `tests/test_hmi_softserial_contract.py`.
+
+#### Transport — Software Serial (Bit-Bang)
+
+| Item | Nilai |
+|------|-------|
+| Pin TX | **PD0** (`HMI_SOFT_TX`, GPIO output, idle HIGH) |
+| Pin RX | **PD1** (`HMI_SOFT_RX`, label tersedia; driver **TX-only**, tidak ada receive) |
+| Timer | **TIM4** mode interrupt — `TIM4_IRQHandler` memanggil `HMI_SoftSerial_TimerIRQ()` langsung (HAL handler di-bypass) |
+| Baud | ≈ **115200 8N1** (TIM4 @64 MHz, Prescaler 0, Period/ARR **555** → ~115108 Hz, 1 interrupt per bit) |
+| Framing | 1 start bit (LOW), 8 data bit LSB-first, 1 stop bit (HIGH) — 10 IRQ per byte |
+| Buffer | TX circular buffer 256 byte; `Write` blocking ≤1000 ms saat penuh; `Flush` tunggu ≤2000 ms |
+
+#### Format Frame DWIN
+
+Semua frame berheader DWIN `0x5A 0xA5`, diikuti byte panjang, command `0x82` (write VP), alamat VP 16-bit (big-endian), lalu payload:
+
+| Operasi | Byte Frame |
+|---------|------------|
+| Write U16 ke VP | `5A A5 05 82 <addrHi> <addrLo> <valHi> <valLo>` |
+| Reset / re-init page | `5A A5 07 82 00 04 55 AA 5A A5` |
+| Set RTC clock (VP 0x009C) | `5A A5 0B 82 00 9C 5A A5 <yy> <mm> <dd> <hh> <mi> <ss>` |
+| Set backlight (VP 0x0082) | `5A A5 04 82 00 82 <brightness 0..100>` |
+
+#### Scaling
+
+Nilai float (baterai, suhu, kelembaban, slot sensor) dikirim via `HMI_DWIN_WriteScaled100()`: nilai negatif di-clamp ke 0, dikali **×100**, di-clamp ke 65535, dikirim sebagai U16. HMI harus membagi 100 untuk memulihkan nilai engineering (mis. 12.34 V → `1234`; 25.5 °C → `2550`).
+
+#### Peta VP Register (`HMI_DWIN_ADDR_*`)
+
+| Alamat VP | Simbol | Makna | Nilai ditulis |
+|-----------|--------|-------|---------------|
+| `0x1000` | `RTC_STATUS` | Status RTC | konstan `2` |
+| `0x1100` | `DEVICE` | Status device | konstan `3` |
+| `0x1200` | `COMM` | State komunikasi/MQTT | `5`=connected & tanpa backlog, `2`=Ethernet belum siap, `3`=SIM7600 publish terakhir gagal |
+| `0x1300` | `SD_CARD` | Status SD card | `4`=save terakhir OK, `2`=save terakhir gagal |
+| `0x1400` | `BATT` | Tegangan baterai | INA219 `voltage_V` ×100 |
+| `0x1500` | `TEMP` | Suhu | SHT30 `temperature_c` ×100 |
+| `0x1600` | `HUMD` | Kelembaban | SHT30 `humidity_rh` ×100 |
+| `0x1700` | `RESTART` | Jumlah reboot | `logger_info_config.reboot_count` |
+| `0x1800` | `CTRL` | Control (reserved) | *(didefinisi, tidak ditulis Update)* |
+| `0x1900` | `WEATHER` | Flag siang/malam | `1` jika jam RTC 6–17, selain itu `0` |
+| `0x2000` | `DATA1` | Slot sensor 1 | nilai telemetry slot ×100 |
+| `0x2000 + (n-1)·0x0100` | (slot 2–8) | Slot sensor 2–8 | nilai telemetry slot ×100 (VP 0x2000, 0x2100 … 0x2700) |
+
+#### Update Mapping (`HMI_DWIN_Update`)
+
+Dipanggil sekali per siklus tampilan dari main-loop (setelah `Display_Update`). Tiap panggilan menulis RTC_STATUS, DEVICE, COMM (`hmi_comm_state()`), SD_CARD (`last_save_status`), BATT/TEMP/HUMD (scaled), RESTART (`reboot_count`), WEATHER (siang/malam dari jam RTC), lalu loop slot 1–8 membaca `SensorIter_GetTelemetrySlotValue(slot, g_profile.profile_id, &value)` → scaled ×100 ke VP DATA. Sumber data: global `now`, `sht30Data`, `ina219_input`, `logger_info_config`, `last_save_status`, `last_mqtt_publish_status`.
+
+#### Inisialisasi & Catatan
+
+- `HMI_DWIN_Init(&htim4)` dipanggil sekali saat boot (setelah init LCD I²C): init software-serial, set ready flag, kirim `HMI_DWIN_Reset()`. `HMI_DWIN_SetClock()` dan `HMI_DWIN_SetBacklight()` tersedia sebagai API tapi tidak dipanggil di jalur update periodik.
+- Slot yang dirender hanya **1–8** (profile-id-aware, memakai iterator telemetry yang sama dengan MQTT). Slot diagnostik 10+ dan slot GNSS sensor9 tidak dirender.
+- Penulisan bersifat best-effort: frame di-drop diam-diam jika driver belum siap; driver software-serial hanya blocking dalam batas waktu terbatas.
 
 ---
 
@@ -2417,15 +3301,18 @@ mqtt.beacontelemetry.com:8383
 | `0x00A000` | 4KB | `NET` | Ethernet config (IP, Subnet, GW, DNS, DHCP) |
 | `0x00B000` | 4KB | MQTT | MQTT broker/topics *(via PRODUCTION)* |
 | `0x00C000` | 4KB | `INFO` | Logger info (SN, ID, intervals) |
-| `0x00D000` | 4KB | HTTP | HTTP endpoint config |
+| `0x00D000` | 4KB | HTTP / reserved | Tidak ada command konfigurasi HTTP aktif; HTTP server memakai port tetap di firmware |
 | `0x00E000` | 4KB | `FTP` | FTP server config |
 | `0x00F000` | 4KB | `SIM` | SIM / APN config |
 | `0x010000` | 5x4KB | `SENSORS` RS485 | Modbus slave 1-5 |
 | `0x020000` | 2x4KB | `SENSORS` RS232 | RS232 port 1-2 |
 | `0x022000` | 8x4KB | `SENSORS` ANALOG | Analog ch 0-7 |
 | `0x02A000` | 4x4KB | `SENSORS` DIGITAL | Digital ch 1-4 |
-| `0x030000` | 4KB | `SYSTEM` | Mode sistem aktif (AWLR_TD, AWLR_US, WEATHER, DEF) + profil AWLR |
+| `0x030000` | 4KB | `SYSTEM` | Mode sistem aktif (AWLR_TD, AWLR_US, WEATHER, GNSS, DEFAULT) + profil aktif |
 | `0x031000` | 4KB | `MODBUSTCP` | Modbus TCP Server config (enable, port) |
+| `0x032000` | 4KB | `EWS` | Early Warning System config (enable, mode, source, rules) |
+| `0x033000` | 4KB | `GCM_MAP` | GCM telemetry-slot → register mapping (per modul 1–5) |
+| `0x034000` | 4KB | `GCM` | GCM master switch + binding slave (enable, id1–id5) |
 ---
 
 ## 6. Error Response Standards
@@ -2472,5 +3359,6 @@ Sistem STM32 RTC memiliki 20 buah Backup Registers (masing-masing 32-bit, dari `
 | **`BKP1R`** | Jumlah Restart Harian (`db_reboot_daily`) | Jumlah Pengiriman GAGAL (`db_fail`) | Dipakai oleh `BKP_SaveCounters()` untuk melacak counter gagal & reboot sistem. |
 | **`BKP2R`** | *Kosong* | *Kosong* | Tidak terpakai (Tersedia untuk penggunaan masa depan). |
 | **`BKP3R`** | `0x0007` | `0xA07A` | Dipakai khusus untuk instruksi pelatuk (*trigger*) **OTA Update** dengan Magic Word `0x07A07A` (32-bit value). |
-| **`BKP4R` - `BKP19R`**| *Kosong* | *Kosong* | Tidak terpakai. |
+| **`BKP4R`** | `0x0A7A` | `0x55A5` | Flag boot setelah OTA (`0x0A7A55A5`) agar aplikasi tidak mem-pulse relay modem/router. Dibaca lalu di-clear saat boot aplikasi. |
+| **`BKP5R` - `BKP19R`**| *Kosong* | *Kosong* | Tidak terpakai. |
 

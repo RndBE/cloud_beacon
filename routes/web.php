@@ -94,14 +94,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.sensors.set');
     Route::post('api/mqtt/sensors/del', [MqttController::class, 'deleteSensorConfig'])
         ->name('api.mqtt.sensors.del');
+    Route::post('api/mqtt/sensors/ctrl', [MqttController::class, 'ctrlSensorConfig'])
+        ->name('api.mqtt.sensors.ctrl');
     Route::post('api/mqtt/sensors/confirm', [MqttController::class, 'confirmSensorSync'])
         ->name('api.mqtt.sensors.confirm');
     Route::post('api/mqtt/reboot', [MqttController::class, 'reboot'])
         ->name('api.mqtt.reboot');
-    Route::post('api/mqtt/interval', [MqttController::class, 'setInterval'])
-        ->name('api.mqtt.interval');
-    Route::post('api/mqtt/interval/get', [MqttController::class, 'getInterval'])
-        ->name('api.mqtt.interval.get');
+    // INTERVAL routes removed — firmware locks read/send interval to 1 min (spec §2).
     Route::post('api/mqtt/ftp/set', [MqttController::class, 'setFtp'])
         ->name('api.mqtt.ftp.set');
     Route::post('api/mqtt/ftp/test', [MqttController::class, 'testFtp'])

@@ -188,14 +188,18 @@ class MqttService
                 'interval_read'     => isset($info[22]) ? (int) $info[22] : null,
                 'interval_send'     => isset($info[23]) ? (int) $info[23] : null,
                 'max_reset'         => isset($info[24]) ? (int) $info[24] : null,
+                // [25] Connection Mode per spec §3.4: 1=Ethernet, 2=Cellular, 3=WiFi/reserved.
                 'connection_type'   => isset($info[25]) ? match ((int) $info[25]) {
-                    0 => 'cellular',
                     1 => 'ethernet',
+                    2 => 'cellular',
+                    3 => 'wifi',
                     default => null,
                 } : null,
                 'signal_strength'   => isset($info[26]) && is_numeric($info[26]) ? (int) $info[26] : null,
                 // [27] System Mode in the current table. Some devices still send it as the last value at [26].
                 'logger_mode'       => self::normalizeSystemMode($modeValue),
+                // [28] Firmware Version (always last), e.g. "BL110-v2.0.0".
+                'firmware_version'  => isset($info[28]) ? (string) $info[28] : null,
             ];
         }
 
@@ -253,9 +257,35 @@ class MqttService
 
         return match ($normalized) {
             'DEF' => 'DEFAULT',
-            'DEFAULT', 'AWLR_TD', 'AWLR_US', 'WEATHER' => $normalized,
+            // Active modes per spec §3.14 / §3.4. WEATHER kept only for legacy stored values.
+            'DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'WEATHER' => $normalized,
             default => null,
         };
+    }
+
+    /**
+     * Detect a firmware error acknowledgement per spec §6.
+     *
+     * Handles both the flat form {"RS485 SET":"ERR"} and the detailed form
+     * {"MODULE":{"status":"ERR","msg":"..."}}.
+     */
+    public static function isErrorAck(string $rawMessage): bool
+    {
+        $data = json_decode($rawMessage, true);
+        if (!is_array($data)) {
+            return false;
+        }
+
+        foreach ($data as $value) {
+            if (is_string($value) && strtoupper(trim($value)) === 'ERR') {
+                return true;
+            }
+            if (is_array($value) && strtoupper((string) ($value['status'] ?? '')) === 'ERR') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // =========================================================================
@@ -307,8 +337,9 @@ class MqttService
     {
         $sensors = [];
 
-        // RS485 — cfg: [slave_id, device_name, function_code, fallback_register_address, item_count, baudrate, serial_format]
-        //          s:   [name, scale, unit, lcd, sd, server, register_address, fast_poll]
+        // RS485 — cfg: [slave_id, device_name, function_code, fallback_register_address, baudrate, serial_format]
+        //          s:   [sensor_type, scale, unit, register_address, reg_count, fast_poll]
+        // (Protocol v3: item_count removed from cfg; lcd/sd/server map flags removed from s; reg_count added.)
         $rs485Devices = $raw['rs485'] ?? $raw['RS485'] ?? [];
         foreach ($rs485Devices as $device) {
             $cfg = $device['cfg'] ?? [];
@@ -316,33 +347,35 @@ class MqttService
             $deviceName = $cfg[1] ?? null;
             $funcCode = $cfg[2] ?? null;
             $fallbackRegAddr = $cfg[3] ?? null;
-            $quantity = $cfg[4] ?? null;
-            $baudrate = $cfg[5] ?? null;
-            $serialFormat = $cfg[6] ?? null;
+            $baudrate = $cfg[4] ?? null;
+            $serialFormat = $cfg[5] ?? null;
 
             foreach (self::normalizeSensorRows($device['s'] ?? []) as $s) {
+                $regCount = isset($s[4]) ? (int) $s[4] : 1;
                 $sensors[] = [
                     'connection_type' => 'rs485',
                     'name' => $s[0] ?? 'Unknown',
                     'device_name' => $deviceName,
                     'scale_factor' => $s[1] ?? 1,
                     'unit' => is_string($s[2] ?? null) ? $s[2] : '',
-                    'lcd_enabled' => (bool) ($s[3] ?? false),
-                    'log_enabled' => (bool) ($s[4] ?? false),
-                    'send_enabled' => (bool) ($s[5] ?? false),
                     'modbus_slave_id' => $slaveId,
                     'function_code' => $funcCode,
-                    'register_address' => $s[6] ?? $fallbackRegAddr,
-                    'quantity' => $quantity,
+                    'register_address' => $s[3] ?? $fallbackRegAddr,
+                    'reg_count' => $regCount,
+                    'quantity' => $regCount, // 'quantity' column repurposed to store reg_count (1=U16, 2=FLOAT32, 4=U32)
                     'baudrate' => isset($baudrate) ? (int) $baudrate : null,
                     'serial_format' => is_string($serialFormat) ? $serialFormat : null,
-                    'fast_poll' => (bool) ($s[7] ?? false),
+                    'fast_poll' => (bool) ($s[5] ?? false),
+                    // lcd/sd/server were removed from the protocol; firmware always shows/saves/sends.
+                    // Kept here as vestigial-true so existing app data & sync diff stay stable.
+                    'lcd_enabled' => true,
+                    'log_enabled' => true,
+                    'send_enabled' => true,
                 ];
             }
         }
 
-        // RS232 — p: port
-        //          s: [[name, scale, unit, lcd, sd, server], ...]
+        // RS232 — p: port; s: [[sensor_type, scale, unit], ...]
         $rs232Devices = $raw['rs232'] ?? $raw['RS232'] ?? [];
         foreach ($rs232Devices as $device) {
             $port = $device['p'] ?? 1;
@@ -354,24 +387,16 @@ class MqttService
                     'device_name' => null,
                     'scale_factor' => $s[1] ?? 1,
                     'unit' => is_string($s[2] ?? null) ? $s[2] : '',
-                    'lcd_enabled' => (bool) ($s[3] ?? false),
-                    'log_enabled' => (bool) ($s[4] ?? false),
-                    'send_enabled' => (bool) ($s[5] ?? false),
                     'port' => $port,
+                    'lcd_enabled' => true,
+                    'log_enabled' => true,
+                    'send_enabled' => true,
                 ];
             }
         }
 
-        // Analog — ch: channel
-        // New protocol: s: [[name, min_value, max_value, unit, map_lcd, map_sd, map_server]]
-        //   s[0] = parameter name
-        //   s[1] = batas bawah (lower bound / min)
-        //   s[2] = batas atas  (upper bound / max)
-        //   s[3] = satuan (unit)
-        //   s[4] = map lcd
-        //   s[5] = map sd
-        //   s[6] = map server
-        // Device may send key as 'analog' or 'ANALOG'
+        // Analog — ch: channel, mode: 0 voltage / 1 current.
+        //   s: [[name, min_val, max_val, unit]]  (lcd/sd/server map flags removed)
         $analogDevices = $raw['analog'] ?? $raw['ANALOG'] ?? [];
         foreach ($analogDevices as $device) {
             $channel = $device['ch'] ?? 0;
@@ -385,42 +410,57 @@ class MqttService
                     'min_value' => isset($s[1]) ? (float) $s[1] : 0,   // batas bawah
                     'max_value' => isset($s[2]) ? (float) $s[2] : 100, // batas atas
                     'unit' => is_string($s[3] ?? null) ? $s[3] : '',
-                    'lcd_enabled' => (bool) ($s[4] ?? false),
-                    'log_enabled' => (bool) ($s[5] ?? false),
-                    'send_enabled' => (bool) ($s[6] ?? false),
                     'channel' => $channel,
                     'analog_mode' => isset($mode) ? (int) $mode : null,
+                    'lcd_enabled' => true,
+                    'log_enabled' => true,
+                    'send_enabled' => true,
                 ];
             }
         }
 
         // Digital — ch: channel, mode: 0 logic input, 1/2 pulse input, 3 logic output.
+        //   mode 0: [name, label_high, label_low, debounce_ms, invert_logic]
+        //   mode 1/2: [name, pulse_submode, scale, unit, timeout_sec]
+        //   mode 3: [name, default_state, failsafe]
         $digitalDevices = $raw['digital'] ?? $raw['DIGITAL'] ?? [];
         foreach ($digitalDevices as $device) {
             $channel = $device['ch'] ?? 1;
             $mode = isset($device['mode']) ? (int) $device['mode'] : 0;
 
             foreach (self::normalizeSensorRows($device['s'] ?? []) as $s) {
-                $unit = match ($mode) {
-                    1, 2 => is_string($s[3] ?? null) ? $s[3] : '',
-                    3 => is_string($s[3] ?? null) ? $s[3] : '-',
-                    default => '',
-                };
-
-                $sensors[] = [
+                $entry = [
                     'connection_type' => 'digital',
                     'name' => $s[0] ?? 'Unknown',
                     'device_name' => null,
-                    'scale_factor' => in_array($mode, [1, 2], true) ? (float) ($s[2] ?? 1) : null,
-                    'min_value' => 0,
-                    'max_value' => $mode === 3 ? 1 : 100,
-                    'unit' => $unit,
-                    'lcd_enabled' => (bool) ($s[$mode === 3 ? 4 : 5] ?? false),
-                    'log_enabled' => (bool) ($s[$mode === 3 ? 5 : 6] ?? false),
-                    'send_enabled' => (bool) ($s[$mode === 3 ? 6 : 7] ?? false),
                     'channel' => $channel,
                     'analog_mode' => $mode,
+                    'min_value' => 0,
+                    'max_value' => $mode === 3 ? 1 : 100,
+                    'unit' => '',
+                    'scale_factor' => null,
+                    'lcd_enabled' => true,
+                    'log_enabled' => true,
+                    'send_enabled' => true,
                 ];
+
+                if ($mode === 0) {
+                    $entry['label_high'] = is_string($s[1] ?? null) ? $s[1] : null;
+                    $entry['label_low'] = is_string($s[2] ?? null) ? $s[2] : null;
+                    $entry['debounce_ms'] = isset($s[3]) ? (int) $s[3] : null;
+                    $entry['invert_logic'] = (bool) ($s[4] ?? false);
+                } elseif ($mode === 1 || $mode === 2) {
+                    $entry['pulse_submode'] = isset($s[1]) ? (int) $s[1] : 0;
+                    $entry['scale_factor'] = isset($s[2]) ? (float) $s[2] : 1.0;
+                    $entry['unit'] = is_string($s[3] ?? null) ? $s[3] : '';
+                    $entry['timeout_sec'] = isset($s[4]) ? (int) $s[4] : null;
+                } elseif ($mode === 3) {
+                    $entry['default_state'] = isset($s[1]) ? (int) $s[1] : 0;
+                    $entry['failsafe'] = isset($s[2]) ? (int) $s[2] : 0;
+                    $entry['unit'] = '-';
+                }
+
+                $sensors[] = $entry;
             }
         }
 
@@ -460,11 +500,14 @@ class MqttService
                 if ($sensorType !== $sensor['name'])
                     continue;
 
-                // Match by additional key depending on protocol
+                // Match by additional key depending on protocol.
+                // NOTE: GET_ALL `channel` is 0-based while GET `ch` is 1-based (spec §3.2.2),
+                // so analog/digital must compare entry.channel + 1 against sensor.channel.
                 $matched = match ($sensor['connection_type']) {
                     'rs485' => ($entry['slave_id'] ?? null) == ($sensor['modbus_slave_id'] ?? null),
                     'rs232' => ($entry['port'] ?? null) == ($sensor['port'] ?? null),
-                    'analog', 'digital' => ($entry['channel'] ?? null) == ($sensor['channel'] ?? null),
+                    'analog', 'digital' => isset($entry['channel'], $sensor['channel'])
+                        && ((int) $entry['channel'] + 1) === (int) $sensor['channel'],
                     default => false,
                 };
 
@@ -516,11 +559,9 @@ class MqttService
         $connType = strtolower((string) ($data['connection_type'] ?? ''));
         $name = (string) ($data['sensor_name'] ?? $data['name'] ?? 'Unknown');
         $unit = (string) ($data['unit'] ?? '');
-        $lcdFlag = array_key_exists('lcd_enabled', $data) ? ((bool) $data['lcd_enabled'] ? 1 : 0) : 1;
-        $sdFlag = array_key_exists('log_enabled', $data) ? ((bool) $data['log_enabled'] ? 1 : 0) : 1;
-        $serverFlag = array_key_exists('send_enabled', $data) ? ((bool) $data['send_enabled'] ? 1 : 0) : 1;
 
         if ($connType === 'analog') {
+            // s: [name, min_val, max_val, unit]  (lcd/sd/server removed)
             return [
                 'SENSORS' => [
                     'cmd' => 'SET',
@@ -532,9 +573,6 @@ class MqttService
                         (float) ($data['min_value'] ?? 0),
                         (float) ($data['max_value'] ?? 100),
                         $unit,
-                        $lcdFlag,
-                        $sdFlag,
-                        $serverFlag,
                     ]],
                 ],
             ];
@@ -543,7 +581,11 @@ class MqttService
         if ($connType === 'digital') {
             $mode = (int) ($data['digital_mode'] ?? $data['analog_mode'] ?? 0);
 
-            $payload = [
+            // s is a FLAT, per-mode array (no lcd/sd/server):
+            //   mode 0: [name, label_high, label_low, debounce_ms, invert_logic]
+            //   mode 1/2: [name, pulse_submode, scale, unit, timeout_sec]
+            //   mode 3: [name, default_state, failsafe]
+            return [
                 'SENSORS' => [
                     'cmd' => 'SET',
                     'type' => 'DIGITAL',
@@ -556,18 +598,11 @@ class MqttService
                             (float) ($data['scale_factor'] ?? 1.0),
                             $unit,
                             (int) ($data['timeout_sec'] ?? 5),
-                            $lcdFlag,
-                            $sdFlag,
-                            $serverFlag,
                         ],
                         3 => [
                             $name,
                             (int) ($data['default_state'] ?? 0),
                             (int) ($data['failsafe'] ?? 0),
-                            $unit !== '' ? $unit : '-',
-                            $lcdFlag,
-                            $sdFlag,
-                            $serverFlag,
                         ],
                         default => [
                             $name,
@@ -575,18 +610,14 @@ class MqttService
                             (string) ($data['label_low'] ?? 'LOW'),
                             (int) ($data['debounce_ms'] ?? 50),
                             !empty($data['invert_logic']) ? 1 : 0,
-                            $lcdFlag,
-                            $sdFlag,
-                            $serverFlag,
                         ],
                     },
                 ],
             ];
-
-            return $payload;
         }
 
         if ($connType === 'rs232') {
+            // s: [name, scale, unit]  (lcd/sd/server removed)
             return [
                 'SENSORS' => [
                     'cmd' => 'SET',
@@ -596,41 +627,34 @@ class MqttService
                         $name,
                         (float) ($data['scale_factor'] ?? 1.0),
                         $unit,
-                        $lcdFlag,
-                        $sdFlag,
-                        $serverFlag,
                     ]],
                 ],
             ];
+        }
+
+        // RS485 — cfg: [slave_id, name, function, register_address, baudrate, format]  (item_count removed)
+        //          s:   [sensor_type, scale, unit, register_address, reg_count, fast_poll]  (lcd/sd/server removed)
+        $registerAddress = (int) ($data['register_address'] ?? 0);
+        $regCount = (int) ($data['reg_count'] ?? $data['quantity'] ?? 1);
+        if (!in_array($regCount, [1, 2, 4], true)) {
+            $regCount = 1;
         }
 
         $cfg = [
             (int) ($data['modbus_slave_id'] ?? 1),
             (string) ($data['device_name'] ?? ''),
             (int) ($data['function_code'] ?? 3),
-            (int) ($data['register_address'] ?? 0),
-            (int) ($data['quantity'] ?? 1),
+            $registerAddress,
+            (int) ($data['baudrate'] ?? 9600),
+            (string) ($data['serial_format'] ?? '8N1'),
         ];
-
-        if (!empty($data['baudrate'])) {
-            $cfg[] = (int) $data['baudrate'];
-        }
-
-        if (!empty($data['serial_format'])) {
-            if (count($cfg) === 5) {
-                $cfg[] = 9600;
-            }
-            $cfg[] = (string) $data['serial_format'];
-        }
 
         $sEntry = [
             $name,
             (float) ($data['scale_factor'] ?? 1.0),
             $unit,
-            $lcdFlag,
-            $sdFlag,
-            $serverFlag,
-            (int) ($data['register_address'] ?? 0),
+            $registerAddress,
+            $regCount,
             !empty($data['fast_poll']) ? 1 : 0,
         ];
 
@@ -642,6 +666,23 @@ class MqttService
                     'cfg' => $cfg,
                     's' => [$sEntry],
                 ]],
+            ],
+        ];
+    }
+
+    /**
+     * Build a SENSORS DIGITAL CTRL payload to toggle a configured output channel (mode 3).
+     *
+     * Produces {"SENSORS":{"cmd":"CTRL","type":"DIGITAL","ch":N,"state":0|1}} per spec §3.2.11.
+     */
+    public static function buildSensorCtrlPayload(int $channel, int $state): array
+    {
+        return [
+            'SENSORS' => [
+                'cmd' => 'CTRL',
+                'type' => 'DIGITAL',
+                'ch' => $channel,
+                'state' => $state ? 1 : 0,
             ],
         ];
     }
@@ -672,6 +713,21 @@ class MqttService
         ]);
 
         return $this->sendAndWaitForAck($idLogger, $payload, 'SENSORS DEL');
+    }
+
+    /**
+     * Send a SENSORS DIGITAL CTRL command to toggle a configured output channel (mode 3).
+     *
+     * Publishes {"SENSORS":{"cmd":"CTRL","type":"DIGITAL","ch":N,"state":0|1}}
+     * Waits for {"DIGITAL CTRL":"OK","ch":N,"state":1} or an error ack.
+     *
+     * @return array{success: bool, message: string}
+     */
+    public function sendSensorCtrl(string $idLogger, int $channel, int $state): array
+    {
+        $payload = json_encode(self::buildSensorCtrlPayload($channel, $state));
+
+        return $this->sendAndWaitForAck($idLogger, $payload, 'SENSORS CTRL');
     }
 
     // =========================================================================
@@ -918,186 +974,6 @@ class MqttService
         } catch (\Throwable $e) {
             Log::error("[MQTT] ❌ [FTP GET] Error: {$e->getMessage()}");
             return ['success' => false, 'message' => 'Koneksi MQTT gagal: ' . $e->getMessage()];
-        }
-
-        return $result;
-    }
-
-    // =========================================================================
-    // INTERVAL CONFIG
-    // =========================================================================
-
-    /**
-     * Send INTERVAL SET command to the logger.
-     *
-     * Publishes {"INTERVAL":{"cmd":"SET","SEND":<send>,"SENS":<sens>,"WDT":<wdt>}}
-     * Waits for {"INTERVAL":{"status":"OK"}} response.
-     *
-     * @return array{success: bool, message: string}
-     */
-    public function sendIntervalSet(string $idLogger, int $send, int $sens, int $wdt): array
-    {
-        $pubTopic = "pub_{$idLogger}";
-        $subTopic = "sub_{$idLogger}";
-        $clientId = $this->clientPrefix . uniqid();
-        $result = null;
-
-        Log::info("[MQTT] ═══════════════════════════════════════════════");
-        Log::info("[MQTT] [INTERVAL SET] Sending to: {$idLogger}");
-
-        try {
-            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
-            $mqtt = new MqttClient($this->host, $this->port, $clientId);
-            $connectionSettings = (new ConnectionSettings())
-                ->setUsername($this->username)
-                ->setPassword($this->password)
-                ->setConnectTimeout($this->timeout)
-                ->setKeepAliveInterval(10);
-
-            $mqtt->connect($connectionSettings, true);
-            Log::info("[MQTT] ✅ Connected");
-
-            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt) {
-                Log::info("[MQTT] 📩 [INTERVAL SET] Received: {$message}");
-
-                $error = self::parseErrorResponse($message);
-                if ($error) {
-                    $result = ['success' => false, 'message' => $error];
-                    $mqtt->interrupt();
-                    return;
-                }
-
-                try {
-                    $data = json_decode($message, true);
-                    if ($data && isset($data['INTERVAL']['status']) && $data['INTERVAL']['status'] === 'OK') {
-                        $result = ['success' => true, 'message' => 'Interval config updated'];
-                        Log::info("[MQTT] ✅ [INTERVAL SET] OK received");
-                        $mqtt->interrupt();
-                        return;
-                    }
-                } catch (\Throwable $e) {
-                    Log::warning("[MQTT] ⚠️ [INTERVAL SET] Parse error: {$e->getMessage()}");
-                }
-            }, 0);
-
-            $payload = json_encode([
-                'INTERVAL' => [
-                    'cmd' => 'SET',
-                    'SEND' => $send,
-                    'SENS' => $sens,
-                    'WDT' => $wdt,
-                ],
-            ]);
-            Log::info("[MQTT] 📤 [INTERVAL SET] Publishing: {$payload}");
-            $mqtt->publish($subTopic, $payload, 0);
-
-            $startTime = microtime(true);
-            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
-                $mqtt->loopOnce(microtime(true) - $startTime, true);
-                usleep(100_000);
-            }
-
-            $elapsed = round(microtime(true) - $startTime, 2);
-            if ($result === null) {
-                Log::warning("[MQTT] ⏰ [INTERVAL SET] Timeout after {$elapsed}s");
-                $result = ['success' => false, 'message' => 'Timeout — perangkat tidak merespons'];
-            } else {
-                Log::info("[MQTT] ✅ [INTERVAL SET] Done in {$elapsed}s");
-            }
-
-            $mqtt->disconnect();
-            Log::info("[MQTT] ═══════════════════════════════════════════════");
-        } catch (\Throwable $e) {
-            Log::error("[MQTT] ❌ [INTERVAL SET] Error: {$e->getMessage()}");
-            return ['success' => false, 'message' => 'MQTT connection failed: ' . $e->getMessage()];
-        }
-
-        return $result;
-    }
-
-    /**
-     * Send INTERVAL GET command to read current intervals from the logger.
-     *
-     * Publishes {"INTERVAL":{"cmd":"GET"}}
-     * Waits for {"INTERVAL":{"SEND":x,"SENS":x,"WDT":x}} response.
-     *
-     * @return array{success: bool, data?: array, message?: string}
-     */
-    public function sendIntervalGet(string $idLogger): array
-    {
-        $pubTopic = "pub_{$idLogger}";
-        $subTopic = "sub_{$idLogger}";
-        $clientId = $this->clientPrefix . uniqid();
-        $result = null;
-
-        Log::info("[MQTT] ═══════════════════════════════════════════════");
-        Log::info("[MQTT] [INTERVAL GET] Requesting from: {$idLogger}");
-
-        try {
-            set_time_limit(0); // MQTT punya timeout sendiri, jangan biarkan PHP enforce
-            $mqtt = new MqttClient($this->host, $this->port, $clientId);
-            $connectionSettings = (new ConnectionSettings())
-                ->setUsername($this->username)
-                ->setPassword($this->password)
-                ->setConnectTimeout($this->timeout)
-                ->setKeepAliveInterval(10);
-
-            $mqtt->connect($connectionSettings, true);
-            Log::info("[MQTT] ✅ Connected");
-
-            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt) {
-                Log::info("[MQTT] 📩 [INTERVAL GET] Received: {$message}");
-
-                $error = self::parseErrorResponse($message);
-                if ($error) {
-                    $result = ['success' => false, 'message' => $error];
-                    $mqtt->interrupt();
-                    return;
-                }
-
-                try {
-                    $data = json_decode($message, true);
-                    if ($data && isset($data['INTERVAL']) && isset($data['INTERVAL']['SEND'])) {
-                        $result = [
-                            'success' => true,
-                            'data' => [
-                                'interval_send' => (int) $data['INTERVAL']['SEND'],
-                                'interval_read' => (int) $data['INTERVAL']['SENS'],
-                                'max_reset' => (int) $data['INTERVAL']['WDT'],
-                            ],
-                        ];
-                        Log::info("[MQTT] ✅ [INTERVAL GET] Data received");
-                        $mqtt->interrupt();
-                        return;
-                    }
-                } catch (\Throwable $e) {
-                    Log::warning("[MQTT] ⚠️ [INTERVAL GET] Parse error: {$e->getMessage()}");
-                }
-            }, 0);
-
-            $payload = json_encode(['INTERVAL' => ['cmd' => 'GET']]);
-            Log::info("[MQTT] 📤 [INTERVAL GET] Publishing: {$payload}");
-            $mqtt->publish($subTopic, $payload, 0);
-
-            $startTime = microtime(true);
-            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
-                $mqtt->loopOnce(microtime(true) - $startTime, true);
-                usleep(100_000);
-            }
-
-            $elapsed = round(microtime(true) - $startTime, 2);
-            if ($result === null) {
-                Log::warning("[MQTT] ⏰ [INTERVAL GET] Timeout after {$elapsed}s");
-                $result = ['success' => false, 'message' => 'Timeout — perangkat tidak merespons'];
-            } else {
-                Log::info("[MQTT] ✅ [INTERVAL GET] Done in {$elapsed}s");
-            }
-
-            $mqtt->disconnect();
-            Log::info("[MQTT] ═══════════════════════════════════════════════");
-        } catch (\Throwable $e) {
-            Log::error("[MQTT] ❌ [INTERVAL GET] Error: {$e->getMessage()}");
-            return ['success' => false, 'message' => 'MQTT connection failed: ' . $e->getMessage()];
         }
 
         return $result;
@@ -1411,13 +1287,15 @@ class MqttService
      *
      * @return array{success: bool, message: string, data?: mixed, raw?: string}
      */
-    public function sendProtocolCommand(string $idLogger, array $payload, string $module): array
+    public function sendProtocolCommand(string $idLogger, array $payload, string $module, ?int $timeout = null): array
     {
         $pubTopic = "pub_{$idLogger}";
         $subTopic = "sub_{$idLogger}";
         $clientId = $this->clientPrefix . uniqid();
         $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
         $result = null;
+        // OTA GET streams a multi-minute download; allow a long wait (spec §3.26: total ≤5 min).
+        $waitTimeout = $timeout ?? $this->timeout;
 
         if ($jsonPayload === false) {
             return ['success' => false, 'message' => 'Payload tidak bisa di-encode ke JSON'];
@@ -1432,7 +1310,7 @@ class MqttService
             $connectionSettings = (new ConnectionSettings())
                 ->setUsername($this->username)
                 ->setPassword($this->password)
-                ->setConnectTimeout($this->timeout)
+                ->setConnectTimeout($waitTimeout)
                 ->setKeepAliveInterval(10);
 
             $mqtt->connect($connectionSettings, true);
@@ -1474,6 +1352,17 @@ class MqttService
                     if ($module === 'RTC' && isset($data['date'], $data['time'])) {
                         $result = ['success' => true, 'message' => 'RTC response received', 'data' => $data, 'raw' => $message];
                         $mqtt->interrupt();
+                        return;
+                    }
+
+                    // OTA streams progress (spec §3.26); only the terminal frame is conclusive.
+                    if ($module === 'OTA') {
+                        $otaResult = self::interpretOtaMessage($data);
+                        if ($otaResult !== null) {
+                            $result = $otaResult + ['raw' => $message];
+                            $mqtt->interrupt();
+                        }
+                        // Intermediate frame (BEGIN/END/PROGRESS/GET_OK) → keep waiting.
                         return;
                     }
 
@@ -1527,7 +1416,7 @@ class MqttService
             $mqtt->publish($subTopic, $jsonPayload, 0);
 
             $startTime = microtime(true);
-            while ($result === null && (microtime(true) - $startTime) < $this->timeout) {
+            while ($result === null && (microtime(true) - $startTime) < $waitTimeout) {
                 $mqtt->loopOnce(microtime(true) - $startTime, true);
                 usleep(100_000);
             }
@@ -1555,6 +1444,66 @@ class MqttService
         return $key === $module
             || str_starts_with($key, $module . ' ')
             || str_starts_with($key, $module . '_');
+    }
+
+    /**
+     * Interpret a single OTA MQTT frame (spec §3.26).
+     *
+     * Returns a result array only for a CONCLUSIVE frame (terminal success/failure);
+     * returns null for intermediate streaming frames (BEGIN / END / PROGRESS / GET_OK)
+     * so the caller keeps waiting for the real outcome.
+     *
+     * @return array{success: bool, message: string}|null
+     */
+    public static function interpretOtaMessage(array $data): ?array
+    {
+        // Streaming progress for BL110/BL1100: {"OTA_DOWNLOAD":"BEGIN"|"END"|"ERR"}, {"OTA_PROGRESS":"x%"}
+        if (array_key_exists('OTA_PROGRESS', $data)) {
+            return null; // keep waiting
+        }
+        if (array_key_exists('OTA_DOWNLOAD', $data)) {
+            $v = strtoupper(trim((string) $data['OTA_DOWNLOAD']));
+            if ($v === 'ERR') {
+                return ['success' => false, 'message' => 'OTA download gagal'];
+            }
+            return null; // BEGIN / END → keep waiting
+        }
+
+        // INSTALL trigger: {"OTA_INSTALL":{"status":"PROCESS"|"ERR"}}
+        if (isset($data['OTA_INSTALL'])) {
+            $status = strtoupper((string) ($data['OTA_INSTALL']['status'] ?? ''));
+            if ($status === 'PROCESS') {
+                return ['success' => true, 'message' => 'OTA install dipicu — perangkat akan reboot'];
+            }
+            return ['success' => false, 'message' => 'OTA install ditolak (file/versi tidak valid)'];
+        }
+
+        if (array_key_exists('OTA', $data)) {
+            $value = $data['OTA'];
+
+            // Terminal object form: {"OTA":{"status":"OK"|"ERR"}}
+            if (is_array($value)) {
+                $status = strtoupper((string) ($value['status'] ?? ''));
+                if ($status === 'OK') {
+                    return ['success' => true, 'message' => 'OTA download selesai'];
+                }
+                if ($status === 'ERR') {
+                    return ['success' => false, 'message' => (string) ($value['msg'] ?? 'OTA gagal')];
+                }
+                return null;
+            }
+
+            // String forms
+            $sv = strtoupper(trim((string) $value));
+            return match ($sv) {
+                'GET_OK' => null,                                                                  // BL11 ack — keep waiting
+                'GET_EXISTING' => ['success' => true, 'message' => 'Firmware sudah versi terbaru'], // nothing to download
+                'INVALID' => ['success' => false, 'message' => 'OTA tidak didukung pada board ini'],
+                default => null,
+            };
+        }
+
+        return null;
     }
 
     // =========================================================================
@@ -1689,6 +1638,13 @@ class MqttService
                         foreach ($data as $key => $value) {
                             if ($value === 'OK') {
                                 $result = ['success' => true, 'message' => "{$key}: OK"];
+                                $mqtt->interrupt();
+                                return;
+                            }
+                            // Flat error per spec §6, e.g. {"RS485 SET":"ERR"} / {"DIGITAL SET":"ERR mode"}
+                            if (is_string($value) && str_starts_with(strtoupper(trim($value)), 'ERR')) {
+                                $errMsg = $data['msg'] ?? "{$key}: {$value}";
+                                $result = ['success' => false, 'message' => $errMsg];
                                 $mqtt->interrupt();
                                 return;
                             }
