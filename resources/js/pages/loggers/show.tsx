@@ -1334,28 +1334,29 @@ function SensorCrudPanel({
 
             {/* Create / Edit Dialog */}
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-                <DialogContent className="sm:max-w-md">
+                <DialogContent className="sm:max-w-2xl max-h-[90vh] grid-rows-[auto_1fr_auto]">
                     <DialogHeader>
                         <DialogTitle>{editingSensor ? t('loggerDetail.edit_sensor') : t('loggerDetail.add_sensor')}</DialogTitle>
                         <DialogDescription>
                             {editingSensor ? t('loggerDetail.edit_sensor_desc') : t('loggerDetail.add_sensor_desc')}
                         </DialogDescription>
                     </DialogHeader>
-                    <div className="grid gap-4 py-2">
-                        {/* Name */}
-                        <div className="grid gap-2">
-                            <Label htmlFor="sensor-name">{t('loggerDetail.sensor_name')}</Label>
-                            <Input
-                                id="sensor-name"
-                                value={form.name}
-                                onChange={e => setForm({ ...form, name: e.target.value })}
-                                placeholder="e.g. Water Level Sensor"
-                            />
-                            {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
-                        </div>
+                    <div className="grid gap-4 overflow-y-auto py-2 -mx-1 px-1">
+                        {/* General */}
+                        <div className="grid gap-4 sm:grid-cols-2">
+                            {/* Name */}
+                            <div className="grid gap-2 sm:col-span-2">
+                                <Label htmlFor="sensor-name">{t('loggerDetail.sensor_name')}</Label>
+                                <Input
+                                    id="sensor-name"
+                                    value={form.name}
+                                    onChange={e => setForm({ ...form, name: e.target.value })}
+                                    placeholder="e.g. Water Level Sensor"
+                                />
+                                {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                            </div>
 
-                        {/* Type + Unit */}
-                        <div className="grid grid-cols-2 gap-3">
+                            {/* Type */}
                             <div className="grid gap-2">
                                 <Label htmlFor="sensor-type">{t('loggerDetail.type')}</Label>
                                 <select
@@ -1370,6 +1371,8 @@ function SensorCrudPanel({
                                 </select>
                                 {errors.type && <p className="text-xs text-red-500">{errors.type}</p>}
                             </div>
+
+                            {/* Unit */}
                             <div className="grid gap-2">
                                 <Label htmlFor="sensor-unit">{t('loggerDetail.sensor_unit')}</Label>
                                 <Input
@@ -1380,39 +1383,39 @@ function SensorCrudPanel({
                                 />
                                 {errors.unit && <p className="text-xs text-red-500">{errors.unit}</p>}
                             </div>
-                        </div>
 
-                        {/* Status */}
-                        <div className="grid gap-2">
-                            <Label htmlFor="sensor-status">{t('loggerDetail.status')}</Label>
-                            <select
-                                id="sensor-status"
-                                value={form.status}
-                                onChange={e => setForm({ ...form, status: e.target.value })}
-                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            >
-                                <option value="active">{t('loggerDetail.active')}</option>
-                                <option value="inactive">{t('loggerDetail.inactive')}</option>
-                                <option value="error">{t('loggerDetail.error')}</option>
-                            </select>
-                            {errors.status && <p className="text-xs text-red-500">{errors.status}</p>}
-                        </div>
+                            {/* Status */}
+                            <div className="grid gap-2">
+                                <Label htmlFor="sensor-status">{t('loggerDetail.status')}</Label>
+                                <select
+                                    id="sensor-status"
+                                    value={form.status}
+                                    onChange={e => setForm({ ...form, status: e.target.value })}
+                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                >
+                                    <option value="active">{t('loggerDetail.active')}</option>
+                                    <option value="inactive">{t('loggerDetail.inactive')}</option>
+                                    <option value="error">{t('loggerDetail.error')}</option>
+                                </select>
+                                {errors.status && <p className="text-xs text-red-500">{errors.status}</p>}
+                            </div>
 
-                        {/* Connection Type */}
-                        <div className="grid gap-2">
-                            <Label htmlFor="sensor-conn-type">Connection Type</Label>
-                            <select
-                                id="sensor-conn-type"
-                                value={form.connection_type}
-                                onChange={e => setForm({ ...form, connection_type: e.target.value })}
-                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            >
-                                <option value="">None (Generic)</option>
-                                <option value="rs485">RS485 (Modbus)</option>
-                                <option value="rs232">RS232</option>
-                                <option value="analog">Analog</option>
-                                <option value="digital">Digital</option>
-                            </select>
+                            {/* Connection Type */}
+                            <div className="grid gap-2">
+                                <Label htmlFor="sensor-conn-type">Connection Type</Label>
+                                <select
+                                    id="sensor-conn-type"
+                                    value={form.connection_type}
+                                    onChange={e => setForm({ ...form, connection_type: e.target.value })}
+                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                >
+                                    <option value="">None (Generic)</option>
+                                    <option value="rs485">RS485 (Modbus)</option>
+                                    <option value="rs232">RS232</option>
+                                    <option value="analog">Analog</option>
+                                    <option value="digital">Digital</option>
+                                </select>
+                            </div>
                         </div>
 
                         {/* RS485 fields */}
@@ -1618,45 +1621,42 @@ function SensorCrudPanel({
                             </div>
                         )}
 
-                        {/* Scale Factor — only for RS485 / RS232 */}
+                        {/* Scaling & Range — only for RS485 / RS232 (analog uses its own in the Analog Config block) */}
                         {(form.connection_type === 'rs485' || form.connection_type === 'rs232') && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Scale Factor</Label>
-                                    <Input type="number" step="any" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: parseFloat(e.target.value) || 1 })} />
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Scaling & Range</p>
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Scale Factor</Label>
+                                        <Input type="number" step="any" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: parseFloat(e.target.value) || 1 })} />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs" htmlFor="sensor-min">{t('loggerDetail.min_value')}</Label>
+                                        <Input
+                                            id="sensor-min"
+                                            type="number"
+                                            step="any"
+                                            value={form.min_value}
+                                            onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })}
+                                        />
+                                        {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs" htmlFor="sensor-max">{t('loggerDetail.max_value')}</Label>
+                                        <Input
+                                            id="sensor-max"
+                                            type="number"
+                                            step="any"
+                                            value={form.max_value}
+                                            onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 0 })}
+                                        />
+                                        {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
+                                    </div>
                                 </div>
                             </div>
                         )}
 
                         {/* LCD/SD/Server map flags removed — firmware always shows, stores, and sends every configured sensor (spec §3.2). */}
-
-                        {/* Min / Max — only for RS485 / RS232 (analog uses its own in the Analog Config block) */}
-                        {(form.connection_type === 'rs485' || form.connection_type === 'rs232') && (
-                            <div className="grid grid-cols-2 gap-3">
-                                <div className="grid gap-2">
-                                    <Label htmlFor="sensor-min">{t('loggerDetail.min_value')}</Label>
-                                    <Input
-                                        id="sensor-min"
-                                        type="number"
-                                        step="any"
-                                        value={form.min_value}
-                                        onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })}
-                                    />
-                                    {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="sensor-max">{t('loggerDetail.max_value')}</Label>
-                                    <Input
-                                        id="sensor-max"
-                                        type="number"
-                                        step="any"
-                                        value={form.max_value}
-                                        onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 0 })}
-                                    />
-                                    {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
-                                </div>
-                            </div>
-                        )}
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
