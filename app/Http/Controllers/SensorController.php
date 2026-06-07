@@ -394,6 +394,90 @@ class SensorController extends Controller
         return back()->with('success', 'Device deleted successfully.');
     }
 
+    /**
+     * Edit an ENTIRE RS485 slave / RS232 port's device-level config (slave_id,
+     * device name, function code, baud, format) — the "Edit group" action. The
+     * params themselves are untouched; the whole slave is re-SET with the new cfg.
+     * Changing the slave_id/port moves the device (DEL old + SET new).
+     */
+    public function updateGroup(Request $request, string $loggerHash, string $connType, int $groupId): RedirectResponse
+    {
+        $logger = $this->resolveLogger($loggerHash);
+        $connType = strtolower($connType);
+        abort_unless(in_array($connType, self::GROUPED_TYPES, true), 404);
+
+        $rows = $this->groupMembers($logger, $connType, $groupId);
+        abort_if($rows->isEmpty(), 404);
+
+        if ($connType === 'rs485') {
+            $validated = $request->validate([
+                'modbus_slave_id' => 'required|integer|min:1|max:5',
+                'device_name' => 'nullable|string|max:50',
+                'function_code' => 'required|integer|in:3,4',
+                'baudrate' => 'required|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
+                'serial_format' => 'required|string|in:8N1,8E1,8O1',
+            ]);
+            $newGroupId = (int) $validated['modbus_slave_id'];
+            $device = [
+                'modbus_slave_id' => $newGroupId,
+                'device_name' => $validated['device_name'] ?? '',
+                'function_code' => (int) $validated['function_code'],
+                'register_address' => 0,
+                'baudrate' => (int) $validated['baudrate'],
+                'serial_format' => $validated['serial_format'],
+            ];
+            $dbCfg = [
+                'modbus_slave_id' => $newGroupId,
+                'device_name' => $validated['device_name'] ?? '',
+                'function_code' => (int) $validated['function_code'],
+                'baudrate' => (int) $validated['baudrate'],
+                'serial_format' => $validated['serial_format'],
+            ];
+        } else { // rs232
+            $validated = $request->validate([
+                'port' => 'required|integer|min:1|max:2',
+                'device_name' => 'nullable|string|max:50',
+            ]);
+            $newGroupId = (int) $validated['port'];
+            $device = ['port' => $newGroupId];
+            $dbCfg = ['port' => $newGroupId, 'device_name' => $validated['device_name'] ?? ''];
+        }
+
+        // Block moving onto a slave/port already used by another device.
+        if ($newGroupId !== $groupId) {
+            $clash = Sensor::where('logger_id', $logger->id)
+                ->where('connection_type', $connType)
+                ->where($this->groupColumn($connType), $newGroupId)
+                ->exists();
+            if ($clash) {
+                $label = $connType === 'rs485' ? 'Slave ID' : 'Port';
+                return back()->withErrors(['mqtt' => "{$label} {$newGroupId} sudah dipakai device lain."]);
+            }
+        }
+
+        $params = $rows->map(fn (Sensor $s) => $this->paramFromSensor($s))->values()->all();
+
+        // Re-SET the (possibly new) slave/port with the new cfg + existing params.
+        $result = $this->pushGroupConfig($logger, $connType, $newGroupId, $params, $device);
+        if ($result && !$result['success']) {
+            return back()->withErrors(['mqtt' => $result['message']]);
+        }
+
+        // If the device moved, remove the old slave/port on the firmware.
+        if ($newGroupId !== $groupId && $logger->device_identifier) {
+            $delResult = (new MqttService())->sendSensorDel($logger->device_identifier, $connType, $groupId);
+            if ($delResult && !$delResult['success']) {
+                return back()->withErrors(['mqtt' => $delResult['message']]);
+            }
+        }
+
+        foreach ($rows as $s) {
+            $s->update($dbCfg);
+        }
+
+        return back()->with('success', 'Device updated successfully.');
+    }
+
     private function persistableSensorData(array $data): array
     {
         if (($data['connection_type'] ?? null) === 'digital') {

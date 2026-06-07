@@ -208,7 +208,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('sensors.update');
     Route::delete('loggers/{loggerId}/sensors/{id}', [\App\Http\Controllers\SensorController::class, 'destroy'])
         ->name('sensors.destroy');
-    // Delete an entire RS485 slave / RS232 port device (all its parameters at once).
+    // Edit / delete an entire RS485 slave / RS232 port device (device-level cfg).
+    Route::put('loggers/{loggerId}/sensor-devices/{connType}/{groupId}', [\App\Http\Controllers\SensorController::class, 'updateGroup'])
+        ->name('sensors.updateGroup');
     Route::delete('loggers/{loggerId}/sensor-devices/{connType}/{groupId}', [\App\Http\Controllers\SensorController::class, 'destroyGroup'])
         ->name('sensors.destroyGroup');
 

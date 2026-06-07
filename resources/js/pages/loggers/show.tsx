@@ -1286,12 +1286,20 @@ function SensorCrudPanel({
     const [form, setForm] = useState(EMPTY_FORM);
     const [processing, setProcessing] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
+    // A parameter only edits register-level fields; device cfg (slave/name/baud/format)
+    // is locked in the param form and changed via the "Edit device" dialog instead.
+    const [deviceLocked, setDeviceLocked] = useState(false);
+    const [editingGroup, setEditingGroup] = useState<SensorGroup | null>(null);
+    const [groupForm, setGroupForm] = useState({ modbus_slave_id: 1, device_name: '', function_code: 3, baudrate: 9600, serial_format: '8N1', port: 1 });
+    const [groupProcessing, setGroupProcessing] = useState(false);
+    const [groupErrors, setGroupErrors] = useState<Record<string, string>>({});
     const { t } = useTranslation();
 
     const openCreate = () => {
         setEditingSensor(null);
         setForm(EMPTY_FORM);
         setErrors({});
+        setDeviceLocked(false); // new device → cfg editable
         setDialogOpen(true);
     };
 
@@ -1316,7 +1324,48 @@ function SensorCrudPanel({
             port: head.port ?? 1,
         });
         setErrors({});
+        setDeviceLocked(true); // adding a param to an existing device → cfg locked
         setDialogOpen(true);
+    };
+
+    // Edit an existing RS485 slave / RS232 port device-level config.
+    const openEditGroup = (group: SensorGroup) => {
+        const head = group.members[0];
+        setEditingGroup(group);
+        setGroupForm({
+            modbus_slave_id: head.modbusSlaveId ?? 1,
+            device_name: head.deviceName ?? '',
+            function_code: head.functionCode ?? 3,
+            baudrate: head.baudrate ?? 9600,
+            serial_format: head.serialFormat ?? '8N1',
+            port: head.port ?? 1,
+        });
+        setGroupErrors({});
+    };
+
+    const handleSaveGroup = () => {
+        if (!editingGroup) return;
+        const head = editingGroup.members[0];
+        const connType = head.connectionType;
+        const groupId = connType === 'rs485' ? head.modbusSlaveId : head.port;
+        if (!connType || groupId == null) return;
+        const payload = connType === 'rs485'
+            ? {
+                modbus_slave_id: groupForm.modbus_slave_id,
+                device_name: groupForm.device_name,
+                function_code: groupForm.function_code,
+                baudrate: groupForm.baudrate,
+                serial_format: groupForm.serial_format,
+            }
+            : { port: groupForm.port, device_name: groupForm.device_name };
+        setGroupProcessing(true);
+        setGroupErrors({});
+        router.put(`/loggers/${loggerId}/sensor-devices/${connType}/${groupId}`, payload, {
+            preserveScroll: true,
+            onSuccess: () => setEditingGroup(null),
+            onError: (errs) => setGroupErrors(errs as Record<string, string>),
+            onFinish: () => setGroupProcessing(false),
+        });
     };
 
     const openEdit = (sensor: SensorItem) => {
@@ -1352,6 +1401,7 @@ function SensorCrudPanel({
             fast_poll: sensor.fastPoll ?? false,
         });
         setErrors({});
+        setDeviceLocked(isDeviceGroupType(sensor.connectionType)); // editing a param → lock device cfg
         setDialogOpen(true);
     };
 
@@ -1500,6 +1550,15 @@ function SensorCrudPanel({
                                                                 variant="ghost"
                                                                 size="icon"
                                                                 className="size-7"
+                                                                title="Edit device (slave, nama, baud, format)"
+                                                                onClick={() => openEditGroup(group)}
+                                                            >
+                                                                <Pencil className="size-3.5" />
+                                                            </Button>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="size-7"
                                                                 title="Tambah parameter ke device ini"
                                                                 onClick={() => openAddParam(group)}
                                                             >
@@ -1642,7 +1701,8 @@ function SensorCrudPanel({
                                     id="sensor-conn-type"
                                     value={form.connection_type}
                                     onChange={e => setForm({ ...form, connection_type: e.target.value })}
-                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    disabled={deviceLocked}
+                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     <option value="">None (Generic)</option>
                                     <option value="rs485">RS485 (Modbus)</option>
@@ -1656,21 +1716,24 @@ function SensorCrudPanel({
                         {/* RS485 fields */}
                         {form.connection_type === 'rs485' && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">RS485 / Modbus Config</p>
+                                <div className="flex items-center justify-between">
+                                    <p className="text-xs font-semibold uppercase text-muted-foreground">RS485 / Modbus Config</p>
+                                    {deviceLocked && <span className="text-[10px] text-muted-foreground">Slave/nama/baud/format dikelola via "Edit device"</span>}
+                                </div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Slave ID</Label>
-                                        <Input type="number" min={1} max={5} value={form.modbus_slave_id} onChange={e => setForm({ ...form, modbus_slave_id: parseInt(e.target.value) || 1 })} />
+                                        <Input type="number" min={1} max={5} value={form.modbus_slave_id} disabled={deviceLocked} onChange={e => setForm({ ...form, modbus_slave_id: parseInt(e.target.value) || 1 })} />
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Device Name</Label>
-                                        <Input value={form.device_name} onChange={e => setForm({ ...form, device_name: e.target.value })} placeholder="e.g. WS" />
+                                        <Input value={form.device_name} disabled={deviceLocked} onChange={e => setForm({ ...form, device_name: e.target.value })} placeholder="e.g. WS" />
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-3 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Function Code</Label>
-                                        <select value={form.function_code} onChange={e => setForm({ ...form, function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <select value={form.function_code} disabled={deviceLocked} onChange={e => setForm({ ...form, function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60">
                                             <option value={3}>03 (HR)</option>
                                             <option value={4}>04 (IR)</option>
                                         </select>
@@ -1691,7 +1754,7 @@ function SensorCrudPanel({
                                 <div className="grid grid-cols-3 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Baudrate</Label>
-                                        <select value={form.baudrate} onChange={e => setForm({ ...form, baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <select value={form.baudrate} disabled={deviceLocked} onChange={e => setForm({ ...form, baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60">
                                             {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map(rate => (
                                                 <option key={rate} value={rate}>{rate}</option>
                                             ))}
@@ -1699,7 +1762,7 @@ function SensorCrudPanel({
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Format</Label>
-                                        <select value={form.serial_format} onChange={e => setForm({ ...form, serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <select value={form.serial_format} disabled={deviceLocked} onChange={e => setForm({ ...form, serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60">
                                             <option value="8N1">8N1</option>
                                             <option value="8E1">8E1</option>
                                             <option value="8O1">8O1</option>
@@ -1719,10 +1782,13 @@ function SensorCrudPanel({
                         {/* RS232 fields */}
                         {form.connection_type === 'rs232' && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">RS232 Config</p>
+                                <div className="flex items-center justify-between">
+                                    <p className="text-xs font-semibold uppercase text-muted-foreground">RS232 Config</p>
+                                    {deviceLocked && <span className="text-[10px] text-muted-foreground">Port dikelola via "Edit device"</span>}
+                                </div>
                                 <div className="grid gap-1.5">
                                     <Label className="text-xs">Port</Label>
-                                    <Input type="number" min={1} max={2} value={form.port} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
+                                    <Input type="number" min={1} max={2} value={form.port} disabled={deviceLocked} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
                                 </div>
                             </div>
                         )}
@@ -1919,6 +1985,80 @@ function SensorCrudPanel({
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+
+            {/* Edit Device (group cfg) Dialog */}
+            <Dialog open={editingGroup !== null} onOpenChange={(open) => { if (!open) setEditingGroup(null); }}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Edit Device</DialogTitle>
+                        <DialogDescription>
+                            Ubah konfigurasi device (berlaku untuk semua parameter di {editingGroup?.deviceLabel ?? 'device'}).
+                        </DialogDescription>
+                    </DialogHeader>
+                    {editingGroup && editingGroup.members[0].connectionType === 'rs485' && (
+                        <div className="grid gap-3 py-2">
+                            {groupErrors.mqtt && <p className="rounded bg-red-500/10 p-2 text-xs text-red-600">{groupErrors.mqtt}</p>}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Slave ID</Label>
+                                    <Input type="number" min={1} max={5} value={groupForm.modbus_slave_id} onChange={e => setGroupForm({ ...groupForm, modbus_slave_id: parseInt(e.target.value) || 1 })} />
+                                    {groupErrors.modbus_slave_id && <span className="text-[10px] text-red-500">{groupErrors.modbus_slave_id}</span>}
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Device Name</Label>
+                                    <Input value={groupForm.device_name} onChange={e => setGroupForm({ ...groupForm, device_name: e.target.value })} placeholder="e.g. RainGauge" />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3">
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Function</Label>
+                                    <select value={groupForm.function_code} onChange={e => setGroupForm({ ...groupForm, function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <option value={3}>03 (HR)</option>
+                                        <option value={4}>04 (IR)</option>
+                                    </select>
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Baudrate</Label>
+                                    <select value={groupForm.baudrate} onChange={e => setGroupForm({ ...groupForm, baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map(rate => <option key={rate} value={rate}>{rate}</option>)}
+                                    </select>
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Format</Label>
+                                    <select value={groupForm.serial_format} onChange={e => setGroupForm({ ...groupForm, serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <option value="8N1">8N1</option>
+                                        <option value="8E1">8E1</option>
+                                        <option value="8O1">8O1</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {editingGroup && editingGroup.members[0].connectionType === 'rs232' && (
+                        <div className="grid gap-3 py-2">
+                            {groupErrors.mqtt && <p className="rounded bg-red-500/10 p-2 text-xs text-red-600">{groupErrors.mqtt}</p>}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Port</Label>
+                                    <Input type="number" min={1} max={2} value={groupForm.port} onChange={e => setGroupForm({ ...groupForm, port: parseInt(e.target.value) || 1 })} />
+                                    {groupErrors.port && <span className="text-[10px] text-red-500">{groupErrors.port}</span>}
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Device Name</Label>
+                                    <Input value={groupForm.device_name} onChange={e => setGroupForm({ ...groupForm, device_name: e.target.value })} />
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEditingGroup(null)} disabled={groupProcessing}>{t('common.cancel')}</Button>
+                        <Button onClick={handleSaveGroup} disabled={groupProcessing} className="gap-2">
+                            {groupProcessing ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                            {t('common.save')}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </>
     );
 }
