@@ -15,23 +15,32 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration {
     public function up(): void
     {
-        Schema::table('logger_integrations', function (Blueprint $table) {
-            $table->timestamp('last_forwarded_data_at')->nullable()->after('last_forwarded_at');
-        });
+        // Idempotent: a prior manual attempt may already have added these columns.
+        if (! Schema::hasColumn('logger_integrations', 'last_forwarded_data_at')) {
+            Schema::table('logger_integrations', function (Blueprint $table) {
+                $table->timestamp('last_forwarded_data_at')->nullable()->after('last_forwarded_at');
+            });
+        }
 
-        Schema::table('loggers', function (Blueprint $table) {
-            $table->timestamp('ministesy_last_forwarded_data_at')->nullable()->after('ministesy_last_forwarded_at');
-        });
+        if (! Schema::hasColumn('loggers', 'ministesy_last_forwarded_data_at')) {
+            Schema::table('loggers', function (Blueprint $table) {
+                $table->timestamp('ministesy_last_forwarded_data_at')->nullable()->after('ministesy_last_forwarded_at');
+            });
+        }
     }
 
     public function down(): void
     {
-        Schema::table('logger_integrations', function (Blueprint $table) {
-            $table->dropColumn('last_forwarded_data_at');
-        });
+        if (Schema::hasColumn('logger_integrations', 'last_forwarded_data_at')) {
+            Schema::table('logger_integrations', function (Blueprint $table) {
+                $table->dropColumn('last_forwarded_data_at');
+            });
+        }
 
-        Schema::table('loggers', function (Blueprint $table) {
-            $table->dropColumn('ministesy_last_forwarded_data_at');
-        });
+        if (Schema::hasColumn('loggers', 'ministesy_last_forwarded_data_at')) {
+            Schema::table('loggers', function (Blueprint $table) {
+                $table->dropColumn('ministesy_last_forwarded_data_at');
+            });
+        }
     }
 };
