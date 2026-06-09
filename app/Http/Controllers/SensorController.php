@@ -36,8 +36,9 @@ class SensorController extends Controller
             'type' => 'required|string|in:temperature,humidity,pressure,water-level,flow-rate,rainfall,voltage,current,digital-input,pulse-counter,digital-output',
             'unit' => 'required|string|max:50',
             'status' => 'required|string|in:active,inactive,error',
-            'min_value' => 'required|numeric',
-            'max_value' => 'required|numeric|gte:min_value',
+            // min/max are ANALOG-only (physical range mapping). Other types have none.
+            'min_value' => 'required_if:connection_type,analog|nullable|numeric',
+            'max_value' => 'required_if:connection_type,analog|nullable|numeric|gte:min_value',
             // Protocol fields (optional — only for protocol-configured sensors)
             'connection_type' => 'nullable|string|in:rs485,rs232,analog,digital',
             'modbus_slave_id' => 'nullable|integer|min:1|max:5',
@@ -482,6 +483,12 @@ class SensorController extends Controller
     {
         if (($data['connection_type'] ?? null) === 'digital') {
             $data['analog_mode'] = (int) ($data['digital_mode'] ?? $data['analog_mode'] ?? 0);
+        }
+
+        // min/max only apply to ANALOG sensors; never persist them for other types.
+        if (($data['connection_type'] ?? null) !== 'analog') {
+            $data['min_value'] = null;
+            $data['max_value'] = null;
         }
 
         // The DB `quantity` column now stores reg_count (1=U16, 2=FLOAT32, 4=U32).

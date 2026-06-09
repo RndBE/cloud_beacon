@@ -345,8 +345,9 @@ class MqttController extends Controller
                 'unit' => $ds['unit'] ?? '',
                 'value' => $ds['value'] ?? 0,
                 'scale_factor' => $ds['scale_factor'] ?? null,
-                'min_value' => $ds['min_value'] ?? 0,
-                'max_value' => $ds['max_value'] ?? 100,
+                // min/max are ANALOG-only; other types store NULL.
+                'min_value' => ($ds['connection_type'] ?? null) === 'analog' ? ($ds['min_value'] ?? 0) : null,
+                'max_value' => ($ds['connection_type'] ?? null) === 'analog' ? ($ds['max_value'] ?? 100) : null,
                 'function_code' => $ds['function_code'] ?? null,
                 'register_address' => $ds['register_address'] ?? null,
                 'quantity' => $ds['quantity'] ?? null,
@@ -377,8 +378,9 @@ class MqttController extends Controller
                     'value' => $ds['value'] ?? $sensor->value,
                     'type' => $ds['type'] ?? $sensor->type,
                     'scale_factor' => $ds['scale_factor'] ?? $sensor->scale_factor,
-                    'min_value' => $ds['min_value'] ?? $sensor->min_value,
-                    'max_value' => $ds['max_value'] ?? $sensor->max_value,
+                    // min/max are ANALOG-only; keep NULL for every other type.
+                    'min_value' => $sensor->connection_type === 'analog' ? ($ds['min_value'] ?? $sensor->min_value) : null,
+                    'max_value' => $sensor->connection_type === 'analog' ? ($ds['max_value'] ?? $sensor->max_value) : null,
                     'function_code' => $ds['function_code'] ?? $sensor->function_code,
                     'register_address' => $ds['register_address'] ?? $sensor->register_address,
                     'quantity' => $ds['quantity'] ?? $sensor->quantity,
@@ -519,8 +521,6 @@ class MqttController extends Controller
                 $sensorData['analog_mode'] = $request->input('analog_mode', 1);
                 $sensorData['channel']     = $request->input('channel');
             } elseif ($connType === 'digital') {
-                $sensorData['min_value']    = 0;
-                $sensorData['max_value']    = 100;
                 $sensorData['scale_factor'] = $request->input('scale_factor');
                 $sensorData['analog_mode']  = $request->input('digital_mode', 0);
                 $sensorData['channel']      = $request->input('channel');

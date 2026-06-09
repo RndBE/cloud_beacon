@@ -454,8 +454,9 @@ class LoggerController extends Controller
                             'unit' => $ds['unit'] ?? '',
                             'value' => $ds['value'] ?? 0,
                             'scale_factor' => $ds['scale_factor'] ?? null,
-                            'min_value' => $ds['min_value'] ?? 0,
-                            'max_value' => $ds['max_value'] ?? 100,
+                            // min/max are ANALOG-only; other types store NULL.
+                            'min_value' => ($ds['connection_type'] ?? null) === 'analog' ? ($ds['min_value'] ?? 0) : null,
+                            'max_value' => ($ds['connection_type'] ?? null) === 'analog' ? ($ds['max_value'] ?? 100) : null,
                             'function_code' => $ds['function_code'] ?? null,
                             'register_address' => $ds['register_address'] ?? null,
                             'quantity' => $ds['quantity'] ?? null,

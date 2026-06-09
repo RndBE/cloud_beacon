@@ -51,7 +51,7 @@ import {
     HeartPulse,
     ShieldAlert,
 } from 'lucide-react';
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     AlertDialog,
@@ -66,6 +66,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
     Dialog,
     DialogContent,
@@ -100,8 +101,8 @@ interface SensorItem {
     unit: string;
     status: 'active' | 'inactive' | 'error';
     lastReading: string;
-    min: number;
-    max: number;
+    min: number | null; // ANALOG-only (physical range mapping); null for other types
+    max: number | null;
     modbusSlaveId: number | null;
     deviceName: string | null;
     functionCode: number | null;
@@ -1294,6 +1295,18 @@ function SensorCrudPanel({
     const [groupForm, setGroupForm] = useState({ modbus_slave_id: 1, device_name: '', function_code: 3, baudrate: 9600, serial_format: '8N1', port: 1 });
     const [groupProcessing, setGroupProcessing] = useState(false);
     const [groupErrors, setGroupErrors] = useState<Record<string, string>>({});
+    // Accordion: device groups (RS485 slave / RS232 port) can be collapsed.
+    // Track collapsed keys; absent key = expanded. Default: all device groups closed.
+    const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+        () => new Set(groupSensorsByDevice(sensors).filter((g) => g.interfaceLabel).map((g) => g.key)),
+    );
+    const toggleGroup = (key: string) =>
+        setCollapsedGroups((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+        });
     const { t } = useTranslation();
 
     const openCreate = () => {
@@ -1376,8 +1389,8 @@ function SensorCrudPanel({
             type: sensor.type,
             unit: sensor.unit,
             status: sensor.status,
-            min_value: sensor.min,
-            max_value: sensor.max,
+            min_value: sensor.min ?? 0,
+            max_value: sensor.max ?? 100,
             connection_type: sensor.connectionType || '',
             modbus_slave_id: sensor.modbusSlaveId || 1,
             device_name: sensor.deviceName || '',
@@ -1495,6 +1508,36 @@ function SensorCrudPanel({
         }
     };
 
+    // Shared column template for the sensor list (header + rows kept in sync).
+    // Mobile: Channel | Type | Value | Status | Actions. md+: inserts Last Reading.
+    const colsClass =
+        'grid items-center gap-3 grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.9fr)_auto_88px] md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.9fr)_auto_minmax(0,1fr)_88px]';
+    const groups = groupSensorsByDevice(sensors);
+
+    const renderRow = (sensor: SensorItem, indented: boolean) => (
+        <div key={sensor.id} className={`${colsClass} px-4 py-2.5 text-sm transition-colors hover:bg-muted/30`}>
+            <div className={indented ? 'truncate pl-6 font-medium' : 'truncate font-medium'}>{sensor.name}</div>
+            <div className="truncate capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</div>
+            <div className="font-mono font-semibold">
+                {sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span>
+            </div>
+            <div>
+                <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
+                    {sensor.status}
+                </Badge>
+            </div>
+            <div className="hidden truncate text-xs text-muted-foreground md:block">{sensor.lastReading || '—'}</div>
+            <div className="flex items-center justify-end gap-1">
+                <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
+                    <Pencil className="size-3.5" />
+                </Button>
+                <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
+                    <Trash2 className="size-3.5" />
+                </Button>
+            </div>
+        </div>
+    );
+
     return (
         <>
             <Card>
@@ -1517,113 +1560,91 @@ function SensorCrudPanel({
                 </CardHeader>
                 <Separator />
                 <CardContent className="p-0">
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead>{t('loggerDetail.channel')}</TableHead>
-                                <TableHead>{t('loggerDetail.type')}</TableHead>
-                                <TableHead>Interface</TableHead>
-                                <TableHead>{t('loggerDetail.value')}</TableHead>
-                                <TableHead>{t('loggerDetail.range')}</TableHead>
-                                <TableHead>{t('loggerDetail.status')}</TableHead>
-                                <TableHead className="hidden md:table-cell">{t('loggerDetail.last_reading')}</TableHead>
-                                <TableHead className="w-[100px] text-right">{t('loggerDetail.actions')}</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {groupSensorsByDevice(sensors).map((group) => (
-                                <Fragment key={group.key}>
-                                    {group.interfaceLabel && (
-                                        <TableRow className="bg-muted/40 hover:bg-muted/40">
-                                            <TableCell colSpan={8} className="py-2">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="font-semibold">{group.deviceLabel}</span>
-                                                        {group.locator && <span className="text-xs text-muted-foreground">· {group.locator}</span>}
-                                                        <Badge variant="outline" className="text-[10px] uppercase">{group.interfaceLabel}</Badge>
-                                                        {group.members.length > 1 && (
-                                                            <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
-                                                        )}
-                                                    </div>
-                                                    {isDeviceGroupType(group.members[0].connectionType) && (
-                                                        <div className="flex items-center gap-1">
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                className="size-7"
-                                                                title="Edit device (slave, nama, baud, format)"
-                                                                onClick={() => openEditGroup(group)}
-                                                            >
-                                                                <Pencil className="size-3.5" />
-                                                            </Button>
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                className="size-7"
-                                                                title="Tambah parameter ke device ini"
-                                                                onClick={() => openAddParam(group)}
-                                                            >
-                                                                <Plus className="size-3.5" />
-                                                            </Button>
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                className="size-7 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
-                                                                title="Hapus device (semua parameter)"
-                                                                onClick={() => deleteDevice(group)}
-                                                            >
-                                                                <Trash2 className="size-3.5" />
-                                                            </Button>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </TableCell>
-                                        </TableRow>
-                                    )}
-                                    {group.members.map((sensor) => (
-                                        <TableRow key={sensor.id}>
-                                            <TableCell className={group.interfaceLabel ? 'pl-8 font-medium' : 'font-medium'}>{sensor.name}</TableCell>
-                                            <TableCell className="capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</TableCell>
-                                            <TableCell>
-                                                {group.interfaceLabel ? (
-                                                    <span className="text-xs text-muted-foreground">—</span>
-                                                ) : sensor.connectionType ? (
-                                                    <Badge variant="outline" className="text-xs uppercase">{sensor.connectionType}</Badge>
-                                                ) : (
-                                                    <span className="text-xs text-muted-foreground">—</span>
-                                                )}
-                                            </TableCell>
-                                            <TableCell className="font-mono font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></TableCell>
-                                            <TableCell className="font-mono text-xs text-muted-foreground">{sensor.connectionType === 'analog' ? `${sensor.min} – ${sensor.max} ${sensor.unit}` : '—'}</TableCell>
-                                            <TableCell>
-                                                <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
-                                                    {sensor.status}
-                                                </Badge>
-                                            </TableCell>
-                                            <TableCell className="hidden text-xs text-muted-foreground md:table-cell">{sensor.lastReading || '—'}</TableCell>
-                                            <TableCell className="text-right">
-                                                <div className="flex items-center justify-end gap-1">
-                                                    <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
-                                                        <Pencil className="size-3.5" />
-                                                    </Button>
-                                                    <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
-                                                        <Trash2 className="size-3.5" />
-                                                    </Button>
-                                                </div>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))}
-                                </Fragment>
-                            ))}
-                            {sensors.length === 0 && (
-                                <TableRow>
-                                    <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
-                                        {t('loggerDetail.no_sensors_hint')}
-                                    </TableCell>
-                                </TableRow>
-                            )}
-                        </TableBody>
-                    </Table>
+                    {/* Column header (mirrors colsClass; Interface & Range columns removed). */}
+                    <div className={`${colsClass} border-b px-4 py-2.5 text-xs font-medium text-muted-foreground`}>
+                        <div>{t('loggerDetail.channel')}</div>
+                        <div>{t('loggerDetail.type')}</div>
+                        <div>{t('loggerDetail.value')}</div>
+                        <div>{t('loggerDetail.status')}</div>
+                        <div className="hidden md:block">{t('loggerDetail.last_reading')}</div>
+                        <div className="text-right">{t('loggerDetail.actions')}</div>
+                    </div>
+
+                    <div className="divide-y">
+                        {groups.map((group) => {
+                            // Standalone sensors (analog/digital) have no device header — render flat.
+                            if (!group.interfaceLabel) {
+                                return (
+                                    <div key={group.key} className="divide-y">
+                                        {group.members.map((sensor) => renderRow(sensor, false))}
+                                    </div>
+                                );
+                            }
+
+                            const open = !collapsedGroups.has(group.key);
+                            return (
+                                <Collapsible key={group.key} open={open} onOpenChange={() => toggleGroup(group.key)}>
+                                    <div className="flex items-center justify-between gap-2 bg-muted/40 px-4 py-2">
+                                        <CollapsibleTrigger
+                                            aria-expanded={open}
+                                            className="flex flex-1 items-center gap-2 text-left"
+                                        >
+                                            <ChevronRight
+                                                className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+                                            />
+                                            <span className="font-semibold">{group.deviceLabel}</span>
+                                            {group.locator && <span className="text-xs text-muted-foreground">· {group.locator}</span>}
+                                            <Badge variant="outline" className="text-[10px] uppercase">{group.interfaceLabel}</Badge>
+                                            {group.members.length > 1 && (
+                                                <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
+                                            )}
+                                        </CollapsibleTrigger>
+                                        {isDeviceGroupType(group.members[0].connectionType) && (
+                                            <div className="flex items-center gap-1">
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="size-7"
+                                                    title="Edit device (slave, nama, baud, format)"
+                                                    onClick={() => openEditGroup(group)}
+                                                >
+                                                    <Pencil className="size-3.5" />
+                                                </Button>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="size-7"
+                                                    title="Tambah parameter ke device ini"
+                                                    onClick={() => openAddParam(group)}
+                                                >
+                                                    <Plus className="size-3.5" />
+                                                </Button>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="size-7 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                    title="Hapus device (semua parameter)"
+                                                    onClick={() => deleteDevice(group)}
+                                                >
+                                                    <Trash2 className="size-3.5" />
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+                                        <div className="divide-y border-t">
+                                            {group.members.map((sensor) => renderRow(sensor, true))}
+                                        </div>
+                                    </CollapsibleContent>
+                                </Collapsible>
+                            );
+                        })}
+                        {sensors.length === 0 && (
+                            <div className="py-12 text-center text-muted-foreground">
+                                {t('loggerDetail.no_sensors_hint')}
+                            </div>
+                        )}
+                    </div>
                 </CardContent>
             </Card>
 
