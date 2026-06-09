@@ -193,7 +193,7 @@ class DeviceDataController extends Controller
 
         // --- 8. Dispatch forwarding job (async, database queue) ---
         // Logger gets 200 OK immediately; forwarding runs in background.
-        ForwardToIntegrations::dispatch($logger, $request->all())->onQueue('default');
+        ForwardToIntegrations::dispatch($logger, $request->all(), $recordedAt)->onQueue('default');
 
         return response()->json([
             'success'     => true,

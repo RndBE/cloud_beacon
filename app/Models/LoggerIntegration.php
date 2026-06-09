@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -16,6 +17,7 @@ class LoggerIntegration extends Model
         'interval_minutes',
         'is_enabled',
         'last_forwarded_at',
+        'last_forwarded_data_at',
         'last_status',
         'last_error',
     ];
@@ -23,10 +25,11 @@ class LoggerIntegration extends Model
     protected function casts(): array
     {
         return [
-            'auth_config'      => 'array',
-            'is_enabled'       => 'boolean',
-            'interval_minutes' => 'integer',
-            'last_forwarded_at' => 'datetime',
+            'auth_config'            => 'array',
+            'is_enabled'             => 'boolean',
+            'interval_minutes'       => 'integer',
+            'last_forwarded_at'      => 'datetime',
+            'last_forwarded_data_at' => 'datetime',
         ];
     }
 
@@ -53,27 +56,38 @@ class LoggerIntegration extends Model
 
     /**
      * Determine if this integration is due for forwarding.
-     * Uses interval_minutes compared to last_forwarded_at.
+     *
+     * The interval is evaluated against the DATA timestamp of the record
+     * (recorded_at = hari + jam), not wall-clock time. This way buffered data
+     * flushed in a burst after an outage (anti-data-loss) is forwarded
+     * according to its original recording cadence: each record is only sent if
+     * its timestamp is at least interval_minutes after the last forwarded
+     * record's timestamp. Older/out-of-order records are skipped.
      */
-    public function isDueForForwarding(): bool
+    public function isDueForForwarding(CarbonInterface $recordedAt): bool
     {
-        if (! $this->last_forwarded_at) {
+        if (! $this->last_forwarded_data_at) {
             return true; // Never forwarded → send immediately
         }
 
-        $secondsSinceLast = now()->diffInSeconds($this->last_forwarded_at, absolute: true);
-        return $secondsSinceLast >= ($this->interval_minutes * 60) - 5; // 5s tolerance
+        return $recordedAt->greaterThanOrEqualTo(
+            $this->last_forwarded_data_at->copy()->addMinutes($this->interval_minutes)
+        );
     }
 
     /**
      * Mark the integration as successfully forwarded.
+     *
+     * @param CarbonInterface $recordedAt Data timestamp of the forwarded record;
+     *                                    becomes the throttle reference for the next record.
      */
-    public function markSuccess(): void
+    public function markSuccess(CarbonInterface $recordedAt): void
     {
         $this->update([
-            'last_forwarded_at' => now(),
-            'last_status'       => 'success',
-            'last_error'        => null,
+            'last_forwarded_at'      => now(),       // wall-clock, for display/monitoring
+            'last_forwarded_data_at' => $recordedAt, // data-time, drives throttle
+            'last_status'            => 'success',
+            'last_error'             => null,
         ]);
     }
 

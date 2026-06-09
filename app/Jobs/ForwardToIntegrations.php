@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
 use App\Models\LoggerIntegration;
+use Carbon\CarbonInterface;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -34,7 +35,8 @@ class ForwardToIntegrations implements ShouldQueue
 
     public function __construct(
         private readonly Logger $logger,
-        private readonly array $rawPayload,   // exact payload received from device
+        private readonly array $rawPayload,        // exact payload received from device
+        private readonly CarbonInterface $recordedAt, // data timestamp (hari + jam); drives throttle
     ) {}
 
     public function handle(): void
@@ -48,7 +50,9 @@ class ForwardToIntegrations implements ShouldQueue
             ->get();
 
         foreach ($integrations as $integration) {
-            if (! $integration->isDueForForwarding()) {
+            if (! $integration->isDueForForwarding($this->recordedAt)) {
+                $nextDue = $integration->last_forwarded_data_at?->copy()->addMinutes($integration->interval_minutes);
+
                 // Log skipped entry
                 ForwardingLog::create([
                     'logger_id'       => $this->logger->id,
@@ -56,16 +60,17 @@ class ForwardToIntegrations implements ShouldQueue
                     'target_name'     => $integration->name,
                     'target_url'      => $integration->endpoint_url,
                     'status'          => 'skipped',
-                    'error_message'   => 'Interval belum tercapai. Berikutnya: '
-                        . ($integration->last_forwarded_at?->addMinutes($integration->interval_minutes)?->format('H:i:s') ?? '-'),
+                    'error_message'   => 'Interval belum tercapai (berdasarkan waktu data). '
+                        . 'Data berikutnya yang diteruskan: ' . ($nextDue?->format('Y-m-d H:i:s') ?? '-'),
                     'payload_summary' => $payloadSummary,
                     'raw_payload'     => $this->rawPayload,
                     'created_at'      => now(),
                 ]);
 
-                Log::debug("[Integration] Skip — interval not reached", [
+                Log::debug("[Integration] Skip — interval not reached (data-time)", [
                     'integration' => $integration->name,
-                    'next_due'    => $integration->last_forwarded_at?->addMinutes($integration->interval_minutes)->toDateTimeString(),
+                    'recorded_at' => $this->recordedAt->toDateTimeString(),
+                    'next_due'    => $nextDue?->toDateTimeString(),
                 ]);
                 continue;
             }
@@ -101,7 +106,7 @@ class ForwardToIntegrations implements ShouldQueue
 
             if ($response->successful()) {
                 Log::info("[Integration] ✅ Success: {$integration->name} ({$response->status()})");
-                $integration->markSuccess();
+                $integration->markSuccess($this->recordedAt);
 
                 ForwardingLog::create([
                     'logger_id'        => $this->logger->id,
@@ -163,9 +168,11 @@ class ForwardToIntegrations implements ShouldQueue
     {
         $logger = $this->logger;
 
-        // Interval check using same logic as LoggerIntegration
+        // Interval check using the DATA timestamp (same anti-data-loss logic as
+        // LoggerIntegration): a record is forwarded only if its timestamp is at
+        // least interval_minutes after the last forwarded record's timestamp.
         $intervalMinutes = $logger->ministesy_interval ?? 10;
-        $lastForwarded   = $logger->ministesy_last_forwarded_at ?? null;
+        $lastForwarded   = $logger->ministesy_last_forwarded_data_at ?? null;
 
         $endpoint = config('integrations.ministesy_endpoint');
         if (! $endpoint) {
@@ -173,31 +180,24 @@ class ForwardToIntegrations implements ShouldQueue
             return;
         }
 
-        Log::info('[MiniSTESY] DEBUG interval check', [
-            'intervalMinutes'  => $intervalMinutes,
-            'lastForwarded'    => $lastForwarded?->toDateTimeString(),
-            'bypass'           => $intervalMinutes <= 1 ? 'YES — skipping interval check' : 'NO',
-        ]);
-
-        if ($lastForwarded && $intervalMinutes > 1) {
-            $secondsSinceLast = (int) now()->diffInSeconds($lastForwarded, absolute: true);
-            $intervalSeconds  = ($intervalMinutes * 60) - 10; // 10s tolerance
-            if ($secondsSinceLast < $intervalSeconds) {
-                $remaining = round(($intervalSeconds - $secondsSinceLast) / 60, 1);
+        if ($lastForwarded) {
+            $nextDue = $lastForwarded->copy()->addMinutes($intervalMinutes);
+            if ($this->recordedAt->lessThan($nextDue)) {
                 ForwardingLog::create([
                     'logger_id'      => $logger->id,
                     'target_name'    => 'Mini STESY',
                     'target_url'     => $endpoint,
                     'status'         => 'skipped',
-                    'error_message'  => "Interval belum tercapai ({$remaining} menit lagi)",
+                    'error_message'  => 'Interval belum tercapai (berdasarkan waktu data). '
+                        . 'Data berikutnya yang diteruskan: ' . $nextDue->format('Y-m-d H:i:s'),
                     'payload_summary' => $payloadSummary,
                     'raw_payload'     => $this->rawPayload,
                     'created_at'     => now(),
                 ]);
 
-                Log::debug("[MiniSTESY] Skip — interval not reached", [
-                    'seconds_since_last' => $secondsSinceLast,
-                    'interval_seconds'   => $intervalSeconds,
+                Log::debug("[MiniSTESY] Skip — interval not reached (data-time)", [
+                    'recorded_at' => $this->recordedAt->toDateTimeString(),
+                    'next_due'    => $nextDue->toDateTimeString(),
                 ]);
                 return;
             }
@@ -247,7 +247,10 @@ class ForwardToIntegrations implements ShouldQueue
 
             if ($response->successful()) {
                 Log::info("[MiniSTESY] ✅ Success ({$response->status()})");
-                $logger->update(['ministesy_last_forwarded_at' => now()]);
+                $logger->update([
+                    'ministesy_last_forwarded_at'      => now(),               // wall-clock, for display
+                    'ministesy_last_forwarded_data_at' => $this->recordedAt,   // data-time, drives throttle
+                ]);
 
                 ForwardingLog::create([
                     'logger_id'        => $logger->id,
@@ -281,11 +284,12 @@ class ForwardToIntegrations implements ShouldQueue
             $responseTimeMs = (int) round((microtime(true) - $startTime) * 1000);
             $error = $e->getMessage();
 
-            // Timeout = data kemungkinan sudah diterima, log sebagai warning
+            // Timeout: we cannot confirm delivery, so we do NOT advance the
+            // throttle. Leaving the throttle untouched means the next buffered
+            // record is still attempted instead of being skipped — no data loss.
             $isTimeout = str_contains($error, 'cURL error 28');
             if ($isTimeout) {
-                Log::warning('[MiniSTESY] ⚠️ Timeout — data kemungkinan sudah diterima (server lambat merespons)');
-                $logger->update(['ministesy_last_forwarded_at' => now()]);
+                Log::warning('[MiniSTESY] ⚠️ Timeout — throttle tidak digeser, data berikutnya tetap dicoba');
             } else {
                 Log::error('[MiniSTESY] ❌ Exception: ' . $error);
             }
