@@ -213,11 +213,14 @@ class MqttController extends Controller
 
         // Parse device sensors using new format parser
         $deviceSensors = [];
+        // True only when GET_ALL actually returned live readings — so we never
+        // overwrite stored values with the merge's zero fallbacks on a failed call.
+        $getAllValid = is_array($getAllResult) && !isset($getAllResult['_error']);
         if (is_array($config)) {
             $deviceSensors = MqttService::parseSensorsResponse($config);
 
             // Merge values from GET_ALL if available
-            if (is_array($getAllResult) && !isset($getAllResult['_error'])) {
+            if ($getAllValid) {
                 $deviceSensors = MqttService::mergeValuesFromGetAll($deviceSensors, $getAllResult);
             }
 
@@ -255,25 +258,31 @@ class MqttController extends Controller
                 $added[] = $ds;
             } else {
                 $matchedDbIds[] = $match->id;
-                // Check for structural changes — NOT value (readings change constantly)
+
+                // Persist the live reading immediately. The structural diff below
+                // intentionally ignores `value`, and an all-"unchanged" sync skips the
+                // confirm step entirely — so without this write the Sensor Summary would
+                // keep showing stale/zero readings even though GET_ALL just returned fresh
+                // ones. Value is a reading, not config, so it's safe to store pre-confirm.
+                if ($getAllValid && array_key_exists('value', $ds) && $ds['value'] !== null) {
+                    $match->update(['value' => $ds['value']]);
+                }
+
+                // Check for structural changes — NOT value (readings change constantly).
+                // Only compare fields that the protocol actually carries for THIS
+                // connection type, so e.g. an RS485 sensor never diffs on analog_mode
+                // or min/max (those belong to ANALOG only).
                 $changes = [];
                 if ($match->unit !== ($ds['unit'] ?? '')) $changes['unit'] = ['old' => $match->unit, 'new' => $ds['unit']];
-                if ($match->device_name !== ($ds['device_name'] ?? null)) $changes['device_name'] = ['old' => $match->device_name, 'new' => $ds['device_name']];
-                foreach ([
-                    'scale_factor',
-                    'min_value',
-                    'max_value',
-                    'function_code',
-                    'register_address',
-                    'quantity',
-                    'baudrate',
-                    'serial_format',
-                    'lcd_enabled',
-                    'log_enabled',
-                    'send_enabled',
-                    'fast_poll',
-                    'analog_mode',
-                ] as $field) {
+
+                $compareFields = match ($ds['connection_type']) {
+                    'rs485' => ['device_name', 'scale_factor', 'function_code', 'register_address', 'quantity', 'baudrate', 'serial_format', 'fast_poll'],
+                    'rs232' => ['scale_factor'],
+                    'analog' => ['min_value', 'max_value', 'analog_mode'],
+                    'digital' => ['analog_mode', 'scale_factor'],
+                    default => [],
+                };
+                foreach ($compareFields as $field) {
                     if (($match->{$field} ?? null) != ($ds[$field] ?? null)) {
                         $changes[$field] = ['old' => $match->{$field} ?? null, 'new' => $ds[$field] ?? null];
                     }
@@ -807,6 +816,55 @@ class MqttController extends Controller
     /**
      * Send an allowlisted protocol command that does not have a dedicated UI/service yet.
      */
+    /**
+     * GET_NAME — fetch the live name/value/unit list straight from the device so the
+     * MAP_DATA picker plots against what the firmware actually has, not stale DB rows.
+     * Returns a normalized [{nama, nilai, satuan}] array; offline devices yield success=false.
+     */
+    public function getSensorNames(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $mqtt = new MqttService();
+        $list = $mqtt->requestSensorsGetName($idLogger);
+
+        if ($list === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Perangkat tidak merespons — kemungkinan offline.',
+            ]);
+        }
+
+        if (isset($list['_error'])) {
+            return response()->json([
+                'success' => false,
+                'message' => $list['_error'],
+            ]);
+        }
+
+        // Normalize: keep only entries with a non-empty name; coerce nilai/satuan shape.
+        $sensors = [];
+        foreach ($list as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            $nama = trim((string) ($entry['nama'] ?? ''));
+            if ($nama === '') {
+                continue;
+            }
+            $sensors[] = [
+                'nama' => $nama,
+                'nilai' => is_numeric($entry['nilai'] ?? null) ? (float) $entry['nilai'] : null,
+                'satuan' => (string) ($entry['satuan'] ?? ''),
+            ];
+        }
+
+        return response()->json(['success' => true, 'data' => $sensors]);
+    }
+
     public function sendProtocolCommand(Request $request): JsonResponse
     {
         $request->validate([
@@ -828,9 +886,13 @@ class MqttController extends Controller
             'CAL',
             'STATUS',
             'ARR',          // §3.16.1 — ARR source slave select (mode-gated)
-            'GCM',          // §3.17 — GCM master switch + slave binding
-            'GCM_PUMP',     // §3.17 — pump control per module (renamed from AWLR_PUMP)
+            'GCM',          // §3.17 — GCM master switch + slave binding (id format [slave,mode])
+            'GCM_PUMP',     // §3.17 — pump control per module (mode PUMP)
+            'GCM_GATE',     // §3.17 — water gate control per module (mode AWGC)
+            'GCM_GATE_WARN', // §4 — EWS horn/speaker pre-warning before AWGC moves (mode AWGC)
             'GCM_MAP',      // §3.17.1 — telemetry-slot -> GCM register mapping
+            'MAP_DATA',     // name-based sensor mapping — telemetry/LCD/SD ordering (s1..s43)
+            'P_OUT',         // power-output GET → {"12":x,"24":x}
             'P_OUT24',
             'P_OUT12',
             'SENS_DOOR',
@@ -1126,9 +1188,13 @@ class MqttController extends Controller
         $calibrationFields = $modeConfig->calibration_fields ?? [];
         $validationRules = [];
         foreach ($calibrationFields as $field) {
-            if (($field['type'] ?? 'number') === 'select') {
+            $type = $field['type'] ?? 'number';
+            if ($type === 'select') {
                 $allowedValues = collect($field['options'] ?? [])->pluck('value')->implode(',');
                 $rules = ['required', 'string', 'in:' . $allowedValues];
+            } elseif ($type === 'sensor-source') {
+                // A device sensor name (validated live on the device, not against a static list).
+                $rules = ['required', 'string', 'max:255'];
             } else {
                 $rules = ['required', 'numeric'];
                 if (isset($field['min'])) {
@@ -1142,11 +1208,9 @@ class MqttController extends Controller
         // Build params from calibration fields
         $params = [];
         foreach ($calibrationFields as $field) {
-            if (($field['type'] ?? 'number') === 'select') {
-                $params[$field['key']] = $request->input($field['key']);
-            } else {
-                $params[$field['key']] = (float) $request->input($field['key']);
-            }
+            $params[$field['key']] = ($field['type'] ?? 'number') === 'number'
+                ? (float) $request->input($field['key'])
+                : $request->input($field['key']);
         }
 
         $mqtt   = new MqttService();
@@ -1179,6 +1243,35 @@ class MqttController extends Controller
                 'created_at' => now(),
             ]);
         }
+
+        return response()->json($result);
+    }
+
+    /**
+     * Read the device's current calibration/profile settings, e.g. {"AWLR_TD":{"cmd":"GET"}}
+     * → {"status":"OK","source":"Level5","sumur":25.50,"muka_air":12.00,"sensor_awal":0.55}.
+     */
+    public function getCalibration(Request $request): JsonResponse
+    {
+        $request->validate(['id_logger' => 'required|string']);
+
+        $idLogger = $request->input('id_logger');
+        $logger   = $this->resolveLogger($idLogger);
+
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
+        if (!$logger->logger_mode) {
+            return response()->json(['success' => false, 'message' => 'Logger belum memiliki mode.'], 400);
+        }
+
+        $modeConfig = \App\Models\LoggerMode::where('slug', $logger->logger_mode)->first();
+        if (!$modeConfig || !$modeConfig->has_calibration) {
+            return response()->json(['success' => false, 'message' => 'Mode ' . $logger->logger_mode . ' tidak memiliki kalibrasi.'], 400);
+        }
+
+        $result = (new MqttService())->sendCalibrationGet($idLogger, $logger->logger_mode);
 
         return response()->json($result);
     }

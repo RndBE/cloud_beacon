@@ -401,12 +401,19 @@ class SensorController extends Controller
      * params themselves are untouched; the whole slave is re-SET with the new cfg.
      * Changing the slave_id/port moves the device (DEL old + SET new).
      */
-    public function updateGroup(Request $request, string $loggerHash, string $connType, int $groupId): RedirectResponse
+    public function saveDevice(Request $request, string $loggerHash, string $connType, ?int $groupId = null): RedirectResponse
     {
         $logger = $this->resolveLogger($loggerHash);
         $connType = strtolower($connType);
         abort_unless(in_array($connType, self::GROUPED_TYPES, true), 404);
 
+        // RS485 unified device form: full cfg + the complete `s` param list in one shot.
+        if ($connType === 'rs485' && $request->has('params')) {
+            return $this->saveRs485Device($logger, $request, $groupId);
+        }
+
+        // Legacy device-level cfg edit (RS232 "Edit device"); params untouched.
+        abort_if($groupId === null, 404);
         $rows = $this->groupMembers($logger, $connType, $groupId);
         abort_if($rows->isEmpty(), 404);
 
@@ -479,6 +486,119 @@ class SensorController extends Controller
         return back()->with('success', 'Device updated successfully.');
     }
 
+    /**
+     * RS485 unified upsert: SET the slave with the full param list, then reconcile
+     * the DB rows (update by id, create new, delete removed). $groupId is the old
+     * slave id (null on create). Type is auto-derived; status defaults to active.
+     */
+    private function saveRs485Device(Logger $logger, Request $request, ?int $groupId): RedirectResponse
+    {
+        $validated = $request->validate([
+            'modbus_slave_id' => 'required|integer|min:1|max:5',
+            'device_name' => 'nullable|string|max:50',
+            'function_code' => 'required|integer|in:3,4',
+            'baudrate' => 'required|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
+            'serial_format' => 'required|string|in:8N1,8E1,8O1',
+            'params' => 'required|array|min:1|max:16', // MAX_SENSORS_PER_SLAVE
+            'params.*.id' => 'nullable|integer',
+            'params.*.name' => 'required|string|max:255',
+            'params.*.unit' => 'nullable|string|max:50',
+            'params.*.scale_factor' => 'nullable|numeric',
+            'params.*.register_address' => 'nullable|integer|min:0|max:65535',
+            'params.*.reg_count' => 'nullable|integer|in:1,2,4',
+            'params.*.fast_poll' => 'nullable|boolean',
+        ]);
+
+        $newSlave = (int) $validated['modbus_slave_id'];
+
+        // Block moving onto a slave already owned by a different device.
+        if ($newSlave !== $groupId) {
+            $clash = Sensor::where('logger_id', $logger->id)
+                ->where('connection_type', 'rs485')
+                ->where('modbus_slave_id', $newSlave)
+                ->exists();
+            if ($clash) {
+                return back()->withErrors(['mqtt' => "Slave ID {$newSlave} sudah dipakai device lain."])->withInput();
+            }
+        }
+
+        $device = [
+            'modbus_slave_id' => $newSlave,
+            'device_name' => $validated['device_name'] ?? '',
+            'function_code' => (int) $validated['function_code'],
+            'register_address' => 0, // fallback address is always 0
+            'baudrate' => (int) $validated['baudrate'],
+            'serial_format' => $validated['serial_format'],
+        ];
+
+        $params = array_map(fn (array $p) => $this->paramFromData([
+            'name' => $p['name'],
+            'scale_factor' => $p['scale_factor'] ?? 1.0,
+            'unit' => $p['unit'] ?? '',
+            'register_address' => $p['register_address'] ?? 0,
+            'reg_count' => $p['reg_count'] ?? 1,
+            'fast_poll' => !empty($p['fast_poll']),
+        ]), $validated['params']);
+
+        // Push the whole slave once.
+        $result = $this->pushGroupConfig($logger, 'rs485', $newSlave, $params, $device);
+        if ($result && !$result['success']) {
+            return back()->withErrors(['mqtt' => $result['message']])->withInput();
+        }
+
+        // Device moved to a different slave → remove the old slave on the firmware.
+        if ($groupId !== null && $newSlave !== $groupId && $logger->device_identifier) {
+            $del = (new MqttService())->sendSensorDel($logger->device_identifier, 'rs485', $groupId);
+            if ($del && !$del['success']) {
+                return back()->withErrors(['mqtt' => $del['message']])->withInput();
+            }
+        }
+
+        // Reconcile DB rows for this device.
+        $existing = $groupId !== null
+            ? $this->groupMembers($logger, 'rs485', $groupId)->keyBy('id')
+            : collect();
+        $keepIds = [];
+
+        foreach ($validated['params'] as $p) {
+            $row = isset($p['id']) ? $existing->get((int) $p['id']) : null;
+            $flat = [
+                'connection_type' => 'rs485',
+                'logger_id' => $logger->id,
+                'modbus_slave_id' => $newSlave,
+                'device_name' => $device['device_name'],
+                'function_code' => $device['function_code'],
+                'baudrate' => $device['baudrate'],
+                'serial_format' => $device['serial_format'],
+                'name' => $p['name'],
+                'unit' => $p['unit'] ?? '',
+                'scale_factor' => $p['scale_factor'] ?? 1.0,
+                'register_address' => $p['register_address'] ?? 0,
+                'reg_count' => $p['reg_count'] ?? 1,
+                'fast_poll' => !empty($p['fast_poll']),
+                'type' => $row->type ?? MqttService::guessSensorType($p['name'], $p['unit'] ?? ''),
+                'status' => $row->status ?? 'active',
+            ];
+            $persist = $this->persistableSensorData($flat);
+
+            if ($row) {
+                $row->update($persist);
+                $keepIds[] = $row->id;
+            } else {
+                $keepIds[] = Sensor::create($persist)->id;
+            }
+        }
+
+        // Delete params removed in the form.
+        $existing->each(function (Sensor $row) use ($keepIds) {
+            if (!in_array($row->id, $keepIds, true)) {
+                $row->delete();
+            }
+        });
+
+        return back()->with('success', $groupId === null ? 'Device created successfully.' : 'Device updated successfully.');
+    }
+
     private function persistableSensorData(array $data): array
     {
         if (($data['connection_type'] ?? null) === 'digital') {
@@ -489,6 +609,12 @@ class SensorController extends Controller
         if (($data['connection_type'] ?? null) !== 'analog') {
             $data['min_value'] = null;
             $data['max_value'] = null;
+        }
+
+        // analog_mode is meaningful only for ANALOG (input mode) and DIGITAL (digital
+        // mode, stored here). RS485/RS232/virtual sensors must not carry it.
+        if (!in_array($data['connection_type'] ?? null, ['analog', 'digital'], true)) {
+            $data['analog_mode'] = null;
         }
 
         // The DB `quantity` column now stores reg_count (1=U16, 2=FLOAT32, 4=U32).

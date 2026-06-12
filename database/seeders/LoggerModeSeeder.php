@@ -22,9 +22,11 @@ class LoggerModeSeeder extends Seeder
                 'slug'               => 'ARR',
                 'label'              => 'ARR (Rainfall Recorder)',
                 'group'              => 'ARR',
-                'has_calibration'    => false,
-                'calibration_fields' => null,
-                'description'        => 'Automatic Rainfall Recorder — memilih satu slave RS485 sebagai sumber data curah hujan (command ARR).',
+                'has_calibration'    => true,
+                'calibration_fields' => [
+                    ['key' => 'source', 'label' => 'Sumber Data (Sensor)', 'unit' => '', 'type' => 'sensor-source'],
+                ],
+                'description'        => 'Automatic Rainfall Recorder — memilih nama sensor sebagai sumber data curah hujan (command ARR).',
             ],
             [
                 'slug'               => 'GNSS',
@@ -55,6 +57,7 @@ class LoggerModeSeeder extends Seeder
                 'group'              => 'AWLR',
                 'has_calibration'    => true,
                 'calibration_fields' => [
+                    ['key' => 'source', 'label' => 'Sumber Data (Sensor)', 'unit' => '', 'type' => 'sensor-source'],
                     ['key' => 'sumur', 'label' => 'Kedalaman Sumur', 'unit' => 'm', 'type' => 'number', 'min' => 0, 'step' => 0.01],
                     ['key' => 'muka_air', 'label' => 'Muka Air', 'unit' => 'm', 'type' => 'number', 'min' => 0, 'step' => 0.01],
                 ],

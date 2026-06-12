@@ -323,6 +323,22 @@ class MqttService
     }
 
     /**
+     * Send SENSORS GET_NAME — compact name-based list for MAP_DATA plotting.
+     *
+     * Firmware replies with: {"SENSORS":[{"nama":"kedalaman","nilai":23.4,"satuan":"m"}, ...]}
+     * Returns that array (each entry: nama / nilai / satuan), or null if offline.
+     */
+    public function requestSensorsGetName(string $idLogger): ?array
+    {
+        return $this->sendAndWait(
+            $idLogger,
+            json_encode(['SENSORS' => ['cmd' => 'GET_NAME']]),
+            'SENSORS GET_NAME',
+            fn(array $data) => $data['SENSORS'] ?? null,
+        );
+    }
+
+    /**
      * Parse the new SENSORS GET response format into a flat normalized sensor list.
      *
      * Input format (grouped by protocol):
@@ -546,7 +562,9 @@ class MqttService
     {
         return $this->sendAndWaitForAck(
             $idLogger,
-            json_encode($payload),
+            // PRESERVE_ZERO_FRACTION keeps float fields explicit (e.g. analog min/max 100.0
+            // stays 100.0 instead of collapsing to 100); the firmware parses them as floats.
+            json_encode($payload, JSON_PRESERVE_ZERO_FRACTION),
             'SENSORS SET',
         );
     }
@@ -750,6 +768,28 @@ class MqttService
                 ]],
             ],
         ];
+    }
+
+    /**
+     * Best-effort sensor `type` from its name/unit. Shared by SensorController,
+     * MqttController, and MobileLoggerSyncService so they stay consistent.
+     */
+    public static function guessSensorType(string $name, string $unit): string
+    {
+        $name = strtolower($name);
+        $unit = strtolower($unit);
+
+        if (str_contains($name, 'temp') || $unit === '°c') return 'temperature';
+        if (str_contains($name, 'hum') || $unit === '%rh') return 'humidity';
+        if (str_contains($name, 'press') || $unit === 'hpa') return 'pressure';
+        if (str_contains($name, 'water') || str_contains($name, 'level')) return 'water-level';
+        if (str_contains($name, 'flow')) return 'flow-rate';
+        if (str_contains($name, 'rain')) return 'rainfall';
+        if (str_contains($name, 'volt') || $unit === 'v') return 'voltage';
+        if (str_contains($name, 'current') || $unit === 'a') return 'current';
+        if (str_contains($name, 'wind')) return 'pressure'; // generic fallback for wind sensors
+
+        return 'pressure'; // safe default
     }
 
     /**
@@ -1259,6 +1299,17 @@ class MqttService
      */
     public function sendCalibrationSet(string $idLogger, string $modeSlug, array $params): array
     {
+        return $this->sendCalibrationCommand($idLogger, $modeSlug, array_merge(['cmd' => 'SET'], $params));
+    }
+
+    /** Read the current calibration/profile settings: {"AWLR_TD":{"cmd":"GET"}} → {...,"sensor_awal":..}. */
+    public function sendCalibrationGet(string $idLogger, string $modeSlug): array
+    {
+        return $this->sendCalibrationCommand($idLogger, $modeSlug, ['cmd' => 'GET']);
+    }
+
+    private function sendCalibrationCommand(string $idLogger, string $modeSlug, array $command): array
+    {
         $pubTopic = "pub_{$idLogger}";
         $subTopic = "sub_{$idLogger}";
         $clientId = $this->clientPrefix . uniqid();
@@ -1315,8 +1366,8 @@ class MqttService
                 }
             }, 0);
 
-            // Build payload: {"AWLR_TD": {"cmd": "SET", "sumur": 25.5, "muka_air": 12.0}}
-            $payload = json_encode([$modeSlug => array_merge(['cmd' => 'SET'], $params)]);
+            // Build payload, e.g. {"AWLR_TD":{"cmd":"SET","sumur":25.5,...}} or {"AWLR_TD":{"cmd":"GET"}}
+            $payload = json_encode([$modeSlug => $command]);
             Log::info("[MQTT] 📤 [CALIBRATION] Publishing: {$payload}");
             $mqtt->publish($subTopic, $payload, 0);
 
@@ -1352,7 +1403,7 @@ class MqttService
      *
      * @return array{success: bool, message: string, data?: mixed, raw?: string}
      */
-    public function sendProtocolCommand(string $idLogger, array $payload, string $module, ?int $timeout = null): array
+    public function sendProtocolCommand(string $idLogger, array $payload, string $module, ?int $timeout = null, ?callable $onProgress = null): array
     {
         $pubTopic = "pub_{$idLogger}";
         $subTopic = "sub_{$idLogger}";
@@ -1381,7 +1432,7 @@ class MqttService
             $mqtt->connect($connectionSettings, true);
             Log::info("[MQTT] ✅ Connected");
 
-            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt, $module) {
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt, $module, $onProgress) {
                 Log::info("[MQTT] 📩 [PROTOCOL {$module}] Received: {$message}");
 
                 $trimmed = trim($message);
@@ -1422,6 +1473,11 @@ class MqttService
 
                     // OTA streams progress (spec §3.26); only the terminal frame is conclusive.
                     if ($module === 'OTA') {
+                        // Surface each streaming frame (BEGIN/PROGRESS/END) to the caller so it can
+                        // publish live download percentage while we keep blocking for the outcome.
+                        if ($onProgress !== null) {
+                            $onProgress($data);
+                        }
                         $otaResult = self::interpretOtaMessage($data);
                         if ($otaResult !== null) {
                             $result = $otaResult + ['raw' => $message];
