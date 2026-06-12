@@ -91,6 +91,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
+import { ProtocolPanel, ADVANCED_PROTOCOL_TABS, MODULE_PROTOCOL_TABS } from './protocol';
+import type { ProtocolLogger } from './protocol';
 
 interface SensorItem {
     id: number;
@@ -149,7 +151,8 @@ interface CalibrationFieldDef {
     key: string;
     label: string;
     unit: string;
-    type: 'number' | 'select';
+    // 'sensor-source' = a device sensor-name picker, populated live via SENSORS GET_NAME.
+    type: 'number' | 'select' | 'sensor-source';
     min?: number;
     step?: number;
     options?: { value: string; label: string }[];
@@ -280,8 +283,8 @@ const EMPTY_FORM = {
     type: 'temperature' as string,
     unit: '°C',
     status: 'active' as string,
-    min_value: 0,
-    max_value: 100,
+    min_value: '0' as string, // string-backed so float entry (e.g. 100.0 / 55.6) isn't clobbered
+    max_value: '100' as string,
     connection_type: '' as string,
     modbus_slave_id: 1,
     device_name: '',
@@ -306,6 +309,50 @@ const EMPTY_FORM = {
     failsafe: 0,
     fast_poll: false,
 };
+
+// RS485 unified device form: one device cfg + a repeatable list of parameters (the `s` array).
+type Rs485Param = {
+    id?: number;
+    name: string;
+    unit: string;
+    scale_factor: string; // string-backed so float entry (e.g. 0.1) isn't clobbered
+    register_address: number;
+    reg_count: number;
+    fast_poll: boolean;
+};
+
+const BLANK_RS485_PARAM: Rs485Param = { name: '', unit: '', scale_factor: '1', register_address: 0, reg_count: 1, fast_poll: false };
+
+// Virtual/profile sensors (AWLR_TD.*, AWLR_US.*, ARR.*, GNSS.*) are computed outputs with no
+// raw reading (value still empty) — they must never be offered as a data SOURCE.
+function isVirtualSourceName(name: string): boolean {
+    return /^(AWLR_TD|AWLR_US|ARR|GNSS)\./i.test(name);
+}
+
+// Mirror of MqttService::guessSensorType — derive a sensor `type` from name/unit so
+// RS232/Analog/Digital forms don't need to show a Type dropdown.
+function guessSensorType(name: string, unit: string): string {
+    const n = name.toLowerCase();
+    const u = unit.toLowerCase();
+    if (n.includes('temp') || u === '°c') return 'temperature';
+    if (n.includes('hum') || u === '%rh') return 'humidity';
+    if (n.includes('press') || u === 'hpa') return 'pressure';
+    if (n.includes('water') || n.includes('level')) return 'water-level';
+    if (n.includes('flow')) return 'flow-rate';
+    if (n.includes('rain')) return 'rainfall';
+    if (n.includes('volt') || u === 'v') return 'voltage';
+    if (n.includes('current') || u === 'a') return 'current';
+    return 'pressure';
+}
+
+const emptyRs485Form = () => ({
+    modbus_slave_id: 1,
+    device_name: '',
+    function_code: 3,
+    baudrate: 9600,
+    serial_format: '8N1',
+    params: [{ ...BLANK_RS485_PARAM }] as Rs485Param[],
+});
 
 function configuratorModes(modes: LoggerModeOption[]): LoggerModeOption[] {
     return modes.filter((mode) => CONFIGURATOR_MODES.has(mode.slug));
@@ -401,11 +448,6 @@ function groupSensorsByDevice(sensors: SensorItem[]): SensorGroup[] {
     }
 
     return groups;
-}
-
-/** Whether a connection type is a multi-parameter device (slave/port) that can be deleted as a unit. */
-function isDeviceGroupType(connectionType: string | null): boolean {
-    return connectionType === 'rs485' || connectionType === 'rs232';
 }
 
 interface DiffGroup {
@@ -1268,6 +1310,88 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
     );
 }
 
+// Analog calibration controls (moved from the Advanced/Protocol CAL card). Shown inside the
+// expanded analog sensor row. Sends CAL SET (gain) / CAL OFFSET via the protocol command endpoint.
+function AnalogCalibration({ channel, mode, deviceIdentifier, disabled }: {
+    channel: number;
+    mode: number;
+    deviceIdentifier: string | null;
+    disabled: boolean;
+}) {
+    const [actualVal, setActualVal] = useState('');
+    const [offsetVal, setOffsetVal] = useState('');
+    const [busy, setBusy] = useState<'gain' | 'offset' | null>(null);
+    const [confirm, setConfirm] = useState<'gain' | 'offset' | null>(null);
+    const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+
+    // actual_val = the RAW signal the calibrator reads. Mode 1 (current) 4–20 mA, mode 0 (voltage) 0–10 V.
+    const range = mode === 1 ? { min: 4, max: 20, unit: 'mA' } : { min: 0, max: 10, unit: 'V' };
+
+    async function sendCal(kind: 'gain' | 'offset') {
+        if (!deviceIdentifier) return;
+        const payload = kind === 'gain'
+            ? { CAL: { cmd: 'SET', ch: channel, actual_val: parseFloat(actualVal) } }
+            : { CAL: { cmd: 'OFFSET', Sens: 'Analog', ch: channel, actual_val: parseFloat(offsetVal) } };
+        setBusy(kind);
+        setStatus(null);
+        try {
+            const res = await apiFetch('/api/mqtt/protocol/command', { id_logger: deviceIdentifier, module: 'CAL', payload });
+            const data = await res.json();
+            setStatus(data.success ? { ok: true, msg: kind === 'gain' ? 'Calibration sent.' : 'Offset saved.' } : { ok: false, msg: data.message || 'Failed to send.' });
+        } catch {
+            setStatus({ ok: false, msg: 'Network error.' });
+        } finally {
+            setBusy(null);
+        }
+    }
+
+    const gainNum = parseFloat(actualVal);
+    const gainValid = actualVal !== '' && !isNaN(gainNum) && gainNum >= range.min && gainNum <= range.max;
+    const offsetValid = offsetVal !== '' && !isNaN(parseFloat(offsetVal));
+
+    return (
+        <div className="border-t bg-muted/20 px-4 py-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                    <Label className="text-xs">Calibration <span className="font-normal text-muted-foreground">({range.unit} {range.min}–{range.max})</span></Label>
+                    <div className="flex items-start gap-2">
+                        <Input inputMode="decimal" value={actualVal} disabled={disabled || busy !== null} onChange={(e) => setActualVal(e.target.value)} placeholder={mode === 1 ? 'e.g. 5.0' : 'e.g. 2.5'} className="flex-1" />
+                        <Button size="sm" className="gap-1" disabled={disabled || !gainValid || busy !== null} onClick={() => setConfirm('gain')}>
+                            {busy === 'gain' ? <Loader2 className="size-3.5 animate-spin" /> : <SlidersHorizontal className="size-3.5" />} Set
+                        </Button>
+                    </div>
+                </div>
+                <div className="grid gap-1.5">
+                    <Label className="text-xs">Offset</Label>
+                    <div className="flex items-start gap-2">
+                        <Input inputMode="decimal" value={offsetVal} disabled={disabled || busy !== null} onChange={(e) => setOffsetVal(e.target.value)} placeholder="e.g. 0.0" className="flex-1" />
+                        <Button size="sm" variant="outline" className="gap-1" disabled={disabled || !offsetValid || busy !== null} onClick={() => setConfirm('offset')}>
+                            {busy === 'offset' ? <Loader2 className="size-3.5 animate-spin" /> : <SlidersHorizontal className="size-3.5" />} Set
+                        </Button>
+                    </div>
+                </div>
+            </div>
+            {status && <p className={`mt-2 text-[11px] ${status.ok ? 'text-emerald-600' : 'text-red-600'}`}>{status.msg}</p>}
+
+            <AlertDialog open={confirm !== null} onOpenChange={(o) => { if (!o) setConfirm(null); }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirm Calibration</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            The calibration value is the <strong>raw {mode === 1 ? 'current (mA)' : 'voltage (V)'}</strong> read from your calibrator —
+                            <strong> not</strong> the final scaled value. Example: if the calibrator shows <strong>5&nbsp;mA</strong>, enter <strong>5.0</strong>. Send to the device?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => { const k = confirm; setConfirm(null); if (k) sendCal(k); }}>Continue</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </div>
+    );
+}
+
 function SensorCrudPanel({
     loggerId,
     sensors,
@@ -1291,10 +1415,9 @@ function SensorCrudPanel({
     // A parameter only edits register-level fields; device cfg (slave/name/baud/format)
     // is locked in the param form and changed via the "Edit device" dialog instead.
     const [deviceLocked, setDeviceLocked] = useState(false);
-    const [editingGroup, setEditingGroup] = useState<SensorGroup | null>(null);
-    const [groupForm, setGroupForm] = useState({ modbus_slave_id: 1, device_name: '', function_code: 3, baudrate: 9600, serial_format: '8N1', port: 1 });
-    const [groupProcessing, setGroupProcessing] = useState(false);
-    const [groupErrors, setGroupErrors] = useState<Record<string, string>>({});
+    // RS485 unified device form (cfg + params). editingDeviceSlave: null = create, else the slave being edited.
+    const [rs485Form, setRs485Form] = useState(emptyRs485Form);
+    const [editingDeviceSlave, setEditingDeviceSlave] = useState<number | null>(null);
     // Accordion: device groups (RS485 slave / RS232 port) can be collapsed.
     // Track collapsed keys; absent key = expanded. Default: all device groups closed.
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
@@ -1311,74 +1434,92 @@ function SensorCrudPanel({
 
     const openCreate = () => {
         setEditingSensor(null);
+        setEditingDeviceSlave(null);
         setForm(EMPTY_FORM);
+        setRs485Form(emptyRs485Form());
         setErrors({});
         setDeviceLocked(false); // new device → cfg editable
         setDialogOpen(true);
     };
 
-    // Add another parameter to an existing RS485 slave / RS232 port: opens the
-    // form in create mode pre-filled with the device's cfg, so the operator only
-    // fills the param fields. store() merges it into the slave's full param list.
-    const openAddParam = (group: SensorGroup) => {
+    // ── RS485 unified device form helpers ──
+    const setRs485 = (patch: Partial<ReturnType<typeof emptyRs485Form>>) => setRs485Form(f => ({ ...f, ...patch }));
+    const updateRs485Param = (i: number, patch: Partial<Rs485Param>) =>
+        setRs485Form(f => ({ ...f, params: f.params.map((p, idx) => (idx === i ? { ...p, ...patch } : p)) }));
+    const addRs485Param = () =>
+        setRs485Form(f => {
+            const nextReg = Math.max(-1, ...f.params.map(p => p.register_address ?? 0)) + 1;
+            return { ...f, params: [...f.params, { ...BLANK_RS485_PARAM, register_address: nextReg }] };
+        });
+    const removeRs485Param = (i: number) =>
+        setRs485Form(f => (f.params.length > 1 ? { ...f, params: f.params.filter((_, idx) => idx !== i) } : f));
+
+    // When the connection type switches to RS485 during create, start a fresh device form.
+    const handleConnTypeChange = (value: string) => {
+        setForm(f => ({ ...f, connection_type: value }));
+        if (value === 'rs485' && editingDeviceSlave === null) {
+            setRs485Form(emptyRs485Form());
+        }
+    };
+
+    // Open the unified RS485 device form pre-loaded with the device cfg + ALL its parameters.
+    const openEditDevice = (group: SensorGroup) => {
         const head = group.members[0];
-        const nextRegister = Math.max(-1, ...group.members.map((m) => m.registerAddress ?? 0)) + 1;
         setEditingSensor(null);
-        setForm({
-            ...EMPTY_FORM,
-            type: head.type || EMPTY_FORM.type,
-            unit: head.unit || EMPTY_FORM.unit,
-            connection_type: head.connectionType || '',
+        setEditingDeviceSlave(head.modbusSlaveId ?? 1);
+        setForm({ ...EMPTY_FORM, connection_type: 'rs485' });
+        setRs485Form({
             modbus_slave_id: head.modbusSlaveId ?? 1,
             device_name: head.deviceName ?? '',
             function_code: head.functionCode ?? 3,
-            register_address: head.connectionType === 'rs485' ? nextRegister : 0,
             baudrate: head.baudrate ?? 9600,
             serial_format: head.serialFormat ?? '8N1',
-            port: head.port ?? 1,
+            params: group.members.map(m => ({
+                id: m.id,
+                name: m.name,
+                unit: m.unit,
+                scale_factor: String(m.scaleFactor ?? 1),
+                register_address: m.registerAddress ?? 0,
+                reg_count: m.regCount ?? m.quantity ?? 1,
+                fast_poll: m.fastPoll ?? false,
+            })),
         });
         setErrors({});
-        setDeviceLocked(true); // adding a param to an existing device → cfg locked
         setDialogOpen(true);
     };
 
-    // Edit an existing RS485 slave / RS232 port device-level config.
-    const openEditGroup = (group: SensorGroup) => {
-        const head = group.members[0];
-        setEditingGroup(group);
-        setGroupForm({
-            modbus_slave_id: head.modbusSlaveId ?? 1,
-            device_name: head.deviceName ?? '',
-            function_code: head.functionCode ?? 3,
-            baudrate: head.baudrate ?? 9600,
-            serial_format: head.serialFormat ?? '8N1',
-            port: head.port ?? 1,
-        });
-        setGroupErrors({});
-    };
-
-    const handleSaveGroup = () => {
-        if (!editingGroup) return;
-        const head = editingGroup.members[0];
-        const connType = head.connectionType;
-        const groupId = connType === 'rs485' ? head.modbusSlaveId : head.port;
-        if (!connType || groupId == null) return;
-        const payload = connType === 'rs485'
-            ? {
-                modbus_slave_id: groupForm.modbus_slave_id,
-                device_name: groupForm.device_name,
-                function_code: groupForm.function_code,
-                baudrate: groupForm.baudrate,
-                serial_format: groupForm.serial_format,
-            }
-            : { port: groupForm.port, device_name: groupForm.device_name };
-        setGroupProcessing(true);
-        setGroupErrors({});
-        router.put(`/loggers/${loggerId}/sensor-devices/${connType}/${groupId}`, payload, {
+    const submitRs485 = () => {
+        setProcessing(true);
+        setErrors({});
+        const body = {
+            modbus_slave_id: rs485Form.modbus_slave_id,
+            device_name: rs485Form.device_name,
+            function_code: rs485Form.function_code,
+            baudrate: rs485Form.baudrate,
+            serial_format: rs485Form.serial_format,
+            params: rs485Form.params.map(p => ({
+                ...(p.id != null ? { id: p.id } : {}),
+                name: p.name,
+                unit: p.unit,
+                scale_factor: p.scale_factor === '' ? 1 : Number(p.scale_factor),
+                register_address: p.register_address,
+                reg_count: p.reg_count,
+                fast_poll: p.fast_poll,
+            })),
+        };
+        const url = editingDeviceSlave != null
+            ? `/loggers/${loggerId}/sensor-devices/rs485/${editingDeviceSlave}`
+            : `/loggers/${loggerId}/sensor-devices/rs485`;
+        const method = editingDeviceSlave != null ? 'put' : 'post';
+        router[method](url, body, {
             preserveScroll: true,
-            onSuccess: () => setEditingGroup(null),
-            onError: (errs) => setGroupErrors(errs as Record<string, string>),
-            onFinish: () => setGroupProcessing(false),
+            onSuccess: () => {
+                setDialogOpen(false);
+                setEditingDeviceSlave(null);
+                setRs485Form(emptyRs485Form());
+            },
+            onError: (errs) => setErrors(errs as Record<string, string>),
+            onFinish: () => setProcessing(false),
         });
     };
 
@@ -1389,8 +1530,8 @@ function SensorCrudPanel({
             type: sensor.type,
             unit: sensor.unit,
             status: sensor.status,
-            min_value: sensor.min ?? 0,
-            max_value: sensor.max ?? 100,
+            min_value: String(sensor.min ?? 0),
+            max_value: String(sensor.max ?? 100),
             connection_type: sensor.connectionType || '',
             modbus_slave_id: sensor.modbusSlaveId || 1,
             device_name: sensor.deviceName || '',
@@ -1415,7 +1556,9 @@ function SensorCrudPanel({
             fast_poll: sensor.fastPoll ?? false,
         });
         setErrors({});
-        setDeviceLocked(isDeviceGroupType(sensor.connectionType)); // editing a param → lock device cfg
+        // RS485 never reaches this path (managed in the device form); analog/digital/rs232
+        // are single sensors edited directly, so device cfg fields stay editable.
+        setDeviceLocked(false);
         setDialogOpen(true);
     };
 
@@ -1434,6 +1577,12 @@ function SensorCrudPanel({
     };
 
     const handleSubmit = () => {
+        // RS485 uses the unified device + parameters endpoint.
+        if (form.connection_type === 'rs485') {
+            submitRs485();
+            return;
+        }
+
         setProcessing(true);
         setErrors({});
 
@@ -1443,7 +1592,12 @@ function SensorCrudPanel({
 
         const method = editingSensor ? 'put' : 'post';
 
-        router[method](url, form, {
+        // RS232/Analog/Digital no longer show a Type dropdown — derive it from name/unit.
+        const payload = ['rs232', 'analog', 'digital'].includes(form.connection_type)
+            ? { ...form, type: guessSensorType(form.name, form.unit) }
+            : form;
+
+        router[method](url, payload, {
             preserveScroll: true,
             onSuccess: () => {
                 setDialogOpen(false);
@@ -1514,9 +1668,15 @@ function SensorCrudPanel({
         'grid items-center gap-3 grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.9fr)_auto_88px] md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.9fr)_auto_minmax(0,1fr)_88px]';
     const groups = groupSensorsByDevice(sensors);
 
-    const renderRow = (sensor: SensorItem, indented: boolean) => (
+    // showActions=false for RS485 members — those are managed entirely in the device form.
+    // locator (e.g. "Ch 1" / "Port 1") is shown inline next to the name for one-per-channel
+    // sensors (analog/digital/rs232) that no longer have a device-group header.
+    const renderRow = (sensor: SensorItem, indented: boolean, showActions = true, locator?: string | null) => (
         <div key={sensor.id} className={`${colsClass} px-4 py-2.5 text-sm transition-colors hover:bg-muted/30`}>
-            <div className={indented ? 'truncate pl-6 font-medium' : 'truncate font-medium'}>{sensor.name}</div>
+            <div className={indented ? 'truncate pl-6 font-medium' : 'truncate font-medium'}>
+                {sensor.name}
+                {locator && <span className="ml-1.5 text-xs font-normal text-muted-foreground">· {locator}</span>}
+            </div>
             <div className="truncate capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</div>
             <div className="font-mono font-semibold">
                 {sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span>
@@ -1528,12 +1688,16 @@ function SensorCrudPanel({
             </div>
             <div className="hidden truncate text-xs text-muted-foreground md:block">{sensor.lastReading || '—'}</div>
             <div className="flex items-center justify-end gap-1">
-                <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
-                    <Pencil className="size-3.5" />
-                </Button>
-                <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
-                    <Trash2 className="size-3.5" />
-                </Button>
+                {showActions && (
+                    <>
+                        <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
+                            <Pencil className="size-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
+                            <Trash2 className="size-3.5" />
+                        </Button>
+                    </>
+                )}
             </div>
         </div>
     );
@@ -1572,11 +1736,54 @@ function SensorCrudPanel({
 
                     <div className="divide-y">
                         {groups.map((group) => {
-                            // Standalone sensors (analog/digital) have no device header — render flat.
-                            if (!group.interfaceLabel) {
+                            const head = group.members[0];
+
+                            // Analog: one sensor per channel, but expandable (like RS485) to reveal
+                            // its calibration controls (gain/offset). Collapsed view = the flat row.
+                            if (head?.connectionType === 'analog') {
+                                const open = !collapsedGroups.has(group.key);
+                                return (
+                                    <Collapsible key={group.key} open={open} onOpenChange={() => toggleGroup(group.key)}>
+                                        <div className={`${colsClass} px-4 py-2.5 text-sm transition-colors hover:bg-muted/30`}>
+                                            <div className="flex items-center gap-1 truncate font-medium">
+                                                <CollapsibleTrigger aria-expanded={open} title="Kalibrasi" className="shrink-0 text-muted-foreground hover:text-foreground">
+                                                    <ChevronRight className={`size-4 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+                                                </CollapsibleTrigger>
+                                                <span className="truncate">{head.name}</span>
+                                                {group.locator && <span className="text-xs font-normal text-muted-foreground">· {group.locator}</span>}
+                                            </div>
+                                            <div className="truncate capitalize text-muted-foreground">{head.type.replace('-', ' ')}</div>
+                                            <div className="font-mono font-semibold">{head.value} <span className="text-xs font-normal text-muted-foreground">{head.unit}</span></div>
+                                            <div>
+                                                <Badge variant={head.status === 'active' ? 'default' : head.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">{head.status}</Badge>
+                                            </div>
+                                            <div className="hidden truncate text-xs text-muted-foreground md:block">{head.lastReading || '—'}</div>
+                                            <div className="flex items-center justify-end gap-1">
+                                                <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(head)}>
+                                                    <Pencil className="size-3.5" />
+                                                </Button>
+                                                <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(head)}>
+                                                    <Trash2 className="size-3.5" />
+                                                </Button>
+                                            </div>
+                                        </div>
+                                        <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+                                            <AnalogCalibration
+                                                channel={head.channel ?? 1}
+                                                mode={head.analogMode ?? 1}
+                                                deviceIdentifier={deviceIdentifier ?? null}
+                                                disabled={!deviceIdentifier}
+                                            />
+                                        </CollapsibleContent>
+                                    </Collapsible>
+                                );
+                            }
+
+                            // Digital/RS232/virtual: one sensor per channel → flat row with locator inline.
+                            if (head?.connectionType !== 'rs485') {
                                 return (
                                     <div key={group.key} className="divide-y">
-                                        {group.members.map((sensor) => renderRow(sensor, false))}
+                                        {group.members.map((sensor) => renderRow(sensor, false, true, group.locator))}
                                     </div>
                                 );
                             }
@@ -1584,7 +1791,7 @@ function SensorCrudPanel({
                             const open = !collapsedGroups.has(group.key);
                             return (
                                 <Collapsible key={group.key} open={open} onOpenChange={() => toggleGroup(group.key)}>
-                                    <div className="flex items-center justify-between gap-2 bg-muted/40 px-4 py-2">
+                                    <div className="flex items-center justify-between gap-2 px-4 py-2.5 transition-colors hover:bg-muted/30">
                                         <CollapsibleTrigger
                                             aria-expanded={open}
                                             className="flex flex-1 items-center gap-2 text-left"
@@ -1599,41 +1806,30 @@ function SensorCrudPanel({
                                                 <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
                                             )}
                                         </CollapsibleTrigger>
-                                        {isDeviceGroupType(group.members[0].connectionType) && (
-                                            <div className="flex items-center gap-1">
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="size-7"
-                                                    title="Edit device (slave, nama, baud, format)"
-                                                    onClick={() => openEditGroup(group)}
-                                                >
-                                                    <Pencil className="size-3.5" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="size-7"
-                                                    title="Tambah parameter ke device ini"
-                                                    onClick={() => openAddParam(group)}
-                                                >
-                                                    <Plus className="size-3.5" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="size-7 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
-                                                    title="Hapus device (semua parameter)"
-                                                    onClick={() => deleteDevice(group)}
-                                                >
-                                                    <Trash2 className="size-3.5" />
-                                                </Button>
-                                            </div>
-                                        )}
+                                        <div className="flex items-center gap-1">
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="size-7"
+                                                title="Edit device & parameter"
+                                                onClick={() => openEditDevice(group)}
+                                            >
+                                                <Pencil className="size-3.5" />
+                                            </Button>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="size-7 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                title="Hapus device (semua parameter)"
+                                                onClick={() => deleteDevice(group)}
+                                            >
+                                                <Trash2 className="size-3.5" />
+                                            </Button>
+                                        </div>
                                     </div>
                                     <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
                                         <div className="divide-y border-t">
-                                            {group.members.map((sensor) => renderRow(sensor, true))}
+                                            {group.members.map((sensor) => renderRow(sensor, true, false))}
                                         </div>
                                     </CollapsibleContent>
                                 </Collapsible>
@@ -1652,131 +1848,88 @@ function SensorCrudPanel({
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                 <DialogContent className="sm:max-w-2xl max-h-[90vh] grid-rows-[auto_1fr_auto]">
                     <DialogHeader>
-                        <DialogTitle>{editingSensor ? t('loggerDetail.edit_sensor') : t('loggerDetail.add_sensor')}</DialogTitle>
+                        <DialogTitle>{(editingSensor || editingDeviceSlave != null) ? t('loggerDetail.edit_sensor') : t('loggerDetail.add_sensor')}</DialogTitle>
                         <DialogDescription>
-                            {editingSensor ? t('loggerDetail.edit_sensor_desc') : t('loggerDetail.add_sensor_desc')}
+                            {(editingSensor || editingDeviceSlave != null) ? t('loggerDetail.edit_sensor_desc') : t('loggerDetail.add_sensor_desc')}
                         </DialogDescription>
                     </DialogHeader>
                     <div className="grid gap-4 overflow-y-auto py-2 -mx-1 px-1">
-                        {/* General */}
-                        <div className="grid gap-4 sm:grid-cols-2">
-                            {/* Name */}
-                            <div className="grid gap-2 sm:col-span-2">
-                                <Label htmlFor="sensor-name">{t('loggerDetail.sensor_name')}</Label>
-                                <Input
-                                    id="sensor-name"
-                                    value={form.name}
-                                    onChange={e => setForm({ ...form, name: e.target.value })}
-                                    placeholder="e.g. Water Level Sensor"
-                                />
-                                {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
-                            </div>
-
-                            {/* Type */}
-                            <div className="grid gap-2">
-                                <Label htmlFor="sensor-type">{t('loggerDetail.type')}</Label>
-                                <select
-                                    id="sensor-type"
-                                    value={form.type}
-                                    onChange={e => handleTypeChange(e.target.value)}
-                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                >
-                                    {SENSOR_TYPES.map(t => (
-                                        <option key={t.value} value={t.value}>{t.label}</option>
-                                    ))}
-                                </select>
-                                {errors.type && <p className="text-xs text-red-500">{errors.type}</p>}
-                            </div>
-
-                            {/* Unit */}
-                            <div className="grid gap-2">
-                                <Label htmlFor="sensor-unit">{t('loggerDetail.sensor_unit')}</Label>
-                                <Input
-                                    id="sensor-unit"
-                                    value={form.unit}
-                                    onChange={e => setForm({ ...form, unit: e.target.value })}
-                                    placeholder="e.g. °C, m, mm"
-                                />
-                                {errors.unit && <p className="text-xs text-red-500">{errors.unit}</p>}
-                            </div>
-
-                            {/* Status */}
-                            <div className="grid gap-2">
-                                <Label htmlFor="sensor-status">{t('loggerDetail.status')}</Label>
-                                <select
-                                    id="sensor-status"
-                                    value={form.status}
-                                    onChange={e => setForm({ ...form, status: e.target.value })}
-                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                >
-                                    <option value="active">{t('loggerDetail.active')}</option>
-                                    <option value="inactive">{t('loggerDetail.inactive')}</option>
-                                    <option value="error">{t('loggerDetail.error')}</option>
-                                </select>
-                                {errors.status && <p className="text-xs text-red-500">{errors.status}</p>}
-                            </div>
-
-                            {/* Connection Type */}
-                            <div className="grid gap-2">
-                                <Label htmlFor="sensor-conn-type">Connection Type</Label>
-                                <select
-                                    id="sensor-conn-type"
-                                    value={form.connection_type}
-                                    onChange={e => setForm({ ...form, connection_type: e.target.value })}
-                                    disabled={deviceLocked}
-                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                    <option value="">None (Generic)</option>
-                                    <option value="rs485">RS485 (Modbus)</option>
-                                    <option value="rs232">RS232</option>
-                                    <option value="analog">Analog</option>
-                                    <option value="digital">Digital</option>
-                                </select>
-                            </div>
+                        {/* Connection Type — always first; the rest of the form follows the choice. */}
+                        <div className="grid gap-2">
+                            <Label htmlFor="sensor-conn-type">Connection Type</Label>
+                            <select
+                                id="sensor-conn-type"
+                                value={form.connection_type}
+                                onChange={e => handleConnTypeChange(e.target.value)}
+                                disabled={deviceLocked || editingDeviceSlave != null}
+                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                <option value="">None (Generic)</option>
+                                <option value="rs485">RS485 (Modbus)</option>
+                                <option value="rs232">RS232</option>
+                                <option value="analog">Analog</option>
+                                <option value="digital">Digital</option>
+                            </select>
                         </div>
 
-                        {/* RS485 fields */}
+                        {/* Generic (None) — name/type/unit/status only when no protocol is chosen. */}
+                        {form.connection_type === '' && (
+                            <div className="grid gap-4 sm:grid-cols-2">
+                                <div className="grid gap-2 sm:col-span-2">
+                                    <Label htmlFor="sensor-name">{t('loggerDetail.sensor_name')}</Label>
+                                    <Input id="sensor-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Water Level Sensor" />
+                                    {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="sensor-type">{t('loggerDetail.type')}</Label>
+                                    <select id="sensor-type" value={form.type} onChange={e => handleTypeChange(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                                        {SENSOR_TYPES.map(t => (<option key={t.value} value={t.value}>{t.label}</option>))}
+                                    </select>
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="sensor-unit">{t('loggerDetail.sensor_unit')}</Label>
+                                    <Input id="sensor-unit" value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="e.g. °C, m, mm" />
+                                    {errors.unit && <p className="text-xs text-red-500">{errors.unit}</p>}
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="sensor-status">{t('loggerDetail.status')}</Label>
+                                    <select id="sensor-status" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                                        <option value="active">{t('loggerDetail.active')}</option>
+                                        <option value="inactive">{t('loggerDetail.inactive')}</option>
+                                        <option value="error">{t('loggerDetail.error')}</option>
+                                    </select>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* RS485 — device communication (cfg) */}
                         {form.connection_type === 'rs485' && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <div className="flex items-center justify-between">
-                                    <p className="text-xs font-semibold uppercase text-muted-foreground">RS485 / Modbus Config</p>
-                                    {deviceLocked && <span className="text-[10px] text-muted-foreground">Slave/nama/baud/format dikelola via "Edit device"</span>}
-                                </div>
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Komunikasi Device (RS485 / Modbus)</p>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Slave ID</Label>
-                                        <Input type="number" min={1} max={5} value={form.modbus_slave_id} disabled={deviceLocked} onChange={e => setForm({ ...form, modbus_slave_id: parseInt(e.target.value) || 1 })} />
+                                        <Label className="text-xs">Nama Sensor (Device)</Label>
+                                        <Input value={rs485Form.device_name} onChange={e => setRs485({ device_name: e.target.value })} placeholder="e.g. Rain Gauge" />
+                                        {errors.device_name && <p className="text-xs text-red-500">{errors.device_name}</p>}
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Device Name</Label>
-                                        <Input value={form.device_name} disabled={deviceLocked} onChange={e => setForm({ ...form, device_name: e.target.value })} placeholder="e.g. WS" />
+                                        <Label className="text-xs">Slave ID</Label>
+                                        <Input type="number" min={1} max={5} value={rs485Form.modbus_slave_id} onChange={e => setRs485({ modbus_slave_id: parseInt(e.target.value) || 1 })} />
+                                        {errors.modbus_slave_id && <p className="text-xs text-red-500">{errors.modbus_slave_id}</p>}
+                                        {errors.mqtt && <p className="text-xs text-red-500">{errors.mqtt}</p>}
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-3 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Function Code</Label>
-                                        <select value={form.function_code} disabled={deviceLocked} onChange={e => setForm({ ...form, function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60">
+                                        <select value={rs485Form.function_code} onChange={e => setRs485({ function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
                                             <option value={3}>03 (HR)</option>
                                             <option value={4}>04 (IR)</option>
                                         </select>
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Register</Label>
-                                        <Input type="number" min={0} max={65535} value={form.register_address} onChange={e => setForm({ ...form, register_address: parseInt(e.target.value) || 0 })} />
-                                    </div>
-                                    <div className="grid gap-1.5">
-                                        <Label className="text-xs">Register Count</Label>
-                                        <select value={form.reg_count} onChange={e => setForm({ ...form, reg_count: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                            <option value={1}>1 — U16</option>
-                                            <option value={2}>2 — FLOAT32 (ABCD)</option>
-                                            <option value={4}>4 — U32 (bulat.pecahan)</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-3 gap-3">
-                                    <div className="grid gap-1.5">
                                         <Label className="text-xs">Baudrate</Label>
-                                        <select value={form.baudrate} disabled={deviceLocked} onChange={e => setForm({ ...form, baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60">
+                                        <select value={rs485Form.baudrate} onChange={e => setRs485({ baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
                                             {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map(rate => (
                                                 <option key={rate} value={rate}>{rate}</option>
                                             ))}
@@ -1784,75 +1937,152 @@ function SensorCrudPanel({
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Format</Label>
-                                        <select value={form.serial_format} disabled={deviceLocked} onChange={e => setForm({ ...form, serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-60">
+                                        <select value={rs485Form.serial_format} onChange={e => setRs485({ serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
                                             <option value="8N1">8N1</option>
                                             <option value="8E1">8E1</option>
                                             <option value="8O1">8O1</option>
                                         </select>
                                     </div>
-                                    <label className="flex items-center gap-2 pt-5 text-xs">
-                                        <input type="checkbox" checked={form.fast_poll} onChange={e => setForm({ ...form, fast_poll: e.target.checked })} className="rounded" />
-                                        Fast Poll
-                                    </label>
-                                </div>
-                                <div className="text-[10px] text-muted-foreground">
-                                    Register juga dikirim sebagai alamat parameter; jika firmware memakai sequential fallback, nilai ini tetap menjadi register awal.
                                 </div>
                             </div>
                         )}
 
-                        {/* RS232 fields */}
-                        {form.connection_type === 'rs232' && (
+                        {/* RS485 — parameters (the `s` array; one device can have many) */}
+                        {form.connection_type === 'rs485' && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
                                 <div className="flex items-center justify-between">
-                                    <p className="text-xs font-semibold uppercase text-muted-foreground">RS232 Config</p>
-                                    {deviceLocked && <span className="text-[10px] text-muted-foreground">Port dikelola via "Edit device"</span>}
+                                    <p className="text-xs font-semibold uppercase text-muted-foreground">Parameter ({rs485Form.params.length})</p>
+                                    <Button type="button" size="sm" variant="outline" className="h-7 gap-1" onClick={addRs485Param}>
+                                        <Plus className="size-3.5" /> Tambah parameter
+                                    </Button>
                                 </div>
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Port</Label>
-                                    <Input type="number" min={1} max={2} value={form.port} disabled={deviceLocked} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
+                                {rs485Form.params.map((p, i) => (
+                                    <div key={i} className="grid gap-3 rounded-md border bg-background p-3">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-[11px] font-medium text-muted-foreground">Parameter {i + 1}</span>
+                                            {rs485Form.params.length > 1 && (
+                                                <Button type="button" size="icon" variant="ghost" className="size-6 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => removeRs485Param(i)}>
+                                                    <Trash2 className="size-3.5" />
+                                                </Button>
+                                            )}
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="grid gap-1.5">
+                                                <Label className="text-xs">Nama Parameter</Label>
+                                                <Input value={p.name} onChange={e => updateRs485Param(i, { name: e.target.value })} placeholder="e.g. Rainfall" />
+                                                {errors[`params.${i}.name`] && <p className="text-xs text-red-500">{errors[`params.${i}.name`]}</p>}
+                                            </div>
+                                            <div className="grid gap-1.5">
+                                                <Label className="text-xs">Satuan</Label>
+                                                <Input value={p.unit} onChange={e => updateRs485Param(i, { unit: e.target.value })} placeholder="e.g. mm" />
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                            <div className="grid gap-1.5">
+                                                <Label className="text-xs">Scale</Label>
+                                                <Input inputMode="decimal" value={p.scale_factor} onChange={e => updateRs485Param(i, { scale_factor: e.target.value })} placeholder="1.0" />
+                                            </div>
+                                            <div className="grid gap-1.5">
+                                                <Label className="text-xs">Address</Label>
+                                                <Input type="number" min={0} max={65535} value={p.register_address} onChange={e => updateRs485Param(i, { register_address: parseInt(e.target.value) || 0 })} />
+                                            </div>
+                                            <div className="grid gap-1.5">
+                                                <Label className="text-xs">Register Count</Label>
+                                                <select value={p.reg_count} onChange={e => updateRs485Param(i, { reg_count: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                                    <option value={1}>1 — U16</option>
+                                                    <option value={2}>2 — FLOAT32 (ABCD)</option>
+                                                    <option value={4}>4 — U32 (bulat.pecahan)</option>
+                                                </select>
+                                            </div>
+                                            <label className="flex items-center gap-2 pt-5 text-xs">
+                                                <input type="checkbox" checked={p.fast_poll} onChange={e => updateRs485Param(i, { fast_poll: e.target.checked })} className="rounded" />
+                                                Fast Poll
+                                            </label>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* RS232 — one sensor per port: channel(port), name, scale, unit. */}
+                        {form.connection_type === 'rs232' && (
+                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">RS232</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Channel (Port)</Label>
+                                        <Input type="number" min={1} max={2} value={form.port} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Nama Sensor</Label>
+                                        <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. RainGauge" />
+                                        {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Scale</Label>
+                                        <Input inputMode="decimal" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: e.target.value })} placeholder="1.0" />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Satuan</Label>
+                                        <Input value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="e.g. mm" />
+                                    </div>
                                 </div>
                             </div>
                         )}
 
-                        {/* Analog fields */}
+                        {/* Analog — one sensor per channel: channel, mode, name, unit, range. */}
                         {form.connection_type === 'analog' && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Analog Config</p>
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Channel</Label>
-                                    <Input type="number" min={1} max={analogChannelMax} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
-                                    <p className="text-[10px] text-muted-foreground">Channel 1-based, maksimum {analogChannelMax} sesuai varian perangkat</p>
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Analog</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Channel</Label>
+                                        <Input type="number" min={1} max={analogChannelMax} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Input Mode</Label>
+                                        <select value={form.analog_mode} onChange={e => setForm({ ...form, analog_mode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            <option value={1}>4-20mA Current Loop</option>
+                                            <option value={0}>0-10V Voltage</option>
+                                        </select>
+                                    </div>
                                 </div>
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Input Mode</Label>
-                                    <select value={form.analog_mode} onChange={e => setForm({ ...form, analog_mode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                        <option value={1}>4-20mA Current Loop</option>
-                                        <option value={0}>0-10V Voltage</option>
-                                    </select>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Nama Sensor</Label>
+                                        <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Water Level" />
+                                        {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                                    </div>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs">Satuan</Label>
+                                        <Input value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="e.g. m" />
+                                    </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Batas Bawah (Min)</Label>
-                                        <Input type="number" step="any" value={form.min_value} onChange={e => setForm({ ...form, min_value: parseFloat(e.target.value) || 0 })} placeholder="0" />
+                                        <Input inputMode="decimal" value={form.min_value} onChange={e => setForm({ ...form, min_value: e.target.value })} placeholder="0.0" />
+                                        {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Batas Atas (Max)</Label>
-                                        <Input type="number" step="any" value={form.max_value} onChange={e => setForm({ ...form, max_value: parseFloat(e.target.value) || 100 })} placeholder="100" />
+                                        <Input inputMode="decimal" value={form.max_value} onChange={e => setForm({ ...form, max_value: e.target.value })} placeholder="100.0" />
+                                        {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
                                     </div>
                                 </div>
                             </div>
                         )}
 
-                        {/* Digital fields */}
+                        {/* Digital — one sensor per channel: channel, mode, name. */}
                         {form.connection_type === 'digital' && (
                             <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Digital Config</p>
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Digital</p>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Channel</Label>
                                         <Input type="number" min={1} max={digitalChannelMax} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
-                                        <p className="text-[10px] text-muted-foreground">Channel 1-based, maksimum {digitalChannelMax} sesuai varian perangkat</p>
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Mode</Label>
@@ -1863,6 +2093,11 @@ function SensorCrudPanel({
                                             <option value={3}>Logic Output</option>
                                         </select>
                                     </div>
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label className="text-xs">Nama Sensor</Label>
+                                    <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Status Pintu" />
+                                    {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
                                 </div>
 
                                 {form.digital_mode === 0 && (
@@ -1944,24 +2179,12 @@ function SensorCrudPanel({
                             </div>
                         )}
 
-                        {/* Scaling — only for RS485 / RS232 (min/max range only applies to Analog). */}
-                        {(form.connection_type === 'rs485' || form.connection_type === 'rs232') && (
-                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Scaling</p>
-                                <div className="grid gap-1.5 sm:max-w-[200px]">
-                                    <Label className="text-xs">Scale Factor</Label>
-                                    <Input inputMode="decimal" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: e.target.value })} placeholder="1.0" />
-                                    <p className="text-[10px] text-muted-foreground">Nilai akhir = raw × scale (desimal, mis. 0.1).</p>
-                                </div>
-                            </div>
-                        )}
-
                         {/* LCD/SD/Server map flags removed — firmware always shows, stores, and sends every configured sensor (spec §3.2). */}
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
                         <Button onClick={handleSubmit} disabled={processing}>
-                            {processing ? t('loggerDetail.saving_dots') : editingSensor ? t('loggerDetail.save_changes') : t('loggerDetail.create_sensor')}
+                            {processing ? t('loggerDetail.saving_dots') : (editingSensor || editingDeviceSlave != null) ? t('loggerDetail.save_changes') : t('loggerDetail.create_sensor')}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
@@ -1985,79 +2208,6 @@ function SensorCrudPanel({
                 </AlertDialogContent>
             </AlertDialog>
 
-            {/* Edit Device (group cfg) Dialog */}
-            <Dialog open={editingGroup !== null} onOpenChange={(open) => { if (!open) setEditingGroup(null); }}>
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>Edit Device</DialogTitle>
-                        <DialogDescription>
-                            Ubah konfigurasi device (berlaku untuk semua parameter di {editingGroup?.deviceLabel ?? 'device'}).
-                        </DialogDescription>
-                    </DialogHeader>
-                    {editingGroup && editingGroup.members[0].connectionType === 'rs485' && (
-                        <div className="grid gap-3 py-2">
-                            {groupErrors.mqtt && <p className="rounded bg-red-500/10 p-2 text-xs text-red-600">{groupErrors.mqtt}</p>}
-                            <div className="grid grid-cols-2 gap-3">
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Slave ID</Label>
-                                    <Input type="number" min={1} max={5} value={groupForm.modbus_slave_id} onChange={e => setGroupForm({ ...groupForm, modbus_slave_id: parseInt(e.target.value) || 1 })} />
-                                    {groupErrors.modbus_slave_id && <span className="text-[10px] text-red-500">{groupErrors.modbus_slave_id}</span>}
-                                </div>
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Device Name</Label>
-                                    <Input value={groupForm.device_name} onChange={e => setGroupForm({ ...groupForm, device_name: e.target.value })} placeholder="e.g. RainGauge" />
-                                </div>
-                            </div>
-                            <div className="grid grid-cols-3 gap-3">
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Function</Label>
-                                    <select value={groupForm.function_code} onChange={e => setGroupForm({ ...groupForm, function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                        <option value={3}>03 (HR)</option>
-                                        <option value={4}>04 (IR)</option>
-                                    </select>
-                                </div>
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Baudrate</Label>
-                                    <select value={groupForm.baudrate} onChange={e => setGroupForm({ ...groupForm, baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                        {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map(rate => <option key={rate} value={rate}>{rate}</option>)}
-                                    </select>
-                                </div>
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Format</Label>
-                                    <select value={groupForm.serial_format} onChange={e => setGroupForm({ ...groupForm, serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                        <option value="8N1">8N1</option>
-                                        <option value="8E1">8E1</option>
-                                        <option value="8O1">8O1</option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                    {editingGroup && editingGroup.members[0].connectionType === 'rs232' && (
-                        <div className="grid gap-3 py-2">
-                            {groupErrors.mqtt && <p className="rounded bg-red-500/10 p-2 text-xs text-red-600">{groupErrors.mqtt}</p>}
-                            <div className="grid grid-cols-2 gap-3">
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Port</Label>
-                                    <Input type="number" min={1} max={2} value={groupForm.port} onChange={e => setGroupForm({ ...groupForm, port: parseInt(e.target.value) || 1 })} />
-                                    {groupErrors.port && <span className="text-[10px] text-red-500">{groupErrors.port}</span>}
-                                </div>
-                                <div className="grid gap-1.5">
-                                    <Label className="text-xs">Device Name</Label>
-                                    <Input value={groupForm.device_name} onChange={e => setGroupForm({ ...groupForm, device_name: e.target.value })} />
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setEditingGroup(null)} disabled={groupProcessing}>{t('common.cancel')}</Button>
-                        <Button onClick={handleSaveGroup} disabled={groupProcessing} className="gap-2">
-                            {groupProcessing ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                            {t('common.save')}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
         </>
     );
 }
@@ -2078,6 +2228,232 @@ function getLogLevelColor(level: string) {
         case 'error': return 'text-red-500';
         default: return 'text-muted-foreground';
     }
+}
+
+type FirmwareCheck = {
+    updateAvailable: boolean;
+    downloaded?: boolean;
+    currentVersion: string | null;
+    latestVersion: string | null;
+    ver?: string;
+    file?: string;
+    fileSize?: number | null;
+};
+
+/**
+ * Firmware OTA card: checks the device's running firmware (from INFO sync) against the
+ * latest firmware registered for its hardware model, lets the user download it (with a
+ * live bottom-left progress popup), then install ({"OTA":{"cmd":"INSTALL"}}).
+ */
+function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
+    deviceIdentifier: string | null;
+    currentVersion: string | null;
+    disabled?: boolean;
+}) {
+    const { t } = useTranslation();
+    const [checking, setChecking] = useState(false);
+    const [info, setInfo] = useState<FirmwareCheck | null>(null);
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [phase, setPhase] = useState<'idle' | 'downloading' | 'downloaded' | 'installing' | 'error'>('idle');
+    // Persists independently of the popup: once a firmware image is downloaded onto the
+    // device it stays "ready to install" until install() runs — so dismissing the popup
+    // (or reloading the page) keeps the card on Install, not back to Update available.
+    const [ready, setReady] = useState(false);
+    const [percent, setPercent] = useState(0);
+    const [progressMsg, setProgressMsg] = useState('');
+    const [errorMsg, setErrorMsg] = useState('');
+    const esRef = useRef<EventSource | null>(null);
+
+    const closeStream = useCallback(() => {
+        if (esRef.current) { esRef.current.close(); esRef.current = null; }
+    }, []);
+
+    const checkFirmware = useCallback(async () => {
+        if (!deviceIdentifier) return;
+        setChecking(true);
+        try {
+            const res = await apiFetch('/api/mqtt/ota/check', { id_logger: deviceIdentifier });
+            const data = await res.json();
+            if (data.success) {
+                setInfo(data as FirmwareCheck);
+                // Authoritative: backend clears the ready flag once firmware matches latest,
+                // so this also flips the card back from Install → Up to date when up to date.
+                setReady(!!data.downloaded);
+            }
+        } catch { /* ignore — leave as "up to date" fallback */ }
+        setChecking(false);
+    }, [deviceIdentifier]);
+
+    useEffect(() => { checkFirmware(); }, [checkFirmware]);
+    useEffect(() => () => closeStream(), [closeStream]);
+
+    const handleDownload = useCallback(() => {
+        if (!deviceIdentifier || !info?.ver || !info?.file) return;
+        setDialogOpen(false);
+        setPhase('downloading');
+        setPercent(0);
+        setProgressMsg('Memulai unduhan...');
+        setErrorMsg('');
+        closeStream();
+
+        // Stream live download progress over a single SSE connection (works even with one
+        // PHP worker — no concurrent poll request that would block behind the download).
+        const params = new URLSearchParams({ id_logger: deviceIdentifier, ver: info.ver, file: info.file });
+        const es = new EventSource(`/api/mqtt/ota/stream?${params.toString()}`);
+        esRef.current = es;
+        let finished = false;
+
+        es.addEventListener('progress', (e) => {
+            try {
+                const d = JSON.parse((e as MessageEvent).data);
+                setPercent(d.percent ?? 0);
+                if (d.message) setProgressMsg(d.message);
+            } catch { /* ignore malformed frame */ }
+        });
+        es.addEventListener('done', (e) => {
+            finished = true;
+            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+            setPercent(100);
+            setPhase('downloaded');
+            setReady(true);
+            closeStream();
+        });
+        es.addEventListener('failed', (e) => {
+            finished = true;
+            let msg = 'Gagal mengunduh firmware';
+            try { msg = JSON.parse((e as MessageEvent).data).message || msg; } catch { /* ignore */ }
+            setPhase('error');
+            setErrorMsg(msg);
+            closeStream();
+        });
+        es.onerror = () => {
+            if (finished) return; // normal close after a done/failed event
+            finished = true;
+            setPhase('error');
+            setErrorMsg('Koneksi ke server terputus saat mengunduh');
+            closeStream();
+        };
+    }, [deviceIdentifier, info, closeStream]);
+
+    const handleInstall = useCallback(async () => {
+        if (!deviceIdentifier) return;
+        setPhase('installing');
+        setErrorMsg('');
+        try {
+            const res = await apiFetch('/api/mqtt/ota/install', { id_logger: deviceIdentifier });
+            const data = await res.json();
+            if (data.success) {
+                setProgressMsg('Perangkat akan reboot dengan firmware baru...');
+                setReady(false);
+                setTimeout(() => router.reload(), 4000);
+            } else {
+                setPhase('error');
+                setErrorMsg(data.message || 'Gagal install firmware');
+            }
+        } catch {
+            setPhase('error');
+            setErrorMsg('Network error saat install firmware');
+        }
+    }, [deviceIdentifier]);
+
+    const updateAvailable = info?.updateAvailable ?? false;
+    const showPopup = phase === 'downloading' || phase === 'downloaded' || phase === 'installing' || phase === 'error';
+
+    return (
+        <>
+            <Card>
+                <CardHeader>
+                    <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> {t('loggerDetail.firmware')}</CardTitle>
+                    <CardDescription>Current: {currentVersion || '—'}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                        <div>
+                            <p className="text-sm font-medium">{t('loggerDetail.current_firmware')}</p>
+                            <p className="font-mono text-xs text-muted-foreground">{currentVersion || '—'}</p>
+                            {updateAvailable && info?.latestVersion && (
+                                <p className="mt-0.5 font-mono text-xs text-emerald-600">→ {info.latestVersion}</p>
+                            )}
+                        </div>
+                        {ready || phase === 'installing' ? (
+                            <Button size="sm" onClick={handleInstall} disabled={phase === 'installing'}>
+                                {phase === 'installing'
+                                    ? <><Loader2 className="mr-1 size-3.5 animate-spin" />Installing…</>
+                                    : <><Download className="mr-1 size-3.5" />Install</>}
+                            </Button>
+                        ) : checking ? (
+                            <Badge variant="secondary" className="gap-1"><Loader2 className="size-3 animate-spin" />Checking…</Badge>
+                        ) : updateAvailable ? (
+                            <button type="button" onClick={() => setDialogOpen(true)} disabled={disabled} className="disabled:opacity-50">
+                                <Badge variant="destructive" className="cursor-pointer gap-1"><Download className="size-3" />Update available</Badge>
+                            </button>
+                        ) : (
+                            <Badge variant="default">{t('loggerDetail.up_to_date')}</Badge>
+                        )}
+                    </div>
+                </CardContent>
+            </Card>
+
+            {/* Latest-firmware dialog with download trigger */}
+            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2"><Zap className="size-5 text-amber-500" /> Firmware Terbaru Tersedia</DialogTitle>
+                        <DialogDescription>Versi firmware baru tersedia untuk perangkat ini. Unduh ke perangkat lalu install.</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2 rounded-lg border p-3 text-sm">
+                        <div className="flex justify-between"><span className="text-muted-foreground">Versi saat ini</span><span className="font-mono">{currentVersion || '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Versi terbaru</span><span className="font-mono font-semibold text-emerald-600">{info?.latestVersion || '—'}</span></div>
+                        {info?.file && <div className="flex justify-between gap-2"><span className="text-muted-foreground">File</span><span className="truncate font-mono text-xs">{info.file}</span></div>}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setDialogOpen(false)}>Batal</Button>
+                        <Button onClick={handleDownload} disabled={disabled}><Download className="mr-1 size-4" />Unduh</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Bottom-left live progress popup */}
+            {showPopup && (
+                <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border bg-background p-4 shadow-lg animate-in slide-in-from-bottom-2 fade-in">
+                    <div className="mb-2 flex items-center justify-between">
+                        <p className="flex items-center gap-2 text-sm font-medium">
+                            {phase === 'downloading' && <><Loader2 className="size-4 animate-spin text-blue-500" />Mengunduh Firmware</>}
+                            {phase === 'downloaded' && <><CheckCircle2 className="size-4 text-emerald-500" />Unduhan Selesai</>}
+                            {phase === 'installing' && <><Loader2 className="size-4 animate-spin text-amber-500" />Menginstall…</>}
+                            {phase === 'error' && <><XCircle className="size-4 text-red-500" />Gagal</>}
+                        </p>
+                        {(phase === 'downloaded' || phase === 'error') && (
+                            <button type="button" onClick={() => setPhase('idle')} className="text-muted-foreground hover:text-foreground">
+                                <XCircle className="size-4" />
+                            </button>
+                        )}
+                    </div>
+                    {phase === 'error' ? (
+                        <p className="text-xs text-red-500">{errorMsg}</p>
+                    ) : (
+                        <>
+                            <Progress value={percent} className="h-2" />
+                            <p className="mt-1.5 text-xs text-muted-foreground">
+                                {phase === 'downloading'
+                                    ? `Mengunduh ${percent}%`
+                                    : phase === 'downloaded'
+                                        ? 'Unduhan selesai'
+                                        : phase === 'installing'
+                                            ? (progressMsg || 'Menginstall…')
+                                            : `${percent}%`}
+                            </p>
+                            {phase === 'downloaded' && (
+                                <Button size="sm" className="mt-3 w-full" onClick={handleInstall}>
+                                    <Download className="mr-1 size-3.5" />Install Sekarang
+                                </Button>
+                            )}
+                        </>
+                    )}
+                </div>
+            )}
+        </>
+    );
 }
 
 function DeviceConfigCard({ intervalRead, intervalSend, maxReset }: {
@@ -3497,9 +3873,64 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
         setFormValues(prev => ({ ...prev, [key]: value }));
     }
 
+    // A 'sensor-source' field picks a REAL device sensor (like MAP_DATA), never a virtual/profile
+    // output. Live names come from GET_NAME (minus virtuals); merged with the real DB sensors so the
+    // list is never empty even if the device only reports profile sensors in the current mode.
+    const needsSource = fields.some(f => f.type === 'sensor-source');
+    const [liveSourceNames, setLiveSourceNames] = useState<string[]>([]);
+    const [sourceLoading, setSourceLoading] = useState(needsSource && Boolean(logger.deviceIdentifier));
+
+    useEffect(() => {
+        if (!needsSource || !logger.deviceIdentifier) return;
+        let cancelled = false;
+        apiFetch('/api/mqtt/sensors/get-name', { id_logger: logger.deviceIdentifier })
+            .then(r => r.json())
+            .then((json: { success: boolean; data?: { nama: string }[] }) => {
+                if (!cancelled && json.success && Array.isArray(json.data)) {
+                    setLiveSourceNames(json.data.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)));
+                }
+            })
+            .catch(() => { /* ignore — the dropdown still shows the DB sensors + saved value */ })
+            .finally(() => { if (!cancelled) setSourceLoading(false); });
+        return () => { cancelled = true; };
+    }, [needsSource, logger.deviceIdentifier]);
+
+    const sourceNames = Array.from(new Set([
+        ...logger.sensors.map(s => s.name).filter(n => n && !isVirtualSourceName(n)),
+        ...liveSourceNames,
+    ]));
+
+    // On entering the mode, auto-read the device's current settings ({"AWLR_TD":{"cmd":"GET"}})
+    // and fill the form. The full response (incl. sensor_awal) is shown in the box below.
+    const [deviceCalib, setDeviceCalib] = useState<Record<string, number | string> | null>(null);
+    const [calibLoading, setCalibLoading] = useState(Boolean(logger.deviceIdentifier) && logger.status !== 'offline');
+
+    useEffect(() => {
+        if (!logger.deviceIdentifier || logger.status === 'offline') return;
+        let cancelled = false;
+        apiFetch('/api/mqtt/calibration/get', { id_logger: logger.deviceIdentifier })
+            .then(r => r.json())
+            .then((data: { success: boolean; data?: Record<string, number | string> }) => {
+                if (!cancelled && data.success && data.data) {
+                    const dd = data.data;
+                    setDeviceCalib(dd);
+                    setFormValues(prev => {
+                        const next = { ...prev };
+                        for (const [k, v] of Object.entries(dd)) {
+                            if (k in prev) next[k] = String(v); // prev holds exactly the field keys
+                        }
+                        return next;
+                    });
+                }
+            })
+            .catch(() => { /* ignore — fall back to the saved DB calibration data */ })
+            .finally(() => { if (!cancelled) setCalibLoading(false); });
+        return () => { cancelled = true; };
+    }, [logger.deviceIdentifier, logger.status]);
+
     const allFilled = fields.every(f => {
         const val = formValues[f.key];
-        if (f.type === 'select') return val !== '';
+        if (f.type === 'select' || f.type === 'sensor-source') return val !== '';
         return val !== '' && !isNaN(parseFloat(val));
     });
 
@@ -3516,7 +3947,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                 id_logger: logger.deviceIdentifier!,
             };
             for (const f of fields) {
-                body[f.key] = f.type === 'select' ? formValues[f.key] : parseFloat(formValues[f.key]);
+                body[f.key] = f.type === 'number' ? parseFloat(formValues[f.key]) : formValues[f.key];
             }
 
             const res = await apiFetch('/api/mqtt/calibration/set', body);
@@ -3551,25 +3982,35 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
             </CardHeader>
             <CardContent>
                 <div className="grid gap-4">
-                    {/* Previous calibration data */}
-                    {logger.calibrationData && Object.keys(logger.calibrationData).length > 0 && (
-                        <div className="rounded-lg border bg-muted/30 p-3">
-                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Data Kalibrasi Terakhir</p>
-                            <div className="grid grid-cols-2 gap-2">
-                                {Object.entries(logger.calibrationData).map(([key, val]) => {
-                                    const fieldDef = fields.find(f => f.key === key);
-                                    return (
-                                        <div key={key} className="rounded-md bg-background px-3 py-1.5">
-                                            <p className="text-[10px] text-muted-foreground">{fieldDef?.label || key}</p>
-                                            <p className="font-mono text-sm font-medium">
-                                                {val} <span className="text-xs text-muted-foreground">{fieldDef?.unit || ''}</span>
-                                            </p>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
+                    {calibLoading && !deviceCalib && (
+                        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Loader2 className="size-3.5 animate-spin" /> Memuat setting dari perangkat…
+                        </p>
                     )}
+
+                    {/* Current settings — live from the device (GET), falling back to the last saved data. */}
+                    {(() => {
+                        const calib = deviceCalib ?? logger.calibrationData;
+                        if (!calib || Object.keys(calib).length === 0) return null;
+                        return (
+                            <div className="rounded-lg border bg-muted/30 p-3">
+                                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Data Kalibrasi Terakhir</p>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {Object.entries(calib).map(([key, val]) => {
+                                        const fieldDef = fields.find(f => f.key === key);
+                                        return (
+                                            <div key={key} className="rounded-md bg-background px-3 py-1.5">
+                                                <p className="text-[10px] text-muted-foreground">{fieldDef?.label || key}</p>
+                                                <p className="font-mono text-sm font-medium">
+                                                    {val} <span className="text-xs text-muted-foreground">{fieldDef?.unit || ''}</span>
+                                                </p>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     {/* Calibration form */}
                     <div className="space-y-3">
@@ -3578,7 +4019,26 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                                 <Label htmlFor={`calib_${f.key}`} className="text-sm">
                                     {f.label} {f.unit && <span className="text-xs text-muted-foreground">({f.unit})</span>}
                                 </Label>
-                                {f.type === 'select' && f.options ? (
+                                {f.type === 'sensor-source' ? (
+                                    <Select
+                                        value={formValues[f.key]}
+                                        onValueChange={(v) => updateField(f.key, v)}
+                                        disabled={phase === 'sending'}
+                                    >
+                                        <SelectTrigger id={`calib_${f.key}`}>
+                                            <SelectValue placeholder={sourceLoading ? 'Memuat sensor…' : 'Pilih sumber sensor'} />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {sourceNames.map(n => (
+                                                <SelectItem key={n} value={n}>{n}</SelectItem>
+                                            ))}
+                                            {/* Keep a saved source selectable even if the device no longer reports it. */}
+                                            {formValues[f.key] && !sourceNames.includes(formValues[f.key]) && (
+                                                <SelectItem value={formValues[f.key]}>{formValues[f.key]} (tidak terdaftar)</SelectItem>
+                                            )}
+                                        </SelectContent>
+                                    </Select>
+                                ) : f.type === 'select' && f.options ? (
                                     <Select
                                         value={formValues[f.key]}
                                         onValueChange={(v) => updateField(f.key, v)}
@@ -3903,7 +4363,7 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
                             <div className="flex items-start gap-2 rounded-lg bg-blue-500/5 border border-blue-500/20 px-3 py-2">
                                 <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-blue-500" />
                                 <p className="text-[11px] text-blue-700 dark:text-blue-400">
-                                    Mode bisa diubah kapan saja di tab Maintenance.
+                                    Mode bisa diubah kapan saja di tab Mode.
                                 </p>
                             </div>
                         </div>
@@ -4105,6 +4565,28 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
         { title: logger.name, href: `/loggers/${logger.id}` },
     ];
 
+    // Shape the existing logger data for the embedded Advanced Settings (Protocol) panel.
+    const protocolLogger: ProtocolLogger = {
+        id: logger.id,
+        name: logger.name,
+        serialNumber: logger.serialNumber,
+        status: logger.status,
+        deviceIdentifier: logger.deviceIdentifier,
+        model: logger.model,
+        connectionType: logger.connectionType,
+        loggerMode: logger.loggerMode,
+        channelCount: logger.channelCount,
+        firmwareVersion: logger.firmwareVersion,
+        sensors: logger.sensors.map((s) => ({
+            id: s.id,
+            name: s.name,
+            connectionType: s.connectionType,
+            modbusSlaveId: s.modbusSlaveId,
+            port: s.port,
+            channel: s.channel,
+        })),
+    };
+
     // Auto-refresh UI every 30s to show latest cron sync results
     const [autoSyncing] = useState(false);
     useEffect(() => {
@@ -4229,14 +4711,6 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         {logger.deviceIdentifier && (
                             <SyncFromDeviceDialog deviceIdentifier={logger.deviceIdentifier} loggerId={logger.id} label={t('loggerDetail.sync')} />
                         )}
-                        {logger.deviceIdentifier && (
-                            <Button asChild variant="outline" size="sm" className="gap-1.5">
-                                <Link href={`/loggers/${logger.id}/protocol`}>
-                                    <Terminal className="size-4" />
-                                    Protocol
-                                </Link>
-                            </Button>
-                        )}
                         {!logger.deviceIdentifier && (
                             <Button variant="outline" size="sm" className="gap-1.5" disabled>
                                 <RefreshCw className="size-4" />
@@ -4272,7 +4746,8 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         <TabsTrigger value="overview" className="gap-1.5 cursor-pointer"><Activity className="size-3.5" />{t('loggerDetail.tab_overview')}</TabsTrigger>
                         <TabsTrigger value="sensors" className="gap-1.5 cursor-pointer"><Thermometer className="size-3.5" />{t('loggerDetail.tab_sensors')}</TabsTrigger>
                         <TabsTrigger value="system" className="gap-1.5 cursor-pointer"><Cpu className="size-3.5" />{t('loggerDetail.tab_system')}</TabsTrigger>
-                        <TabsTrigger value="maintenance" className="gap-1.5 cursor-pointer"><Settings className="size-3.5" />{t('loggerDetail.tab_maintenance')}</TabsTrigger>
+                        <TabsTrigger value="mode" className="gap-1.5 cursor-pointer"><Radio className="size-3.5" />Mode</TabsTrigger>
+                        <TabsTrigger value="advanced" className="gap-1.5 cursor-pointer"><SlidersHorizontal className="size-3.5" />Advanced Settings</TabsTrigger>
                         <TabsTrigger value="logs" className="gap-1.5 cursor-pointer"><Terminal className="size-3.5" />{t('loggerDetail.tab_logs')}</TabsTrigger>
                         <TabsTrigger value="api" className="gap-1.5 cursor-pointer"><Code2 className="size-3.5" />{t('loggerDetail.tab_api')}</TabsTrigger>
                     </TabsList>
@@ -4458,6 +4933,11 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 </CardContent>
                             </Card>
                         </div>
+                        <FirmwareCard
+                            deviceIdentifier={logger.deviceIdentifier}
+                            currentVersion={logger.firmwareVersion}
+                            disabled={logger.status === 'offline'}
+                        />
                         <DeviceConfigCard
                             intervalRead={logger.intervalRead}
                             intervalSend={logger.intervalSend}
@@ -4482,32 +4962,37 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         )}
                     </TabsContent>
 
-                    {/* ==================== MAINTENANCE ==================== */}
-                    <TabsContent value="maintenance" className="mt-6 space-y-4">
-                        {/* Set Mode & Calibration */}
+                    {/* ==================== MODE (operating profile + mode-specific calibration + modules) ==================== */}
+                    <TabsContent value="mode" className="mt-6 space-y-4">
                         <div className="grid gap-4 lg:grid-cols-2">
                             <SetModeCard logger={logger} />
                             <CalibrationCard key={logger.loggerMode || 'no-mode'} logger={logger} />
                         </div>
-                        <div className="grid gap-4 lg:grid-cols-2">
-                            <Card>
-                                <CardHeader>
-                                    <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> {t('loggerDetail.firmware')}</CardTitle>
-                                    <CardDescription>Current: {logger.firmwareVersion || '—'}</CardDescription>
-                                </CardHeader>
-                                <CardContent>
-                                    <div className="grid gap-3">
-                                        <div className="flex items-center justify-between rounded-lg border p-3">
-                                            <div>
-                                                <p className="text-sm font-medium">{t('loggerDetail.current_firmware')}</p>
-                                                <p className="font-mono text-xs text-muted-foreground">{logger.firmwareVersion || '—'}</p>
-                                            </div>
-                                            <Badge variant="default">{t('loggerDetail.up_to_date')}</Badge>
-                                        </div>
-                                    </div>
-                                </CardContent>
-                            </Card>
-                        </div>
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> Module</CardTitle>
+                                <CardDescription>EWS (Early Warning System) &amp; GCM</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <ProtocolPanel logger={protocolLogger} tabs={MODULE_PROTOCOL_TABS} />
+                            </CardContent>
+                        </Card>
+
+                        {/* I/O controls (Power Output, SENS_DOOR, ALERT) — 3 across, below Module. */}
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> I/O Control</CardTitle>
+                                <CardDescription>Power output, sensor pintu, &amp; buzzer alert.</CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <ProtocolPanel logger={protocolLogger} ioRow />
+                            </CardContent>
+                        </Card>
+                    </TabsContent>
+
+                    {/* ==================== ADVANCED SETTINGS (Protocol commands; EWS/GCM moved to Mode) ==================== */}
+                    <TabsContent value="advanced" className="mt-6 space-y-4">
+                        <ProtocolPanel logger={protocolLogger} tabs={ADVANCED_PROTOCOL_TABS} />
                     </TabsContent>
 
                     {/* ==================== LOGS ==================== */}

@@ -7,6 +7,7 @@ use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MqttController;
+use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
@@ -90,6 +91,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.poll');
     Route::post('api/mqtt/sensors/get', [MqttController::class, 'getSensorsConfig'])
         ->name('api.mqtt.sensors.get');
+    Route::post('api/mqtt/sensors/get-name', [MqttController::class, 'getSensorNames'])
+        ->name('api.mqtt.sensors.get-name');
     Route::post('api/mqtt/sensors/set', [MqttController::class, 'setSensorConfig'])
         ->name('api.mqtt.sensors.set');
     Route::post('api/mqtt/sensors/del', [MqttController::class, 'deleteSensorConfig'])
@@ -115,8 +118,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.system.set-mode');
     Route::post('api/mqtt/calibration/set', [MqttController::class, 'setCalibration'])
         ->name('api.mqtt.calibration.set');
+    Route::post('api/mqtt/calibration/get', [MqttController::class, 'getCalibration'])
+        ->name('api.mqtt.calibration.get');
     Route::post('api/mqtt/protocol/command', [MqttController::class, 'sendProtocolCommand'])
         ->name('api.mqtt.protocol.command');
+
+    // Firmware OTA (spec §3.26)
+    Route::post('api/mqtt/ota/check', [OtaController::class, 'check'])
+        ->name('api.mqtt.ota.check');
+    // GET + SSE so the browser can stream live download progress via EventSource.
+    Route::get('api/mqtt/ota/stream', [OtaController::class, 'stream'])
+        ->name('api.mqtt.ota.stream');
+    Route::post('api/mqtt/ota/install', [OtaController::class, 'install'])
+        ->name('api.mqtt.ota.install');
 
     // TEMPORARY: Compare GET vs GET_ALL sensor formats
     Route::get('api/mqtt/sensors/compare/{id_logger}', function (string $id_logger) {
@@ -208,9 +222,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('sensors.update');
     Route::delete('loggers/{loggerId}/sensors/{id}', [\App\Http\Controllers\SensorController::class, 'destroy'])
         ->name('sensors.destroy');
-    // Edit / delete an entire RS485 slave / RS232 port device (device-level cfg).
-    Route::put('loggers/{loggerId}/sensor-devices/{connType}/{groupId}', [\App\Http\Controllers\SensorController::class, 'updateGroup'])
-        ->name('sensors.updateGroup');
+    // Create / edit an entire device (RS485 unified cfg + params upsert; RS232 cfg-only).
+    Route::post('loggers/{loggerId}/sensor-devices/{connType}', [\App\Http\Controllers\SensorController::class, 'saveDevice'])
+        ->name('sensors.storeDevice');
+    Route::put('loggers/{loggerId}/sensor-devices/{connType}/{groupId}', [\App\Http\Controllers\SensorController::class, 'saveDevice'])
+        ->name('sensors.saveDevice');
     Route::delete('loggers/{loggerId}/sensor-devices/{connType}/{groupId}', [\App\Http\Controllers\SensorController::class, 'destroyGroup'])
         ->name('sensors.destroyGroup');
 

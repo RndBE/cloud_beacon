@@ -1,25 +1,18 @@
 import { Head, Link } from '@inertiajs/react';
 import {
-    AlertTriangle,
     ArrowLeft,
     Bell,
     Clock,
-    CloudRain,
     Cpu,
     DoorOpen,
-    Download,
-    Droplets,
-    Gauge,
     Layers,
+    ListOrdered,
     Loader2,
     Network,
     Plus,
     Power,
-    RefreshCw,
-    Satellite,
     Send,
     Server,
-    ShieldAlert,
     Siren,
     Terminal,
     Trash2,
@@ -27,14 +20,15 @@ import {
     Wifi,
     Zap,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
@@ -42,8 +36,10 @@ import type { BreadcrumbItem } from '@/types';
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type Payload = Record<string, JsonValue>;
+// Each GCM module binding: slave = Modbus RTU ID (0 = disabled), mode = 1 AWGC | 2 PUMP.
+type GcmModule = { slave: string; mode: string };
 
-interface ProtocolLogger {
+export interface ProtocolLogger {
     id: string;
     name: string;
     serialNumber: string | null;
@@ -57,11 +53,22 @@ interface ProtocolLogger {
     sensors: ProtocolSensor[];
 }
 
+type ProtocolTabKey = 'system' | 'network' | 'io' | 'power' | 'logs' | 'ews' | 'gcm' | 'map';
+const ALL_PROTOCOL_TABS: ProtocolTabKey[] = ['system', 'network', 'io', 'power', 'logs', 'ews', 'gcm', 'map'];
+// EWS & GCM now live in the logger's "Mode" tab; the rest stay in "Advanced Settings".
+// I/O (Power Output / SENS_DOOR / ALERT) moved to the Mode tab (rendered via ProtocolPanel ioRow).
+export const ADVANCED_PROTOCOL_TABS: ProtocolTabKey[] = ['system', 'network', 'power', 'logs', 'map'];
+export const MODULE_PROTOCOL_TABS: ProtocolTabKey[] = ['ews', 'gcm'];
+
 interface ProtocolPageProps {
     logger: ProtocolLogger;
+    tabs?: ProtocolTabKey[];
+    // When true, render ONLY the I/O controls (Power Output, SENS_DOOR, ALERT) as a
+    // 3-across grid with no tab bar — used standalone in the logger's "Mode" tab.
+    ioRow?: boolean;
 }
 
-interface ProtocolSensor {
+export interface ProtocolSensor {
     id: number;
     name: string;
     connectionType: string | null;
@@ -88,9 +95,6 @@ function inferBoardVariant(logger: ProtocolLogger): 'BL11' | 'BL110' | 'BL1100' 
     return null;
 }
 
-function targetKey(sensor: ProtocolSensor): string {
-    return `${sensor.connectionType}:${sensor.id}`;
-}
 
 function csrfToken(): string {
     return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
@@ -172,10 +176,17 @@ function ButtonRow({ children }: { children: ReactNode }) {
     return <div className="flex flex-wrap gap-2">{children}</div>;
 }
 
-export default function ProtocolPage({ logger }: ProtocolPageProps) {
+// Normalized MAP_DATA slot value: empty/placeholder → 'none' (the firmware's empty-slot sentinel).
+function effSlotName(name: string): string {
+    return name && name.trim() !== '' ? name.trim() : 'none';
+}
+
+export function ProtocolPanel({ logger, tabs, ioRow = false }: ProtocolPageProps) {
+    const shownTabs = tabs ?? ALL_PROTOCOL_TABS;
     const now = useMemo(() => new Date(), []);
     const [loading, setLoading] = useState<string | null>(null);
     const [responses, setResponses] = useState<Record<string, CommandResult | null>>({});
+    const [activeTab, setActiveTab] = useState<string>(shownTabs[0] ?? 'system');
 
     const [rtc, setRtc] = useState({
         date: now.toISOString().slice(0, 10),
@@ -189,13 +200,7 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
         gateway: '192.168.1.1',
         dns: '8.8.8.8',
     });
-    const [wdtTime, setWdtTime] = useState('30');
     const [simApn, setSimApn] = useState('internet');
-    const [cal, setCal] = useState({
-        actual: '20',
-        analogTarget: '',
-        offsetTarget: '',
-    });
     const [pumpState, setPumpState] = useState('1');
     const [out24State, setOut24State] = useState('1');
     const [out12State, setOut12State] = useState('1');
@@ -209,19 +214,56 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     });
     const [ftpLogFile, setFtpLogFile] = useState('20260502.txt');
 
-    // ── Protocol v3 modules: ARR / GCM / GCM_PUMP / GCM_MAP / OTA ──
-    const [arrId, setArrId] = useState('1');
-    const [gcm, setGcm] = useState({ enable: '1', id1: '0', id2: '0', id3: '0', id4: '0', id5: '0' });
+    // ── Protocol v3 modules: GCM / GCM_PUMP / GCM_GATE / GCM_MAP ──
+    const gcmModuleEmpty: GcmModule = { slave: '0', mode: '1' };
+    const [gcm, setGcm] = useState<{ enable: string; id1: GcmModule; id2: GcmModule; id3: GcmModule; id4: GcmModule; id5: GcmModule }>({
+        enable: '1',
+        id1: { ...gcmModuleEmpty }, id2: { ...gcmModuleEmpty }, id3: { ...gcmModuleEmpty },
+        id4: { ...gcmModuleEmpty }, id5: { ...gcmModuleEmpty },
+    });
     const [gcmPumpId, setGcmPumpId] = useState('1');
+    const [gcmGateId, setGcmGateId] = useState('1');
+    const [gcmGateTarget, setGcmGateTarget] = useState('0');
+    // Live gate status from GCM_GATE GET: pos/run/full_close/full_open/fault.
+    const [gcmGateStatus, setGcmGateStatus] = useState<{ pos: number; run: number; full_close: number; full_open: number; fault: number } | null>(null);
+    // GCM_GATE_WARN (§4): EWS horn pre-warning before AWGC moves. Per-AWGC-module config + runtime.
+    const [gcmWarnId, setGcmWarnId] = useState('1');
+    const [gcmWarn, setGcmWarn] = useState({
+        enable: '0', level: '1', clear_level: '0', on_sec: '15', off_sec: '5', repeat: '2', ews_fail: 'BLOCK',
+    });
+    const [gcmWarnStatus, setGcmWarnStatus] = useState<
+        { ews_ready: number; active: number; phase: string; cycle: number; remaining_sec: number; last_error: string } | null
+    >(null);
     const [gcmMapId, setGcmMapId] = useState('1');
-    const [gcmMapRows, setGcmMapRows] = useState<{ reg: string; slot: string }[]>([
-        { reg: '16', slot: '0' },
-        { reg: '17', slot: '0' },
-        { reg: '18', slot: '0' },
-        { reg: '19', slot: '0' },
-        { reg: '20', slot: '0' },
+    // GCM_MAP is name-based like MAP_DATA: each register (16–20) maps to a sensor name. '-' = empty.
+    const [gcmMapRows, setGcmMapRows] = useState<{ reg: string; name: string }[]>([
+        { reg: '16', name: '-' },
+        { reg: '17', name: '-' },
+        { reg: '18', name: '-' },
+        { reg: '19', name: '-' },
+        { reg: '20', name: '-' },
     ]);
-    const [ota, setOta] = useState({ ver: '', file: '' });
+    // Animated error popup when a GCM-family read fails (e.g. Modbus read fail).
+    const [gcmError, setGcmError] = useState<string | null>(null);
+
+    // Styled confirmation popup (replaces the browser's native window.confirm) used by
+    // every actionButton that passes a confirmMessage.
+    const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
+
+    // ── MAP_DATA: name-based telemetry/LCD/SD ordering (s1..s43; s44..s50 reserved) ──
+    const MAP_SLOT_MAX = 43;
+    const mappableSensors = useMemo(
+        () => logger.sensors.filter((sensor) => (sensor.name ?? '').trim() !== ''),
+        [logger.sensors],
+    );
+    // Current device mapping (slot -> sensor name) shown to the user; sourced from MAP_DATA GET.
+    // A row with name === '' is an unsaved placeholder waiting for the user to pick a sensor.
+    const [mapSlots, setMapSlots] = useState<{ slot: number; name: string }[]>([]);
+    // Baseline = the mapping as last loaded/saved on the device; used to send only what changed.
+    const [mapBaseline, setMapBaseline] = useState<{ slot: number; name: string }[]>([]);
+    const [mapStatus, setMapStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+    // Available sensor names for the picker only (NOT shown as a list), from SENSORS GET_NAME.
+    const [deviceSensors, setDeviceSensors] = useState<{ nama: string; nilai: number | null; satuan: string }[] | null>(null);
 
     type EwsSourceType = 'RS485' | 'RS232' | 'ANALOG' | 'DIGITAL' | 'CALC';
     type EwsRuleRow = { min: string; max: string; level: string };
@@ -246,10 +288,44 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     const variant = inferBoardVariant(logger);
     const isCellularBoard = variant === 'BL11';
     const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
-    const isArrMode = logger.loggerMode === 'ARR';
-    const isGnssMode = logger.loggerMode === 'GNSS';
-    const slotTotal = variant === 'BL1100' ? 50 : 16;
     const gcmEnabled = numberValue(gcm.enable) === 1;
+
+    // Only modules whose slave is bound (enabled) in the Binding Slave section are
+    // selectable in Mapping Parameter / Pump Control / Gate Control.
+    const boundGcmModules = useMemo(
+        () => ([1, 2, 3, 4, 5] as const).filter((n) => numberValue(gcm[`id${n}` as 'id1' | 'id2' | 'id3' | 'id4' | 'id5'].slave) > 0),
+        [gcm],
+    );
+    const pumpModules = useMemo(
+        () => boundGcmModules.filter((n) => numberValue(gcm[`id${n}` as 'id1' | 'id2' | 'id3' | 'id4' | 'id5'].mode) === 2),
+        [gcm, boundGcmModules],
+    );
+    const gateModules = useMemo(
+        () => boundGcmModules.filter((n) => numberValue(gcm[`id${n}` as 'id1' | 'id2' | 'id3' | 'id4' | 'id5'].mode) === 1),
+        [gcm, boundGcmModules],
+    );
+
+    // Snap module selectors to the first available module after binding changes.
+    useEffect(() => {
+        const mapIds = boundGcmModules.map((n) => String(n));
+        if (mapIds.length > 0 && !mapIds.includes(gcmMapId)) setGcmMapId(mapIds[0]);
+
+        const pumpIds = pumpModules.map((n) => String(n));
+        if (pumpIds.length > 0 && !pumpIds.includes(gcmPumpId)) setGcmPumpId(pumpIds[0]);
+
+        const gateIds = gateModules.map((n) => String(n));
+        if (gateIds.length > 0 && !gateIds.includes(gcmGateId)) setGcmGateId(gateIds[0]);
+
+        // GCM_GATE_WARN hanya untuk modul AWGC (sama pool dengan gate).
+        if (gateIds.length > 0 && !gateIds.includes(gcmWarnId)) setGcmWarnId(gateIds[0]);
+    }, [boundGcmModules, pumpModules, gateModules, gcmMapId, gcmPumpId, gcmGateId, gcmWarnId]);
+
+    // In the Mode tab's I/O row, auto-GET the door/alert state once on mount so the
+    // dropdowns reflect the device without the user pressing GET.
+    useEffect(() => {
+        if (ioRow && logger.deviceIdentifier) loadIo();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ioRow]);
 
     const ewsCalcNames = useMemo<string[]>(() => {
         if (logger.loggerMode === 'AWLR_TD') return ['AWLR_TD.TMA', 'AWLR_TD.KEDALAMAN'];
@@ -259,19 +335,9 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     const ewsHasDualRs232 = variant === 'BL1100';
     const ewsSourceTypes: EwsSourceType[] = ['RS485', 'ANALOG', 'DIGITAL', 'CALC'];
     if (ewsHasDualRs232) ewsSourceTypes.splice(1, 0, 'RS232');
-    const calibrationTargets = logger.sensors.filter((sensor) =>
-        sensor.connectionType === 'rs485' || sensor.connectionType === 'rs232' || sensor.connectionType === 'analog',
-    );
-    const analogTargets = calibrationTargets.filter((sensor) => sensor.connectionType === 'analog');
-    const selectedAnalogTarget = analogTargets.find((sensor) => targetKey(sensor) === cal.analogTarget) ?? analogTargets[0] ?? null;
-    const selectedOffsetTarget = calibrationTargets.find((sensor) => targetKey(sensor) === cal.offsetTarget) ?? calibrationTargets[0] ?? null;
     const powerCalSensors = isEthernetBoard ? ['bat', 'out5', 'out12', 'out24'] : ['bat'];
-
-    const breadcrumbs: BreadcrumbItem[] = [
-        { title: 'Loggers', href: '/loggers' },
-        { title: logger.name, href: `/loggers/${logger.id}` },
-        { title: 'Protocol', href: `/loggers/${logger.id}/protocol` },
-    ];
+    // Picker pool prefers live device names; falls back to DB names when device not yet synced.
+    const sensorNamePool = deviceSensors ? deviceSensors.map((sensor) => sensor.nama) : mappableSensors.map((sensor) => sensor.name);
 
     async function send(module: string, payload: Payload, key = module) {
         if (!logger.deviceIdentifier) {
@@ -305,6 +371,406 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
         setResponses((current) => ({ ...current, [key]: { success: false, message } }));
     }
 
+    // Entering a tab auto-pulls its current state from the device.
+    function handleTabChange(value: string) {
+        setActiveTab(value);
+        if (value === 'map' && canSend && loading !== 'MAP_DATA') {
+            loadMap();
+        }
+        if (value === 'gcm' && canSend && loading !== 'GCM') {
+            loadGcmAll();
+        }
+        if (value === 'io' && canSend) {
+            loadIo();
+        }
+    }
+
+    async function gcmGet(module: string, payload: Payload): Promise<CommandResult> {
+        const resp = await postJson('/api/mqtt/protocol/command', { id_logger: logger.deviceIdentifier, module, payload });
+        return (await resp.json()) as CommandResult;
+    }
+
+    // Auto-pull the current I/O polarity/state from the device and reflect it in the
+    // dropdowns (silent — no response box, no GET button needed).
+    async function loadIo() {
+        if (!logger.deviceIdentifier) return;
+        try {
+            // Power outputs: P_OUT GET → {"12":1,"24":1} (1 = on, 0 = off).
+            const o = await gcmGet('P_OUT', { P_OUT: { cmd: 'GET' } });
+            const oInner = (o.data as { P_OUT?: Record<string, number> } | undefined)?.P_OUT;
+            if (o.success && oInner) {
+                if (oInner['12'] !== undefined) setOut12State(String(oInner['12']));
+                if (oInner['24'] !== undefined) setOut24State(String(oInner['24']));
+            }
+
+            const d = await gcmGet('SENS_DOOR', { SENS_DOOR: { cmd: 'GET' } });
+            const dInner = (d.data as { SENS_DOOR?: Record<string, number> } | undefined)?.SENS_DOOR;
+            if (d.success && dInner && dInner.close_st !== undefined) setDoorCloseState(String(dInner.close_st));
+
+            const a = await gcmGet('ALERT', { ALERT: { cmd: 'GET' } });
+            const aInner = (a.data as { ALERT?: Record<string, number> } | undefined)?.ALERT;
+            if (a.success && aInner && aInner.state !== undefined) setAlertState(String(aInner.state));
+        } catch {
+            /* silent — dropdowns just keep their defaults if the device is unreachable */
+        }
+    }
+
+    // Auto-GET the GCM family on entering the tab: GCM master (binding [slave,mode]) +
+    // GCM_PUMP + GCM_MAP. Any read failure (e.g. Modbus read fail) pops the error dialog.
+    async function loadGcmAll() {
+        if (!logger.deviceIdentifier) return;
+        setLoading('GCM');
+        setGcmError(null);
+        let firstError: string | null = null;
+        try {
+            const g = await gcmGet('GCM', { GCM: { cmd: 'GET' } });
+            const gInner = (g.data as { GCM?: Record<string, unknown> } | undefined)?.GCM;
+            // Modul yang aktually ke-bind, dipakai untuk menentukan command turunan mana
+            // yang aman di-auto-GET (mis. GCM_PUMP hanya untuk modul mode PUMP).
+            const bound: { n: number; slave: number; mode: number }[] = [];
+            if (g.success && gInner) {
+                // Response uses [slave, mode] arrays e.g. "id1":[2,1].
+                const parseGcmModule = (v: unknown): GcmModule => {
+                    if (Array.isArray(v) && v.length >= 2) {
+                        // mode hanya valid 1 (AWGC) / 2 (PUMP); 0 atau nilai lain → default AWGC.
+                        // Jangan pakai `?? 1` karena `0` lolos dari nullish coalescing.
+                        const m = Number(v[1]);
+                        return { slave: String(v[0] ?? 0), mode: m === 2 ? '2' : '1' };
+                    }
+                    return { slave: '0', mode: '1' };
+                };
+                const parsed = {
+                    id1: parseGcmModule(gInner.id1), id2: parseGcmModule(gInner.id2),
+                    id3: parseGcmModule(gInner.id3), id4: parseGcmModule(gInner.id4),
+                    id5: parseGcmModule(gInner.id5),
+                };
+                setGcm({ enable: String((gInner.enable as number | undefined) ?? 0), ...parsed });
+                ([1, 2, 3, 4, 5] as const).forEach((n) => {
+                    const mod = parsed[`id${n}` as 'id1' | 'id2' | 'id3' | 'id4' | 'id5'];
+                    const slave = numberValue(mod.slave);
+                    if (slave > 0) bound.push({ n, slave, mode: numberValue(mod.mode) });
+                });
+            } else if (!g.success) {
+                firstError = firstError ?? g.message ?? 'GCM read failed.';
+            }
+
+            // GCM_PUMP GET hanya untuk modul mode PUMP. Kalau modul aktif AWGC (atau tidak ada
+            // modul PUMP sama sekali), jangan kirim — firmware akan balas "id not PUMP mode".
+            const pumpId = bound.find((b) => b.n === numberValue(gcmPumpId) && b.mode === 2)?.n
+                ?? bound.find((b) => b.mode === 2)?.n;
+            if (pumpId !== undefined) {
+                const p = await gcmGet('GCM_PUMP', { GCM_PUMP: { cmd: 'GET', id: pumpId } });
+                const pInner = (p.data as { GCM_PUMP?: Record<string, number> } | undefined)?.GCM_PUMP;
+                if (p.success && pInner && pInner.state !== undefined) {
+                    setPumpState(String(pInner.state));
+                } else if (!p.success) {
+                    firstError = firstError ?? p.message ?? 'GCM_PUMP read failed.';
+                }
+            }
+
+            // GCM_MAP berlaku untuk kedua mode, tapi modulnya wajib ke-bind. Pakai modul terpilih
+            // bila ke-bind, kalau tidak pakai modul ke-bind pertama; skip kalau tidak ada.
+            const mapId = bound.find((b) => b.n === numberValue(gcmMapId))?.n ?? bound[0]?.n;
+            if (mapId !== undefined) {
+                const m = await gcmGet('GCM_MAP', { GCM_MAP: { cmd: 'GET', id: mapId } });
+                const mInner = (m.data as { GCM_MAP?: { m?: Array<[number, number | string]> } } | undefined)?.GCM_MAP;
+                if (m.success && Array.isArray(mInner?.m)) {
+                    setGcmMapRows(parseGcmMapRows(mInner.m));
+                } else if (!m.success) {
+                    firstError = firstError ?? m.message ?? 'GCM_MAP read failed.';
+                }
+            }
+
+            // Load sensor names so the GCM_MAP dropdown has the same options as MAP_DATA.
+            try {
+                const nameResp = await postJson('/api/mqtt/sensors/get-name', { id_logger: logger.deviceIdentifier });
+                const nameJson = (await nameResp.json()) as { success: boolean; data?: { nama: string; nilai: number | null; satuan: string }[] };
+                if (nameJson.success && Array.isArray(nameJson.data)) setDeviceSensors(nameJson.data);
+            } catch { /* ignore — falls back to DB sensor names */ }
+        } catch (error) {
+            firstError = error instanceof Error ? error.message : 'Request gagal.';
+        } finally {
+            setLoading(null);
+            if (firstError) setGcmError(firstError);
+        }
+    }
+
+    // Map GET response m:[[reg, name], …] → rows. Empty name → '-' (the UI's empty sentinel).
+    function parseGcmMapRows(m: Array<[number, number | string]>): { reg: string; name: string }[] {
+        return m.map(([reg, name]) => ({
+            reg: String(reg),
+            name: typeof name === 'string' && name.trim() !== '' ? name : '-',
+        }));
+    }
+
+    async function loadGcmPump(id: number) {
+        if (!logger.deviceIdentifier) return;
+        setLoading('GCM');
+        try {
+            const p = await gcmGet('GCM_PUMP', { GCM_PUMP: { cmd: 'GET', id } });
+            const pInner = (p.data as { GCM_PUMP?: Record<string, number> } | undefined)?.GCM_PUMP;
+            if (p.success && pInner && pInner.state !== undefined) setPumpState(String(pInner.state));
+            else if (!p.success) setGcmError(p.message ?? 'GCM_PUMP read failed.');
+        } catch (e) {
+            setGcmError(e instanceof Error ? e.message : 'Request gagal.');
+        } finally {
+            setLoading(null);
+        }
+    }
+
+    async function loadGcmGate(id: number) {
+        if (!logger.deviceIdentifier) return;
+        setLoading('GCM');
+        setGcmGateStatus(null);
+        try {
+            const g = await gcmGet('GCM_GATE', { GCM_GATE: { cmd: 'GET', id } });
+            const gInner = (g.data as { GCM_GATE?: Record<string, number> } | undefined)?.GCM_GATE;
+            if (g.success && gInner && gInner.pos !== undefined) {
+                setGcmGateStatus({
+                    pos: gInner.pos ?? 0,
+                    run: gInner.run ?? 0,
+                    full_close: gInner.full_close ?? 0,
+                    full_open: gInner.full_open ?? 0,
+                    fault: gInner.fault ?? 0,
+                });
+            } else if (!g.success) {
+                setGcmError(g.message ?? 'GCM_GATE read failed.');
+            }
+        } catch (e) {
+            setGcmError(e instanceof Error ? e.message : 'Request gagal.');
+        } finally {
+            setLoading(null);
+        }
+    }
+
+    // GCM_GATE_WARN GET → config tersimpan + status runtime (ews_ready/active/phase/cycle/…).
+    async function loadGcmWarn(id: number) {
+        if (!logger.deviceIdentifier) return;
+        setLoading('GCM_GATE_WARN');
+        setGcmWarnStatus(null);
+        try {
+            const w = await gcmGet('GCM_GATE_WARN', { GCM_GATE_WARN: { cmd: 'GET', id } });
+            const inner = (w.data as { GCM_GATE_WARN?: Record<string, number | string> } | undefined)?.GCM_GATE_WARN;
+            if (w.success && inner && inner.enable !== undefined) {
+                setGcmWarn({
+                    enable: String(inner.enable ?? 0),
+                    level: String(inner.level ?? 1),
+                    clear_level: String(inner.clear_level ?? 0),
+                    on_sec: String(inner.on_sec ?? 15),
+                    off_sec: String(inner.off_sec ?? 5),
+                    repeat: String(inner.repeat ?? 2),
+                    ews_fail: inner.ews_fail === 'ALLOW' ? 'ALLOW' : 'BLOCK',
+                });
+                setGcmWarnStatus({
+                    ews_ready: Number(inner.ews_ready ?? 0),
+                    active: Number(inner.active ?? 0),
+                    phase: String(inner.phase ?? 'IDLE'),
+                    cycle: Number(inner.cycle ?? 0),
+                    remaining_sec: Number(inner.remaining_sec ?? 0),
+                    last_error: String(inner.last_error ?? 'NONE'),
+                });
+            } else if (!w.success) {
+                setGcmError(w.message ?? 'GCM_GATE_WARN read failed.');
+            }
+        } catch (e) {
+            setGcmError(e instanceof Error ? e.message : 'Request gagal.');
+        } finally {
+            setLoading(null);
+        }
+    }
+
+    // GCM_GATE_WARN SET — validasi range sebelum kirim (firmware menolak di luar rentang).
+    function sendGcmWarnSet() {
+        const id = numberValue(gcmWarnId);
+        const enable = numberValue(gcmWarn.enable);
+        const level = numberValue(gcmWarn.level);
+        const clearLevel = numberValue(gcmWarn.clear_level);
+        const onSec = numberValue(gcmWarn.on_sec);
+        const offSec = numberValue(gcmWarn.off_sec);
+        const repeat = numberValue(gcmWarn.repeat);
+        if (enable === 1) {
+            if (level < 0 || level > 8) return localError('GCM_GATE_WARN', 'level harus 0–8.');
+            if (clearLevel < 0 || clearLevel > 8) return localError('GCM_GATE_WARN', 'clear_level harus 0–8.');
+            if (onSec < 10 || onSec > 30) return localError('GCM_GATE_WARN', 'on_sec harus 10–30 detik.');
+            if (offSec < 0 || offSec > 60) return localError('GCM_GATE_WARN', 'off_sec harus 0–60 detik.');
+            if (repeat < 1 || repeat > 5) return localError('GCM_GATE_WARN', 'repeat harus 1–5.');
+        }
+        send('GCM_GATE_WARN', {
+            GCM_GATE_WARN: {
+                cmd: 'SET', id, enable,
+                level, clear_level: clearLevel, on_sec: onSec, off_sec: offSec, repeat,
+                ews_fail: gcmWarn.ews_fail === 'ALLOW' ? 'ALLOW' : 'BLOCK',
+            },
+        }, 'GCM_GATE_WARN');
+    }
+
+    async function loadGcmMap(id: number) {
+        if (!logger.deviceIdentifier) return;
+        setLoading('GCM');
+        try {
+            const m = await gcmGet('GCM_MAP', { GCM_MAP: { cmd: 'GET', id } });
+            const mInner = (m.data as { GCM_MAP?: { m?: Array<[number, number | string]> } } | undefined)?.GCM_MAP;
+            if (m.success && Array.isArray(mInner?.m)) {
+                setGcmMapRows(parseGcmMapRows(mInner.m));
+            } else if (!m.success) {
+                setGcmError(m.message ?? 'GCM_MAP read failed.');
+            }
+        } catch (e) {
+            setGcmError(e instanceof Error ? e.message : 'Request gagal.');
+        } finally {
+            setLoading(null);
+        }
+    }
+
+    // ── MAP_DATA handlers (slot-based) ──
+    function parseMapSlots(inner: Record<string, JsonValue>): { slot: number; name: string }[] {
+        const slots: { slot: number; name: string }[] = [];
+        for (let slot = 1; slot <= MAP_SLOT_MAX; slot += 1) {
+            const name = inner[`s${slot}`];
+            if (typeof name === 'string' && name.trim() !== '') {
+                slots.push({ slot, name: name.trim() });
+            }
+        }
+        return slots;
+    }
+
+    // Load BOTH: MAP_DATA GET (the map we display) + SENSORS GET_NAME (picker options only).
+    async function loadMap() {
+        if (!logger.deviceIdentifier) {
+            localError('MAP_DATA', 'Logger belum punya device identifier.');
+            return;
+        }
+        setLoading('MAP_DATA');
+        try {
+            const [mapResp, nameResp] = await Promise.all([
+                postJson('/api/mqtt/protocol/command', {
+                    id_logger: logger.deviceIdentifier,
+                    module: 'MAP_DATA',
+                    payload: { MAP_DATA: { cmd: 'GET' } },
+                }),
+                postJson('/api/mqtt/sensors/get-name', { id_logger: logger.deviceIdentifier }),
+            ]);
+
+            const mapData = (await mapResp.json()) as CommandResult;
+            setResponses((current) => ({ ...current, MAP_DATA: mapData }));
+            const inner = (mapData.data as { MAP_DATA?: Record<string, JsonValue> } | undefined)?.MAP_DATA;
+            if (mapData.success && inner) {
+                const parsed = parseMapSlots(inner);
+                setMapSlots(parsed);
+                setMapBaseline(parsed.map((entry) => ({ ...entry }))); // baseline for the change diff
+                setMapStatus(null);
+            }
+
+            const nameJson = (await nameResp.json()) as {
+                success: boolean;
+                data?: { nama: string; nilai: number | null; satuan: string }[];
+            };
+            if (nameJson.success && Array.isArray(nameJson.data)) {
+                setDeviceSensors(nameJson.data);
+            }
+        } catch (error) {
+            localError('MAP_DATA', error instanceof Error ? error.message : 'Request gagal.');
+        } finally {
+            setLoading(null);
+        }
+    }
+
+    // Edits are local only — nothing is sent until the user presses "Set".
+    function assignSlot(slot: number, name: string) {
+        setMapStatus(null);
+        setMapSlots((slots) => {
+            const others = slots.filter((entry) => entry.slot !== slot);
+            return [...others, { slot, name }].sort((a, b) => a.slot - b.slot);
+        });
+    }
+
+    function addMapping() {
+        const used = new Set(mapSlots.map((entry) => entry.slot));
+        let next = 1;
+        while (next <= MAP_SLOT_MAX && used.has(next)) next += 1;
+        if (next > MAP_SLOT_MAX) {
+            localError('MAP_DATA', `Semua slot terpakai (maksimum ${MAP_SLOT_MAX}).`);
+            return;
+        }
+        setMapSlots((slots) => [...slots, { slot: next, name: '' }].sort((a, b) => a.slot - b.slot));
+    }
+
+    // Move a row to a different slot number (the user chooses where the mapping goes).
+    function changeSlot(oldSlot: number, newSlot: number) {
+        if (oldSlot === newSlot) return;
+        setMapStatus(null);
+        setMapSlots((slots) => {
+            if (slots.some((entry) => entry.slot === newSlot)) return slots; // slot already used — ignore
+            return slots.map((entry) => (entry.slot === oldSlot ? { ...entry, slot: newSlot } : entry)).sort((a, b) => a.slot - b.slot);
+        });
+    }
+
+    // Send ONE MAP_DATA SET containing only the slots whose value differs from the baseline.
+    async function saveMap() {
+        if (!logger.deviceIdentifier) {
+            localError('MAP_DATA', 'Logger belum punya device identifier.');
+            return;
+        }
+        const baseMap = new Map(mapBaseline.map((e) => [e.slot, effSlotName(e.name)]));
+        const curMap = new Map(mapSlots.map((e) => [e.slot, effSlotName(e.name)]));
+        const slots = Array.from(new Set([...baseMap.keys(), ...curMap.keys()])).sort((a, b) => a - b);
+
+        const body: Record<string, JsonValue> = { cmd: 'SET' };
+        let changes = 0;
+        for (const slot of slots) {
+            const before = baseMap.get(slot) ?? 'none';
+            const after = curMap.get(slot) ?? 'none';
+            if (before !== after) {
+                body[`s${slot}`] = after;
+                changes += 1;
+            }
+        }
+
+        if (changes === 0) {
+            setMapStatus({ ok: true, msg: 'Tidak ada perubahan untuk dikirim.' });
+            return;
+        }
+
+        setLoading('MAP_DATA');
+        setMapStatus(null);
+        try {
+            const resp = await postJson('/api/mqtt/protocol/command', {
+                id_logger: logger.deviceIdentifier,
+                module: 'MAP_DATA',
+                payload: { MAP_DATA: body },
+            });
+            const data = (await resp.json()) as CommandResult;
+            if (data.success) {
+                // New baseline = current mapping (drop empty placeholders).
+                setMapBaseline(mapSlots.filter((e) => effSlotName(e.name) !== 'none').map((e) => ({ ...e })));
+                setMapStatus({ ok: true, msg: `${changes} slot terkirim ke perangkat.` });
+            } else {
+                setMapStatus({ ok: false, msg: data.message || 'Gagal mengirim ke perangkat.' });
+            }
+        } catch (error) {
+            setMapStatus({ ok: false, msg: error instanceof Error ? error.message : 'Request gagal.' });
+        } finally {
+            setLoading(null);
+        }
+    }
+
+    function resetMap() {
+        setMapSlots([]);
+        setMapBaseline([]);
+        setMapStatus(null);
+        send('MAP_DATA', { MAP_DATA: { cmd: 'RST' } }, 'MAP_DATA');
+    }
+
+    // True when the current mapping differs from the baseline (enables the Set button).
+    const mapDirty = (() => {
+        const base = new Map(mapBaseline.map((e) => [e.slot, effSlotName(e.name)]));
+        const cur = new Map(mapSlots.map((e) => [e.slot, effSlotName(e.name)]));
+        for (const slot of new Set([...base.keys(), ...cur.keys()])) {
+            if ((base.get(slot) ?? 'none') !== (cur.get(slot) ?? 'none')) return true;
+        }
+        return false;
+    })();
+
     function actionButton(
         label: string,
         key: string,
@@ -320,7 +786,10 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                 variant={variant}
                 disabled={!canSend || busy}
                 onClick={() => {
-                    if (confirmMessage && !window.confirm(confirmMessage)) return;
+                    if (confirmMessage) {
+                        setConfirmDialog({ message: confirmMessage, onConfirm: onClick });
+                        return;
+                    }
                     onClick();
                 }}
             >
@@ -328,24 +797,6 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                 {label}
             </Button>
         );
-    }
-
-    function targetPayload(sensor: ProtocolSensor | null): Record<string, JsonValue> | null {
-        if (!sensor?.connectionType) {
-            return null;
-        }
-
-        if (sensor.connectionType === 'rs485') {
-            return { Sens: 'RS485', slave: sensor.modbusSlaveId ?? 1, item: 0 };
-        }
-        if (sensor.connectionType === 'rs232') {
-            return { Sens: 'RS232', p: sensor.port ?? 1 };
-        }
-        if (sensor.connectionType === 'analog') {
-            return { Sens: 'Analog', ch: sensor.channel ?? 1 };
-        }
-
-        return null;
     }
 
     function sendPowerCalSet() {
@@ -375,50 +826,6 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
         send('POWER_CAL', { POWER_CAL: body }, 'POWER_CAL');
     }
 
-    function actualValue(): number | null {
-        const value = numberValue(cal.actual, Number.NaN);
-        return Number.isFinite(value) && value > 0 ? value : null;
-    }
-
-    function sendCalSet() {
-        const actual = actualValue();
-        if (!selectedAnalogTarget || actual === null) {
-            localError('CAL', 'Pilih sensor analog dan isi actual_val lebih besar dari 0.');
-            return;
-        }
-
-        send('CAL', { CAL: { cmd: 'SET', ch: selectedAnalogTarget.channel ?? 1, actual_val: actual } }, 'CAL');
-    }
-
-    function sendCalReset() {
-        if (!selectedAnalogTarget) {
-            localError('CAL', 'Pilih sensor analog yang sudah terdaftar.');
-            return;
-        }
-
-        send('CAL', { CAL: { cmd: 'RST', ch: selectedAnalogTarget.channel ?? 1 } }, 'CAL');
-    }
-
-    function sendCalOffset() {
-        const target = targetPayload(selectedOffsetTarget);
-        const actual = actualValue();
-        if (!target || actual === null) {
-            localError('CAL', 'Pilih target sensor dan isi actual_val lebih besar dari 0.');
-            return;
-        }
-
-        send('CAL', { CAL: { cmd: 'OFFSET', ...target, actual_val: actual } }, 'CAL');
-    }
-
-    function sendCalResetOffset() {
-        const target = targetPayload(selectedOffsetTarget);
-        if (!target) {
-            localError('CAL', 'Pilih target sensor yang sudah terdaftar.');
-            return;
-        }
-
-        send('CAL', { CAL: { cmd: 'RSTSET', ...target } }, 'CAL');
-    }
 
     type EwsResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -531,60 +938,111 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
         setEwsRules(ewsRules.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
     }
 
-    return (
-        <AppLayout breadcrumbs={breadcrumbs}>
-            <Head title={`${logger.name} Protocol`} />
-            <div className="flex flex-col gap-6 p-4 md:p-6">
-                <Link href={`/loggers/${logger.id}`} className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-                    <ArrowLeft className="size-4" />
-                    Back to logger
-                </Link>
-
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                        <div className="flex flex-wrap items-center gap-3">
-                            <h1 className="text-xl font-bold">Protocol Command</h1>
-                            <Badge variant="outline" className="capitalize">{logger.status}</Badge>
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                            <span className="flex items-center gap-1"><Terminal className="size-3.5" />{logger.name}</span>
-                            {logger.serialNumber && <span>{logger.serialNumber}</span>}
-                            {logger.deviceIdentifier && <span className="font-mono text-xs">ID {logger.deviceIdentifier}</span>}
-                            {logger.model && <span>{logger.model}</span>}
-                            {logger.firmwareVersion && <span className="font-mono text-xs">{logger.firmwareVersion}</span>}
-                        </div>
-                    </div>
-                    {!canSend && (
-                        <Badge variant="outline" className="w-fit text-red-600">
-                            Device identifier kosong
-                        </Badge>
-                    )}
+    // I/O controls (Power Output, SENS_DOOR, ALERT) — shared between the standalone "I/O"
+    // tab and the Mode tab's 3-across `ioRow` layout.
+    const ioCards = (
+        <>
+            <CommandCard title="Power Output" description="Kontrol output 24V dan 12V active-low." icon={Zap}>
+                <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="P_OUT24">
+                        <select className={selectClass} value={out24State} onChange={(event) => setOut24State(event.target.value)}>
+                            <option value="1">ON</option>
+                            <option value="0">OFF</option>
+                        </select>
+                    </Field>
+                    <Field label="P_OUT12">
+                        <select className={selectClass} value={out12State} onChange={(event) => setOut12State(event.target.value)}>
+                            <option value="1">ON</option>
+                            <option value="0">OFF</option>
+                        </select>
+                    </Field>
                 </div>
+                <ButtonRow>
+                    {actionButton('P_OUT24 SET', 'P_OUT', () => send('P_OUT24', { P_OUT24: { cmd: 'SET', state: numberValue(out24State) } }, 'P_OUT'), 'destructive', 'Ubah output power 24V?')}
+                    {actionButton('P_OUT12 SET', 'P_OUT', () => send('P_OUT12', { P_OUT12: { cmd: 'SET', state: numberValue(out12State) } }, 'P_OUT'), 'destructive', 'Ubah output power 12V?')}
+                </ButtonRow>
+            </CommandCard>
 
-                <Card>
-                    <CardContent className="flex items-start gap-3 p-4 text-sm">
-                        <AlertTriangle className="mt-0.5 size-4 text-amber-500" />
-                        <div>
-                            <p className="font-medium">Status implementasi</p>
-                            <p className="text-muted-foreground">
-                                Halaman ini hanya menampilkan command MQTT configurator yang aman untuk model dan mode logger aktif. Modul yang tidak
-                                tersedia melalui MQTT umum tidak dirender sebagai menu atau tombol.
-                            </p>
-                        </div>
-                    </CardContent>
-                </Card>
+            <CommandCard title="SENS_DOOR" description="Polaritas sensor pintu panel." icon={DoorOpen}>
+                <Field label="close_st">
+                    <select className={selectClass} value={doorCloseState} onChange={(event) => setDoorCloseState(event.target.value)}>
+                        <option value="1">LOW = closed</option>
+                        <option value="0">LOW = open</option>
+                    </select>
+                </Field>
+                <ButtonRow>
+                    {actionButton('SET', 'SENS_DOOR', () => send('SENS_DOOR', { SENS_DOOR: { cmd: 'SET', close_st: numberValue(doorCloseState) } }, 'SENS_DOOR'))}
+                </ButtonRow>
+            </CommandCard>
 
-                <Tabs defaultValue="system">
+            <CommandCard title="ALERT" description="Aktif/nonaktif buzzer global." icon={Bell}>
+                <Field label="State">
+                    <select className={selectClass} value={alertState} onChange={(event) => setAlertState(event.target.value)}>
+                        <option value="1">ON</option>
+                        <option value="0">OFF</option>
+                    </select>
+                </Field>
+                <ButtonRow>
+                    {actionButton('SET', 'ALERT', () => send('ALERT', { ALERT: { cmd: 'SET', state: numberValue(alertState) } }, 'ALERT'))}
+                </ButtonRow>
+            </CommandCard>
+        </>
+    );
+
+    // Mode tab: just the three I/O control cards, 3 across, no tab bar.
+    if (ioRow) {
+        return (
+            <>
+                {!canSend && (
+                    <Badge variant="outline" className="mb-3 w-fit text-red-600">
+                        Device identifier kosong — kirim command butuh device terhubung.
+                    </Badge>
+                )}
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{ioCards}</div>
+
+                {/* Styled confirmation popup for actionButtons that require a confirm. */}
+                <AlertDialog open={confirmDialog !== null} onOpenChange={(open) => { if (!open) setConfirmDialog(null); }}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Konfirmasi</AlertDialogTitle>
+                            <AlertDialogDescription>{confirmDialog?.message}</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel>Batal</AlertDialogCancel>
+                            <AlertDialogAction
+                                onClick={() => {
+                                    const action = confirmDialog?.onConfirm;
+                                    setConfirmDialog(null);
+                                    action?.();
+                                }}
+                            >
+                                Ya, lanjutkan
+                            </AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
+            </>
+        );
+    }
+
+    return (
+        <div className="flex flex-col gap-4">
+            {!canSend && (
+                <Badge variant="outline" className="w-fit text-red-600">
+                    Device identifier kosong — kirim command butuh device terhubung.
+                </Badge>
+            )}
+
+            <Tabs value={activeTab} onValueChange={handleTabChange}>
                     <TabsList className="flex h-auto flex-wrap justify-start">
-                        <TabsTrigger value="system">System</TabsTrigger>
-                        <TabsTrigger value="network">Network</TabsTrigger>
-                        <TabsTrigger value="io">I/O</TabsTrigger>
-                        <TabsTrigger value="power">Power</TabsTrigger>
-                        <TabsTrigger value="logs">Logs</TabsTrigger>
-                        <TabsTrigger value="ews">EWS</TabsTrigger>
-                        <TabsTrigger value="mode">Mode</TabsTrigger>
-                        <TabsTrigger value="gcm">GCM</TabsTrigger>
-                        <TabsTrigger value="ota">OTA</TabsTrigger>
+                        {shownTabs.includes('system') && <TabsTrigger value="system">System</TabsTrigger>}
+                        {shownTabs.includes('network') && <TabsTrigger value="network">Network</TabsTrigger>}
+                        {shownTabs.includes('io') && <TabsTrigger value="io">I/O</TabsTrigger>}
+                        {shownTabs.includes('power') && <TabsTrigger value="power">Power</TabsTrigger>}
+                        {shownTabs.includes('logs') && <TabsTrigger value="logs">Logs</TabsTrigger>}
+                        {shownTabs.includes('ews') && <TabsTrigger value="ews">EWS</TabsTrigger>}
+                        {shownTabs.includes('gcm') && <TabsTrigger value="gcm">GCM</TabsTrigger>}
+                        {shownTabs.includes('map') && <TabsTrigger value="map">Data Map</TabsTrigger>}
                     </TabsList>
 
                     <TabsContent value="system" className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -606,67 +1064,7 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                             </ButtonRow>
                         </CommandCard>
 
-                        <CommandCard title="WDT" description="SET/GET external watchdog dan hard reboot via WDT." icon={RefreshCw} result={responses.WDT}>
-                            <Field label="Timeout">
-                                <select className={selectClass} value={wdtTime} onChange={(event) => setWdtTime(event.target.value)}>
-                                    {['5', '10', '15', '30', '60'].map((value) => <option key={value} value={value}>{value} menit</option>)}
-                                </select>
-                            </Field>
-                            <ButtonRow>
-                                {actionButton('SET', 'WDT', () => send('WDT', { WDT: { command: 'SET', time: wdtTime } }, 'WDT'))}
-                                {actionButton('GET', 'WDT', () => send('WDT', { WDT: { command: 'GET' } }, 'WDT'))}
-                                {actionButton(
-                                    'SET_REBOOT',
-                                    'WDT',
-                                    () => send('WDT', { WDT: { command: 'SET_REBOOT', value: 1 } }, 'WDT'),
-                                    'destructive',
-                                    'Kirim WDT SET_REBOOT? Logger akan restart.',
-                                )}
-                            </ButtonRow>
-                        </CommandCard>
-
-                        <CommandCard title="STATUS" description="Heartbeat/cek koneksi logger." icon={ShieldAlert} result={responses.STATUS}>
-                            <ButtonRow>
-                                {actionButton('GET', 'STATUS', () => send('STATUS', { STATUS: { cmd: 'GET' } }, 'STATUS'))}
-                            </ButtonRow>
-                        </CommandCard>
-
-                        {calibrationTargets.length > 0 && (
-                            <CommandCard title="CAL" description="Kalibrasi analog gain dan offset sensor terdaftar." icon={Gauge} result={responses.CAL}>
-                                <div className="grid gap-3 sm:grid-cols-2">
-                                    {analogTargets.length > 0 && (
-                                        <Field label="Analog target">
-                                            <select className={selectClass} value={cal.analogTarget || (selectedAnalogTarget ? targetKey(selectedAnalogTarget) : '')} onChange={(event) => setCal({ ...cal, analogTarget: event.target.value })}>
-                                                {analogTargets.map((sensor) => (
-                                                    <option key={targetKey(sensor)} value={targetKey(sensor)}>
-                                                        {sensor.name} · ch {sensor.channel ?? 1}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </Field>
-                                    )}
-                                    <Field label="Offset target">
-                                        <select className={selectClass} value={cal.offsetTarget || (selectedOffsetTarget ? targetKey(selectedOffsetTarget) : '')} onChange={(event) => setCal({ ...cal, offsetTarget: event.target.value })}>
-                                            {calibrationTargets.map((sensor) => (
-                                                <option key={targetKey(sensor)} value={targetKey(sensor)}>
-                                                    {sensor.name} · {sensor.connectionType?.toUpperCase()}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </Field>
-                                    <Field label="actual_val">
-                                        <Input className={inputClass} type="number" min="0.001" step="0.001" value={cal.actual} onChange={(event) => setCal({ ...cal, actual: event.target.value })} />
-                                    </Field>
-                                </div>
-                                <ButtonRow>
-                                    {analogTargets.length > 0 && actionButton('SET', 'CAL', sendCalSet)}
-                                    {actionButton('GET', 'CAL', () => send('CAL', { CAL: { cmd: 'GET' } }, 'CAL'))}
-                                    {analogTargets.length > 0 && actionButton('RST', 'CAL', sendCalReset, 'destructive', 'Reset kalibrasi analog channel ini?')}
-                                    {actionButton('OFFSET', 'CAL', sendCalOffset)}
-                                    {actionButton('RSTSET', 'CAL', sendCalResetOffset, 'destructive', 'Reset offset sensor target ini?')}
-                                </ButtonRow>
-                            </CommandCard>
-                        )}
+                        {/* CAL (analog calibration) moved to the Sensors panel → analog sensor row. */}
                     </TabsContent>
 
                     <TabsContent value="network" className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -734,53 +1132,7 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
 
                     <TabsContent value="io" className="mt-4 grid gap-4 lg:grid-cols-2">
                         {/* AWLR_PUMP renamed to GCM_PUMP (spec §3.17) — see the GCM tab. */}
-
-                        <CommandCard title="Power Output" description="Kontrol output 24V dan 12V active-low." icon={Zap} result={responses.P_OUT}>
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                <Field label="P_OUT24">
-                                    <select className={selectClass} value={out24State} onChange={(event) => setOut24State(event.target.value)}>
-                                        <option value="1">ON</option>
-                                        <option value="0">OFF</option>
-                                    </select>
-                                </Field>
-                                <Field label="P_OUT12">
-                                    <select className={selectClass} value={out12State} onChange={(event) => setOut12State(event.target.value)}>
-                                        <option value="1">ON</option>
-                                        <option value="0">OFF</option>
-                                    </select>
-                                </Field>
-                            </div>
-                            <ButtonRow>
-                                {actionButton('P_OUT24 SET', 'P_OUT', () => send('P_OUT24', { P_OUT24: { cmd: 'SET', state: numberValue(out24State) } }, 'P_OUT'), 'destructive', 'Ubah output power 24V?')}
-                                {actionButton('P_OUT12 SET', 'P_OUT', () => send('P_OUT12', { P_OUT12: { cmd: 'SET', state: numberValue(out12State) } }, 'P_OUT'), 'destructive', 'Ubah output power 12V?')}
-                            </ButtonRow>
-                        </CommandCard>
-
-                        <CommandCard title="SENS_DOOR" description="Polaritas sensor pintu panel." icon={DoorOpen} result={responses.SENS_DOOR}>
-                            <Field label="close_st">
-                                <select className={selectClass} value={doorCloseState} onChange={(event) => setDoorCloseState(event.target.value)}>
-                                    <option value="1">LOW = closed</option>
-                                    <option value="0">LOW = open</option>
-                                </select>
-                            </Field>
-                            <ButtonRow>
-                                {actionButton('GET', 'SENS_DOOR', () => send('SENS_DOOR', { SENS_DOOR: { cmd: 'GET' } }, 'SENS_DOOR'))}
-                                {actionButton('SET', 'SENS_DOOR', () => send('SENS_DOOR', { SENS_DOOR: { cmd: 'SET', close_st: numberValue(doorCloseState) } }, 'SENS_DOOR'))}
-                            </ButtonRow>
-                        </CommandCard>
-
-                        <CommandCard title="ALERT" description="Aktif/nonaktif buzzer global." icon={Bell} result={responses.ALERT}>
-                            <Field label="State">
-                                <select className={selectClass} value={alertState} onChange={(event) => setAlertState(event.target.value)}>
-                                    <option value="1">ON</option>
-                                    <option value="0">OFF</option>
-                                </select>
-                            </Field>
-                            <ButtonRow>
-                                {actionButton('GET', 'ALERT', () => send('ALERT', { ALERT: { cmd: 'GET' } }, 'ALERT'))}
-                                {actionButton('SET', 'ALERT', () => send('ALERT', { ALERT: { cmd: 'SET', state: numberValue(alertState) } }, 'ALERT'))}
-                            </ButtonRow>
-                        </CommandCard>
+                        {ioCards}
                     </TabsContent>
 
                     <TabsContent value="power" className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -1065,142 +1417,439 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                         </CommandCard>
                     </TabsContent>
 
-                    {/* ── Mode-gated: ARR source select + GNSS telemetry info (spec §3.16.1 / §3.27) ── */}
-                    <TabsContent value="mode" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="ARR" description="Pilih slave RS485 sumber data curah hujan (mode ARR)." icon={CloudRain} result={responses.ARR}>
-                            {!isArrMode && (
-                                <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
-                                    Logger belum di mode ARR — set mode ARR dulu agar command ini diterima firmware.
-                                </p>
-                            )}
-                            <Field label="Slave ID (1–5)">
-                                <select className={selectClass} value={arrId} onChange={(event) => setArrId(event.target.value)}>
-                                    {[1, 2, 3, 4, 5].map((id) => <option key={id} value={id}>{id}</option>)}
-                                </select>
-                            </Field>
-                            <ButtonRow>
-                                {actionButton('GET', 'ARR', () => send('ARR', { ARR: { cmd: 'GET' } }, 'ARR'))}
-                                {actionButton('SET', 'ARR', () => send('ARR', { ARR: { cmd: 'SET', id: numberValue(arrId) } }, 'ARR'))}
-                            </ButtonRow>
-                        </CommandCard>
-
-                        <CommandCard title="GNSS" description="Profil telemetry NMEA (info)." icon={Satellite} result={undefined}>
-                            <p className="text-xs text-muted-foreground">
-                                GNSS bukan command MQTT — aktifkan via <strong>System &rarr; SET_MODE &ldquo;GNSS&rdquo;</strong>. Saat aktif, slot
-                                telemetry <code>sensor1</code>–<code>sensor9</code> di-reserve untuk UTC, posisi, satelit, HDOP, fix quality, dan geoid
-                                dari receiver NMEA di RS232 port 1 (9600 8N1). Sensor user digeser mulai <code>sensor10</code>.
-                            </p>
-                            {isGnssMode
-                                ? <Badge className="w-fit bg-emerald-500/15 text-emerald-600">Mode GNSS aktif</Badge>
-                                : <Badge variant="outline" className="w-fit">Mode GNSS tidak aktif</Badge>}
-                        </CommandCard>
-                    </TabsContent>
-
-                    {/* ── GCM family (spec §3.17 / §3.17.1) ── */}
-                    <TabsContent value="gcm" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="GCM" description="Master switch + binding hingga 5 slave Modbus RTU." icon={Layers} result={responses.GCM}>
-                            <Field label="Enable">
-                                <select className={selectClass} value={gcm.enable} onChange={(event) => setGcm({ ...gcm, enable: event.target.value })}>
-                                    <option value="1">Enabled</option>
-                                    <option value="0">Disabled</option>
-                                </select>
-                            </Field>
-                            <div className="grid gap-3 sm:grid-cols-5">
-                                {(['id1', 'id2', 'id3', 'id4', 'id5'] as const).map((key, idx) => (
-                                    <Field key={key} label={`Slave id${idx + 1}`}>
-                                        <Input className={inputClass} type="number" min="0" max="247" value={gcm[key]} onChange={(event) => setGcm({ ...gcm, [key]: event.target.value })} />
-                                    </Field>
-                                ))}
+                    {/* ── GCM (binding + mapping parameter + gate control + pump control) ── */}
+                    <TabsContent value="gcm" className="mt-4 grid gap-4">
+                        <CommandCard title="GCM" description="Binding slave, mapping parameter, dan kontrol modul." icon={Layers}>
+                            {/* ── Binding slave: tiap modul pilih slave ID + mode (AWGC / PUMP) ── */}
+                            <div className="space-y-2">
+                                <Label className="text-xs font-semibold uppercase text-muted-foreground">Binding Slave</Label>
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                    {([1, 2, 3, 4, 5] as const).map((n) => {
+                                        const key = `id${n}` as 'id1' | 'id2' | 'id3' | 'id4' | 'id5';
+                                        const mod = gcm[key];
+                                        const enabled = numberValue(mod.slave) > 0;
+                                        return (
+                                            <div key={n} className="flex items-center gap-2">
+                                                <span className="w-12 shrink-0 text-sm font-medium">GCM{n}</span>
+                                                <select
+                                                    className={`${selectClass}`}
+                                                    value={enabled ? '1' : '0'}
+                                                    onChange={(event) => setGcm({ ...gcm, [key]: event.target.value === '1' ? { ...mod, slave: numberValue(mod.slave) > 0 ? mod.slave : '1' } : { ...mod, slave: '0' } })}
+                                                >
+                                                    <option value="1">Enabled</option>
+                                                    <option value="0">Disabled</option>
+                                                </select>
+                                                {enabled && (
+                                                    <>
+                                                        <Input
+                                                            className={`${inputClass} w-16`}
+                                                            type="number" min="1" max="247"
+                                                            value={mod.slave}
+                                                            placeholder="Slave"
+                                                            onChange={(event) => setGcm({ ...gcm, [key]: { ...mod, slave: event.target.value } })}
+                                                        />
+                                                        <select
+                                                            className={`${selectClass} w-20`}
+                                                            value={mod.mode}
+                                                            onChange={(event) => setGcm({ ...gcm, [key]: { ...mod, mode: event.target.value } })}
+                                                        >
+                                                            <option value="1">AWGC</option>
+                                                            <option value="2">PUMP</option>
+                                                        </select>
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                <ButtonRow>
+                                    {actionButton('SET', 'GCM', () => {
+                                        // Untuk modul yang punya slave (>0), mode wajib 1 (AWGC) / 2 (PUMP);
+                                        // jangan pernah kirim mode 0. Modul kosong (slave 0) tetap [0,0].
+                                        const moduleTuple = (mod: GcmModule): [number, number] => {
+                                            const slave = numberValue(mod.slave);
+                                            if (slave <= 0) return [0, 0];
+                                            return [slave, numberValue(mod.mode) === 2 ? 2 : 1];
+                                        };
+                                        send('GCM', {
+                                            GCM: {
+                                                cmd: 'SET',
+                                                enable: boundGcmModules.length > 0 ? 1 : 0,
+                                                id1: moduleTuple(gcm.id1),
+                                                id2: moduleTuple(gcm.id2),
+                                                id3: moduleTuple(gcm.id3),
+                                                id4: moduleTuple(gcm.id4),
+                                                id5: moduleTuple(gcm.id5),
+                                            },
+                                        }, 'GCM');
+                                    })}
+                                </ButtonRow>
                             </div>
-                            <ButtonRow>
-                                {actionButton('GET', 'GCM', () => send('GCM', { GCM: { cmd: 'GET' } }, 'GCM'))}
-                                {actionButton('SET', 'GCM', () => send('GCM', { GCM: { cmd: 'SET', enable: numberValue(gcm.enable), id1: numberValue(gcm.id1), id2: numberValue(gcm.id2), id3: numberValue(gcm.id3), id4: numberValue(gcm.id4), id5: numberValue(gcm.id5) } }, 'GCM'))}
-                                {actionButton('RST', 'GCM', () => send('GCM', { GCM: { cmd: 'RST' } }, 'GCM'), 'destructive', 'Reset semua konfigurasi GCM?')}
-                            </ButtonRow>
-                        </CommandCard>
 
-                        <CommandCard title="GCM_PUMP" description="Kontrol pompa per-modul via Modbus RTU (butuh GCM aktif)." icon={Droplets} result={responses.GCM_PUMP}>
-                            {!gcmEnabled && <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">GCM.enable harus 1 agar command ini diterima.</p>}
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                <Field label="Modul (1–5)">
-                                    <select className={selectClass} value={gcmPumpId} onChange={(event) => setGcmPumpId(event.target.value)}>
-                                        {[1, 2, 3, 4, 5].map((id) => <option key={id} value={id}>{id}</option>)}
-                                    </select>
-                                </Field>
-                                <Field label="State">
-                                    <select className={selectClass} value={pumpState} onChange={(event) => setPumpState(event.target.value)}>
-                                        <option value="1">ON</option>
-                                        <option value="0">OFF</option>
-                                    </select>
-                                </Field>
-                            </div>
-                            <ButtonRow>
-                                {actionButton('GET', 'GCM_PUMP', () => send('GCM_PUMP', { GCM_PUMP: { cmd: 'GET', id: numberValue(gcmPumpId) } }, 'GCM_PUMP'))}
-                                {actionButton('SET', 'GCM_PUMP', () => send('GCM_PUMP', { GCM_PUMP: { cmd: 'SET', id: numberValue(gcmPumpId), state: numberValue(pumpState) } }, 'GCM_PUMP'), 'destructive', 'Ubah status pompa GCM?')}
-                            </ButtonRow>
-                            <p className="text-xs text-muted-foreground">SET bersifat queued — tekan GET untuk verifikasi status aktual.</p>
-                        </CommandCard>
-
-                        <CommandCard title="GCM_MAP" description="Pemetaan slot telemetry ke register GCM 16–20 (per modul)." icon={Network} result={responses.GCM_MAP}>
-                            <Field label="Modul (1–5)">
-                                <select className={selectClass} value={gcmMapId} onChange={(event) => setGcmMapId(event.target.value)}>
-                                    {[1, 2, 3, 4, 5].map((id) => <option key={id} value={id}>{id}</option>)}
-                                </select>
-                            </Field>
-                            <div className="grid gap-2">
-                                {gcmMapRows.map((row, idx) => (
-                                    <div key={row.reg} className="grid grid-cols-2 items-center gap-3">
-                                        <span className="text-xs text-muted-foreground">Register {row.reg}</span>
-                                        <Input
-                                            className={inputClass}
-                                            type="number"
-                                            min="0"
-                                            max={slotTotal}
-                                            value={row.slot}
-                                            onChange={(event) => setGcmMapRows(gcmMapRows.map((r, i) => i === idx ? { ...r, slot: event.target.value } : r))}
-                                            placeholder={`slot 0–${slotTotal}`}
-                                        />
+                            {/* ── Mapping parameter (GCM_MAP) — berlaku untuk semua mode ── */}
+                            <div className="space-y-2 border-t border-border/60 pt-3">
+                                <div className="flex items-center justify-between gap-3">
+                                    <Label className="text-xs font-semibold uppercase text-muted-foreground">Mapping Parameter</Label>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-xs text-muted-foreground">Modul</span>
+                                        <select className={`${selectClass} w-16`} value={gcmMapId} disabled={boundGcmModules.length === 0} onChange={(event) => { setGcmMapId(event.target.value); loadGcmMap(numberValue(event.target.value)); }}>
+                                            {boundGcmModules.length === 0
+                                                ? <option value="">—</option>
+                                                : boundGcmModules.map((id) => <option key={id} value={id}>{id}</option>)}
+                                        </select>
                                     </div>
-                                ))}
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                    {gcmMapRows.map((row, idx) => (
+                                        <div key={row.reg} className="flex items-center gap-2">
+                                            <span className="w-20 shrink-0 text-xs text-muted-foreground">Param {idx + 1}</span>
+                                            <Select
+                                                value={row.name}
+                                                onValueChange={(value) => setGcmMapRows(gcmMapRows.map((r, i) => (i === idx ? { ...r, name: value } : r)))}
+                                            >
+                                                <SelectTrigger size="sm" className="flex-1">
+                                                    <SelectValue placeholder="—" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="-">—</SelectItem>
+                                                    {sensorNamePool.map((option) => (
+                                                        <SelectItem key={option} value={option}>{option}</SelectItem>
+                                                    ))}
+                                                    {row.name !== '-' && !sensorNamePool.includes(row.name) && (
+                                                        <SelectItem value={row.name}>{row.name} (tidak terdaftar)</SelectItem>
+                                                    )}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    ))}
+                                </div>
+                                <ButtonRow>
+                                    {actionButton('SET', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'SET', id: numberValue(gcmMapId), m: gcmMapRows.map((r) => [numberValue(r.reg), r.name === '-' ? '' : r.name]) } }, 'GCM_MAP'))}
+                                </ButtonRow>
                             </div>
-                            <ButtonRow>
-                                {actionButton('GET', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'GET', id: numberValue(gcmMapId) } }, 'GCM_MAP'))}
-                                {actionButton('SET', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'SET', id: numberValue(gcmMapId), m: gcmMapRows.map((r) => [numberValue(r.reg), numberValue(r.slot)]) } }, 'GCM_MAP'))}
-                                {actionButton('RST', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'RST', id: numberValue(gcmMapId) } }, 'GCM_MAP'), 'destructive', 'Reset pemetaan GCM modul ini?')}
-                            </ButtonRow>
-                            <p className="text-xs text-muted-foreground">Slot 0 = nonaktif. Rentang slot 0–{slotTotal} sesuai varian perangkat.</p>
+
+                            {/* ── Gate control (GCM_GATE) — hanya untuk modul mode AWGC ── */}
+                            <div className="space-y-2 border-t border-border/60 pt-3">
+                                <Label className="text-xs font-semibold uppercase text-muted-foreground">Gate Control (AWGC)</Label>
+                                {!gcmEnabled && <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">GCM harus aktif agar command ini diterima.</p>}
+                                {gateModules.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">Tidak ada modul AWGC terkonfigurasi.</p>
+                                ) : (
+                                    <>
+                                        <div className="flex flex-wrap items-end gap-3">
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="text-xs text-muted-foreground">Modul</span>
+                                                <select className={`${selectClass} w-16`} value={gcmGateId} onChange={(event) => { setGcmGateId(event.target.value); setGcmGateStatus(null); }}>
+                                                    {gateModules.map((id) => <option key={id} value={id}>{id}</option>)}
+                                                </select>
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="text-xs text-muted-foreground">Target</span>
+                                                <Input
+                                                    className={`${inputClass} w-20`}
+                                                    type="number" min="0" max="65535"
+                                                    value={gcmGateTarget}
+                                                    onChange={(event) => setGcmGateTarget(event.target.value)}
+                                                />
+                                            </div>
+                                            {actionButton('SET Target', 'GCM_GATE', () => send('GCM_GATE', { GCM_GATE: { cmd: 'SET', id: numberValue(gcmGateId), target: numberValue(gcmGateTarget) } }, 'GCM_GATE'), 'destructive', `Gerakkan pintu GCM${gcmGateId} ke posisi ${gcmGateTarget}?`)}
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <span className="text-xs text-muted-foreground">Motor manual:</span>
+                                            {actionButton('Open', 'GCM_GATE', () => send('GCM_GATE', { GCM_GATE: { cmd: '1', id: numberValue(gcmGateId) } }, 'GCM_GATE'), 'outline', `Buka paksa pintu GCM${gcmGateId}?`)}
+                                            {actionButton('Close', 'GCM_GATE', () => send('GCM_GATE', { GCM_GATE: { cmd: '2', id: numberValue(gcmGateId) } }, 'GCM_GATE'), 'outline', `Tutup paksa pintu GCM${gcmGateId}?`)}
+                                            {actionButton('Stop', 'GCM_GATE', () => send('GCM_GATE', { GCM_GATE: { cmd: '4', id: numberValue(gcmGateId) } }, 'GCM_GATE'), 'destructive', `Stop motor pintu GCM${gcmGateId}?`)}
+                                            <Button type="button" size="sm" variant="outline" disabled={!canSend || loading === 'GCM'} onClick={() => loadGcmGate(numberValue(gcmGateId))}>
+                                                {loading === 'GCM' ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                                                GET Status
+                                            </Button>
+                                        </div>
+                                        {gcmGateStatus && (
+                                            <div className="flex flex-wrap gap-1.5 text-xs">
+                                                <Badge variant="outline" className="tabular-nums">Posisi: {gcmGateStatus.pos}</Badge>
+                                                <Badge variant="outline">{gcmGateStatus.run === 1 ? 'Opening' : gcmGateStatus.run === 2 ? 'Closing' : 'Stop'}</Badge>
+                                                {gcmGateStatus.full_close === 1 && <Badge variant="outline" className="text-amber-600">Full Close</Badge>}
+                                                {gcmGateStatus.full_open === 1 && <Badge variant="outline" className="text-amber-600">Full Open</Badge>}
+                                                <Badge variant="outline" className={gcmGateStatus.fault === 0 ? 'text-emerald-600' : 'text-red-600'}>
+                                                    {gcmGateStatus.fault === 0 ? 'Normal' : 'Fault'}
+                                                </Badge>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+
+                            {/* ── EWS Pre-Warning (GCM_GATE_WARN) — horn/speaker sebelum AWGC bergerak ── */}
+                            <div className="space-y-2 border-t border-border/60 pt-3">
+                                <Label className="text-xs font-semibold uppercase text-muted-foreground">EWS Pre-Warning (AWGC)</Label>
+                                <p className="text-xs text-muted-foreground">
+                                    Horn/speaker EWS berbunyi sebelum motor AWGC jalan. Butuh <span className="font-medium">EWS aktif</span> + GCM aktif + modul mode AWGC. STOP tidak menunggu warning.
+                                </p>
+                                {!gcmEnabled && <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">GCM harus aktif agar command ini diterima.</p>}
+                                {gateModules.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">Tidak ada modul AWGC terkonfigurasi.</p>
+                                ) : (
+                                    <>
+                                        <div className="flex flex-wrap items-end gap-3">
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="text-xs text-muted-foreground">Modul</span>
+                                                <select className={`${selectClass} w-16`} value={gcmWarnId} onChange={(event) => { setGcmWarnId(event.target.value); loadGcmWarn(numberValue(event.target.value)); }}>
+                                                    {gateModules.map((id) => <option key={id} value={id}>{id}</option>)}
+                                                </select>
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="text-xs text-muted-foreground">Enable</span>
+                                                <select className={`${selectClass} w-24`} value={gcmWarn.enable} onChange={(event) => setGcmWarn({ ...gcmWarn, enable: event.target.value })}>
+                                                    <option value="1">Aktif</option>
+                                                    <option value="0">Nonaktif</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div className="grid gap-2 sm:grid-cols-3">
+                                            <Field label="Level horn ON (0–8)">
+                                                <Input className={inputClass} type="number" min="0" max="8" value={gcmWarn.level} onChange={(event) => setGcmWarn({ ...gcmWarn, level: event.target.value })} />
+                                            </Field>
+                                            <Field label="Level horn OFF (0–8)">
+                                                <Input className={inputClass} type="number" min="0" max="8" value={gcmWarn.clear_level} onChange={(event) => setGcmWarn({ ...gcmWarn, clear_level: event.target.value })} />
+                                            </Field>
+                                            <Field label="ews_fail">
+                                                <select className={`${selectClass} w-full`} value={gcmWarn.ews_fail} onChange={(event) => setGcmWarn({ ...gcmWarn, ews_fail: event.target.value })}>
+                                                    <option value="BLOCK">BLOCK (motor batal)</option>
+                                                    <option value="ALLOW">ALLOW (motor tetap jalan)</option>
+                                                </select>
+                                            </Field>
+                                            <Field label="on_sec (10–30)">
+                                                <Input className={inputClass} type="number" min="10" max="30" value={gcmWarn.on_sec} onChange={(event) => setGcmWarn({ ...gcmWarn, on_sec: event.target.value })} />
+                                            </Field>
+                                            <Field label="off_sec (0–60)">
+                                                <Input className={inputClass} type="number" min="0" max="60" value={gcmWarn.off_sec} onChange={(event) => setGcmWarn({ ...gcmWarn, off_sec: event.target.value })} />
+                                            </Field>
+                                            <Field label="repeat (1–5)">
+                                                <Input className={inputClass} type="number" min="1" max="5" value={gcmWarn.repeat} onChange={(event) => setGcmWarn({ ...gcmWarn, repeat: event.target.value })} />
+                                            </Field>
+                                        </div>
+                                        <ButtonRow>
+                                            <Button type="button" size="sm" variant="outline" disabled={!canSend || loading === 'GCM_GATE_WARN'} onClick={() => loadGcmWarn(numberValue(gcmWarnId))}>
+                                                {loading === 'GCM_GATE_WARN' ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                                                GET
+                                            </Button>
+                                            {actionButton('SET', 'GCM_GATE_WARN', sendGcmWarnSet, 'default', numberValue(gcmWarn.enable) === 1 ? `Aktifkan pre-warning EWS untuk GCM${gcmWarnId}? Pastikan EWS sudah aktif.` : undefined)}
+                                            {actionButton('RST', 'GCM_GATE_WARN', () => send('GCM_GATE_WARN', { GCM_GATE_WARN: { cmd: 'RST', id: numberValue(gcmWarnId) } }, 'GCM_GATE_WARN'), 'destructive', `Reset pre-warning GCM${gcmWarnId} ke default (nonaktif)?`)}
+                                        </ButtonRow>
+                                        {gcmWarnStatus && (
+                                            <div className="flex flex-wrap gap-1.5 text-xs">
+                                                <Badge variant="outline" className={gcmWarnStatus.ews_ready === 1 ? 'text-emerald-600' : 'text-amber-600'}>
+                                                    EWS {gcmWarnStatus.ews_ready === 1 ? 'ready' : 'mati'}
+                                                </Badge>
+                                                <Badge variant="outline">{gcmWarnStatus.active === 1 ? 'Active' : 'Idle'}</Badge>
+                                                <Badge variant="outline">Fase: {gcmWarnStatus.phase}</Badge>
+                                                <Badge variant="outline" className="tabular-nums">Siklus: {gcmWarnStatus.cycle}</Badge>
+                                                <Badge variant="outline" className="tabular-nums">Sisa: {gcmWarnStatus.remaining_sec}s</Badge>
+                                                <Badge variant="outline" className={gcmWarnStatus.last_error === 'NONE' ? 'text-emerald-600' : 'text-red-600'}>
+                                                    {gcmWarnStatus.last_error}
+                                                </Badge>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+
+                            {/* ── PUMP control (GCM_PUMP) — hanya untuk modul mode PUMP ── */}
+                            <div className="space-y-2 border-t border-border/60 pt-3">
+                                <Label className="text-xs font-semibold uppercase text-muted-foreground">PUMP Control</Label>
+                                {!gcmEnabled && <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">GCM harus aktif agar command ini diterima.</p>}
+                                {pumpModules.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">Tidak ada modul PUMP terkonfigurasi.</p>
+                                ) : (
+                                    <div className="flex flex-wrap items-end gap-3">
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="text-xs text-muted-foreground">Modul</span>
+                                            <select className={`${selectClass} w-16`} value={gcmPumpId} onChange={(event) => { setGcmPumpId(event.target.value); loadGcmPump(numberValue(event.target.value)); }}>
+                                                {pumpModules.map((id) => <option key={id} value={id}>{id}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="text-xs text-muted-foreground">State</span>
+                                            <select className={`${selectClass} w-20`} value={pumpState} onChange={(event) => setPumpState(event.target.value)}>
+                                                <option value="1">ON</option>
+                                                <option value="0">OFF</option>
+                                            </select>
+                                        </div>
+                                        {actionButton('SET', 'GCM_PUMP', () => send('GCM_PUMP', { GCM_PUMP: { cmd: 'SET', id: numberValue(gcmPumpId), state: numberValue(pumpState) } }, 'GCM_PUMP'), 'destructive', 'Ubah status pompa GCM?')}
+                                    </div>
+                                )}
+                            </div>
                         </CommandCard>
                     </TabsContent>
 
-                    {/* ── OTA firmware update (spec §3.26) ── */}
-                    <TabsContent value="ota" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="OTA" description="Download & install firmware (board bermodem)." icon={Download} result={responses.OTA}>
-                            <div className="grid gap-3">
-                                <Field label="Version (mis. BL-1100-v2.0.4)">
-                                    <Input className={inputClass} value={ota.ver} onChange={(event) => setOta({ ...ota, ver: event.target.value })} placeholder="BL-1100-v2.0.4" />
-                                </Field>
-                                <Field label="File (.bin)">
-                                    <Input className={inputClass} value={ota.file} onChange={(event) => setOta({ ...ota, file: event.target.value })} placeholder="BL-1100-v2.0.4.bin" />
-                                </Field>
+                    {/* ── MAP_DATA: name-based telemetry/LCD/SD ordering ── */}
+                    <TabsContent value="map" className="mt-4 grid gap-4">
+                        <CommandCard
+                            title="Data Map — Urutan Sensor"
+                            description=""
+                            icon={ListOrdered}
+                        >
+                            <div className="space-y-4">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="text-xs text-muted-foreground">
+                                        Pilihan sensor:{' '}
+                                        {deviceSensors
+                                            ? <span className="font-medium text-emerald-600">live device ({deviceSensors.length})</span>
+                                            : `DB cloud (${mappableSensors.length})`}
+                                    </span>
+                                    <ButtonRow>
+                                        {actionButton('Reset semua', 'MAP_DATA', resetMap, 'destructive', 'Hapus semua mapping di perangkat?')}
+                                    </ButtonRow>
+                                </div>
+
+                                {mapSlots.length === 0 ? (
+                                    <p className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">
+                                        Belum ada mapping. Tekan <span className="font-medium">Tambah mapping</span> untuk membuat baru.
+                                    </p>
+                                ) : (
+                                    <ul className="space-y-1.5">
+                                        {mapSlots.map(({ slot, name }) => (
+                                            <li key={slot} className="flex items-center gap-2 rounded-md border bg-card px-2.5 py-2 text-sm">
+                                                <Select value={String(slot)} onValueChange={(value) => changeSlot(slot, parseInt(value, 10))}>
+                                                    <SelectTrigger size="sm" className="w-[68px] shrink-0 tabular-nums">
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {Array.from({ length: MAP_SLOT_MAX }, (_, i) => i + 1)
+                                                            .filter((n) => n === slot || !mapSlots.some((e) => e.slot === n))
+                                                            .map((n) => (
+                                                                <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                                                            ))}
+                                                    </SelectContent>
+                                                </Select>
+                                                <Select value={name} onValueChange={(value) => assignSlot(slot, value)}>
+                                                    <SelectTrigger size="sm" className="flex-1">
+                                                        <SelectValue placeholder="— pilih sensor —" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {/* "none" is the firmware sentinel for an empty slot. */}
+                                                        <SelectItem value="none">none</SelectItem>
+                                                        {sensorNamePool.map((option) => (
+                                                            <SelectItem key={option} value={option}>{option}</SelectItem>
+                                                        ))}
+                                                        {/* Keep a saved name selectable even if device no longer reports it. */}
+                                                        {name !== '' && name !== 'none' && !sensorNamePool.includes(name) && (
+                                                            <SelectItem value={name}>{name} (tidak terdaftar)</SelectItem>
+                                                        )}
+                                                    </SelectContent>
+                                                </Select>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="gap-1"
+                                        disabled={!canSend || mapSlots.length >= MAP_SLOT_MAX}
+                                        onClick={addMapping}
+                                    >
+                                        <Plus className="size-3.5" /> Tambah mapping
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        className="gap-1.5"
+                                        disabled={!canSend || !mapDirty || loading === 'MAP_DATA'}
+                                        onClick={saveMap}
+                                    >
+                                        {loading === 'MAP_DATA' ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                                        Set{mapDirty ? ` (kirim perubahan)` : ''}
+                                    </Button>
+                                </div>
+
+                                {mapStatus && (
+                                    <p className={`text-xs ${mapStatus.ok ? 'text-emerald-600' : 'text-red-600'}`}>{mapStatus.msg}</p>
+                                )}
                             </div>
-                            <ButtonRow>
-                                {actionButton('GET (download)', 'OTA', () => {
-                                    if (!ota.ver.trim() || !ota.file.trim()) { localError('OTA', 'Isi version dan file .bin.'); return; }
-                                    send('OTA', { OTA: { cmd: 'GET', ver: ota.ver.trim(), file: ota.file.trim() } }, 'OTA');
-                                })}
-                                {actionButton('INSTALL', 'OTA', () => send('OTA', { OTA: { cmd: 'INSTALL' } }, 'OTA'), 'destructive', 'Install firmware & reboot perangkat?')}
-                            </ButtonRow>
-                            <p className="text-xs text-muted-foreground">
-                                Format strict: <code>BL-11</code>/<code>BL-110</code>/<code>BL-1100</code>. INSTALL hanya setelah GET selesai. Board tanpa modem membalas <code>INVALID</code>.
-                            </p>
                         </CommandCard>
                     </TabsContent>
-                </Tabs>
 
-                <Separator />
-                <p className="text-xs text-muted-foreground">
-                    Endpoint ini mengirim payload sesuai root module yang dipilih dan mencatat hasil ke Activity Log sebagai protocol_command.
-                </p>
+            </Tabs>
+
+            {/* Animated error popup for GCM-family read failures (e.g. Modbus read fail). */}
+            <AlertDialog open={gcmError !== null} onOpenChange={(open) => { if (!open) setGcmError(null); }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className="text-red-600">Gagal Membaca GCM</AlertDialogTitle>
+                        <AlertDialogDescription>{gcmError}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogAction onClick={() => setGcmError(null)}>Tutup</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Styled confirmation popup for actionButtons that require a confirm. */}
+            <AlertDialog open={confirmDialog !== null} onOpenChange={(open) => { if (!open) setConfirmDialog(null); }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Konfirmasi</AlertDialogTitle>
+                        <AlertDialogDescription>{confirmDialog?.message}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Batal</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                const action = confirmDialog?.onConfirm;
+                                setConfirmDialog(null);
+                                action?.();
+                            }}
+                        >
+                            Ya, lanjutkan
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </div>
+    );
+}
+
+/**
+ * Standalone route wrapper (kept for the /loggers/{id}/protocol URL). The panel
+ * itself now also renders inside the logger detail page's "Advanced Settings" tab.
+ */
+export default function ProtocolPage({ logger }: ProtocolPageProps) {
+    const breadcrumbs: BreadcrumbItem[] = [
+        { title: 'Loggers', href: '/loggers' },
+        { title: logger.name, href: `/loggers/${logger.id}` },
+        { title: 'Advanced Settings', href: `/loggers/${logger.id}/protocol` },
+    ];
+
+    return (
+        <AppLayout breadcrumbs={breadcrumbs}>
+            <Head title={`${logger.name} · Advanced Settings`} />
+            <div className="flex flex-col gap-6 p-4 md:p-6">
+                <Link href={`/loggers/${logger.id}`} className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+                    <ArrowLeft className="size-4" />
+                    Back to logger
+                </Link>
+
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                        <div className="flex flex-wrap items-center gap-3">
+                            <h1 className="text-xl font-bold">Advanced Settings</h1>
+                            <Badge variant="outline" className="capitalize">{logger.status}</Badge>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                            <span className="flex items-center gap-1"><Terminal className="size-3.5" />{logger.name}</span>
+                            {logger.serialNumber && <span>{logger.serialNumber}</span>}
+                            {logger.deviceIdentifier && <span className="font-mono text-xs">ID {logger.deviceIdentifier}</span>}
+                            {logger.model && <span>{logger.model}</span>}
+                            {logger.firmwareVersion && <span className="font-mono text-xs">{logger.firmwareVersion}</span>}
+                        </div>
+                    </div>
+                </div>
+
+                <ProtocolPanel logger={logger} tabs={ADVANCED_PROTOCOL_TABS} />
             </div>
         </AppLayout>
     );
