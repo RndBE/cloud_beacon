@@ -42,12 +42,8 @@ class LoggerModeSeeder extends Seeder
                 'group'              => 'AWLR',
                 'has_calibration'    => true,
                 'calibration_fields' => [
-                    ['key' => 'snsr_height', 'label' => 'Tinggi Sensor', 'unit' => 'm', 'type' => 'number', 'min' => 0, 'step' => 0.01],
+                    ['key' => 'source', 'label' => 'Sumber Data (Sensor)', 'unit' => '', 'type' => 'sensor-source'],
                     ['key' => 'water_depth', 'label' => 'Kedalaman Air', 'unit' => 'm', 'type' => 'number', 'min' => 0, 'step' => 0.01],
-                    ['key' => 'snsr_type', 'label' => 'Tipe Sensor', 'unit' => '', 'type' => 'select', 'options' => [
-                        ['value' => 'U30', 'label' => 'U30 (resolusi 0.172)'],
-                        ['value' => 'U50', 'label' => 'U50 (resolusi 0.344)'],
-                    ]],
                 ],
                 'description'        => 'Automatic Water Level Recorder menggunakan sensor Ultrasonic untuk mengukur ketinggian muka air.',
             ],

@@ -122,6 +122,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.calibration.get');
     Route::post('api/mqtt/protocol/command', [MqttController::class, 'sendProtocolCommand'])
         ->name('api.mqtt.protocol.command');
+    // SSE: listen-only live GCM status stream for the topology (EventSource → GET).
+    Route::get('api/mqtt/modules/stream', [MqttController::class, 'streamModules'])
+        ->name('api.mqtt.modules.stream');
 
     // Firmware OTA (spec §3.26)
     Route::post('api/mqtt/ota/check', [OtaController::class, 'check'])
@@ -131,6 +134,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.ota.stream');
     Route::post('api/mqtt/ota/install', [OtaController::class, 'install'])
         ->name('api.mqtt.ota.install');
+    // GET + SSE: install then stream the reboot lifecycle until the device reports STATUS=1.
+    Route::get('api/mqtt/ota/install-stream', [OtaController::class, 'installStream'])
+        ->name('api.mqtt.ota.install-stream');
 
     // TEMPORARY: Compare GET vs GET_ALL sensor formats
     Route::get('api/mqtt/sensors/compare/{id_logger}', function (string $id_logger) {

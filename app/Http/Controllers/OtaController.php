@@ -62,6 +62,17 @@ class OtaController extends Controller
         return version_compare($c, $l, '<');
     }
 
+    /** True when two firmware labels resolve to different versions (used for staged vs running). */
+    private function versionsDiffer(?string $a, ?string $b): bool
+    {
+        $va = $this->extractVersion($a);
+        $vb = $this->extractVersion($b);
+        if (!$va || !$vb) {
+            return trim((string) $a) !== trim((string) $b); // can't parse → raw compare
+        }
+        return version_compare($va, $vb, '!=');
+    }
+
     /**
      * Compare the logger's running firmware against the latest registered for its model.
      */
@@ -75,53 +86,66 @@ class OtaController extends Controller
             return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
         }
 
-        $model      = $logger->deviceModel;
-        $current    = $logger->firmware_version;
-        // A finished download persists here so the card stays on "Install" across popup
-        // dismissals and page reloads — until the image is actually installed.
-        $ready      = Cache::get($this->readyKey($idLogger));
-        $downloaded = is_array($ready);
+        $model    = $logger->deviceModel;
+        $current  = $logger->firmware_version;       // running firmware (from INFO sync)
+        $dbLatest = $model?->firmware_version;        // latest firmware registered in the DB
 
-        if (!$model || !$model->firmware_version || !$model->firmware_file_path) {
-            // No registered firmware → nothing to offer or install; clear any stale flag.
-            Cache::forget($this->readyKey($idLogger));
-            return response()->json([
-                'success'         => true,
-                'updateAvailable' => false,
-                'downloaded'      => false,
-                'currentVersion'  => $current,
-                'latestVersion'   => $model?->firmware_version,
-                'ver'             => $ready['ver'] ?? null,
-                'file'            => $ready['file'] ?? null,
-                'message'         => 'Firmware terbaru belum tersedia untuk model ini.',
-            ]);
+        // Firmware file (for the download flow). "ver" is the filename without ".bin"
+        // (matches the device's expected {"ver":"BL-1100-v2.0.3","file":"BL-1100-v2.0.3.bin"}).
+        $fileName = null;
+        $ver = null;
+        if ($model && $model->firmware_version && $model->firmware_file_path) {
+            $fileName = $model->firmware_file_name ?: basename($model->firmware_file_path);
+            $ver = pathinfo($fileName, PATHINFO_FILENAME);
         }
 
-        $fileName = $model->firmware_file_name ?: basename($model->firmware_file_path);
-        // Firmware identifies the image by name; "ver" is the filename without ".bin"
-        // (matches the device's expected {"ver":"BL-1100-v2.0.3","file":"BL-1100-v2.0.3.bin"}).
-        $ver = pathinfo($fileName, PATHINFO_FILENAME);
+        // Ask the device whether a firmware image is staged & ready (only worth it when online).
+        $check       = $logger->status === 'online' ? (new MqttService())->sendOtaCheck($idLogger) : null;
+        $checkStatus = $check['status'] ?? null;
+        $stagedVer   = $check['ver'] ?? null;
 
-        $updateAvailable = $this->isUpdateAvailable($current, $model->firmware_version);
-        // Running firmware already matches (or exceeds) the latest → nothing to install.
-        // Drop any stale "ready" flag from a previous download so the card shows Up to date,
-        // not a dangling Install button.
-        if (!$updateAvailable) {
+        // Derive a single UI state from the device's OTA CHECK + version comparison.
+        if ($checkStatus === 'READY') {
+            // A firmware image is downloaded on the device. Install when it differs from running.
+            $state = $this->versionsDiffer($current, $stagedVer) ? 'install' : 'uptodate';
+        } elseif ($checkStatus === 'EMPTY') {
+            // Nothing staged. Offer an update when the DB has a newer firmware than what runs.
+            $state = $this->isUpdateAvailable($current, $dbLatest) ? 'update' : 'uptodate';
+        } elseif ($checkStatus === 'BUSY') {
+            $state = 'busy';
+        } else {
+            // Offline / ERR / no response → fall back to the cached download flag + DB compare.
+            $ready = Cache::get($this->readyKey($idLogger));
+            if (is_array($ready)) {
+                $state = 'install';
+                $stagedVer = $stagedVer ?: ($ready['ver'] ?? null);
+            } elseif ($this->isUpdateAvailable($current, $dbLatest)) {
+                $state = 'update';
+            } else {
+                $state = 'uptodate';
+            }
+        }
+
+        // Keep the cached "ready" flag consistent with reality so stale Install states don't linger.
+        if ($state !== 'install') {
             Cache::forget($this->readyKey($idLogger));
-            $downloaded = false;
         }
 
         return response()->json([
             'success'         => true,
-            'updateAvailable' => $updateAvailable,
-            'downloaded'      => $downloaded,
+            'state'           => $state,            // install | update | uptodate | busy
+            'checkStatus'     => $checkStatus,      // READY | EMPTY | BUSY | ERR | null
             'currentVersion'  => $current,
-            'latestVersion'   => $model->firmware_version,
-            'model'           => $model->name,
+            'latestVersion'   => $dbLatest,
+            'stagedVersion'   => $stagedVer,        // the downloaded firmware version (state=install)
+            'model'           => $model?->name,
             'ver'             => $ver,
             'file'            => $fileName,
-            'fileSize'        => $model->firmware_file_size,
-            'uploadedAt'      => $model->firmware_uploaded_at?->toISOString(),
+            'fileSize'        => $model?->firmware_file_size,
+            'uploadedAt'      => $model?->firmware_uploaded_at?->toISOString(),
+            // Backward-compatible flags.
+            'updateAvailable' => $state === 'update',
+            'downloaded'      => $state === 'install',
         ]);
     }
 
@@ -244,5 +268,92 @@ class OtaController extends Controller
         }
 
         return response()->json($result);
+    }
+
+    /**
+     * Apply the downloaded firmware and stream the install lifecycle as Server-Sent Events:
+     * {"OTA":{"cmd":"INSTALL"}} → {"OTA_INSTALL":{"status":"PROCESS"}} (reboot) → {"STATUS":1}
+     * (back online). The browser flips "Menginstall…" to "OK" the moment the `online` event
+     * arrives. GET so it can be consumed with EventSource (auth via session cookie).
+     */
+    public function installStream(Request $request): StreamedResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'ver'       => 'nullable|string', // staged firmware version (from OTA CHECK READY)
+        ]);
+
+        $idLogger  = $request->input('id_logger');
+        $stagedVer = $request->input('ver');
+
+        $callback = function () use ($idLogger, $stagedVer) {
+            @set_time_limit(0);
+            while (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+
+            $emit = function (string $event, array $data) {
+                echo "event: {$event}\n";
+                echo 'data: ' . json_encode($data) . "\n\n";
+                if (ob_get_level() > 0) {
+                    @ob_flush();
+                }
+                flush();
+            };
+
+            $logger = $this->resolveLogger($idLogger);
+            if (!$logger) {
+                $emit('failed', ['message' => 'Logger not found']);
+                return;
+            }
+
+            $emit('installing', ['message' => 'Mengirim perintah install...']);
+
+            $mqtt   = new MqttService();
+            $result = $mqtt->sendOtaInstallAwaitOnline($idLogger, function (string $event) use ($emit) {
+                if ($event === 'process') {
+                    // Install accepted — device is rebooting into the new firmware.
+                    $emit('installing', ['message' => 'Perangkat akan reboot dengan firmware baru...']);
+                }
+            }, 240);
+
+            if ($result['success']) {
+                Cache::forget($this->readyKey($idLogger));
+
+                if (!empty($result['online'])) {
+                    // STATUS=1 confirmed: device is back online running the new firmware. The
+                    // running version becomes the staged one we just installed (fallback: DB latest).
+                    $installed = $stagedVer ?: ($logger->deviceModel?->firmware_version ?: $logger->firmware_version);
+                    $logger->forceFill([
+                        'firmware_version'   => $installed,
+                        'status'             => 'online',
+                        'last_seen_at'       => now(),
+                        'last_connected_at'  => now(),
+                    ])->save();
+                    $emit('online', ['message' => 'Perangkat kembali online dengan firmware baru', 'version' => $installed]);
+                } else {
+                    // Triggered but not yet confirmed online (still rebooting / soft timeout).
+                    $emit('rebooting', ['message' => $result['message'] ?? 'Perangkat sedang reboot...']);
+                }
+            } else {
+                $emit('failed', ['message' => $result['message'] ?? 'Gagal install firmware']);
+            }
+
+            ActivityLog::create([
+                'logger_id'  => $logger->id,
+                'action'     => 'ota_install',
+                'status'     => $result['success'] ? 'success' : 'failed',
+                'level'      => $result['success'] ? 'info' : 'warning',
+                'message'    => 'OTA install: ' . ($result['message'] ?? ''),
+                'created_at' => now(),
+            ]);
+        };
+
+        return response()->stream($callback, 200, [
+            'Content-Type'      => 'text/event-stream',
+            'Cache-Control'     => 'no-cache',
+            'Connection'        => 'keep-alive',
+            'X-Accel-Buffering' => 'no', // disable nginx proxy buffering
+        ]);
     }
 }

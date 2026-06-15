@@ -1560,6 +1560,157 @@ class MqttService
         return $result;
     }
 
+    /**
+     * Trigger OTA install and keep listening until the device reboots back online.
+     *
+     * Sequence (spec §3.26): publish {"OTA":{"cmd":"INSTALL"}} → device replies
+     * {"OTA_INSTALL":{"status":"PROCESS"}} → reboots into the new firmware → republishes
+     * {"STATUS":1} once it is back online. Each milestone is relayed to $onEvent so the UI can
+     * show "Menginstall…" and then flip to "OK" the moment STATUS=1 arrives.
+     *
+     * @param callable $onEvent fn(string $event, array $data): void — events: 'process', 'online'
+     * @return array{success: bool, message: string, online: bool}
+     */
+    public function sendOtaInstallAwaitOnline(string $idLogger, callable $onEvent, int $timeout = 240): array
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $result = null;
+        $sawProcess = false;
+
+        Log::info("[MQTT] ═══════════════════════════════════════════════");
+        Log::info("[MQTT] [OTA INSTALL] Install + await online for: {$idLogger}");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->timeout)
+                ->setKeepAliveInterval(10);
+
+            $mqtt->connect($connectionSettings, true);
+            Log::info("[MQTT] ✅ Connected");
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, &$sawProcess, $mqtt, $onEvent) {
+                Log::info("[MQTT] 📩 [OTA INSTALL] Received: {$message}");
+                $data = json_decode(trim($message), true);
+                if (!is_array($data)) {
+                    return;
+                }
+
+                // Step 1 — install accepted, device will reboot: {"OTA_INSTALL":{"status":"PROCESS"}}.
+                if (isset($data['OTA_INSTALL'])) {
+                    $status = strtoupper((string) ($data['OTA_INSTALL']['status'] ?? ''));
+                    if ($status === 'PROCESS') {
+                        $sawProcess = true;
+                        $onEvent('process', $data);
+                    } else {
+                        $result = ['success' => false, 'message' => 'OTA install ditolak (file/versi tidak valid)', 'online' => false];
+                        $mqtt->interrupt();
+                    }
+                    return;
+                }
+
+                // Step 2 — device back online after reboot: {"STATUS":1}.
+                if (array_key_exists('STATUS', $data) && (int) $data['STATUS'] === 1) {
+                    $onEvent('online', $data);
+                    $result = ['success' => true, 'message' => 'Perangkat kembali online dengan firmware baru', 'online' => true];
+                    $mqtt->interrupt();
+                }
+            }, 0);
+
+            $payload = json_encode(['OTA' => ['cmd' => 'INSTALL']], JSON_UNESCAPED_SLASHES);
+            Log::info("[MQTT] 📤 [OTA INSTALL] Publishing: {$payload}");
+            $mqtt->publish($subTopic, $payload, 0);
+
+            $startTime = microtime(true);
+            while ($result === null && (microtime(true) - $startTime) < $timeout) {
+                $mqtt->loopOnce(microtime(true) - $startTime, true);
+                usleep(100_000);
+            }
+
+            $elapsed = round(microtime(true) - $startTime, 2);
+            if ($result === null) {
+                // No online confirmation in time. If install was at least accepted, report a soft
+                // timeout (device may still be rebooting); otherwise a hard no-response.
+                $result = $sawProcess
+                    ? ['success' => true, 'message' => 'Install dipicu, konfirmasi online belum diterima', 'online' => false]
+                    : ['success' => false, 'message' => 'Timeout — perangkat tidak merespons', 'online' => false];
+                Log::warning("[MQTT] ⏰ [OTA INSTALL] Timeout after {$elapsed}s (process=" . ($sawProcess ? '1' : '0') . ")");
+            } else {
+                Log::info("[MQTT] ✅ [OTA INSTALL] Done in {$elapsed}s");
+            }
+
+            $mqtt->disconnect();
+            Log::info("[MQTT] ═══════════════════════════════════════════════");
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [OTA INSTALL] Error: {$e->getMessage()}");
+            return ['success' => false, 'message' => 'Koneksi MQTT gagal: ' . $e->getMessage(), 'online' => false];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Ask the device whether a downloaded firmware image is staged and ready to install:
+     * publish {"OTA":{"cmd":"CHECK"}} → {"OTA_CHECK":{"status":"READY","ver":"BL-1100-v2.0.4"}}
+     * | {"status":"EMPTY"} | {"status":"BUSY"} | {"status":"ERR"}.
+     *
+     * @return array{status: string, ver: ?string}|null  null on timeout / connection failure
+     */
+    public function sendOtaCheck(string $idLogger, int $timeout = 12): ?array
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $result = null;
+
+        Log::info("[MQTT] [OTA CHECK] Checking staged firmware for: {$idLogger}");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->timeout)
+                ->setKeepAliveInterval(10);
+
+            $mqtt->connect($connectionSettings, true);
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt) {
+                $data = json_decode(trim($message), true);
+                if (is_array($data) && isset($data['OTA_CHECK'])) {
+                    $oc = $data['OTA_CHECK'];
+                    $result = [
+                        'status' => strtoupper((string) ($oc['status'] ?? 'ERR')),
+                        'ver'    => isset($oc['ver']) ? (string) $oc['ver'] : null,
+                    ];
+                    Log::info("[MQTT] 📩 [OTA CHECK] {$message}");
+                    $mqtt->interrupt();
+                }
+            }, 0);
+
+            $mqtt->publish($subTopic, json_encode(['OTA' => ['cmd' => 'CHECK']], JSON_UNESCAPED_SLASHES), 0);
+
+            $start = microtime(true);
+            while ($result === null && (microtime(true) - $start) < $timeout) {
+                $mqtt->loopOnce(microtime(true) - $start, true);
+                usleep(100_000);
+            }
+
+            $mqtt->disconnect();
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [OTA CHECK] Error: {$e->getMessage()}");
+            return null;
+        }
+
+        return $result;
+    }
+
     private static function protocolKeyMatches(string $module, string $key): bool
     {
         return $key === $module
@@ -1816,5 +1967,73 @@ class MqttService
         }
 
         return $result;
+    }
+
+    /**
+     * LISTEN-ONLY live stream of GCM status. Subscribes to pub_{id} and relays every spontaneous
+     * GCM_GATE / GCM_PUMP status push the device emits (e.g. {"GCM_GATE":{...,"run":2,...}} on
+     * "Gate CLOSING"). It NEVER publishes a command — the device pushes on its own when state
+     * changes, so the topology stays live without polling/GET spam.
+     *
+     * Runs until the HTTP client disconnects (connection_aborted). A periodic 'ping' lets the
+     * caller flush a heartbeat so that disconnect is detected promptly.
+     *
+     * @param callable $emit fn(string $event, array $data): void — events: 'status', 'ping'
+     */
+    public function streamGcmStatus(string $idLogger, callable $emit): void
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+
+        Log::info("[MQTT] [GCM STREAM] Listening pub_{$idLogger} for live GCM status");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->timeout)
+                ->setKeepAliveInterval(10);
+
+            $mqtt->connect($connectionSettings, true);
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use ($emit) {
+                $data = json_decode(trim($message), true);
+                if (!is_array($data)) {
+                    return;
+                }
+                // Only relay module status shapes — GCM (RS485) + EWS (RS232) — ignore sensor/INFO pushes.
+                foreach (['GCM_GATE', 'GCM_PUMP', 'EWS', 'EWS_EVENT'] as $key) {
+                    if (isset($data[$key]) && is_array($data[$key])) {
+                        $emit('status', ['module' => $key] + $data[$key]);
+                    }
+                }
+            }, 0);
+
+            // connection_aborted() only flips after we write to a closed socket, so emit a heartbeat
+            // every ~1s: that flush detects a closed browser/navigated-away tab quickly and lets the
+            // loop exit, freeing the worker (critical on a single-worker dev server). A hard cap stops
+            // a forgotten stream from holding a worker forever — the browser's EventSource reconnects.
+            $start = microtime(true);
+            $lastPing = $start;
+            while (!connection_aborted()) {
+                $mqtt->loopOnce(microtime(true), true);
+                usleep(100_000);
+                $now = microtime(true);
+                if ($now - $lastPing >= 1) {
+                    $emit('ping', []);
+                    $lastPing = $now;
+                }
+                if ($now - $start >= 600) {
+                    break; // 10-min safety cap
+                }
+            }
+
+            $mqtt->disconnect();
+            Log::info("[MQTT] [GCM STREAM] Client disconnected — stopped listening pub_{$idLogger}");
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [GCM STREAM] Error: {$e->getMessage()}");
+        }
     }
 }
