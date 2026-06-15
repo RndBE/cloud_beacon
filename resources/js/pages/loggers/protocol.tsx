@@ -358,6 +358,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     const [gcmWarn, setGcmWarn] = useState({
         enable: '0', level: '1', clear_level: '0', on_sec: '15', off_sec: '5', repeat: '2', ews_fail: 'BLOCK',
     });
+    // act = gerakan AWGC yang memicu pre-warning: [open, close, target, stop]. Default: stop OFF.
+    const [gcmWarnAct, setGcmWarnAct] = useState<boolean[]>([true, true, true, false]);
     const [gcmWarnStatus, setGcmWarnStatus] = useState<
         { ews_ready: number; active: number; phase: string; cycle: number; remaining_sec: number; last_error: string } | null
     >(null);
@@ -888,6 +890,10 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     repeat: String(inner.repeat ?? 2),
                     ews_fail: inner.ews_fail === 'ALLOW' ? 'ALLOW' : 'BLOCK',
                 });
+                const actArr = (inner as Record<string, unknown>).act;
+                if (Array.isArray(actArr) && actArr.length >= 4) {
+                    setGcmWarnAct(actArr.slice(0, 4).map((v) => Number(v) === 1));
+                }
                 setGcmWarnStatus({
                     ews_ready: Number(inner.ews_ready ?? 0),
                     active: Number(inner.active ?? 0),
@@ -925,6 +931,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         send('GCM_GATE_WARN', {
             GCM_GATE_WARN: {
                 cmd: 'SET', id, enable,
+                act: gcmWarnAct.map((b) => (b ? 1 : 0)),
                 level, clear_level: clearLevel, on_sec: onSec, off_sec: offSec, repeat,
                 ews_fail: gcmWarn.ews_fail === 'ALLOW' ? 'ALLOW' : 'BLOCK',
             },
@@ -1960,6 +1967,23 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                                 <option value="1">Active</option>
                                                 <option value="0">Inactive</option>
                                             </select>
+                                        </div>
+                                    </div>
+                                    {/* act[]: gerakan AWGC mana yang memicu pre-warning EWS (open/close/target/stop) */}
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs text-muted-foreground">Aktif saat gerakan</Label>
+                                        <div className="flex flex-wrap gap-x-4 gap-y-2">
+                                            {(['Open', 'Close', 'Target', 'Stop'] as const).map((label, idx) => (
+                                                <label key={label} className="flex items-center gap-1.5 text-xs">
+                                                    <input
+                                                        type="checkbox"
+                                                        className="rounded"
+                                                        checked={gcmWarnAct[idx] ?? false}
+                                                        onChange={(event) => setGcmWarnAct(gcmWarnAct.map((v, i) => (i === idx ? event.target.checked : v)))}
+                                                    />
+                                                    {label}
+                                                </label>
+                                            ))}
                                         </div>
                                     </div>
                                     <div className="grid gap-2 sm:grid-cols-3">
