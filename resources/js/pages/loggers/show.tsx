@@ -21,6 +21,7 @@ import {
     HardDrive,
     Key,
     Link2,
+    ListOrdered,
     MapPin,
     Network,
     Pencil,
@@ -90,8 +91,10 @@ import {
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import AppLayout from '@/layouts/app-layout';
+import { fetchSensorNames, fetchMapSlots, getCachedSensorNames, subscribeDeviceCache } from '@/lib/device-sync-cache';
 import type { BreadcrumbItem } from '@/types';
 import { ProtocolPanel, ADVANCED_PROTOCOL_TABS, MODULE_PROTOCOL_TABS } from './protocol';
+import type { ProtocolPanelHandle } from './protocol';
 import type { ProtocolLogger } from './protocol';
 
 interface SensorItem {
@@ -578,6 +581,7 @@ const SYNC_STEPS: SyncStep[] = [
     { id: 'connect', label: 'Connecting to Logger', description: 'Menghubungkan ke perangkat…', icon: Plug, durationMs: 2000 },
     { id: 'info', label: 'Fetching Device Info', description: 'Reading configuration data…', icon: Settings, durationMs: 1800 },
     { id: 'sensors', label: 'Syncing Sensor Config', description: 'Mengambil konfigurasi sensor…', icon: Cable, durationMs: 2200 },
+    { id: 'mapping', label: 'Syncing Data Mapping', description: 'Mengambil nama sensor & data mapping…', icon: ListOrdered, durationMs: 2000 },
 ];
 
 interface SyncDiffItem {
@@ -758,6 +762,30 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
         const fetchedSummary = sensorResult.summary as SyncSummary;
         setDiff(fetchedDiff);
         setDiffSummary(fetchedSummary);
+
+        // === Step 3: Data Mapping (sensor names + MAP_DATA together, one bar) ===
+        // Caches both so the Data Mapping card, GCM and Calibration reuse them without re-querying.
+        if (cancelled.current) return;
+        setStepProgress(0);
+        setStepStatuses(prev => { const n = [...prev]; n[3] = 'running'; return n; });
+        let mapDone = false;
+        const mapStart = Date.now();
+        const mapProgressInterval = setInterval(() => {
+            if (cancelled.current || mapDone) { clearInterval(mapProgressInterval); return; }
+            const elapsed = Date.now() - mapStart;
+            setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
+        }, 100);
+        try {
+            await Promise.all([
+                fetchSensorNames(deviceIdentifier, true),
+                fetchMapSlots(deviceIdentifier, true),
+            ]);
+        } catch { /* non-critical — Data Mapping just falls back to DB sensors */ }
+        mapDone = true;
+        clearInterval(mapProgressInterval);
+        if (cancelled.current) return;
+        setStepProgress(100);
+        setStepStatuses(prev => { const n = [...prev]; n[3] = 'done'; return n; });
 
         // If no changes at all, auto-apply (no confirmation needed)
         if (fetchedSummary.added_count === 0 && fetchedSummary.removed_count === 0 && fetchedSummary.changed_count === 0) {
@@ -1712,9 +1740,7 @@ function SensorCrudPanel({
                             <CardDescription>{t('loggerDetail.channels_configured', { count: sensors.length })}</CardDescription>
                         </div>
                         <div className="flex items-center gap-2">
-                            {deviceIdentifier && (
-                                <SyncFromDeviceDialog deviceIdentifier={deviceIdentifier} loggerId={loggerId} />
-                            )}
+                            {/* Sync from Device lives in the page header — no duplicate here. */}
                             <Button size="sm" className="gap-1.5" onClick={openCreate}>
                                 <Plus className="size-4" />
                                 {t('loggerDetail.add_sensor')}
@@ -2231,10 +2257,13 @@ function getLogLevelColor(level: string) {
 }
 
 type FirmwareCheck = {
+    state: 'install' | 'update' | 'uptodate' | 'busy';
+    checkStatus?: 'READY' | 'EMPTY' | 'BUSY' | 'ERR' | null;
     updateAvailable: boolean;
     downloaded?: boolean;
     currentVersion: string | null;
     latestVersion: string | null;
+    stagedVersion?: string | null;
     ver?: string;
     file?: string;
     fileSize?: number | null;
@@ -2254,7 +2283,7 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
     const [checking, setChecking] = useState(false);
     const [info, setInfo] = useState<FirmwareCheck | null>(null);
     const [dialogOpen, setDialogOpen] = useState(false);
-    const [phase, setPhase] = useState<'idle' | 'downloading' | 'downloaded' | 'installing' | 'error'>('idle');
+    const [phase, setPhase] = useState<'idle' | 'downloading' | 'downloaded' | 'installing' | 'online' | 'error'>('idle');
     // Persists independently of the popup: once a firmware image is downloaded onto the
     // device it stays "ready to install" until install() runs — so dismissing the popup
     // (or reloading the page) keeps the card on Install, not back to Update available.
@@ -2276,9 +2305,9 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
             const data = await res.json();
             if (data.success) {
                 setInfo(data as FirmwareCheck);
-                // Authoritative: backend clears the ready flag once firmware matches latest,
-                // so this also flips the card back from Install → Up to date when up to date.
-                setReady(!!data.downloaded);
+                // Authoritative: the backend's OTA CHECK decides the state, so this also flips
+                // the card back from Install → Up to date once the new firmware is running.
+                setReady(data.state === 'install');
             }
         } catch { /* ignore — leave as "up to date" fallback */ }
         setChecking(false);
@@ -2335,29 +2364,69 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
         };
     }, [deviceIdentifier, info, closeStream]);
 
-    const handleInstall = useCallback(async () => {
+    // Install over SSE so we can follow the whole reboot lifecycle: INSTALL → OTA_INSTALL
+    // PROCESS (rebooting) → STATUS=1 (back online). The popup flips to "OK" on `online`.
+    const handleInstall = useCallback(() => {
         if (!deviceIdentifier) return;
         setPhase('installing');
+        setPercent(100); // install is not byte-progress; show a full bar like the device reboot
+        setProgressMsg('Mengirim perintah install...');
         setErrorMsg('');
-        try {
-            const res = await apiFetch('/api/mqtt/ota/install', { id_logger: deviceIdentifier });
-            const data = await res.json();
-            if (data.success) {
-                setProgressMsg('Perangkat akan reboot dengan firmware baru...');
-                setReady(false);
-                setTimeout(() => router.reload(), 4000);
-            } else {
-                setPhase('error');
-                setErrorMsg(data.message || 'Gagal install firmware');
-            }
-        } catch {
-            setPhase('error');
-            setErrorMsg('Network error saat install firmware');
-        }
-    }, [deviceIdentifier]);
+        setReady(false);
+        closeStream();
 
-    const updateAvailable = info?.updateAvailable ?? false;
-    const showPopup = phase === 'downloading' || phase === 'downloaded' || phase === 'installing' || phase === 'error';
+        const params = new URLSearchParams({ id_logger: deviceIdentifier });
+        // Tell the backend which version we're installing (the staged one), so the running
+        // firmware is recorded correctly once the device reports back online.
+        if (info?.stagedVersion) params.set('ver', info.stagedVersion);
+        const es = new EventSource(`/api/mqtt/ota/install-stream?${params.toString()}`);
+        esRef.current = es;
+        let finished = false;
+
+        es.addEventListener('installing', (e) => {
+            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+        });
+        // Triggered but online not yet confirmed (still rebooting / soft timeout) — reload to re-check.
+        es.addEventListener('rebooting', (e) => {
+            finished = true;
+            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+            closeStream();
+            setTimeout(() => router.reload(), 4000);
+        });
+        // Device reported STATUS=1 → back online with the new firmware. Show OK, then refresh.
+        es.addEventListener('online', (e) => {
+            finished = true;
+            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+            setPercent(100);
+            setPhase('online');
+            setReady(false);
+            // Reflect "up to date" immediately so dismissing the popup (X) doesn't fall back to a
+            // stale "Update available" before the reload lands.
+            setInfo(prev => (prev ? { ...prev, state: 'uptodate', checkStatus: 'EMPTY', updateAvailable: false, downloaded: false } : prev));
+            closeStream();
+            setTimeout(() => router.reload(), 3000);
+        });
+        es.addEventListener('failed', (e) => {
+            finished = true;
+            let msg = 'Gagal install firmware';
+            try { msg = JSON.parse((e as MessageEvent).data).message || msg; } catch { /* ignore */ }
+            setPhase('error');
+            setErrorMsg(msg);
+            closeStream();
+        });
+        es.onerror = () => {
+            if (finished) return; // normal close after a terminal event
+            finished = true;
+            setPhase('error');
+            setErrorMsg('Koneksi ke server terputus saat install');
+            closeStream();
+        };
+    }, [deviceIdentifier, info, closeStream]);
+
+    const state = info?.state ?? 'uptodate';
+    // The "→ new version" hint: staged version when installable, otherwise the DB latest.
+    const targetVersion = state === 'install' ? (info?.stagedVersion ?? info?.latestVersion) : info?.latestVersion;
+    const showPopup = phase === 'downloading' || phase === 'downloaded' || phase === 'installing' || phase === 'online' || phase === 'error';
 
     return (
         <>
@@ -2371,22 +2440,28 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
                         <div>
                             <p className="text-sm font-medium">{t('loggerDetail.current_firmware')}</p>
                             <p className="font-mono text-xs text-muted-foreground">{currentVersion || '—'}</p>
-                            {updateAvailable && info?.latestVersion && (
-                                <p className="mt-0.5 font-mono text-xs text-emerald-600">→ {info.latestVersion}</p>
+                            {(state === 'install' || state === 'update') && targetVersion && (
+                                <p className="mt-0.5 font-mono text-xs text-emerald-600">→ {targetVersion}</p>
                             )}
                         </div>
-                        {ready || phase === 'installing' ? (
-                            <Button size="sm" onClick={handleInstall} disabled={phase === 'installing'}>
-                                {phase === 'installing'
-                                    ? <><Loader2 className="mr-1 size-3.5 animate-spin" />Installing…</>
-                                    : <><Download className="mr-1 size-3.5" />Install</>}
+                        {phase === 'online' ? (
+                            <Badge variant="default" className="gap-1"><CheckCircle2 className="size-3" />Terinstall</Badge>
+                        ) : phase === 'installing' ? (
+                            <Button size="sm" disabled>
+                                <Loader2 className="mr-1 size-3.5 animate-spin" />Installing…
                             </Button>
                         ) : checking ? (
                             <Badge variant="secondary" className="gap-1"><Loader2 className="size-3 animate-spin" />Checking…</Badge>
-                        ) : updateAvailable ? (
+                        ) : ready || state === 'install' ? (
+                            <Button size="sm" onClick={handleInstall} disabled={disabled}>
+                                <Download className="mr-1 size-3.5" />Install
+                            </Button>
+                        ) : state === 'update' ? (
                             <button type="button" onClick={() => setDialogOpen(true)} disabled={disabled} className="disabled:opacity-50">
                                 <Badge variant="destructive" className="cursor-pointer gap-1"><Download className="size-3" />Update available</Badge>
                             </button>
+                        ) : state === 'busy' ? (
+                            <Badge variant="secondary" className="gap-1"><Loader2 className="size-3 animate-spin" />Device busy</Badge>
                         ) : (
                             <Badge variant="default">{t('loggerDetail.up_to_date')}</Badge>
                         )}
@@ -2421,9 +2496,10 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
                             {phase === 'downloading' && <><Loader2 className="size-4 animate-spin text-blue-500" />Mengunduh Firmware</>}
                             {phase === 'downloaded' && <><CheckCircle2 className="size-4 text-emerald-500" />Unduhan Selesai</>}
                             {phase === 'installing' && <><Loader2 className="size-4 animate-spin text-amber-500" />Menginstall…</>}
+                            {phase === 'online' && <><CheckCircle2 className="size-4 text-emerald-500" />OK — Perangkat Online</>}
                             {phase === 'error' && <><XCircle className="size-4 text-red-500" />Gagal</>}
                         </p>
-                        {(phase === 'downloaded' || phase === 'error') && (
+                        {(phase === 'downloaded' || phase === 'online' || phase === 'error') && (
                             <button type="button" onClick={() => setPhase('idle')} className="text-muted-foreground hover:text-foreground">
                                 <XCircle className="size-4" />
                             </button>
@@ -2431,6 +2507,10 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
                     </div>
                     {phase === 'error' ? (
                         <p className="text-xs text-red-500">{errorMsg}</p>
+                    ) : phase === 'online' ? (
+                        <p className="flex items-center gap-1.5 text-xs text-emerald-600">
+                            <CheckCircle2 className="size-3.5 shrink-0" /> {progressMsg || 'Perangkat kembali online dengan firmware baru.'}
+                        </p>
                     ) : (
                         <>
                             <Progress value={percent} className="h-2" />
@@ -3876,57 +3956,75 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     // A 'sensor-source' field picks a REAL device sensor (like MAP_DATA), never a virtual/profile
     // output. Live names come from GET_NAME (minus virtuals); merged with the real DB sensors so the
     // list is never empty even if the device only reports profile sensors in the current mode.
-    const needsSource = fields.some(f => f.type === 'sensor-source');
-    const [liveSourceNames, setLiveSourceNames] = useState<string[]>([]);
-    const [sourceLoading, setSourceLoading] = useState(needsSource && Boolean(logger.deviceIdentifier));
+    // GET_NAME is shared/cached: if Sensors or GCM already read it, the names are reused with no
+    // device query. The sync button next to Sumber Data triggers a cache-first read (fetches only
+    // on a cache miss). The list falls back to DB sensors until then.
+    const [liveSourceNames, setLiveSourceNames] = useState<string[]>(() => {
+        const cached = logger.deviceIdentifier ? getCachedSensorNames(logger.deviceIdentifier) : null;
+        return cached ? cached.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)) : [];
+    });
+    const [sourceLoading, setSourceLoading] = useState(false);
 
+    // Re-read names whenever the shared cache changes, so a sync from any tab updates this picker live.
     useEffect(() => {
-        if (!needsSource || !logger.deviceIdentifier) return;
-        let cancelled = false;
-        apiFetch('/api/mqtt/sensors/get-name', { id_logger: logger.deviceIdentifier })
-            .then(r => r.json())
-            .then((json: { success: boolean; data?: { nama: string }[] }) => {
-                if (!cancelled && json.success && Array.isArray(json.data)) {
-                    setLiveSourceNames(json.data.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)));
-                }
-            })
-            .catch(() => { /* ignore — the dropdown still shows the DB sensors + saved value */ })
-            .finally(() => { if (!cancelled) setSourceLoading(false); });
-        return () => { cancelled = true; };
-    }, [needsSource, logger.deviceIdentifier]);
+        const deviceId = logger.deviceIdentifier;
+        if (!deviceId) return;
+        return subscribeDeviceCache(() => {
+            const cached = getCachedSensorNames(deviceId);
+            if (cached) setLiveSourceNames(cached.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)));
+        });
+    }, [logger.deviceIdentifier]);
+
+    async function loadSourceNames() {
+        if (!logger.deviceIdentifier || sourceLoading) return;
+        setSourceLoading(true);
+        try {
+            // Cache-first — reuses names already read elsewhere; only hits the device on a miss.
+            const names = await fetchSensorNames(logger.deviceIdentifier, false);
+            if (names) {
+                setLiveSourceNames(names.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)));
+            }
+        } catch {
+            /* ignore — the dropdown still shows the DB sensors + saved value */
+        } finally {
+            setSourceLoading(false);
+        }
+    }
 
     const sourceNames = Array.from(new Set([
         ...logger.sensors.map(s => s.name).filter(n => n && !isVirtualSourceName(n)),
         ...liveSourceNames,
     ]));
 
-    // On entering the mode, auto-read the device's current settings ({"AWLR_TD":{"cmd":"GET"}})
-    // and fill the form. The full response (incl. sensor_awal) is shown in the box below.
+    // Read the device's current settings ({"AWLR_TD":{"cmd":"GET"}}) and fill the form. The full
+    // response (incl. sensor_awal) is shown in the box below. NOT automatic — the user pulls it
+    // via the card's Sync button so entering the mode sends no GET.
     const [deviceCalib, setDeviceCalib] = useState<Record<string, number | string> | null>(null);
-    const [calibLoading, setCalibLoading] = useState(Boolean(logger.deviceIdentifier) && logger.status !== 'offline');
+    const [calibLoading, setCalibLoading] = useState(false);
 
-    useEffect(() => {
-        if (!logger.deviceIdentifier || logger.status === 'offline') return;
-        let cancelled = false;
-        apiFetch('/api/mqtt/calibration/get', { id_logger: logger.deviceIdentifier })
-            .then(r => r.json())
-            .then((data: { success: boolean; data?: Record<string, number | string> }) => {
-                if (!cancelled && data.success && data.data) {
-                    const dd = data.data;
-                    setDeviceCalib(dd);
-                    setFormValues(prev => {
-                        const next = { ...prev };
-                        for (const [k, v] of Object.entries(dd)) {
-                            if (k in prev) next[k] = String(v); // prev holds exactly the field keys
-                        }
-                        return next;
-                    });
-                }
-            })
-            .catch(() => { /* ignore — fall back to the saved DB calibration data */ })
-            .finally(() => { if (!cancelled) setCalibLoading(false); });
-        return () => { cancelled = true; };
-    }, [logger.deviceIdentifier, logger.status]);
+    async function loadDeviceCalib() {
+        if (!logger.deviceIdentifier || logger.status === 'offline' || calibLoading) return;
+        setCalibLoading(true);
+        try {
+            const r = await apiFetch('/api/mqtt/calibration/get', { id_logger: logger.deviceIdentifier });
+            const data: { success: boolean; data?: Record<string, number | string> } = await r.json();
+            if (data.success && data.data) {
+                const dd = data.data;
+                setDeviceCalib(dd);
+                setFormValues(prev => {
+                    const next = { ...prev };
+                    for (const [k, v] of Object.entries(dd)) {
+                        if (k in prev) next[k] = String(v); // prev holds exactly the field keys
+                    }
+                    return next;
+                });
+            }
+        } catch {
+            /* ignore — fall back to the saved DB calibration data */
+        } finally {
+            setCalibLoading(false);
+        }
+    }
 
     const allFilled = fields.every(f => {
         const val = formValues[f.key];
@@ -3970,15 +4068,28 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     return (
         <Card>
             <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                    <SlidersHorizontal className="size-5" /> Kalibrasi {activeMode.label}
-                </CardTitle>
-                <CardDescription>
-                    {logger.calibratedAt
-                        ? <>Terakhir kalibrasi: {logger.calibratedAt}</>
-                        : 'Belum pernah dikalibrasi'
-                    }
-                </CardDescription>
+                <div className="flex items-start justify-between gap-3">
+                    <div>
+                        <CardTitle className="flex items-center gap-2">
+                            <SlidersHorizontal className="size-5" /> Kalibrasi {activeMode.label}
+                        </CardTitle>
+                        <CardDescription>
+                            {logger.calibratedAt
+                                ? <>Terakhir kalibrasi: {logger.calibratedAt}</>
+                                : 'Belum pernah dikalibrasi'
+                            }
+                        </CardDescription>
+                    </div>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        disabled={!logger.deviceIdentifier || logger.status === 'offline' || calibLoading || phase === 'sending'}
+                        onClick={loadDeviceCalib}
+                    >
+                        <RefreshCw className={`size-4 ${calibLoading ? 'animate-spin' : ''}`} /> Sync
+                    </Button>
+                </div>
             </CardHeader>
             <CardContent>
                 <div className="grid gap-4">
@@ -4020,24 +4131,38 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                                     {f.label} {f.unit && <span className="text-xs text-muted-foreground">({f.unit})</span>}
                                 </Label>
                                 {f.type === 'sensor-source' ? (
-                                    <Select
-                                        value={formValues[f.key]}
-                                        onValueChange={(v) => updateField(f.key, v)}
-                                        disabled={phase === 'sending'}
-                                    >
-                                        <SelectTrigger id={`calib_${f.key}`}>
-                                            <SelectValue placeholder={sourceLoading ? 'Memuat sensor…' : 'Pilih sumber sensor'} />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {sourceNames.map(n => (
-                                                <SelectItem key={n} value={n}>{n}</SelectItem>
-                                            ))}
-                                            {/* Keep a saved source selectable even if the device no longer reports it. */}
-                                            {formValues[f.key] && !sourceNames.includes(formValues[f.key]) && (
-                                                <SelectItem value={formValues[f.key]}>{formValues[f.key]} (tidak terdaftar)</SelectItem>
-                                            )}
-                                        </SelectContent>
-                                    </Select>
+                                    <div className="flex items-center gap-2">
+                                        <Select
+                                            value={formValues[f.key]}
+                                            onValueChange={(v) => updateField(f.key, v)}
+                                            disabled={phase === 'sending'}
+                                        >
+                                            <SelectTrigger id={`calib_${f.key}`} className="flex-1">
+                                                <SelectValue placeholder={sourceLoading ? 'Memuat sensor…' : 'Pilih sumber sensor'} />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {sourceNames.map(n => (
+                                                    <SelectItem key={n} value={n}>{n}</SelectItem>
+                                                ))}
+                                                {/* Keep a saved source selectable even if the device no longer reports it. */}
+                                                {formValues[f.key] && !sourceNames.includes(formValues[f.key]) && (
+                                                    <SelectItem value={formValues[f.key]}>{formValues[f.key]} (tidak terdaftar)</SelectItem>
+                                                )}
+                                            </SelectContent>
+                                        </Select>
+                                        {/* Pull live sensor names from the device on demand (GET_NAME). */}
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="icon"
+                                            className="shrink-0"
+                                            title="Ambil nama sensor dari perangkat"
+                                            disabled={sourceLoading || !logger.deviceIdentifier || logger.status === 'offline' || phase === 'sending'}
+                                            onClick={loadSourceNames}
+                                        >
+                                            <RefreshCw className={`size-4 ${sourceLoading ? 'animate-spin' : ''}`} />
+                                        </Button>
+                                    </div>
                                 ) : f.type === 'select' && f.options ? (
                                     <Select
                                         value={formValues[f.key]}
@@ -4551,6 +4676,10 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const { t } = useTranslation();
 
+    // Sync buttons on the Mode tab's Module / I/O cards read the device on demand (no auto-GET).
+    const modulePanelRef = useRef<ProtocolPanelHandle>(null);
+    const ioPanelRef = useRef<ProtocolPanelHandle>(null);
+
     // Quick Setup Wizard state
     const needsSetup = !logger.loggerMode;
     const [wizardOpen, setWizardOpen] = useState(() => {
@@ -4835,6 +4964,16 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             analogChannelMax={maxAnalogChannel(logger)}
                             digitalChannelMax={maxDigitalChannel(logger)}
                         />
+
+                        {/* Data Mapping — sensor order for telemetry/LCD/SD (MAP_DATA), minimal. */}
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2"><ListOrdered className="size-5" /> Data Mapping</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <ProtocolPanel logger={protocolLogger} mapOnly />
+                            </CardContent>
+                        </Card>
                     </TabsContent>
 
                     {/* ==================== SYSTEM ==================== */}
@@ -4970,22 +5109,47 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         </div>
                         <Card>
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> Module</CardTitle>
-                                <CardDescription>EWS (Early Warning System) &amp; GCM</CardDescription>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> Module</CardTitle>
+                                        <CardDescription>EWS (Early Warning System) &amp; GCM</CardDescription>
+                                    </div>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="gap-1.5"
+                                        disabled={!logger.deviceIdentifier || logger.status === 'offline'}
+                                        onClick={() => modulePanelRef.current?.sync()}
+                                    >
+                                        <RefreshCw className="size-4" /> Sync
+                                    </Button>
+                                </div>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel logger={protocolLogger} tabs={MODULE_PROTOCOL_TABS} />
+                                <ProtocolPanel ref={modulePanelRef} logger={protocolLogger} tabs={MODULE_PROTOCOL_TABS} manualSync />
                             </CardContent>
                         </Card>
 
-                        {/* I/O controls (Power Output, SENS_DOOR, ALERT) — 3 across, below Module. */}
+                        {/* Peripherals & Interface (Power Output, Sensor Door, Alert, Modbus TCP) — below Module. */}
                         <Card>
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> I/O Control</CardTitle>
-                                <CardDescription>Power output, sensor pintu, &amp; buzzer alert.</CardDescription>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Peripherals &amp; Interface</CardTitle>
+                                    </div>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="gap-1.5"
+                                        disabled={!logger.deviceIdentifier || logger.status === 'offline'}
+                                        onClick={() => ioPanelRef.current?.sync()}
+                                    >
+                                        <RefreshCw className="size-4" /> Sync
+                                    </Button>
+                                </div>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel logger={protocolLogger} ioRow />
+                                <ProtocolPanel ref={ioPanelRef} logger={protocolLogger} ioRow manualSync />
                             </CardContent>
                         </Card>
                     </TabsContent>

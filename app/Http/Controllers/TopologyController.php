@@ -38,6 +38,7 @@ class TopologyController extends Controller
                 'firmwareVersion' => $logger->firmware_version,
                 'model' => $logger->model,
                 'modelImage' => $logger->model ? ($modelImages[$logger->model] ?? null) : null,
+                'deviceIdentifier' => $logger->device_identifier,
                 'signalStrength' => $logger->signal_strength,
                 'sensorsCount' => $logger->external_sensors_count,
                 'projectId' => $logger->project_id,
@@ -51,6 +52,10 @@ class TopologyController extends Controller
                     'value' => $s->value,
                     'unit' => $s->unit,
                     'status' => $s->status,
+                    // RS485 parameters share one physical device (cfg); these let the
+                    // topology group them under a single device card keyed by slave.
+                    'modbusSlaveId' => $s->modbus_slave_id,
+                    'deviceName' => $s->device_name,
                 ]),
             ]);
 

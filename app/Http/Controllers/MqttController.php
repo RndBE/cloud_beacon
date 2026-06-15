@@ -8,6 +8,7 @@ use App\Services\IdHasher;
 use App\Services\MqttService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class MqttController extends Controller
 {
@@ -1308,5 +1309,49 @@ class MqttController extends Controller
         }
 
         return $payload;
+    }
+
+    /**
+     * SSE stream of live GCM module status for the topology. The browser opens an EventSource;
+     * the server subscribes to pub_{id} and relays every GCM_GATE / GCM_PUMP status the device
+     * pushes on its own (no command is sent to the device). EventSource uses GET, so the logger
+     * id comes from the query string.
+     */
+    public function streamModules(Request $request): StreamedResponse
+    {
+        $request->validate(['id_logger' => 'required|string']);
+        $idLogger = $request->input('id_logger');
+
+        $callback = function () use ($idLogger) {
+            @set_time_limit(0);
+            // Drop framework output buffering so each event flushes to the browser immediately.
+            while (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+
+            $emit = function (string $event, array $data) {
+                echo "event: {$event}\n";
+                echo 'data: ' . json_encode($data) . "\n\n";
+                if (ob_get_level() > 0) {
+                    @ob_flush();
+                }
+                flush();
+            };
+
+            if (!$this->resolveLogger($idLogger)) {
+                $emit('error', ['message' => 'Logger not found']);
+                return;
+            }
+
+            $emit('ready', ['ok' => true]);
+            (new MqttService())->streamGcmStatus($idLogger, $emit);
+        };
+
+        return response()->stream($callback, 200, [
+            'Content-Type'      => 'text/event-stream',
+            'Cache-Control'     => 'no-cache',
+            'Connection'        => 'keep-alive',
+            'X-Accel-Buffering' => 'no', // disable nginx proxy buffering
+        ]);
     }
 }
