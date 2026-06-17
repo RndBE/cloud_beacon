@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
+import { LoggerToaster } from '@/components/logger-toaster';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -39,6 +40,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import { fetchSensorNames, getCachedSensorNames, getCachedMapSlots, setCachedMapSlots, subscribeDeviceCache } from '@/lib/device-sync-cache';
+import { notifyModuleResponse, pushToast } from '@/lib/logger-toast';
 import type { BreadcrumbItem } from '@/types';
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -62,10 +64,12 @@ export interface ProtocolLogger {
 
 type ProtocolTabKey = 'system' | 'network' | 'io' | 'power' | 'logs' | 'ews' | 'gcm' | 'map';
 const ALL_PROTOCOL_TABS: ProtocolTabKey[] = ['system', 'network', 'io', 'power', 'logs', 'ews', 'gcm', 'map'];
-// EWS & GCM now live in the logger's "Mode" tab; the rest stay in "Advanced Settings".
-// I/O (Power Output / SENS_DOOR / ALERT) moved to the Mode tab (rendered via ProtocolPanel ioRow).
-// Data Map moved to the Sensors tab (rendered via ProtocolPanel mapOnly), below Sensor Channels.
-export const ADVANCED_PROTOCOL_TABS: ProtocolTabKey[] = ['system', 'network', 'power', 'logs'];
+// EWS & GCM live in the logger's "Mode" tab (MODULE_PROTOCOL_TABS, the only tabbed usage left).
+// Everything else is rendered standalone via dedicated flags on ProtocolPanel:
+//   ioRow      → Power Output / SENS_DOOR / ALERT + NET·SIM / Modbus TCP / RTC (Mode → Device Configuration)
+//   powerOnly  → POWER + POWER_CAL                                (System tab)
+//   ftpOnly    → FTP System Logs                                  (Logs tab)
+//   mapOnly    → Data Map (MAP_DATA)                              (Sensors tab)
 export const MODULE_PROTOCOL_TABS: ProtocolTabKey[] = ['ews', 'gcm'];
 
 interface ProtocolPageProps {
@@ -77,6 +81,10 @@ interface ProtocolPageProps {
     // When true, render ONLY the Data Map card (no tab bar) — used standalone in the
     // logger's "Sensors" tab, below the Sensor Channels list.
     mapOnly?: boolean;
+    // When true, render ONLY the FTP System Logs card (no tab bar) — used in the "Logs" tab.
+    ftpOnly?: boolean;
+    // When true, render ONLY the POWER + POWER_CAL cards (no tab bar) — used in the "System" tab.
+    powerOnly?: boolean;
     // When true, suppress every automatic GET (on mount / tab change). The parent triggers a
     // read explicitly through the imperative `sync()` handle (the card's Sync button).
     manualSync?: boolean;
@@ -110,7 +118,7 @@ const selectClass = 'h-8 rounded-md border border-input bg-background px-2 text-
 // EWS manual CTRL levels (firmware EWS>n). 4/5 are intentionally omitted; 1–3 raise the alert
 // with siren, 6–8 raise the same alert levels without the siren.
 const EWS_CTRL_LEVELS: { value: number; label: string }[] = [
-    { value: 0, label: '0' },
+    { value: 0, label: 'NORMAL' },
     { value: 1, label: 'ALERT 1' },
     { value: 2, label: 'ALERT 2' },
     { value: 3, label: 'ALERT 3' },
@@ -162,7 +170,7 @@ function CommandCard({
     result,
 }: {
     title: string;
-    description: string;
+    description?: string;
     icon: ComponentType<{ className?: string }>;
     children: ReactNode;
     result?: CommandResult | null;
@@ -176,7 +184,7 @@ function CommandCard({
                             <Icon className="size-4" />
                             {title}
                         </CardTitle>
-                        <CardDescription>{description}</CardDescription>
+                        {description && <CardDescription>{description}</CardDescription>}
                     </div>
                     {result && (
                         <Badge variant="outline" className={result.success ? 'text-emerald-600' : 'text-red-600'}>
@@ -308,7 +316,7 @@ function SyncProgressOverlay({ data, overallProgress, stepProgress, onCancel }: 
     );
 }
 
-export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(function ProtocolPanel({ logger, tabs, ioRow = false, mapOnly = false, manualSync = false }, ref) {
+export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(function ProtocolPanel({ logger, tabs, ioRow = false, mapOnly = false, ftpOnly = false, powerOnly = false, manualSync = false }, ref) {
     const shownTabs = tabs ?? ALL_PROTOCOL_TABS;
     const now = useMemo(() => new Date(), []);
     const [loading, setLoading] = useState<string | null>(null);
@@ -516,13 +524,13 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     // Picker pool prefers live device names; falls back to DB names when device not yet synced.
     const sensorNamePool = deviceSensors ? deviceSensors.map((sensor) => sensor.nama) : mappableSensors.map((sensor) => sensor.name);
 
-    async function send(module: string, payload: Payload, key = module) {
+    async function send(module: string, payload: Payload, key = module): Promise<CommandResult | null> {
         if (!logger.deviceIdentifier) {
             setResponses((current) => ({
                 ...current,
                 [key]: { success: false, message: 'Logger belum punya device identifier.' },
             }));
-            return;
+            return null;
         }
 
         setLoading(key);
@@ -534,14 +542,33 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             });
             const data = (await response.json()) as CommandResult;
             setResponses((current) => ({ ...current, [key]: data }));
+            // Surface EWS/GCM control replies as a top-right toast (no-op for other modules).
+            notifyModuleResponse(module, data.success, data.data);
+            return data;
         } catch (error) {
             setResponses((current) => ({
                 ...current,
                 [key]: { success: false, message: error instanceof Error ? error.message : 'Request gagal.' },
             }));
+            return null;
         } finally {
             setLoading(null);
         }
+    }
+
+    // Gate motor control (Open/Close/Stop). The device's first reply is just "Queued", and the
+    // live OPENING/CLOSING status may or may not arrive via the pub push — so we toast the action
+    // the operator triggered as soon as the command is accepted (dedupes with any later SSE event).
+    function sendGcmGate(action: 'Open' | 'Close' | 'Stop', cmd: string) {
+        const id = numberValue(gcmGateId);
+        void send('GCM_GATE', { GCM_GATE: { cmd, id } }, 'GCM_GATE').then((result) => {
+            if (!result) return;
+            pushToast(
+                result.success
+                    ? { title: `GCM${id} Gate ${action}`, variant: 'success' }
+                    : { title: `GCM${id} Gate ${action} gagal`, description: result.message, variant: 'error' },
+            );
+        });
     }
 
     function localError(key: string, message: string) {
@@ -686,9 +713,54 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     }
                 },
             });
+            steps.push({
+                // NET GET → {"NET":[use_dhcp, mac, ip, subnet, gateway, dns]}. 1=DHCP, 0=Static.
+                label: 'NET',
+                description: 'Membaca konfigurasi jaringan…',
+                icon: Network,
+                run: async () => {
+                    const r = await gcmGet('NET', { NET: { cmd: 'GET' } });
+                    const data = r.data as { NET?: unknown } | undefined;
+                    const arr = (Array.isArray(data?.NET) ? data?.NET : Array.isArray(r.data) ? r.data : undefined) as unknown[] | undefined;
+                    if (r.success && arr && arr.length >= 1) {
+                        setNet((prev) => ({
+                            dhcp: Number(arr[0]) === 1 ? '1' : '0',
+                            ip: typeof arr[2] === 'string' ? arr[2] : prev.ip,
+                            subnet: typeof arr[3] === 'string' ? arr[3] : prev.subnet,
+                            gateway: typeof arr[4] === 'string' ? arr[4] : prev.gateway,
+                            dns: typeof arr[5] === 'string' ? arr[5] : prev.dns,
+                        }));
+                    } else if (!r.success) {
+                        throw new Error(r.message ?? 'NET read failed.');
+                    }
+                },
+            });
         }
 
-        await runSyncSteps('Sinkronisasi I/O', `Mengambil status terbaru dari ${logger.deviceIdentifier}…`, steps);
+        steps.push({
+            // RTC GET → {"date":"YYYY-MM-DD","time":"HH:MM:SS","timezone":"7"} (with/without RTC wrapper).
+            label: 'RTC',
+            description: 'Membaca jam real-time…',
+            icon: Clock,
+            run: async () => {
+                const r = await gcmGet('RTC', { RTC: { command: 'GET' } });
+                const data = r.data as Record<string, JsonValue> | undefined;
+                const inner = (data && typeof data.RTC === 'object' && data.RTC !== null ? data.RTC : data) as
+                    | { date?: string; time?: string; timezone?: string | number }
+                    | undefined;
+                if (r.success && inner) {
+                    setRtc((prev) => ({
+                        date: typeof inner.date === 'string' && inner.date ? inner.date : prev.date,
+                        time: typeof inner.time === 'string' && inner.time ? inner.time : prev.time,
+                        timezone: inner.timezone !== undefined && inner.timezone !== null ? String(inner.timezone) : prev.timezone,
+                    }));
+                } else if (!r.success) {
+                    throw new Error(r.message ?? 'RTC read failed.');
+                }
+            },
+        });
+
+        await runSyncSteps('Sinkronisasi Device Configuration', `Mengambil status terbaru dari ${logger.deviceIdentifier}…`, steps);
     }
 
     // One read step per GCM sub-command, sharing a `bound` list (filled by step 1, read by 2–3)
@@ -750,17 +822,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         errBox.msg = errBox.msg ?? m.message ?? 'GCM_MAP read failed.';
                         throw new Error(errBox.msg);
                     }
-                },
-            },
-            {
-                label: 'Nama Sensor',
-                description: 'Mengambil daftar nama sensor…',
-                icon: Cpu,
-                run: async () => {
-                    // Cache-first: reuse names already read by Sensors/Calibration so the hardware
-                    // is queried only once. Populates the GCM_MAP parameter dropdown.
-                    const names = await fetchSensorNames(logger.deviceIdentifier!, false);
-                    if (names) setDeviceSensors(names);
                 },
             },
         ];
@@ -1381,9 +1442,64 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     {actionButton('SET', 'ALERT', () => send('ALERT', { ALERT: { cmd: 'SET', state: numberValue(alertState) } }, 'ALERT'))}
                 </div>
             </CommandCard>
+        </>
+    );
 
-            {/* Modbus TCP server (BL110/BL1100 only) — lives alongside the I/O controls. The GET
-                is folded into the card's Sync button, so only SET stays here. */}
+    // NET / SIM / Modbus TCP / RTC cards for the Device Configuration row. SET sits inline with the
+    // inputs (no GET — the card's Sync button pulls these in the loadIo sequence).
+    const netIsDhcp = numberValue(net.dhcp) === 1;
+    const sendNet = () =>
+        send(
+            'NET',
+            { NET: { cmd: 'SET', d: netIsDhcp ? [1] : [0, net.ip, net.subnet, net.gateway, net.dns] } },
+            'NET',
+        );
+    const netDhcpField = (
+        <Field label="DHCP">
+            <select className={`${selectClass} w-full`} value={net.dhcp} onChange={(event) => setNet({ ...net, dhcp: event.target.value })}>
+                <option value="1">DHCP</option>
+                <option value="0">Static</option>
+            </select>
+        </Field>
+    );
+    const deviceConfigRow = (
+        <>
+            {/* NET — Ethernet (BL110/BL1100). DHCP hides the static fields & sends d:[1]; Static sends d:[0, …]. */}
+            {isEthernetBoard && (
+                <CommandCard title="NET" icon={Network}>
+                    {netIsDhcp ? (
+                        // DHCP: just the mode selector + SET mepet to its right.
+                        <div className="flex items-end gap-2">
+                            <div className="flex-1">{netDhcpField}</div>
+                            {actionButton('SET', 'NET', sendNet)}
+                        </div>
+                    ) : (
+                        // Static: SET sits mepet to the right of Gateway; DNS drops to the next row.
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            {netDhcpField}
+                            <Field label="IP">
+                                <Input className={inputClass} value={net.ip} onChange={(event) => setNet({ ...net, ip: event.target.value })} />
+                            </Field>
+                            <Field label="Subnet">
+                                <Input className={inputClass} value={net.subnet} onChange={(event) => setNet({ ...net, subnet: event.target.value })} />
+                            </Field>
+                            <div className="flex items-end gap-2">
+                                <div className="flex-1">
+                                    <Field label="Gateway">
+                                        <Input className={inputClass} value={net.gateway} onChange={(event) => setNet({ ...net, gateway: event.target.value })} />
+                                    </Field>
+                                </div>
+                                {actionButton('SET', 'NET', sendNet)}
+                            </div>
+                            <Field label="DNS">
+                                <Input className={inputClass} value={net.dns} onChange={(event) => setNet({ ...net, dns: event.target.value })} />
+                            </Field>
+                        </div>
+                    )}
+                </CommandCard>
+            )}
+
+            {/* Modbus TCP server (BL110/BL1100 only) — to the right of NET. */}
             {isEthernetBoard && (
                 <CommandCard title="Modbus TCP" description="Modbus TCP server" icon={Server} result={responses.MODBUSTCP}>
                     <div className="flex items-end gap-2">
@@ -1402,19 +1518,128 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     </div>
                 </CommandCard>
             )}
+
+            {/* BL11 (cellular) has no NET; the SIM/APN card takes its place. */}
+            {isCellularBoard && (
+                <CommandCard title="SIM" icon={Wifi} result={responses.SIM}>
+                    <div className="flex items-end gap-2">
+                        <div className="flex-1">
+                            <Field label="APN">
+                                <Input className={inputClass} value={simApn} onChange={(event) => setSimApn(event.target.value)} />
+                            </Field>
+                        </div>
+                        {actionButton('SET', 'SIM', () => send('SIM', { SIM: { cmd: 'SET', apn: simApn } }, 'SIM'))}
+                    </div>
+                </CommandCard>
+            )}
+
+            <CommandCard title="RTC" icon={Clock}>
+                {/* Date | Time on top; Timezone (under Date) with SET mepet to its right. */}
+                <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Date">
+                        <Input className={inputClass} type="date" value={rtc.date} onChange={(event) => setRtc({ ...rtc, date: event.target.value })} />
+                    </Field>
+                    <Field label="Time">
+                        <Input className={inputClass} type="time" step="1" value={rtc.time} onChange={(event) => setRtc({ ...rtc, time: event.target.value })} />
+                    </Field>
+                    <div className="flex items-end gap-2">
+                        <div className="flex-1">
+                            <Field label="Timezone">
+                                <Input className={inputClass} value={rtc.timezone} onChange={(event) => setRtc({ ...rtc, timezone: event.target.value })} />
+                            </Field>
+                        </div>
+                        {actionButton('SET', 'RTC', () => send('RTC', { RTC: { command: 'SET', ...rtc } }, 'RTC'))}
+                    </div>
+                </div>
+            </CommandCard>
         </>
     );
 
-    // Mode tab: just the three I/O control cards, 3 across, no tab bar.
+    // Logs tab: just the FTP System Logs card, no tab bar.
+    if (ftpOnly) {
+        return (
+            <CommandCard title="FTP System Logs" description="READLOGS dan GETLOG untuk black-box recorder." icon={UploadCloud} result={responses.FTP_LOGS}>
+                <Field label="Log file">
+                    <Input className={inputClass} value={ftpLogFile} onChange={(event) => setFtpLogFile(event.target.value)} />
+                </Field>
+                <ButtonRow>
+                    {actionButton('READLOGS', 'FTP_LOGS', () => send('FTP', { FTP: { cmd: 'READLOGS' } }, 'FTP_LOGS'))}
+                    {actionButton('GETLOG', 'FTP_LOGS', () => send('FTP', { FTP: { cmd: 'GETLOG', f: ftpLogFile } }, 'FTP_LOGS'))}
+                </ButtonRow>
+            </CommandCard>
+        );
+    }
+
+    // System tab: POWER (live INA219 read) + POWER_CAL (per-rail calibration), no tab bar.
+    if (powerOnly) {
+        return (
+            <div className="grid gap-4 lg:grid-cols-2">
+                <CommandCard title="POWER" description="Baca INA219 live: battery, 5V, 12V, 24V." icon={Power} result={responses.POWER}>
+                    <ButtonRow>
+                        {actionButton('READ', 'POWER', () => send('POWER', { POWER: { cmd: 'READ' } }, 'POWER'))}
+                    </ButtonRow>
+                </CommandCard>
+
+                <CommandCard title="POWER_CAL" description="Kalibrasi INA219 per rail." icon={Cpu} result={responses.POWER_CAL}>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                        <Field label="Sensor">
+                            <select className={selectClass} value={powerCal.sensor} onChange={(event) => setPowerCal({ ...powerCal, sensor: event.target.value })}>
+                                {powerCalSensors.map((sensor) => (
+                                    <option key={sensor} value={sensor}>{sensor}</option>
+                                ))}
+                            </select>
+                        </Field>
+                        <Field label="v_ref">
+                            <Input className={inputClass} type="number" step="0.001" value={powerCal.vRef} onChange={(event) => setPowerCal({ ...powerCal, vRef: event.target.value })} />
+                        </Field>
+                        <Field label="i_ref">
+                            <Input className={inputClass} type="number" step="0.001" value={powerCal.iRef} onChange={(event) => setPowerCal({ ...powerCal, iRef: event.target.value })} />
+                        </Field>
+                    </div>
+                    <ButtonRow>
+                        {actionButton('SET', 'POWER_CAL', sendPowerCalSet)}
+                        {actionButton('GET', 'POWER_CAL', () => send('POWER_CAL', { POWER_CAL: { cmd: 'GET' } }, 'POWER_CAL'))}
+                        {actionButton('RST', 'POWER_CAL', () => send('POWER_CAL', { POWER_CAL: { cmd: 'RST' } }, 'POWER_CAL'), 'destructive', 'Reset semua kalibrasi INA219 ke default?')}
+                    </ButtonRow>
+                </CommandCard>
+
+                {/* Confirmation popup for the POWER_CAL RST action. */}
+                <AlertDialog open={confirmDialog !== null} onOpenChange={(open) => { if (!open) setConfirmDialog(null); }}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Konfirmasi</AlertDialogTitle>
+                            <AlertDialogDescription>{confirmDialog?.message}</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel>Batal</AlertDialogCancel>
+                            <AlertDialogAction
+                                onClick={() => {
+                                    const action = confirmDialog?.onConfirm;
+                                    setConfirmDialog(null);
+                                    action?.();
+                                }}
+                            >
+                                Ya, lanjutkan
+                            </AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
+            </div>
+        );
+    }
+
+    // Mode tab "Device Configuration": I/O controls (Power Output, Sensor Door, Alert) on top,
+    // then NET/SIM + Modbus TCP + RTC. The card's Sync button pulls all of it via loadIo.
     if (ioRow) {
         return (
-            <>
+            <div className="space-y-4">
                 {!canSend && (
                     <Badge variant="outline" className="mb-3 w-fit text-red-600">
                         Device identifier kosong — kirim command butuh device terhubung.
                     </Badge>
                 )}
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{ioCards}</div>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{ioCards}</div>
+                <div className="grid gap-4 lg:grid-cols-3">{deviceConfigRow}</div>
 
                 {syncState && (
                     <SyncProgressOverlay data={syncState} overallProgress={syncOverall} stepProgress={syncProgress} onCancel={cancelSync} />
@@ -1441,7 +1666,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         </AlertDialogFooter>
                     </AlertDialogContent>
                 </AlertDialog>
-            </>
+            </div>
         );
     }
 
@@ -1501,127 +1726,21 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         {shownTabs.includes('map') && <TabsTrigger value="map">Data Map</TabsTrigger>}
                     </TabsList>
 
-                    <TabsContent value="system" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="RTC" description="SET/GET real-time clock." icon={Clock} result={responses.RTC}>
-                            <div className="grid gap-3 sm:grid-cols-3">
-                                <Field label="Date">
-                                    <Input className={inputClass} type="date" value={rtc.date} onChange={(event) => setRtc({ ...rtc, date: event.target.value })} />
-                                </Field>
-                                <Field label="Time">
-                                    <Input className={inputClass} type="time" step="1" value={rtc.time} onChange={(event) => setRtc({ ...rtc, time: event.target.value })} />
-                                </Field>
-                                <Field label="Timezone">
-                                    <Input className={inputClass} value={rtc.timezone} onChange={(event) => setRtc({ ...rtc, timezone: event.target.value })} />
-                                </Field>
-                            </div>
-                            <ButtonRow>
-                                {actionButton('SET', 'RTC', () => send('RTC', { RTC: { command: 'SET', ...rtc } }, 'RTC'))}
-                                {actionButton('GET', 'RTC', () => send('RTC', { RTC: { command: 'GET' } }, 'RTC'))}
-                            </ButtonRow>
-                        </CommandCard>
-
-                        {/* CAL (analog calibration) moved to the Sensors panel → analog sensor row. */}
-                    </TabsContent>
-
-                    <TabsContent value="network" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        {isEthernetBoard && (
-                            <CommandCard title="NET" description="Ethernet GET/SET untuk BL110 dan BL1100." icon={Network} result={responses.NET}>
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                <Field label="DHCP">
-                                    <select className={selectClass} value={net.dhcp} onChange={(event) => setNet({ ...net, dhcp: event.target.value })}>
-                                        <option value="1">DHCP</option>
-                                        <option value="0">Static</option>
-                                    </select>
-                                </Field>
-                                <Field label="IP">
-                                    <Input className={inputClass} value={net.ip} onChange={(event) => setNet({ ...net, ip: event.target.value })} />
-                                </Field>
-                                <Field label="Subnet">
-                                    <Input className={inputClass} value={net.subnet} onChange={(event) => setNet({ ...net, subnet: event.target.value })} />
-                                </Field>
-                                <Field label="Gateway">
-                                    <Input className={inputClass} value={net.gateway} onChange={(event) => setNet({ ...net, gateway: event.target.value })} />
-                                </Field>
-                                <Field label="DNS">
-                                    <Input className={inputClass} value={net.dns} onChange={(event) => setNet({ ...net, dns: event.target.value })} />
-                                </Field>
-                            </div>
-                            <ButtonRow>
-                                {actionButton('GET', 'NET', () => send('NET', { NET: { cmd: 'GET' } }, 'NET'))}
-                                {actionButton('SET', 'NET', () => send('NET', { NET: { cmd: 'SET', d: [numberValue(net.dhcp), net.ip, net.subnet, net.gateway, net.dns] } }, 'NET'))}
-                            </ButtonRow>
-                            </CommandCard>
-                        )}
-
-                        {isCellularBoard && (
-                            <CommandCard title="SIM" description="SIM7600 status dan APN untuk BL11." icon={Wifi} result={responses.SIM}>
-                            <Field label="APN">
-                                <Input className={inputClass} value={simApn} onChange={(event) => setSimApn(event.target.value)} />
-                            </Field>
-                            <ButtonRow>
-                                {actionButton('GET', 'SIM', () => send('SIM', { SIM: 'GET' }, 'SIM'))}
-                                {actionButton('SET', 'SIM', () => send('SIM', { SIM: { cmd: 'SET', apn: simApn } }, 'SIM'))}
-                            </ButtonRow>
-                            </CommandCard>
-                        )}
-
-                        {/* Modbus TCP moved to the Mode tab's "Peripherals & Interface" card (ioRow). */}
-                    </TabsContent>
+                    {/* NET / SIM / Modbus TCP / RTC moved to the Mode tab's Device Configuration row (ioRow). */}
 
                     <TabsContent value="io" className="mt-4 grid gap-4 lg:grid-cols-2">
                         {/* AWLR_PUMP renamed to GCM_PUMP (spec §3.17) — see the GCM tab. */}
                         {ioCards}
                     </TabsContent>
 
-                    <TabsContent value="power" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="POWER" description="Baca INA219 live: battery, 5V, 12V, 24V." icon={Power} result={responses.POWER}>
-                            <ButtonRow>
-                                {actionButton('READ', 'POWER', () => send('POWER', { POWER: { cmd: 'READ' } }, 'POWER'))}
-                            </ButtonRow>
-                        </CommandCard>
-
-                        <CommandCard title="POWER_CAL" description="Kalibrasi INA219 per rail." icon={Cpu} result={responses.POWER_CAL}>
-                            <div className="grid gap-3 sm:grid-cols-3">
-                                <Field label="Sensor">
-                                    <select className={selectClass} value={powerCal.sensor} onChange={(event) => setPowerCal({ ...powerCal, sensor: event.target.value })}>
-                                        {powerCalSensors.map((sensor) => (
-                                            <option key={sensor} value={sensor}>{sensor}</option>
-                                        ))}
-                                    </select>
-                                </Field>
-                                <Field label="v_ref">
-                                    <Input className={inputClass} type="number" step="0.001" value={powerCal.vRef} onChange={(event) => setPowerCal({ ...powerCal, vRef: event.target.value })} />
-                                </Field>
-                                <Field label="i_ref">
-                                    <Input className={inputClass} type="number" step="0.001" value={powerCal.iRef} onChange={(event) => setPowerCal({ ...powerCal, iRef: event.target.value })} />
-                                </Field>
-                            </div>
-                            <ButtonRow>
-                                {actionButton('SET', 'POWER_CAL', sendPowerCalSet)}
-                                {actionButton('GET', 'POWER_CAL', () => send('POWER_CAL', { POWER_CAL: { cmd: 'GET' } }, 'POWER_CAL'))}
-                                {actionButton('RST', 'POWER_CAL', () => send('POWER_CAL', { POWER_CAL: { cmd: 'RST' } }, 'POWER_CAL'), 'destructive', 'Reset semua kalibrasi INA219 ke default?')}
-                            </ButtonRow>
-                        </CommandCard>
-                    </TabsContent>
-
-                    <TabsContent value="logs" className="mt-4 grid gap-4 lg:grid-cols-2">
-                        <CommandCard title="FTP System Logs" description="READLOGS dan GETLOG untuk black-box recorder." icon={UploadCloud} result={responses.FTP_LOGS}>
-                            <Field label="Log file">
-                                <Input className={inputClass} value={ftpLogFile} onChange={(event) => setFtpLogFile(event.target.value)} />
-                            </Field>
-                            <ButtonRow>
-                                {actionButton('READLOGS', 'FTP_LOGS', () => send('FTP', { FTP: { cmd: 'READLOGS' } }, 'FTP_LOGS'))}
-                                {actionButton('GETLOG', 'FTP_LOGS', () => send('FTP', { FTP: { cmd: 'GETLOG', f: ftpLogFile } }, 'FTP_LOGS'))}
-                            </ButtonRow>
-                        </CommandCard>
-                    </TabsContent>
+                    {/* POWER + POWER_CAL moved to the System tab (powerOnly).
+                        FTP System Logs moved to the Logs tab (ftpOnly). */}
 
                     <TabsContent value="ews" className="mt-4 grid gap-4">
                         <CommandCard
                             title="EWS Module"
                             description=""
                             icon={Siren}
-                            result={responses.EWS}
                         >
                             <div className="space-y-3 rounded-md border border-border/60 p-3">
                                 <div className="flex items-center justify-between">
@@ -1638,19 +1757,25 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         <span className={`inline-block size-4 transform rounded-full bg-white shadow transition-transform ${ewsEnable ? 'translate-x-4' : 'translate-x-0.5'}`} />
                                     </button>
                                 </div>
-                                <Field label="RS232 Channel">
-                                    <select
-                                        className={`${selectClass} w-full`}
-                                        value={ewsCh}
-                                        disabled={!canSend || loading === 'EWS'}
-                                        onChange={(event) => setEwsChannel(event.target.value)}
-                                    >
-                                        <option value="1">Channel 1</option>
-                                        <option value="2">Channel 2</option>
-                                    </select>
-                                </Field>
+                                {ewsEnable && (
+                                    <Field label="RS232 Channel">
+                                        <select
+                                            className={`${selectClass} w-full`}
+                                            value={ewsCh}
+                                            disabled={!canSend || loading === 'EWS'}
+                                            onChange={(event) => setEwsChannel(event.target.value)}
+                                        >
+                                            <option value="1">Channel 1</option>
+                                            <option value="2">Channel 2</option>
+                                        </select>
+                                    </Field>
+                                )}
                             </div>
 
+                            {/* The rest of the EWS settings only appear once the module is enabled
+                                (toggle on, or a sync that reports enable=1). */}
+                            {ewsEnable && (
+                            <>
                             <div className="space-y-3 rounded-md border border-border/60 p-3">
                                 <Label className="text-xs font-semibold uppercase text-muted-foreground">Mode</Label>
                                 <div className="flex items-end gap-2">
@@ -1787,6 +1912,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     </ButtonRow>
                                 </div>
                             )}
+                            </>
+                            )}
                         </CommandCard>
                     </TabsContent>
 
@@ -1862,7 +1989,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                 </ButtonRow>
                             </div>
 
-                            {/* ── Mapping parameter (GCM_MAP) — berlaku untuk semua mode ── */}
+                            {/* ── Mapping parameter (GCM_MAP) — only once a module is bound (GCM active) ── */}
+                            {boundGcmModules.length > 0 && (
                             <div className="space-y-2 border-t border-border/60 pt-3">
                                 <div className="flex items-center justify-between gap-3">
                                     <Label className="text-xs font-semibold uppercase text-muted-foreground">Mapping Parameter</Label>
@@ -1902,6 +2030,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     {actionButton('SET', 'GCM_MAP', () => send('GCM_MAP', { GCM_MAP: { cmd: 'SET', id: numberValue(gcmMapId), m: gcmMapRows.map((r) => [numberValue(r.reg), r.name === '-' ? '' : r.name]) } }, 'GCM_MAP'))}
                                 </ButtonRow>
                             </div>
+                            )}
 
                             {/* ── Gate control (GCM_GATE) — only shown when an AWGC module exists ── */}
                             {gateModules.length > 0 && (
@@ -1927,9 +2056,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2">
                                         <span className="text-xs text-muted-foreground">Manual motor:</span>
-                                        {actionButton('Open', 'GCM_GATE', () => send('GCM_GATE', { GCM_GATE: { cmd: '1', id: numberValue(gcmGateId) } }, 'GCM_GATE'), 'outline', `Force open the GCM${gcmGateId} gate?`)}
-                                        {actionButton('Close', 'GCM_GATE', () => send('GCM_GATE', { GCM_GATE: { cmd: '2', id: numberValue(gcmGateId) } }, 'GCM_GATE'), 'outline', `Force close the GCM${gcmGateId} gate?`)}
-                                        {actionButton('Stop', 'GCM_GATE', () => send('GCM_GATE', { GCM_GATE: { cmd: '4', id: numberValue(gcmGateId) } }, 'GCM_GATE'), 'destructive', `Stop the GCM${gcmGateId} gate motor?`)}
+                                        {actionButton('Open', 'GCM_GATE', () => sendGcmGate('Open', '1'), 'outline', `Force open the GCM${gcmGateId} gate?`)}
+                                        {actionButton('Close', 'GCM_GATE', () => sendGcmGate('Close', '2'), 'outline', `Force close the GCM${gcmGateId} gate?`)}
+                                        {actionButton('Stop', 'GCM_GATE', () => sendGcmGate('Stop', '4'), 'destructive', `Stop the GCM${gcmGateId} gate motor?`)}
                                         <Button type="button" size="sm" variant="outline" disabled={!canSend || loading === 'GCM'} onClick={() => loadGcmGate(numberValue(gcmGateId))}>
                                             {loading === 'GCM' ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
                                             GET Status
@@ -2141,6 +2270,7 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={`${logger.name} · Advanced Settings`} />
+            <LoggerToaster />
             <div className="flex flex-col gap-6 p-4 md:p-6">
                 <Link href={`/loggers/${logger.id}`} className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
                     <ArrowLeft className="size-4" />
@@ -2163,7 +2293,13 @@ export default function ProtocolPage({ logger }: ProtocolPageProps) {
                     </div>
                 </div>
 
-                <ProtocolPanel logger={logger} tabs={ADVANCED_PROTOCOL_TABS} />
+                {/* Advanced Settings content is now split across dedicated panels (the logger
+                    detail page hosts each in its own tab). Stacked here for the standalone route. */}
+                <div className="flex flex-col gap-4">
+                    <ProtocolPanel logger={logger} ioRow />
+                    <ProtocolPanel logger={logger} powerOnly />
+                    <ProtocolPanel logger={logger} ftpOnly />
+                </div>
             </div>
         </AppLayout>
     );

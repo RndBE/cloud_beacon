@@ -1,11 +1,13 @@
 import { Head, Link, router } from '@inertiajs/react';
 import { ArrowLeft, Cable, ChevronDown, FolderKanban, Fuel, Globe, Minus, Maximize, Plus, Radio, Siren, Signal, Wifi, Cpu, Zap, Thermometer, Droplets, Gauge } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LoggerToaster } from '@/components/logger-toaster';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
 import { getCachedModules, setCachedModules, subscribeDeviceCache } from '@/lib/device-sync-cache';
 import type { DeviceModule, DeviceModulePhase } from '@/lib/device-sync-cache';
+import { notifyModuleResponse } from '@/lib/logger-toast';
 import type { BreadcrumbItem } from '@/types';
 
 interface TopologySensor {
@@ -521,6 +523,8 @@ export default function Topology({ loggers, projects }: TopologyProps) {
         es.addEventListener('status', (event) => {
             try {
                 const msg = JSON.parse((event as MessageEvent).data) as { module: string; id?: number } & Record<string, unknown>;
+                // Surface the push as a top-right toast (formatted summary only, never raw payload).
+                notifyModuleResponse(msg.module, true, msg);
                 // EWS pushes (EWS / EWS_EVENT) carry no id → the single 'ews' node; GCM keys by id.
                 const key = msg.module === 'EWS' || msg.module === 'EWS_EVENT' ? 'ews' : `gcm:${msg.id}`;
                 if (!moduleNodesRef.current.some((n) => n.key === key)) return; // not one of ours
@@ -729,6 +733,7 @@ export default function Topology({ loggers, projects }: TopologyProps) {
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Network Topology" />
+            <LoggerToaster />
             <div className="relative flex h-[calc(100vh-4rem)] flex-col overflow-hidden">
                 {/* Zoom Controls */}
                 <div className="absolute top-4 right-4 z-20 flex items-center gap-1 rounded-lg border bg-background/80 p-1 shadow-sm backdrop-blur-sm">
@@ -1152,10 +1157,10 @@ export default function Topology({ loggers, projects }: TopologyProps) {
                                                 <div className="mt-3 flex flex-col divide-y divide-border/60">
                                                     {mod.kind === 'EWS' ? (
                                                         <>
-                                                            {/* RS232 channel (configurable) */}
+                                                            {/* Channel — the EWS node colour already conveys RS232, so show just the channel number. */}
                                                             <div className="flex items-baseline justify-between gap-2 py-1">
                                                                 <span className="text-[11px] text-muted-foreground">Channel</span>
-                                                                <span className="font-mono text-xs font-bold">{mod.ch != null ? `RS232 · ${mod.ch}` : 'RS232'}</span>
+                                                                <span className="font-mono text-xs font-bold">{mod.ch != null ? `Channel ${mod.ch}` : '—'}</span>
                                                             </div>
                                                             {/* EWS mode */}
                                                             <div className="flex items-baseline justify-between gap-2 py-1">

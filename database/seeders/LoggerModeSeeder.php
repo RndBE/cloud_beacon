@@ -25,8 +25,12 @@ class LoggerModeSeeder extends Seeder
                 'has_calibration'    => true,
                 'calibration_fields' => [
                     ['key' => 'source', 'label' => 'Sumber Data (Sensor)', 'unit' => '', 'type' => 'sensor-source'],
+                    ['key' => 'sensor', 'label' => 'Jenis Sensor', 'unit' => '', 'type' => 'select', 'options' => [
+                        ['value' => 'RK400-04', 'label' => 'RK400-04'],
+                        ['value' => 'SEM400', 'label' => 'SEM400'],
+                    ]],
                 ],
-                'description'        => 'Automatic Rainfall Recorder — memilih nama sensor sebagai sumber data curah hujan (command ARR).',
+                'description'        => 'Automatic Rainfall Recorder — memilih nama sensor sebagai sumber data curah hujan dan jenis sensor (command ARR).',
             ],
             [
                 'slug'               => 'GNSS',
@@ -38,7 +42,7 @@ class LoggerModeSeeder extends Seeder
             ],
             [
                 'slug'               => 'AWLR_US',
-                'label'              => 'AWLR Ultrasonic',
+                'label'              => 'AWLR Ultrasonik/Radar',
                 'group'              => 'AWLR',
                 'has_calibration'    => true,
                 'calibration_fields' => [
