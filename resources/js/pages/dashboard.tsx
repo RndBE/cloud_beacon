@@ -3,13 +3,14 @@ import {
     Activity,
     AlertTriangle,
     ArrowRight,
+    BatteryLow,
     CheckCircle2,
     CloudDownload,
+    Database,
     Download,
     HardDrive,
     Loader2,
     MapPin,
-    Power,
     Radio,
     RefreshCw,
     Save,
@@ -18,7 +19,7 @@ import {
     WifiOff,
     XCircle,
 } from 'lucide-react';
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -45,6 +46,16 @@ import {
 import AppLayout from '@/layouts/app-layout';
 import { dashboard } from '@/routes';
 import type { BreadcrumbItem } from '@/types';
+import SensorTrendCard, {
+    type TrendData,
+    type TrendDefaults,
+    type TrendLogger,
+    type TrendSensor,
+} from '@/components/dashboard/SensorTrendCard';
+import FleetHealthGauges from '@/components/dashboard/FleetHealthGauges';
+import ForwardingHealthCard from '@/components/dashboard/ForwardingHealthCard';
+import BreakdownsCard from '@/components/dashboard/BreakdownsCard';
+import type { Breakdowns, FleetHealth } from '@/components/dashboard/types';
 
 const LoggerMap = lazy(() => import('@/components/logger-map'));
 
@@ -81,7 +92,14 @@ interface DashboardProps {
         warningLoggers: number;
         totalSensors: number;
         activeSensors: number;
+        dataPointsToday: number;
     };
+    fleetHealth: FleetHealth;
+    breakdowns: Breakdowns;
+    trend: TrendData;
+    trendSensors: TrendSensor[];
+    trendLoggers: TrendLogger[];
+    trendDefaults: TrendDefaults;
     recentActivity: ActivityLogItem[];
     loggers: MapLogger[];
 }
@@ -108,9 +126,32 @@ function getStatusColor(status: string) {
     }
 }
 
-export default function Dashboard({ stats, recentActivity, loggers }: DashboardProps) {
+export default function Dashboard({ stats, fleetHealth, breakdowns, trend, trendSensors, trendLoggers, trendDefaults, recentActivity, loggers }: DashboardProps) {
     const activeAlerts = stats.warningLoggers + stats.offlineLoggers;
     const { t } = useTranslation();
+    const [polling, setPolling] = useState(false);
+
+    // Manual MQTT poll for "Sync All Configs" (reuses the loggers-index endpoint).
+    function syncAll() {
+        if (polling) return;
+        setPolling(true);
+        const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+        fetch('/api/mqtt/poll', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-TOKEN': csrfToken },
+        })
+            .then(() => router.reload())
+            .catch(() => { /* silent */ })
+            .finally(() => setPolling(false));
+    }
+
+    // Auto-refresh aggregates every 30s (matches the loggers list behaviour).
+    useEffect(() => {
+        const id = setInterval(() => {
+            router.reload({ only: ['stats', 'fleetHealth', 'breakdowns', 'trend', 'recentActivity', 'loggers'] });
+        }, 30_000);
+        return () => clearInterval(id);
+    }, []);
 
     // ─── Backup Config Modal ──────────────────────────
     const [backupOpen, setBackupOpen] = useState(false);
@@ -194,7 +235,7 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
             <div className="dashboard-glass-bg">
                 <div className="relative z-10 flex flex-col gap-6 p-4 md:p-6">
                     {/* Stats Row */}
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                         <Card className="glass-card glass-animate-in glass-delay-1">
                             <CardContent className="flex items-center gap-4 px-4 py-0">
                                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-500/10">
@@ -242,7 +283,43 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                 </div>
                             </CardContent>
                         </Card>
+
+                        <Card className="glass-card glass-animate-in glass-delay-4">
+                            <CardContent className="flex items-center gap-4 px-4 py-0">
+                                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-cyan-500/10">
+                                    <Database className="size-6 text-cyan-500" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-sm text-muted-foreground">Data Hari Ini</p>
+                                    <p className="text-2xl font-bold">{stats.dataPointsToday.toLocaleString()}</p>
+                                </div>
+                            </CardContent>
+                        </Card>
+
+                        <Card className="glass-card glass-animate-in glass-delay-5">
+                            <CardContent className="flex items-center gap-4 px-4 py-0">
+                                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-500/10">
+                                    <BatteryLow className="size-6 text-amber-500" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-sm text-muted-foreground">Baterai Lemah</p>
+                                    <p className="text-2xl font-bold text-amber-600">{fleetHealth.lowBatteryCount}</p>
+                                </div>
+                            </CardContent>
+                        </Card>
                     </div>
+
+                    {/* Sensor Trend (live) */}
+                    <SensorTrendCard trend={trend} trendLoggers={trendLoggers} trendSensors={trendSensors} trendDefaults={trendDefaults} />
+
+                    {/* Fleet health + forwarding */}
+                    <div className="grid gap-4 lg:grid-cols-2">
+                        <FleetHealthGauges fleetHealth={fleetHealth} />
+                        <ForwardingHealthCard forwarding={fleetHealth.forwarding} />
+                    </div>
+
+                    {/* Composition breakdowns */}
+                    <BreakdownsCard breakdowns={breakdowns} />
 
                     {/* Logger Map */}
                     <Card className="glass-card glass-animate-in glass-delay-5">
@@ -320,13 +397,9 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3">
-                                    <Button variant="outline" className="justify-start gap-2">
-                                        <RefreshCw className="size-4" />
-                                        Sync All Configs
-                                    </Button>
-                                    <Button variant="outline" className="justify-start gap-2">
-                                        <Power className="size-4" />
-                                        {t('dashboard.reboot_devices')}
+                                    <Button variant="outline" className="justify-start gap-2" onClick={syncAll} disabled={polling}>
+                                        <RefreshCw className={`size-4 ${polling ? 'animate-spin' : ''}`} />
+                                        {polling ? 'Menyinkronkan…' : 'Sync All Configs'}
                                     </Button>
                                     <Button
                                         variant="outline"
