@@ -3,6 +3,8 @@ import {
     AlertTriangle,
     Check,
     CheckCircle2,
+    ChevronLeft,
+    ChevronRight,
     Cable,
     FolderKanban,
     Loader2,
@@ -787,6 +789,23 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
         });
     }, [loggers, search, statusFilter, projectFilter]);
 
+    // Client-side pagination (data already loaded; no extra server round-trip)
+    const PER_PAGE = 12;
+    const [currentPage, setCurrentPage] = useState(1);
+    const totalPages = Math.max(1, Math.ceil(filteredLoggers.length / PER_PAGE));
+    // Reset to first page whenever the filtered result set changes (search/filter)
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [search, statusFilter, projectFilter]);
+    // Guard against the current page going out of range (e.g. after a delete)
+    useEffect(() => {
+        if (currentPage > totalPages) setCurrentPage(totalPages);
+    }, [currentPage, totalPages]);
+    const paginatedLoggers = useMemo(
+        () => filteredLoggers.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE),
+        [filteredLoggers, currentPage],
+    );
+
     const onlineCount = loggers.filter(l => l.status === 'online').length;
     const offlineCount = loggers.filter(l => l.status === 'offline').length;
     const warningCount = loggers.filter(l => l.status === 'warning').length;
@@ -945,7 +964,7 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                {filteredLoggers.map((logger) => (
+                                {paginatedLoggers.map((logger) => (
                                     <TableRow key={logger.id} className="cursor-pointer hover:bg-muted/50">
                                         <TableCell>
                                             <Link href={`/loggers/${logger.id}`} className="block">
@@ -1051,6 +1070,38 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                 )}
                             </TableBody>
                         </Table>
+                        {filteredLoggers.length > PER_PAGE && (
+                            <div className="flex flex-col items-center justify-between gap-3 border-t px-4 py-3 sm:flex-row">
+                                <p className="text-xs text-muted-foreground">
+                                    {(currentPage - 1) * PER_PAGE + 1}–{Math.min(currentPage * PER_PAGE, filteredLoggers.length)} dari {filteredLoggers.length}
+                                </p>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                        disabled={currentPage === 1}
+                                    >
+                                        <ChevronLeft className="size-4" />
+                                        <span className="hidden sm:inline">Sebelumnya</span>
+                                    </Button>
+                                    <span className="px-1 text-sm text-muted-foreground">
+                                        Halaman {currentPage} / {totalPages}
+                                    </span>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                        disabled={currentPage === totalPages}
+                                    >
+                                        <span className="hidden sm:inline">Berikutnya</span>
+                                        <ChevronRight className="size-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
 
