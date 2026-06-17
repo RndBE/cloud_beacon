@@ -54,6 +54,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { LoggerToaster } from '@/components/logger-toaster';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -90,10 +91,11 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useModuleEventToasts } from '@/hooks/use-module-event-toasts';
 import AppLayout from '@/layouts/app-layout';
 import { fetchSensorNames, fetchMapSlots, getCachedSensorNames, subscribeDeviceCache } from '@/lib/device-sync-cache';
 import type { BreadcrumbItem } from '@/types';
-import { ProtocolPanel, ADVANCED_PROTOCOL_TABS, MODULE_PROTOCOL_TABS } from './protocol';
+import { ProtocolPanel, MODULE_PROTOCOL_TABS } from './protocol';
 import type { ProtocolPanelHandle } from './protocol';
 import type { ProtocolLogger } from './protocol';
 
@@ -3937,6 +3939,11 @@ type CalibPhase = 'idle' | 'sending' | 'success' | 'error';
 function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     const activeMode = logger.availableModes.find(m => m.slug === logger.loggerMode);
     const fields = activeMode?.hasCalibration ? activeMode.calibrationFields ?? [] : [];
+    // ARR's "calibration" is really just source + sensor-type selection, so it uses setting-style
+    // labels ("ARR Sensor" / "Apply Setting") instead of the calibration wording other modes use.
+    const isArr = logger.loggerMode === 'ARR';
+    // AWLR Ultrasonik/Radar uses a sensor-style title ("<label> Sensor") instead of "Kalibrasi <label>".
+    const isAwlrUs = logger.loggerMode === 'AWLR_US';
 
     const [phase, setPhase] = useState<CalibPhase>('idle');
     const [message, setMessage] = useState('');
@@ -4071,7 +4078,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                 <div className="flex items-start justify-between gap-3">
                     <div>
                         <CardTitle className="flex items-center gap-2">
-                            <SlidersHorizontal className="size-5" /> Kalibrasi {activeMode.label}
+                            <SlidersHorizontal className="size-5" /> {isArr ? 'ARR Sensor' : isAwlrUs ? `${activeMode.label} Sensor` : `Kalibrasi ${activeMode.label}`}
                         </CardTitle>
                         <CardDescription>
                             {logger.calibratedAt
@@ -4238,7 +4245,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                             disabled={!allFilled || !logger.deviceIdentifier || logger.status === 'offline'}
                             onClick={handleCalibrate}
                         >
-                            <SlidersHorizontal className="size-4" /> Kirim Kalibrasi
+                            <SlidersHorizontal className="size-4" /> {isArr ? 'Apply Setting' : 'Kirim Kalibrasi'}
                         </Button>
                     )}
 
@@ -4680,6 +4687,11 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     const modulePanelRef = useRef<ProtocolPanelHandle>(null);
     const ioPanelRef = useRef<ProtocolPanelHandle>(null);
 
+    // Surface the logger's spontaneous EWS/GCM pushes as top-right toasts (formatted, never raw MQTT).
+    // Only an online logger can push events, so we skip the SSE entirely when offline — that avoids
+    // holding a PHP worker open for a device that will never send anything.
+    useModuleEventToasts(logger.status !== 'offline' ? logger.deviceIdentifier : null);
+
     // Quick Setup Wizard state
     const needsSetup = !logger.loggerMode;
     const [wizardOpen, setWizardOpen] = useState(() => {
@@ -4728,6 +4740,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={logger.name} />
+            <LoggerToaster />
             <div className="flex flex-col gap-6 p-4 md:p-6">
                 {/* Quick Setup Wizard */}
                 {needsSetup && (
@@ -4876,7 +4889,6 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         <TabsTrigger value="sensors" className="gap-1.5 cursor-pointer"><Thermometer className="size-3.5" />{t('loggerDetail.tab_sensors')}</TabsTrigger>
                         <TabsTrigger value="system" className="gap-1.5 cursor-pointer"><Cpu className="size-3.5" />{t('loggerDetail.tab_system')}</TabsTrigger>
                         <TabsTrigger value="mode" className="gap-1.5 cursor-pointer"><Radio className="size-3.5" />Mode</TabsTrigger>
-                        <TabsTrigger value="advanced" className="gap-1.5 cursor-pointer"><SlidersHorizontal className="size-3.5" />Advanced Settings</TabsTrigger>
                         <TabsTrigger value="logs" className="gap-1.5 cursor-pointer"><Terminal className="size-3.5" />{t('loggerDetail.tab_logs')}</TabsTrigger>
                         <TabsTrigger value="api" className="gap-1.5 cursor-pointer"><Code2 className="size-3.5" />{t('loggerDetail.tab_api')}</TabsTrigger>
                     </TabsList>
@@ -5072,6 +5084,8 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 </CardContent>
                             </Card>
                         </div>
+                        {/* POWER (live INA219 read) + POWER_CAL — moved here from Advanced Settings. */}
+                        <ProtocolPanel logger={protocolLogger} powerOnly />
                         <FirmwareCard
                             deviceIdentifier={logger.deviceIdentifier}
                             currentVersion={logger.firmwareVersion}
@@ -5130,12 +5144,13 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             </CardContent>
                         </Card>
 
-                        {/* Peripherals & Interface (Power Output, Sensor Door, Alert, Modbus TCP) — below Module. */}
+                        {/* Device Configuration — I/O peripherals (Power Output, Sensor Door, Alert,
+                            Modbus TCP) plus NET (Ethernet, hidden on BL11) / SIM (BL11) + RTC. */}
                         <Card>
                             <CardHeader>
                                 <div className="flex items-start justify-between gap-3">
                                     <div>
-                                        <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Peripherals &amp; Interface</CardTitle>
+                                        <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Device Configuration</CardTitle>
                                     </div>
                                     <Button
                                         size="sm"
@@ -5154,13 +5169,12 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         </Card>
                     </TabsContent>
 
-                    {/* ==================== ADVANCED SETTINGS (Protocol commands; EWS/GCM moved to Mode) ==================== */}
-                    <TabsContent value="advanced" className="mt-6 space-y-4">
-                        <ProtocolPanel logger={protocolLogger} tabs={ADVANCED_PROTOCOL_TABS} />
-                    </TabsContent>
+                    {/* Advanced Settings removed: NET/RTC → Mode, POWER/POWER_CAL → System, FTP → Logs. */}
 
                     {/* ==================== LOGS ==================== */}
                     <TabsContent value="logs" className="mt-6 space-y-4">
+                        {/* FTP System Logs (READLOGS / GETLOG black-box recorder) moved here from Advanced. */}
+                        <ProtocolPanel logger={protocolLogger} ftpOnly />
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2"><Terminal className="size-5" /> {t('loggerDetail.activity_logs')}</CardTitle>
