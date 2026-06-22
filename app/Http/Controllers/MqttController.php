@@ -45,11 +45,22 @@ class MqttController extends Controller
 
         $parsed = MqttService::parseInfoResponse($info);
 
+        // Read the INA219 power rails in the same sync pass (best-effort: a timeout or a board
+        // without power sensors must not fail the INFO sync). Persisted so the System tab cards
+        // survive the page's periodic reload — they refresh on the next sync, not every tick.
+        $powerRails = null;
+        try {
+            $powerRails = $mqtt->requestPower($idLogger);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("[MQTT] POWER read failed during info sync for {$idLogger}: {$e->getMessage()}");
+        }
+
         // Save parsed data to database
         $logger = $this->resolveLogger($idLogger);
         if ($logger) {
             $logger->update(array_merge(
                 array_filter($parsed, fn($v) => $v !== null),
+                $powerRails !== null ? ['power_rails' => $powerRails, 'power_read_at' => now()] : [],
                 [
                     'status' => 'online',
                     'last_connected_at' => now(),
@@ -64,6 +75,7 @@ class MqttController extends Controller
         return response()->json([
             'success' => true,
             'data' => $parsed,
+            'power' => $powerRails,
             'raw' => $info,
         ]);
     }
@@ -1206,12 +1218,17 @@ class MqttController extends Controller
         }
         $request->validate($validationRules);
 
-        // Build params from calibration fields
+        // Build params from calibration fields. `cast` overrides the default per-type coercion so a
+        // select can still emit a JSON number (e.g. GNSS `ch` → {"GNSS":{"cmd":"SET","ch":1}}).
         $params = [];
         foreach ($calibrationFields as $field) {
-            $params[$field['key']] = ($field['type'] ?? 'number') === 'number'
-                ? (float) $request->input($field['key'])
-                : $request->input($field['key']);
+            $value = $request->input($field['key']);
+            $cast  = $field['cast'] ?? (($field['type'] ?? 'number') === 'number' ? 'float' : 'string');
+            $params[$field['key']] = match ($cast) {
+                'int'   => (int) $value,
+                'float' => (float) $value,
+                default => $value,
+            };
         }
 
         $mqtt   = new MqttService();

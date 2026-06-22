@@ -118,6 +118,46 @@ class MqttService
     }
 
     /**
+     * Read live INA219 power rails ({"POWER":{"cmd":"READ"}}, spec §3.23).
+     *
+     * Returns only the rail readings present in the response (the set varies by hardware:
+     * BL110/BL1100 report bat/out5/out12/out24, BL11 reports bat only), each normalised to
+     * {v, a, w}. Returns null on timeout, error, or a board that doesn't support POWER.
+     *
+     * @return array<string, array{v: float|null, a: float|null, w: float|null}>|null
+     */
+    public function requestPower(string $idLogger, int $timeout = 10): ?array
+    {
+        // INFO already confirmed the device is online, so a supported board answers POWER almost
+        // instantly; the shorter cap just bounds the worst case if it goes quiet mid-sync.
+        $result = $this->sendProtocolCommand($idLogger, ['POWER' => ['cmd' => 'READ']], 'POWER', $timeout);
+
+        if (! ($result['success'] ?? false)) {
+            return null;
+        }
+
+        $power = $result['data']['POWER'] ?? null;
+        if (! is_array($power)) {
+            return null;
+        }
+
+        $rails = [];
+        foreach (['bat', 'out5', 'out12', 'out24'] as $rail) {
+            $reading = $power[$rail] ?? null;
+            if (! is_array($reading)) {
+                continue;
+            }
+            $rails[$rail] = [
+                'v' => isset($reading['v']) ? (float) $reading['v'] : null,
+                'a' => isset($reading['a']) ? (float) $reading['a'] : null,
+                'w' => isset($reading['w']) ? (float) $reading['w'] : null,
+            ];
+        }
+
+        return $rails ?: null;
+    }
+
+    /**
      * Parse INFO response into structured data for the logger model.
      *
      * Supports two formats:

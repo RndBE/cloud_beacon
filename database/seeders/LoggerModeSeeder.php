@@ -36,9 +36,18 @@ class LoggerModeSeeder extends Seeder
                 'slug'               => 'GNSS',
                 'label'              => 'GNSS',
                 'group'              => 'GNSS',
-                'has_calibration'    => false,
-                'calibration_fields' => null,
-                'description'        => 'Profil GNSS — memancarkan posisi/satelit dari receiver NMEA RS232 ke slot telemetry sensor1–sensor9.',
+                'has_calibration'    => true,
+                // The "setting" for GNSS is the RS232 channel the NMEA receiver is wired to.
+                // SET → {"GNSS":{"cmd":"SET","ch":1}}, GET → {"GNSS":{"cmd":"GET"}}. `cast`=int keeps
+                // `ch` a JSON number (the firmware reads it as int). ch2 is BL1100-only — the
+                // configurator hides it on BL110/BL11, and the device rejects it otherwise.
+                'calibration_fields' => [
+                    ['key' => 'ch', 'label' => 'Channel RS232', 'unit' => '', 'type' => 'select', 'cast' => 'int', 'options' => [
+                        ['value' => '1', 'label' => 'Channel 1 (RS232 Port 1)'],
+                        ['value' => '2', 'label' => 'Channel 2 (RS232 Port 2) — BL1100'],
+                    ]],
+                ],
+                'description'        => 'Profil GNSS — memancarkan posisi/satelit dari receiver NMEA RS232. Pilih channel RS232 (ch2 hanya untuk BL1100).',
             ],
             [
                 'slug'               => 'AWLR_US',

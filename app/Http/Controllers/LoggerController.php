@@ -133,6 +133,8 @@ class LoggerController extends Controller
             'battery' => $logger->battery,
             'temperature' => $logger->temperature,
             'humidity' => $logger->humidity,
+            'power' => $logger->power_rails,
+            'powerReadAt' => $logger->power_read_at?->format('Y-m-d H:i:s'),
             'sdcardTotal' => $logger->sdcard_total,
             'sdcardUsed' => $logger->sdcard_used,
             'gpsLat' => $logger->gps_lat,

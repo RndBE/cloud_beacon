@@ -1401,17 +1401,20 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         </div>
                         {actionButton('SET', 'P_OUT', () => send('P_OUT24', { P_OUT24: { cmd: 'SET', state: numberValue(out24State) } }, 'P_OUT'), 'destructive', 'Change the 24V power output?')}
                     </div>
-                    <div className="flex items-end gap-2">
-                        <div className="flex-1">
-                            <Field label="Output 12V">
-                                <select className={`${selectClass} w-full`} value={out12State} onChange={(event) => setOut12State(event.target.value)}>
-                                    <option value="1">ON</option>
-                                    <option value="0">OFF</option>
-                                </select>
-                            </Field>
+                    {/* BL11 (cellular) only exposes the 24V output — its P_OUT GET returns just {"24":x}. */}
+                    {!isCellularBoard && (
+                        <div className="flex items-end gap-2">
+                            <div className="flex-1">
+                                <Field label="Output 12V">
+                                    <select className={`${selectClass} w-full`} value={out12State} onChange={(event) => setOut12State(event.target.value)}>
+                                        <option value="1">ON</option>
+                                        <option value="0">OFF</option>
+                                    </select>
+                                </Field>
+                            </div>
+                            {actionButton('SET', 'P_OUT', () => send('P_OUT12', { P_OUT12: { cmd: 'SET', state: numberValue(out12State) } }, 'P_OUT'), 'destructive', 'Change the 12V power output?')}
                         </div>
-                        {actionButton('SET', 'P_OUT', () => send('P_OUT12', { P_OUT12: { cmd: 'SET', state: numberValue(out12State) } }, 'P_OUT'), 'destructive', 'Change the 12V power output?')}
-                    </div>
+                    )}
                 </div>
             </CommandCard>
 

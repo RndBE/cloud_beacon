@@ -158,6 +158,8 @@ interface CalibrationFieldDef {
     unit: string;
     // 'sensor-source' = a device sensor-name picker, populated live via SENSORS GET_NAME.
     type: 'number' | 'select' | 'sensor-source';
+    // Overrides the wire coercion (e.g. a 'select' whose value must be sent as a JSON int).
+    cast?: 'int' | 'float';
     min?: number;
     step?: number;
     options?: { value: string; label: string }[];
@@ -171,6 +173,16 @@ interface LoggerModeOption {
     calibrationFields: CalibrationFieldDef[] | null;
     description: string | null;
 }
+
+// Live INA219 reading for one power rail (volt / ampere / watt). Captured during INFO sync.
+interface PowerRailReading {
+    v: number | null;
+    a: number | null;
+    w: number | null;
+}
+// Rails present vary by hardware: bat is shown with the internal sensors; out5/out12/out24
+// render as the per-rail cards. The set depends on what the device returns.
+type PowerRails = Partial<Record<'bat' | 'out5' | 'out12' | 'out24', PowerRailReading>>;
 
 interface LoggerDetail {
     id: string;
@@ -214,6 +226,8 @@ interface LoggerDetail {
     battery: string | null;
     temperature: string | null;
     humidity: string | null;
+    power: PowerRails | null;
+    powerReadAt: string | null;
     lastConnected: string | null;
     deviceIdentifier: string | null;
     sensors: SensorItem[];
@@ -2271,21 +2285,39 @@ type FirmwareCheck = {
     fileSize?: number | null;
 };
 
+type FirmwarePhase = 'idle' | 'downloading' | 'downloaded' | 'installing' | 'online' | 'error';
+
+// Shared OTA state returned by useFirmwareOta and consumed by both the card (System tab)
+// and the live progress popup (rendered at page level so it survives tab switches).
+interface FirmwareOta {
+    checking: boolean;
+    info: FirmwareCheck | null;
+    dialogOpen: boolean;
+    setDialogOpen: (open: boolean) => void;
+    phase: FirmwarePhase;
+    setPhase: (phase: FirmwarePhase) => void;
+    ready: boolean;
+    percent: number;
+    progressMsg: string;
+    errorMsg: string;
+    handleDownload: () => void;
+    handleInstall: () => void;
+    state: FirmwareCheck['state'];
+    targetVersion: string | null | undefined;
+    showPopup: boolean;
+}
+
 /**
- * Firmware OTA card: checks the device's running firmware (from INFO sync) against the
- * latest firmware registered for its hardware model, lets the user download it (with a
- * live bottom-left progress popup), then install ({"OTA":{"cmd":"INSTALL"}}).
+ * Firmware OTA lifecycle hook. Owns the device firmware check, the download/install SSE
+ * streams, and the popup state. Lives at the page level (LoggerShow) — NOT inside a tab —
+ * so switching tabs within one logger keeps the download + popup alive; it resets only when
+ * `deviceIdentifier` changes (i.e. navigating to a different logger).
  */
-function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
-    deviceIdentifier: string | null;
-    currentVersion: string | null;
-    disabled?: boolean;
-}) {
-    const { t } = useTranslation();
+function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
     const [checking, setChecking] = useState(false);
     const [info, setInfo] = useState<FirmwareCheck | null>(null);
     const [dialogOpen, setDialogOpen] = useState(false);
-    const [phase, setPhase] = useState<'idle' | 'downloading' | 'downloaded' | 'installing' | 'online' | 'error'>('idle');
+    const [phase, setPhase] = useState<FirmwarePhase>('idle');
     // Persists independently of the popup: once a firmware image is downloaded onto the
     // device it stays "ready to install" until install() runs — so dismissing the popup
     // (or reloading the page) keeps the card on Install, not back to Update available.
@@ -2316,7 +2348,21 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
     }, [deviceIdentifier]);
 
     useEffect(() => { checkFirmware(); }, [checkFirmware]);
-    useEffect(() => () => closeStream(), [closeStream]);
+
+    // Reset the whole OTA flow when the logger changes (and on unmount): abort the in-flight
+    // stream and clear the popup. Because this hook is mounted at the page level, switching
+    // *tabs* does not change deviceIdentifier, so an active download is left untouched.
+    useEffect(() => {
+        return () => {
+            closeStream();
+            setPhase('idle');
+            setReady(false);
+            setPercent(0);
+            setProgressMsg('');
+            setErrorMsg('');
+            setInfo(null);
+        };
+    }, [deviceIdentifier, closeStream]);
 
     const handleDownload = useCallback(() => {
         if (!deviceIdentifier || !info?.ver || !info?.file) return;
@@ -2430,6 +2476,77 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
     const targetVersion = state === 'install' ? (info?.stagedVersion ?? info?.latestVersion) : info?.latestVersion;
     const showPopup = phase === 'downloading' || phase === 'downloaded' || phase === 'installing' || phase === 'online' || phase === 'error';
 
+    return {
+        checking, info, dialogOpen, setDialogOpen, phase, setPhase, ready, percent, progressMsg, errorMsg,
+        handleDownload, handleInstall, state, targetVersion, showPopup,
+    };
+}
+
+/**
+ * Bottom-right live OTA progress popup. Rendered at the page level (outside the tab bar) so
+ * it stays visible while the user moves between tabs of the same logger.
+ */
+function FirmwareOtaPopup({ ota }: { ota: FirmwareOta }) {
+    const { phase, percent, progressMsg, errorMsg, showPopup, setPhase, handleInstall } = ota;
+    if (!showPopup) return null;
+    return (
+        <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border bg-background p-4 shadow-lg animate-in slide-in-from-bottom-2 fade-in">
+            <div className="mb-2 flex items-center justify-between">
+                <p className="flex items-center gap-2 text-sm font-medium">
+                    {phase === 'downloading' && <><Loader2 className="size-4 animate-spin text-blue-500" />Mengunduh Firmware</>}
+                    {phase === 'downloaded' && <><CheckCircle2 className="size-4 text-emerald-500" />Unduhan Selesai</>}
+                    {phase === 'installing' && <><Loader2 className="size-4 animate-spin text-amber-500" />Menginstall…</>}
+                    {phase === 'online' && <><CheckCircle2 className="size-4 text-emerald-500" />OK — Perangkat Online</>}
+                    {phase === 'error' && <><XCircle className="size-4 text-red-500" />Gagal</>}
+                </p>
+                {(phase === 'downloaded' || phase === 'online' || phase === 'error') && (
+                    <button type="button" onClick={() => setPhase('idle')} className="text-muted-foreground hover:text-foreground">
+                        <XCircle className="size-4" />
+                    </button>
+                )}
+            </div>
+            {phase === 'error' ? (
+                <p className="text-xs text-red-500">{errorMsg}</p>
+            ) : phase === 'online' ? (
+                <p className="flex items-center gap-1.5 text-xs text-emerald-600">
+                    <CheckCircle2 className="size-3.5 shrink-0" /> {progressMsg || 'Perangkat kembali online dengan firmware baru.'}
+                </p>
+            ) : (
+                <>
+                    <Progress value={percent} className="h-2" />
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                        {phase === 'downloading'
+                            ? `Mengunduh ${percent}%`
+                            : phase === 'downloaded'
+                                ? 'Unduhan selesai'
+                                : phase === 'installing'
+                                    ? (progressMsg || 'Menginstall…')
+                                    : `${percent}%`}
+                    </p>
+                    {phase === 'downloaded' && (
+                        <Button size="sm" className="mt-3 w-full" onClick={handleInstall}>
+                            <Download className="mr-1 size-3.5" />Install Sekarang
+                        </Button>
+                    )}
+                </>
+            )}
+        </div>
+    );
+}
+
+/**
+ * Firmware OTA card: checks the device's running firmware (from INFO sync) against the
+ * latest firmware registered for its hardware model, lets the user download it (the live
+ * progress popup lives at the page level via FirmwareOtaPopup), then install ({"OTA":{"cmd":"INSTALL"}}).
+ */
+function FirmwareCard({ ota, currentVersion, disabled }: {
+    ota: FirmwareOta;
+    currentVersion: string | null;
+    disabled?: boolean;
+}) {
+    const { t } = useTranslation();
+    const { checking, info, dialogOpen, setDialogOpen, phase, ready, handleDownload, handleInstall, state, targetVersion } = ota;
+
     return (
         <>
             <Card>
@@ -2489,51 +2606,6 @@ function FirmwareCard({ deviceIdentifier, currentVersion, disabled }: {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
-
-            {/* Bottom-left live progress popup */}
-            {showPopup && (
-                <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border bg-background p-4 shadow-lg animate-in slide-in-from-bottom-2 fade-in">
-                    <div className="mb-2 flex items-center justify-between">
-                        <p className="flex items-center gap-2 text-sm font-medium">
-                            {phase === 'downloading' && <><Loader2 className="size-4 animate-spin text-blue-500" />Mengunduh Firmware</>}
-                            {phase === 'downloaded' && <><CheckCircle2 className="size-4 text-emerald-500" />Unduhan Selesai</>}
-                            {phase === 'installing' && <><Loader2 className="size-4 animate-spin text-amber-500" />Menginstall…</>}
-                            {phase === 'online' && <><CheckCircle2 className="size-4 text-emerald-500" />OK — Perangkat Online</>}
-                            {phase === 'error' && <><XCircle className="size-4 text-red-500" />Gagal</>}
-                        </p>
-                        {(phase === 'downloaded' || phase === 'online' || phase === 'error') && (
-                            <button type="button" onClick={() => setPhase('idle')} className="text-muted-foreground hover:text-foreground">
-                                <XCircle className="size-4" />
-                            </button>
-                        )}
-                    </div>
-                    {phase === 'error' ? (
-                        <p className="text-xs text-red-500">{errorMsg}</p>
-                    ) : phase === 'online' ? (
-                        <p className="flex items-center gap-1.5 text-xs text-emerald-600">
-                            <CheckCircle2 className="size-3.5 shrink-0" /> {progressMsg || 'Perangkat kembali online dengan firmware baru.'}
-                        </p>
-                    ) : (
-                        <>
-                            <Progress value={percent} className="h-2" />
-                            <p className="mt-1.5 text-xs text-muted-foreground">
-                                {phase === 'downloading'
-                                    ? `Mengunduh ${percent}%`
-                                    : phase === 'downloaded'
-                                        ? 'Unduhan selesai'
-                                        : phase === 'installing'
-                                            ? (progressMsg || 'Menginstall…')
-                                            : `${percent}%`}
-                            </p>
-                            {phase === 'downloaded' && (
-                                <Button size="sm" className="mt-3 w-full" onClick={handleInstall}>
-                                    <Download className="mr-1 size-3.5" />Install Sekarang
-                                </Button>
-                            )}
-                        </>
-                    )}
-                </div>
-            )}
         </>
     );
 }
@@ -3944,6 +4016,10 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     const isArr = logger.loggerMode === 'ARR';
     // AWLR Ultrasonik/Radar uses a sensor-style title ("<label> Sensor") instead of "Kalibrasi <label>".
     const isAwlrUs = logger.loggerMode === 'AWLR_US';
+    // GNSS's "calibration" is just the RS232 channel its NMEA receiver is wired to — sensor/setting
+    // wording, and ch2 (RS232 port 2) is BL1100-only so it's hidden on BL110/BL11.
+    const isGnss = logger.loggerMode === 'GNSS';
+    const gnssSupportsCh2 = inferBoardVariant(logger) === 'BL1100';
 
     const [phase, setPhase] = useState<CalibPhase>('idle');
     const [message, setMessage] = useState('');
@@ -4078,12 +4154,14 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                 <div className="flex items-start justify-between gap-3">
                     <div>
                         <CardTitle className="flex items-center gap-2">
-                            <SlidersHorizontal className="size-5" /> {isArr ? 'ARR Sensor' : isAwlrUs ? `${activeMode.label} Sensor` : `Kalibrasi ${activeMode.label}`}
+                            <SlidersHorizontal className="size-5" /> {isArr ? 'ARR Sensor' : isAwlrUs ? `${activeMode.label} Sensor` : isGnss ? 'GNSS Channel' : `Kalibrasi ${activeMode.label}`}
                         </CardTitle>
                         <CardDescription>
-                            {logger.calibratedAt
-                                ? <>Terakhir kalibrasi: {logger.calibratedAt}</>
-                                : 'Belum pernah dikalibrasi'
+                            {isGnss
+                                ? 'Channel RS232 untuk receiver GNSS'
+                                : logger.calibratedAt
+                                    ? <>Terakhir kalibrasi: {logger.calibratedAt}</>
+                                    : 'Belum pernah dikalibrasi'
                             }
                         </CardDescription>
                     </div>
@@ -4180,7 +4258,10 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                                             <SelectValue placeholder={`Pilih ${f.label.toLowerCase()}`} />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {f.options.map(opt => (
+                                            {(isGnss && f.key === 'ch' && !gnssSupportsCh2
+                                                ? f.options.filter(opt => opt.value !== '2')
+                                                : f.options
+                                            ).map(opt => (
                                                 <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                                             ))}
                                         </SelectContent>
@@ -4245,7 +4326,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                             disabled={!allFilled || !logger.deviceIdentifier || logger.status === 'offline'}
                             onClick={handleCalibrate}
                         >
-                            <SlidersHorizontal className="size-4" /> {isArr ? 'Apply Setting' : 'Kirim Kalibrasi'}
+                            <SlidersHorizontal className="size-4" /> {isArr ? 'Apply Setting' : isGnss ? 'Set Channel' : 'Kirim Kalibrasi'}
                         </Button>
                     )}
 
@@ -4687,6 +4768,11 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     const modulePanelRef = useRef<ProtocolPanelHandle>(null);
     const ioPanelRef = useRef<ProtocolPanelHandle>(null);
 
+    // Firmware OTA lives at the page level (not inside the System tab) so the live download/install
+    // progress popup keeps running when the user switches tabs within this logger. It resets only
+    // when deviceIdentifier changes — i.e. when navigating to a different logger.
+    const firmwareOta = useFirmwareOta(logger.deviceIdentifier);
+
     // Surface the logger's spontaneous EWS/GCM pushes as top-right toasts (formatted, never raw MQTT).
     // Only an online logger can push events, so we skip the SSE entirely when offline — that avoids
     // holding a PHP worker open for a device that will never send anything.
@@ -5047,6 +5133,29 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             </CardContent>
                         </Card>
 
+                        {/* Power Rails — live INA219 readings per output rail (5V/12V/24V), captured
+                            during the INFO sync (POWER READ). Only rails the device reports are shown. */}
+                        {logger.power && (logger.power.out5 || logger.power.out12 || logger.power.out24) && (
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Power Rails</CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                    <div className="grid gap-3 sm:grid-cols-3">
+                                        {logger.power.out5 && <PowerRailCard label="5V" color="emerald" reading={logger.power.out5} />}
+                                        {logger.power.out12 && <PowerRailCard label="12V" color="blue" reading={logger.power.out12} />}
+                                        {logger.power.out24 && <PowerRailCard label="24V" color="violet" reading={logger.power.out24} />}
+                                    </div>
+                                    {logger.powerReadAt && (
+                                        <p className="mt-3 text-xs text-muted-foreground flex items-center gap-1">
+                                            <Clock className="size-3" />
+                                            Last updated: {logger.powerReadAt}
+                                        </p>
+                                    )}
+                                </CardContent>
+                            </Card>
+                        )}
+
                         <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
                                 <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> {t('loggerDetail.system_information')}</CardTitle></CardHeader>
@@ -5084,10 +5193,8 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 </CardContent>
                             </Card>
                         </div>
-                        {/* POWER (live INA219 read) + POWER_CAL — moved here from Advanced Settings. */}
-                        <ProtocolPanel logger={protocolLogger} powerOnly />
                         <FirmwareCard
-                            deviceIdentifier={logger.deviceIdentifier}
+                            ota={firmwareOta}
                             currentVersion={logger.firmwareVersion}
                             disabled={logger.status === 'offline'}
                         />
@@ -5244,6 +5351,10 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         </AlertDialogFooter>
                     </AlertDialogContent>
                 </AlertDialog>
+
+                {/* Firmware OTA progress popup — rendered here (page level, outside the tab bar) so it
+                    survives tab switches within this logger. */}
+                <FirmwareOtaPopup ota={firmwareOta} />
             </div>
         </AppLayout >
     );
@@ -5252,6 +5363,43 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 // =============================================================================
 // Helper Components
 // =============================================================================
+
+// One power-rail card (e.g. "5V") showing tegangan / arus / daya, styled like the
+// internal-sensor tiles. Missing readings render as "—".
+function PowerRailCard({ label, color, reading }: { label: string; color: string; reading: PowerRailReading }) {
+    const colorMap: Record<string, string> = {
+        emerald: 'bg-emerald-500/10 text-emerald-500',
+        blue: 'bg-blue-500/10 text-blue-500',
+        violet: 'bg-violet-500/10 text-violet-500',
+    };
+    const fmt = (n: number | null) => (n === null || n === undefined ? '—' : n.toFixed(3));
+    const rows: [string, number | null, string][] = [
+        ['Tegangan', reading.v, 'V'],
+        ['Arus', reading.a, 'A'],
+        ['Daya', reading.w, 'W'],
+    ];
+    return (
+        <div className="rounded-lg border p-4">
+            <div className="mb-3 flex items-center gap-2">
+                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${colorMap[color] || ''}`}>
+                    <Zap className="size-4" />
+                </div>
+                <p className="text-sm font-semibold">{label}</p>
+            </div>
+            <dl className="space-y-1.5 text-sm">
+                {rows.map(([dtLabel, value, unit]) => (
+                    <div key={dtLabel} className="flex items-center justify-between">
+                        <dt className="text-muted-foreground">{dtLabel}</dt>
+                        <dd className="font-mono font-medium">
+                            {fmt(value)}
+                            <span className="ml-1 text-xs font-normal text-muted-foreground">{unit}</span>
+                        </dd>
+                    </div>
+                ))}
+            </dl>
+        </div>
+    );
+}
 
 function InfoCard({ icon: Icon, label, value, color }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string; color: string }) {
     const colorMap: Record<string, string> = {
