@@ -1,9 +1,11 @@
 import { Head, useForm } from '@inertiajs/react';
-import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { BackfillProgress } from '@/components/data-audit/backfill-progress';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import { useBackfillStatus  } from '@/hooks/use-backfill-status';
+import type {BackfillProgress as Progress} from '@/hooks/use-backfill-status';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
@@ -18,93 +20,44 @@ type Props = {
     present: number;
     /** Array of 'H:i' strings for every missing minute of the day. */
     missing: string[];
-    /**
-     * Backfill task status → count. SPARSE: statuses with zero rows are
-     * omitted by the backend. UI must default all 7 statuses to 0.
-     */
-    counts: Record<string, number>;
+    progress: Progress;
 };
-
-type BackfillForm = {
-    date: string;
-};
-
-// All possible task statuses the backend can emit.
-const ALL_STATUSES = ['pending', 'requested', 'filled', 'no_file', 'not_found', 'future', 'failed'] as const;
-type TaskStatus = (typeof ALL_STATUSES)[number];
 
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
 
-/** Merge sparse counts from the backend over a zero-defaulted baseline. */
-function mergeCounts(sparse: Record<string, number>): Record<TaskStatus, number> {
-    const base = Object.fromEntries(ALL_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>;
-    for (const status of ALL_STATUSES) {
-        if (sparse[status] !== undefined) {
-            base[status] = sparse[status];
-        }
-    }
-    return base;
-}
-
-/**
- * Format a duration in seconds as "Xh Ym".
- * Examples: 3600 → "1h 0m", 125 → "0h 2m", 0 → "0h 0m"
- */
-function formatEta(totalSeconds: number): string {
-    const h = Math.floor(totalSeconds / 3600);
-    const m = Math.round((totalSeconds % 3600) / 60);
-    return `${h}h ${m}m`;
+function cellClass(key: string, missingSet: Set<string>, updates: Record<string, string>): string {
+    const u = updates[key];
+    if (u === 'filled') return 'aspect-square bg-emerald-500';
+    if (u === 'requested') return 'aspect-square animate-pulse bg-amber-500';
+    if (u === 'failed') return 'aspect-square bg-red-700';
+    if (u === 'no_file' || u === 'not_found' || u === 'future') return 'aspect-square bg-slate-400';
+    if (missingSet.has(key)) return 'aspect-square bg-destructive/70';
+    return 'aspect-square bg-muted';
 }
 
 // -----------------------------------------------------------------------
 // Page component
 // -----------------------------------------------------------------------
 
-export default function DataAuditShow({ logger, date, expected, present, missing, counts }: Props) {
+export default function DataAuditShow({ logger, date, expected, present, missing, progress: initialProgress }: Props) {
     const { t } = useTranslation();
 
-    // --- Backfill form --------------------------------------------------
-    const { post, processing } = useForm<BackfillForm>({ date });
+    const { post, processing } = useForm({ date });
+    const retry = useForm({ date });
 
-    // --- Live status panel ----------------------------------------------
-    // Initialise from server-rendered (sparse) counts, zero-defaulted.
-    const [live, setLive] = useState<Record<TaskStatus, number>>(() => mergeCounts(counts));
+    const progress = useBackfillStatus(logger.id, date, initialProgress);
 
-    useEffect(() => {
-        const intervalId = setInterval(async () => {
-            try {
-                const res = await fetch(`/data-audit/${logger.id}/status?date=${date}`, {
-                    headers: { Accept: 'application/json' },
-                });
-                if (!res.ok) return;
-                const json = (await res.json()) as { counts?: Record<string, number> };
-                setLive(mergeCounts(json.counts ?? {}));
-            } catch {
-                // Network errors — silently ignore; next tick will retry.
-            }
-        }, 5000);
-
-        return () => clearInterval(intervalId);
-    }, [logger.id, date]);
-
-    // --- Heatmap cells --------------------------------------------------
+    // Live heatmap: overlay backfill `updates` on the initial missing set.
     const missingSet = new Set(missing);
-
     const cells = Array.from({ length: 1440 }, (_, i) => {
         const hh = String(Math.floor(i / 60)).padStart(2, '0');
         const mm = String(i % 60).padStart(2, '0');
         const key = `${hh}:${mm}`;
-        return { key, isMissing: missingSet.has(key) };
+        return { key, cls: cellClass(key, missingSet, progress.updates) };
     });
 
-    // --- ETA ------------------------------------------------------------
-    // Each missing minute requires one backfill task (~10 s each).
-    const etaSeconds = missing.length * 10;
-    const eta = formatEta(etaSeconds);
-
-    // --- Breadcrumbs ----------------------------------------------------
     const breadcrumbs: BreadcrumbItem[] = [
         { title: t('nav.dashboard', 'Dashboard'), href: '/dashboard' },
         { title: t('data_audit.title', 'Data Audit'), href: '/data-audit' },
@@ -166,35 +119,21 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                     <CardContent className="p-4">
                         <div className="grid grid-cols-[repeat(60,minmax(0,1fr))] gap-px">
                             {cells.map((cell) => (
-                                <div
-                                    key={cell.key}
-                                    title={cell.key}
-                                    className={
-                                        cell.isMissing
-                                            ? 'aspect-square bg-destructive/70'
-                                            : 'aspect-square bg-muted'
-                                    }
-                                />
+                                <div key={cell.key} title={cell.key} className={cell.cls} />
                             ))}
                         </div>
                     </CardContent>
                 </Card>
 
-                {/* ── Backfill + status row ───────────────────────────── */}
-                <div className="grid gap-6 md:grid-cols-2">
-                    {/* Backfill action */}
+                {/* ── Backfill hero ───────────────────────────────────── */}
+                {progress.total === 0 ? (
                     <Card>
                         <CardHeader>
-                            <CardTitle className="text-base">
-                                {t('data_audit.backfill_title', 'Backfill')}
-                            </CardTitle>
+                            <CardTitle className="text-base">{t('data_audit.backfill_title', 'Backfill')}</CardTitle>
                             <CardDescription>
                                 {missing.length === 0
                                     ? t('data_audit.no_gaps', 'No gaps for this day — all minutes are present.')
-                                    : t(
-                                          'data_audit.backfill_description',
-                                          'Queue a backfill job for every missing minute of the day.',
-                                      )}
+                                    : t('data_audit.backfill_description', 'Queue a backfill job for every missing minute of the day.')}
                             </CardDescription>
                         </CardHeader>
                         <Separator />
@@ -204,40 +143,20 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                                     {t('data_audit.all_present', 'All minutes are present. No backfill needed.')}
                                 </p>
                             ) : (
-                                <Button
-                                    disabled={processing || missing.length === 0}
-                                    onClick={() => post(`/data-audit/${logger.id}/backfill`)}
-                                >
-                                    {t('data_audit.backfill_btn', 'Backfill all gaps')} ({missing.length}{' '}
-                                    {t('data_audit.min', 'min')} · ~{eta})
+                                <Button disabled={processing} onClick={() => post(`/data-audit/${logger.id}/backfill`)}>
+                                    {t('data_audit.backfill_btn', 'Backfill all gaps')} ({missing.length} {t('data_audit.min', 'min')} · ~
+                                    {Math.floor((missing.length * 10) / 3600)}h {Math.round(((missing.length * 10) % 3600) / 60)}m)
                                 </Button>
                             )}
                         </CardContent>
                     </Card>
-
-                    {/* Live status panel */}
-                    <Card>
-                        <CardHeader>
-                            <CardTitle className="text-base">
-                                {t('data_audit.status_title', 'Backfill task status')}
-                            </CardTitle>
-                            <CardDescription>
-                                {t('data_audit.status_description', 'Updates every 5 seconds.')}
-                            </CardDescription>
-                        </CardHeader>
-                        <Separator />
-                        <CardContent className="p-4">
-                            <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3 md:grid-cols-2 lg:grid-cols-3">
-                                {ALL_STATUSES.map((status) => (
-                                    <div key={status} className="flex items-center justify-between gap-2">
-                                        <dt className="font-mono text-xs text-muted-foreground">{status}</dt>
-                                        <dd className="tabular-nums font-semibold">{live[status]}</dd>
-                                    </div>
-                                ))}
-                            </dl>
-                        </CardContent>
-                    </Card>
-                </div>
+                ) : (
+                    <BackfillProgress
+                        progress={progress}
+                        retrying={retry.processing}
+                        onRetryFailed={() => retry.post(`/data-audit/${logger.id}/retry-failed`)}
+                    />
+                )}
             </div>
         </AppLayout>
     );
