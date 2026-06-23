@@ -23,7 +23,7 @@ Add the following `[program:cloud_beacon-backfill]` block to your Supervisor con
 
 ```ini
 [program:cloud_beacon-backfill]
-command=php /var/www/vhosts/<domain>/httpdocs/artisan queue:work --queue=backfill --sleep=1 --tries=3 --timeout=120
+command=php /var/www/vhosts/<domain>/httpdocs/artisan queue:work --queue=backfill --sleep=1 --tries=3 --timeout=60
 numprocs=4
 process_name=%(program_name)s_%(process_num)02d
 autostart=true
@@ -39,7 +39,7 @@ stdout_logfile=/var/log/cloud_beacon-backfill.log
 - `--queue=backfill`: Routes only backfill jobs to this worker; the existing default worker continues handling other queues.
 - `--sleep=1`: Poll interval for new jobs (1 second).
 - `--tries=3`: Retry failed backfill jobs up to 3 times.
-- `--timeout=120`: Job timeout of 120 seconds covers one fire-and-confirm cycle and accounts for network latency. Long total backfill runtime is spread across many short re-dispatched jobs, not a single long-running process.
+- `--timeout=60`: Job timeout of 60 seconds (must be less than the queue's `retry_after=90` to avoid duplicate concurrent jobs). This comfortably covers one fire-and-confirm cycle (~25s) and accounts for network latency. Long total backfill runtime is spread across many short re-dispatched jobs, not a single long-running process.
 
 Replace `<domain>` with your domain (e.g., `example.com`) and `<plesk-user>` with the Plesk application user (e.g., `u123456789`).
 
@@ -65,7 +65,7 @@ After deploying the backfill worker configuration:
    ```
 
 4. **Verify the scheduler will pick up audit scans:**
-   - The existing `audit:scan` command should already be registered in your `app/Console/Kernel.php` with an appropriate schedule (e.g., every 5 minutes).
+   - The `audit:scan` command is scheduled **hourly** in **`routes/console.php`** via `Schedule::command('audit:scan')->hourly()->withoutOverlapping()->runInBackground();`.
    - No additional scheduler configuration is required; the existing Laravel scheduler will continue to trigger `audit:scan` as configured.
    - Confirm the scheduler is running under Supervisor alongside the default queue worker.
 

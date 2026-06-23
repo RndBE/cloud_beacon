@@ -26,7 +26,7 @@ class RunLoggerBackfill implements ShouldQueue
     public function middleware(): array
     {
         // Only one backfill job per logger at a time → sequential per logger.
-        return [(new WithoutOverlapping($this->logger->id))->dontRelease()];
+        return [(new WithoutOverlapping($this->logger->id))->dontRelease()->expireAfter(180)];
     }
 
     public function handle(MqttService $mqtt): void
@@ -80,6 +80,7 @@ class RunLoggerBackfill implements ShouldQueue
 
             case 'NO_FILE':
                 $task->status = DataBackfillTask::NO_FILE;
+                $task->error = null;
                 // No file for the whole day → remaining same-day pending are unrecoverable.
                 DataBackfillTask::where('logger_id', $this->logger->id)
                     ->where('status', DataBackfillTask::PENDING)
@@ -92,10 +93,12 @@ class RunLoggerBackfill implements ShouldQueue
 
             case 'NOT_FOUND':
                 $task->status = DataBackfillTask::NOT_FOUND;
+                $task->error = null;
                 break;
 
             case 'FUTURE':
                 $task->status = DataBackfillTask::FUTURE;
+                $task->error = null;
                 break;
 
             default: // null / timeout
@@ -115,7 +118,7 @@ class RunLoggerBackfill implements ShouldQueue
 
         do {
             $exists = SensorLog::where('logger_id', $this->logger->id)
-                ->where('recorded_at', $minute->format('Y-m-d H:i:00'))
+                ->whereBetween('recorded_at', [$minute->copy()->startOfMinute(), $minute->copy()->endOfMinute()])
                 ->exists();
             if ($exists) {
                 return true;
