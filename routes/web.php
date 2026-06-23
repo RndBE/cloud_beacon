@@ -197,6 +197,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::put('loggers/{id}/platform', [LoggerController::class, 'updatePlatform'])
         ->name('loggers.updatePlatform');
 
+    // Data Audit
+    Route::get('data-audit', [\App\Http\Controllers\DataAuditController::class, 'index'])->name('data-audit.index');
+    Route::get('data-audit/{id}', [\App\Http\Controllers\DataAuditController::class, 'show'])->name('data-audit.show');
+    Route::get('data-audit/{id}/status', [\App\Http\Controllers\DataAuditController::class, 'status'])->name('data-audit.status');
+    Route::post('data-audit/{id}/backfill', [\App\Http\Controllers\DataAuditController::class, 'backfill'])->name('data-audit.backfill');
+
     // Projects CRUD
     Route::get('projects', [ProjectController::class, 'index'])
         ->name('projects.index');

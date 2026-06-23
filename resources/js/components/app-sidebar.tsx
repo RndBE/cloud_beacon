@@ -1,5 +1,5 @@
 import { Link } from '@inertiajs/react';
-import { ArrowUpDown, Box, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
+import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -58,6 +58,11 @@ export function AppSidebar() {
             title: 'Forwarding Logs',
             href: '/forwarding-logs',
             icon: ArrowUpDown,
+        },
+        {
+            title: 'Data Audit',
+            href: '/data-audit',
+            icon: ClipboardCheck,
         },
     ];
 
