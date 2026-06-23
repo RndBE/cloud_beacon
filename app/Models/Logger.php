@@ -2,12 +2,15 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Logger extends Model
 {
+    use HasFactory;
+
     /**
      * Sensor types that are built-in to the logger hardware (not external).
      * These are read from MQTT INFO and stored on the loggers table directly.
