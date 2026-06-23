@@ -1205,6 +1205,82 @@ class MqttService
     }
 
     /**
+     * Build the RESEND command payload per firmware contract.
+     *
+     * @param string $hari  Date string (e.g. "2026-06-22")
+     * @param string $jam   Hour string  (e.g. "08:08")
+     * @return string JSON-encoded payload
+     */
+    protected function buildResendPayload(string $hari, string $jam): string
+    {
+        return json_encode(['RESEND' => ['cmd' => 'GET', 'hari' => $hari, 'jam' => $jam]]);
+    }
+
+    /**
+     * Send a RESEND command to a logger and wait for the firmware ACK.
+     *
+     * Publishes {"RESEND":{"cmd":"GET","hari":<hari>,"jam":<jam>}} to sub_{idLogger},
+     * subscribes to pub_{idLogger}, and parses RESEND.status from the ACK.
+     *
+     * @param string   $idLogger  Device identifier
+     * @param string   $hari      Date string (e.g. "2026-06-22")
+     * @param string   $jam       Hour string  (e.g. "08:08")
+     * @param int|null $timeout   Seconds to wait; defaults to config('backfill.ack_timeout', 10)
+     * @return array{success: bool, status: string|null, message: string}
+     */
+    public function sendResend(string $idLogger, string $hari, string $jam, ?int $timeout = null): array
+    {
+        $timeout  = $timeout ?? (int) config('backfill.ack_timeout', 10);
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $status   = null;
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($timeout)
+                ->setKeepAliveInterval(15);
+
+            $mqtt->connect($connectionSettings, true);
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$status, $mqtt) {
+                $data = json_decode($message, true);
+                if (is_array($data) && isset($data['RESEND']['status'])) {
+                    $status = (string) $data['RESEND']['status'];
+                    $mqtt->interrupt();
+                }
+            }, 0);
+
+            $mqtt->publish($subTopic, $this->buildResendPayload($hari, $jam), 0);
+
+            $start = microtime(true);
+            while ($status === null && (microtime(true) - $start) < $timeout) {
+                $mqtt->loopOnce(microtime(true) - $start, true);
+                usleep(100_000);
+            }
+
+            $mqtt->disconnect();
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [RESEND] {$e->getMessage()}");
+            return ['success' => false, 'status' => null, 'message' => 'MQTT error: ' . $e->getMessage()];
+        }
+
+        if ($status === null) {
+            return ['success' => false, 'status' => null, 'message' => "Timeout after {$timeout}s — no RESEND ack"];
+        }
+
+        return [
+            'success' => $status === 'OK',
+            'status'  => $status,
+            'message' => "RESEND ack: {$status}",
+        ];
+    }
+
+    /**
      * Parse MCU error response.
      *
      * @param  string $rawMessage  JSON string from MCU
