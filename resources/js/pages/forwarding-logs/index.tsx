@@ -211,7 +211,7 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
     }
 
     const hasActiveFilters = localFilters.status !== 'all' || localFilters.target || localFilters.logger_id || localFilters.from || localFilters.to;
-    const successRate = stats.totalToday > 0 ? Math.round((stats.successToday / (stats.totalToday - stats.skippedToday || 1)) * 100) : 0;
+    const successRate = stats.totalToday > 0 ? (stats.successToday / (stats.totalToday - stats.skippedToday || 1)) * 100 : 0;
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
@@ -268,7 +268,7 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                             <div className="min-w-0">
                                 <p className="text-sm text-muted-foreground">Skipped</p>
                                 <p className="text-2xl font-bold">{stats.skippedToday}
-                                    <span className="ml-2 text-xs font-normal text-muted-foreground">({successRate}% rate)</span>
+                                    <span className="ml-2 text-xs font-normal text-muted-foreground">({successRate.toFixed(2)}% rate)</span>
                                 </p>
                             </div>
                         </CardContent>

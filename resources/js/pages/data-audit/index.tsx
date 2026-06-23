@@ -55,7 +55,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 
 function completenessPercent(row: AuditRow): number {
     if (row.expected === 0) return 100;
-    return Math.min(100, Math.round((row.present / row.expected) * 100));
+    return Math.min(100, (row.present / row.expected) * 100);
 }
 
 function completenessTone(pct: number): string {
@@ -247,7 +247,7 @@ export default function DataAuditIndex({ audits }: DataAuditIndexProps) {
                                                 <TableCell className="text-sm">{row.date}</TableCell>
                                                 <TableCell>
                                                     <span className={`text-sm font-semibold ${completenessTone(pct)}`}>
-                                                        {pct}%
+                                                        {pct.toFixed(2)}%
                                                     </span>
                                                 </TableCell>
                                                 <TableCell className="text-sm">{row.missing}</TableCell>
