@@ -165,4 +165,18 @@ class DataAuditService
             ]
         );
     }
+
+    public function retryFailed(Logger $logger, CarbonInterface $date): int
+    {
+        $day = Carbon::parse($date);
+
+        return DataBackfillTask::where('logger_id', $logger->id)
+            ->whereBetween('minute', [$day->copy()->startOfDay(), $day->copy()->endOfDay()])
+            ->where('status', DataBackfillTask::FAILED)
+            ->update([
+                'status'   => DataBackfillTask::PENDING,
+                'attempts' => 0,
+                'error'    => null,
+            ]);
+    }
 }
