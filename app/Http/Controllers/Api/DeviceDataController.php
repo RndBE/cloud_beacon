@@ -158,16 +158,20 @@ class DeviceDataController extends Controller
                 ]);
             }
 
-            // Simpan ke histori sensor_logs (selalu, baik matched maupun tidak)
-            SensorLog::create([
-                'logger_id'   => $logger->id,
-                'sensor_id'   => $sensorId,
-                'sensor_name' => $item['nama'],
-                'sensor_key'  => $item['key'],
-                'value'       => $item['nilai'],
-                'unit'        => $item['satuan'],
-                'recorded_at' => $recordedAt,
-            ]);
+            // Simpan ke histori sensor_logs (idempotent: upsert berdasarkan logger+key+waktu)
+            SensorLog::updateOrCreate(
+                [
+                    'logger_id'   => $logger->id,
+                    'sensor_key'  => $item['key'],
+                    'recorded_at' => $recordedAt,
+                ],
+                [
+                    'sensor_id'   => $sensorId,
+                    'sensor_name' => $item['nama'],
+                    'value'       => $item['nilai'],
+                    'unit'        => $item['satuan'],
+                ]
+            );
 
             $results[] = [
                 'key'          => $item['key'],
