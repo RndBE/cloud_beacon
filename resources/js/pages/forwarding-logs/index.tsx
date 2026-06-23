@@ -2,6 +2,7 @@ import { Head, router } from '@inertiajs/react';
 import {
     AlertTriangle,
     ArrowUpDown,
+    CalendarDays,
     CheckCircle2,
     ChevronDown,
     ChevronLeft,
@@ -222,9 +223,6 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                         <ArrowUpDown className="size-6" />
                         Forwarding Logs
                     </h1>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Monitoring log pengiriman data ke platform integrasi
-                    </p>
                 </div>
 
                 {/* Summary Cards */}
@@ -280,17 +278,20 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                 {/* Filters */}
                 <Card>
                     <CardContent className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-3">
-                            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground border-r pr-3 h-6">
-                                <Filter className="size-4" /> Filter
+                        <div className="flex flex-wrap items-center gap-2.5">
+                            <div className="flex items-center gap-2 pr-1 text-sm font-semibold text-foreground/80">
+                                <span className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                                    <Filter className="size-3.5" />
+                                </span>
+                                Filter
                             </div>
-                            <div className="w-[140px]">
+                            <div className="w-[150px]">
                                 <Select
                                     key={`status-${localFilters.status}`}
                                     value={localFilters.status || 'all'}
                                     onValueChange={(v) => applyFilters({ status: v })}
                                 >
-                                    <SelectTrigger className="h-9 text-sm">
+                                    <SelectTrigger className="h-10 rounded-lg border-border/60 bg-muted/40 text-sm font-medium shadow-sm transition-colors hover:bg-muted focus:ring-2 focus:ring-primary/20">
                                         <SelectValue placeholder="Status" />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -301,13 +302,13 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                     </SelectContent>
                                 </Select>
                             </div>
-                            <div className="w-[220px] min-w-0">
+                            <div className="w-[230px] min-w-0">
                                 <Select
                                     key={`logger-${localFilters.logger_id}`}
                                     value={localFilters.logger_id || 'all'}
                                     onValueChange={(v) => applyFilters({ logger_id: v === 'all' ? '' : v })}
                                 >
-                                    <SelectTrigger className="h-9 text-sm">
+                                    <SelectTrigger className="h-10 rounded-lg border-border/60 bg-muted/40 text-sm font-medium shadow-sm transition-colors hover:bg-muted focus:ring-2 focus:ring-primary/20">
                                         <SelectValue placeholder="Semua Logger" />
                                     </SelectTrigger>
                                     <SelectContent position="popper" className="min-w-[280px]">
@@ -323,33 +324,36 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                     </SelectContent>
                                 </Select>
                             </div>
-                            <div className="relative w-[180px]">
-                                <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                            <div className="relative w-[190px]">
+                                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                                 <Input
-                                    className="h-9 pl-9 text-sm"
+                                    className="h-10 rounded-lg border-border/60 bg-muted/40 pl-9 text-sm shadow-sm transition-colors hover:bg-muted focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-primary/20"
                                     placeholder="Target name..."
                                     value={localFilters.target}
                                     onChange={(e) => setLocalFilters(p => ({ ...p, target: e.target.value }))}
                                     onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
                                 />
                             </div>
-                            <div className="flex items-center gap-2">
-                                <Input
+                            <div className="flex h-10 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-3 shadow-sm transition-colors focus-within:bg-background focus-within:ring-2 focus-within:ring-primary/20">
+                                <CalendarDays className="size-4 shrink-0 text-muted-foreground" />
+                                <input
                                     type="date"
-                                    className="h-9 w-[130px] text-sm"
+                                    aria-label="Tanggal mulai"
+                                    className="w-[112px] bg-transparent text-sm text-foreground outline-none [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                                     value={localFilters.from}
                                     onChange={(e) => applyFilters({ from: e.target.value })}
                                 />
-                                <span className="text-muted-foreground">—</span>
-                                <Input
+                                <span className="text-sm text-muted-foreground/60">—</span>
+                                <input
                                     type="date"
-                                    className="h-9 w-[130px] text-sm"
+                                    aria-label="Tanggal akhir"
+                                    className="w-[112px] bg-transparent text-sm text-foreground outline-none [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                                     value={localFilters.to}
                                     onChange={(e) => applyFilters({ to: e.target.value })}
                                 />
                             </div>
                             {hasActiveFilters && (
-                                <Button variant="ghost" size="sm" className="h-9 gap-1 text-sm ml-auto" onClick={clearFilters}>
+                                <Button variant="ghost" size="sm" className="ml-auto h-10 gap-1 rounded-lg text-sm text-muted-foreground hover:text-foreground" onClick={clearFilters}>
                                     <X className="size-4" /> Clear
                                 </Button>
                             )}

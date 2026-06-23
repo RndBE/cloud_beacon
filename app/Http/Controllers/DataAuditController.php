@@ -32,7 +32,7 @@ class DataAuditController extends Controller
         }
         $loggerIds = $scope->pluck('id');
 
-        $audits = LoggerDailyAudit::with('logger:id,name,device_identifier')
+        $audits = LoggerDailyAudit::with(['logger:id,name,device_identifier,project_id', 'logger.project:id,name,color'])
             ->whereIn('logger_id', $loggerIds)
             ->whereIn('id', function ($q) use ($loggerIds) {
                 $q->selectRaw('MAX(id)')->from('logger_daily_audits')

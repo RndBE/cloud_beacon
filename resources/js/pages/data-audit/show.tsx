@@ -1,4 +1,5 @@
-import { Head, useForm } from '@inertiajs/react';
+import { Head, router, useForm } from '@inertiajs/react';
+import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { BackfillProgress } from '@/components/data-audit/backfill-progress';
 import { Button } from '@/components/ui/button';
@@ -49,6 +50,20 @@ export default function DataAuditShow({ logger, date, expected, present, missing
 
     const progress = useBackfillStatus(logger.id, date, initialProgress);
 
+    // Local "today" (browser timezone) — audits can't run into the future.
+    const today = new Date().toLocaleDateString('en-CA');
+
+    function goToDate(next: string) {
+        if (!next || next === date) return;
+        router.get(`/data-audit/${logger.id}`, { date: next }, { preserveScroll: true, preserveState: false });
+    }
+
+    function shiftDate(days: number) {
+        const d = new Date(`${date}T00:00:00`);
+        d.setDate(d.getDate() + days);
+        goToDate(d.toLocaleDateString('en-CA'));
+    }
+
     // Live heatmap: overlay backfill `updates` on the initial missing set.
     const missingSet = new Set(missing);
     const cells = Array.from({ length: 1440 }, (_, i) => {
@@ -73,31 +88,63 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                 {/* ── Header card ─────────────────────────────────────── */}
                 <Card>
                     <CardHeader>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                             <div>
-                                <CardTitle>
-                                    {logger.name}
-                                    <span className="ml-2 font-normal text-muted-foreground">— {date}</span>
-                                </CardTitle>
+                                <CardTitle>{logger.name}</CardTitle>
                                 <CardDescription className="mt-1 font-mono text-xs">
                                     {logger.device_identifier}
                                 </CardDescription>
                             </div>
-                            <p className="shrink-0 text-sm text-muted-foreground">
-                                <span
-                                    className={
-                                        missing.length === 0
-                                            ? 'font-semibold text-emerald-600 dark:text-emerald-400'
-                                            : 'font-semibold text-red-600 dark:text-red-400'
-                                    }
-                                >
-                                    {present}/{expected}
-                                </span>{' '}
-                                {t('data_audit.minutes_present', 'minutes present')}
-                                {' · '}
-                                <span className="font-semibold">{missing.length}</span>{' '}
-                                {t('data_audit.missing_lc', 'missing')}
-                            </p>
+                            <div className="flex flex-col gap-2 sm:items-end">
+                                {/* Date navigation — pick any day to audit / backfill */}
+                                <div className="flex items-center gap-1.5">
+                                    <Button
+                                        variant="outline"
+                                        size="icon"
+                                        className="size-10 rounded-lg border-border/60"
+                                        aria-label={t('data_audit.prev_day', 'Previous day')}
+                                        onClick={() => shiftDate(-1)}
+                                    >
+                                        <ChevronLeft className="size-4" />
+                                    </Button>
+                                    <label className="flex h-10 items-center gap-2 rounded-lg border border-border/60 bg-muted/40 px-3 shadow-sm transition-colors focus-within:bg-background focus-within:ring-2 focus-within:ring-primary/20">
+                                        <CalendarDays className="size-4 shrink-0 text-muted-foreground" />
+                                        <input
+                                            type="date"
+                                            aria-label={t('data_audit.pick_date', 'Pick date')}
+                                            max={today}
+                                            value={date}
+                                            onChange={(e) => goToDate(e.target.value)}
+                                            className="w-[120px] bg-transparent text-sm font-medium text-foreground outline-none [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                                        />
+                                    </label>
+                                    <Button
+                                        variant="outline"
+                                        size="icon"
+                                        className="size-10 rounded-lg border-border/60"
+                                        aria-label={t('data_audit.next_day', 'Next day')}
+                                        disabled={date >= today}
+                                        onClick={() => shiftDate(1)}
+                                    >
+                                        <ChevronRight className="size-4" />
+                                    </Button>
+                                </div>
+                                <p className="text-sm text-muted-foreground">
+                                    <span
+                                        className={
+                                            missing.length === 0
+                                                ? 'font-semibold text-emerald-600 dark:text-emerald-400'
+                                                : 'font-semibold text-red-600 dark:text-red-400'
+                                        }
+                                    >
+                                        {present}/{expected}
+                                    </span>{' '}
+                                    {t('data_audit.minutes_present', 'minutes present')}
+                                    {' · '}
+                                    <span className="font-semibold">{missing.length}</span>{' '}
+                                    {t('data_audit.missing_lc', 'missing')}
+                                </p>
+                            </div>
                         </div>
                     </CardHeader>
                 </Card>
