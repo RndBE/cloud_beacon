@@ -13,3 +13,9 @@ Schedule::command('loggers:sync')
     ->everyFiveMinutes()
     ->withoutOverlapping()
     ->runInBackground();
+
+// Recompute daily data completeness summaries every hour
+Schedule::command('audit:scan')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground();
