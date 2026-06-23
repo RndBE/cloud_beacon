@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\DataBackfillTask;
 use App\Models\Logger;
 use App\Models\LoggerDailyAudit;
 use App\Models\SensorLog;
@@ -56,6 +57,44 @@ class DataAuditService
         }
 
         return $missing;
+    }
+
+    public function enqueueBackfill(
+        Logger $logger,
+        CarbonInterface $date,
+        ?CarbonInterface $from = null,
+        ?CarbonInterface $to = null
+    ): int {
+        $minutes = $this->missingMinutes($logger, $date);
+
+        if ($from) {
+            $minutes = $minutes->filter(fn ($m) => $m->gte(Carbon::parse($from)));
+        }
+        if ($to) {
+            $minutes = $minutes->filter(fn ($m) => $m->lte(Carbon::parse($to)));
+        }
+
+        // Minutes already queued (any status) must not be re-inserted.
+        $existing = DataBackfillTask::where('logger_id', $logger->id)
+            ->whereIn('minute', $minutes->map->format('Y-m-d H:i:00')->all())
+            ->pluck('minute')
+            ->map(fn ($m) => Carbon::parse($m)->format('Y-m-d H:i:00'))
+            ->flip();
+
+        $count = 0;
+        foreach ($minutes as $minute) {
+            if ($existing->has($minute->format('Y-m-d H:i:00'))) {
+                continue;
+            }
+            DataBackfillTask::create([
+                'logger_id' => $logger->id,
+                'minute'    => $minute,
+                'status'    => DataBackfillTask::PENDING,
+            ]);
+            $count++;
+        }
+
+        return $count;
     }
 
     public function rescan(Logger $logger, CarbonInterface $date): LoggerDailyAudit
