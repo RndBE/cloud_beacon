@@ -97,6 +97,59 @@ class DataAuditService
         return $count;
     }
 
+    public function backfillProgress(Logger $logger, CarbonInterface $date): array
+    {
+        $day = Carbon::parse($date);
+
+        $tasks = DataBackfillTask::where('logger_id', $logger->id)
+            ->whereBetween('minute', [$day->copy()->startOfDay(), $day->copy()->endOfDay()])
+            ->get(['minute', 'status', 'last_attempt_at']);
+
+        $total = $tasks->count();
+        if ($total === 0) {
+            return [
+                'total' => 0, 'done' => 0, 'pct' => 0,
+                'counts' => (object) [], 'current' => null,
+                'eta_seconds' => 0, 'updates' => (object) [],
+            ];
+        }
+
+        $counts  = [];
+        $updates = [];
+        $current = null;
+
+        foreach ($tasks as $task) {
+            $counts[$task->status] = ($counts[$task->status] ?? 0) + 1;
+
+            if ($task->status !== DataBackfillTask::PENDING) {
+                $updates[Carbon::parse($task->minute)->format('H:i')] = $task->status;
+            }
+
+            if ($task->status === DataBackfillTask::REQUESTED && $current === null) {
+                $current = [
+                    'minute'          => Carbon::parse($task->minute)->format('H:i'),
+                    'waiting_seconds' => $task->last_attempt_at
+                        ? (int) abs(now()->diffInSeconds($task->last_attempt_at))
+                        : 0,
+                ];
+            }
+        }
+
+        $pending   = $counts[DataBackfillTask::PENDING] ?? 0;
+        $requested = $counts[DataBackfillTask::REQUESTED] ?? 0;
+        $done      = $total - $pending - $requested;
+
+        return [
+            'total'       => $total,
+            'done'        => $done,
+            'pct'         => (int) round($done / $total * 100),
+            'counts'      => $counts,
+            'current'     => $current,
+            'eta_seconds' => $pending * (int) config('backfill.interval', 10),
+            'updates'     => $updates ?: (object) [],
+        ];
+    }
+
     public function rescan(Logger $logger, CarbonInterface $date): LoggerDailyAudit
     {
         $expected = $this->expectedFor($date);
