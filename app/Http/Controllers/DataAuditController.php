@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Jobs\RunLoggerBackfill;
-use App\Models\DataBackfillTask;
 use App\Models\Logger;
 use App\Models\LoggerDailyAudit;
 use App\Services\DataAuditService;
@@ -56,7 +55,7 @@ class DataAuditController extends Controller
             'expected' => $this->audits->expectedFor($date),
             'present'  => $this->audits->presentMinutes($logger, $date)->count(),
             'missing'  => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
-            'counts'   => $this->statusCounts($logger->id, $date),
+            'progress' => $this->audits->backfillProgress($logger, $date),
         ]);
     }
 
@@ -87,16 +86,20 @@ class DataAuditController extends Controller
         $logger = $this->resolveLogger($id);
         $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
 
-        return response()->json(['counts' => $this->statusCounts($logger->id, $date)]);
+        return response()->json($this->audits->backfillProgress($logger, $date));
     }
 
-    private function statusCounts(int $loggerId, Carbon $date): array
+    public function retryFailed(Request $request, int $id)
     {
-        return DataBackfillTask::where('logger_id', $loggerId)
-            ->whereBetween('minute', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
-            ->selectRaw('status, COUNT(*) as c')
-            ->groupBy('status')
-            ->pluck('c', 'status')
-            ->toArray();
+        $logger = $this->resolveLogger($id);
+        $data = $request->validate(['date' => ['required', 'date']]);
+
+        $count = $this->audits->retryFailed($logger, Carbon::parse($data['date']));
+
+        if ($count > 0) {
+            RunLoggerBackfill::dispatch($logger);
+        }
+
+        return back()->with('status', "Retried {$count} failed minute(s).");
     }
 }
