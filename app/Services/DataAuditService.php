@@ -1,0 +1,76 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Logger;
+use App\Models\LoggerDailyAudit;
+use App\Models\SensorLog;
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
+
+class DataAuditService
+{
+    public function expectedFor(CarbonInterface $date): int
+    {
+        $day   = Carbon::parse($date)->startOfDay();
+        $today = Carbon::today();
+
+        if ($day->lt($today)) {
+            return 1440;
+        }
+        if ($day->gt($today)) {
+            return 0;
+        }
+
+        // Today: count complete minutes elapsed since 00:00 (e.g. at 02:00:00 → 120).
+        return (int) $day->diffInMinutes(Carbon::now());
+    }
+
+    public function presentMinutes(Logger $logger, CarbonInterface $date): Collection
+    {
+        $day = Carbon::parse($date)->startOfDay();
+
+        return SensorLog::query()
+            ->where('logger_id', $logger->id)
+            ->whereBetween('recorded_at', [$day, (clone $day)->endOfDay()])
+            ->orderBy('recorded_at')
+            ->pluck('recorded_at')                       // Carbon instances (model casts recorded_at => datetime)
+            ->map(fn ($t) => Carbon::parse($t)->format('Y-m-d H:i:00'))
+            ->unique()
+            ->values();
+    }
+
+    public function missingMinutes(Logger $logger, CarbonInterface $date): Collection
+    {
+        $present  = $this->presentMinutes($logger, $date)->flip();
+        $day      = Carbon::parse($date)->startOfDay();
+        $expected = $this->expectedFor($date);
+
+        $missing = collect();
+        for ($i = 0; $i < $expected; $i++) {
+            $minute = (clone $day)->addMinutes($i);
+            if (! $present->has($minute->format('Y-m-d H:i:00'))) {
+                $missing->push($minute);
+            }
+        }
+
+        return $missing;
+    }
+
+    public function rescan(Logger $logger, CarbonInterface $date): LoggerDailyAudit
+    {
+        $expected = $this->expectedFor($date);
+        $present  = $this->presentMinutes($logger, $date)->count();
+
+        return LoggerDailyAudit::updateOrCreate(
+            ['logger_id' => $logger->id, 'date' => Carbon::parse($date)->toDateString()],
+            [
+                'expected'        => $expected,
+                'present'         => $present,
+                'missing'         => max(0, $expected - $present),
+                'last_scanned_at' => now(),
+            ]
+        );
+    }
+}
