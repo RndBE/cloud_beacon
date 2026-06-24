@@ -134,12 +134,12 @@ class ForwardingAuditService
         // Build the same bucket set as integrationAudit/resendFailed.
         $buckets = [];
         foreach (LoggerIntegration::where('logger_id', $logger->id)->where('is_enabled', true)->get() as $integration) {
-            $buckets[] = ['key' => (string) $integration->id, 'apply' => function ($q) use ($integration) {
+            $buckets[] = ['key' => (string) $integration->id, 'name' => $integration->name, 'apply' => function ($q) use ($integration) {
                 $q->where('integration_id', $integration->id);
             }];
         }
         if ($logger->ministesy_enabled) {
-            $buckets[] = ['key' => 'ministesy', 'apply' => function ($q) {
+            $buckets[] = ['key' => 'ministesy', 'name' => 'Mini STESY', 'apply' => function ($q) {
                 $q->whereNull('integration_id')->where('target_name', 'Mini STESY');
             }];
         }
@@ -198,6 +198,7 @@ class ForwardingAuditService
 
             $result[$bucket['key']] = [
                 'key'         => $bucket['key'],
+                'name'        => $bucket['name'],
                 'total'       => $total,
                 'done'        => $done,
                 'pct'         => (int) round($done / $total * 100),

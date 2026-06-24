@@ -43,7 +43,7 @@ export function ResendProgress({
         <Card>
             <CardHeader>
                 <CardTitle className="text-base">
-                    {progress.key}{' '}
+                    {progress.name}{' '}
                     <span className="font-normal text-muted-foreground">
                         — {t('forwarding_audit.resend_progress_title', 'Progres kirim ulang')}
                     </span>

@@ -49,6 +49,7 @@ it('classifies resolved / failed_again / pending and computes the bucket', funct
     expect($bucket['counts'])->toBe(['resolved' => 1, 'failed_again' => 1, 'pending' => 1]);
     expect($bucket['current']['count'])->toBe(1);
     expect($bucket['eta_seconds'])->toBe(2); // 1 pending * 2
+    expect($bucket['name'])->toBe('Platform A');
 
     Carbon::setTestNow();
 });

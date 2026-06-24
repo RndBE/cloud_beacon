@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 export type ResendBucketProgress = {
     key: string;
+    name: string;
     total: number;
     done: number;
     pct: number;
