@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\SyncLoggerInfo;
 use App\Models\Logger;
 use App\Models\Sensor;
 use App\Services\IdHasher;
@@ -82,69 +83,34 @@ class MqttController extends Controller
 
     /**
      * Poll all registered loggers for status updates.
-     * Called periodically by the frontend.
+     * Triggered by the frontend "Refresh" button.
+     *
+     * The actual MQTT INFO request per logger is BLOCKING (waits up to
+     * mqtt.timeout seconds per device). Doing it inline here meant one click
+     * held an Apache/PHP-FPM worker for loggers × timeout seconds (e.g. 18×15s
+     * ≈ 4.5 min), which exhausted the worker pool and made Apache time out.
+     *
+     * We now mark each logger "syncing" and hand the blocking work to the
+     * "sync" queue (one SyncLoggerInfo job per logger). This returns instantly;
+     * the UI shows the existing per-row spinner and flips each logger to
+     * online/offline as its job lands and the page reloads its `loggers` prop.
      */
     public function pollAll(): JsonResponse
     {
         $loggers = Logger::where('user_id', auth()->id())
             ->whereNotNull('serial_number')
+            ->whereNotNull('device_identifier')
             ->get();
-        $mqtt = new MqttService();
-        $results = [];
 
         foreach ($loggers as $logger) {
-            if (!$logger->device_identifier)
-                continue;
-            $info = $mqtt->requestInfo($logger->device_identifier);
-
-            if ($info !== null) {
-                $parsed = MqttService::parseInfoResponse($info);
-
-                $logger->update(array_merge(
-                    array_filter($parsed, fn($v) => $v !== null),
-                    [
-                        'status' => 'online',
-                        'last_connected_at' => now(),
-                        'last_seen_at' => now(),
-                        'last_sync_status' => 'success',
-                        'last_sync_error' => null,
-                        'last_synced_at' => now(),
-                    ]
-                ));
-
-                $results[] = [
-                    'id' => $logger->id,
-                    'serial' => $logger->serial_number,
-                    'status' => 'online',
-                    'data' => $parsed,
-                ];
-            } else {
-                // Mark offline if not already and last connected > 30 seconds ago
-                if ($logger->status !== 'offline') {
-                    $threshold = now()->subSeconds(30);
-                    if (!$logger->last_connected_at || $logger->last_connected_at->lt($threshold)) {
-                        $logger->update(['status' => 'offline']);
-                    }
-                }
-
-                $logger->update([
-                    'last_sync_status' => 'error',
-                    'last_sync_error' => 'No response from device',
-                    'last_synced_at' => now(),
-                ]);
-
-                $results[] = [
-                    'id' => $logger->id,
-                    'serial' => $logger->serial_number,
-                    'status' => $logger->status,
-                ];
-            }
+            // Show the spinner immediately (UI keys off last_sync_status === 'syncing').
+            $logger->update(['last_sync_status' => 'syncing']);
+            SyncLoggerInfo::dispatch($logger);
         }
 
         return response()->json([
-            'success' => true,
-            'polled' => count($results),
-            'loggers' => $results,
+            'success'    => true,
+            'dispatched' => $loggers->count(),
         ]);
     }
 

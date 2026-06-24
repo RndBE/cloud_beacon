@@ -40,7 +40,12 @@ return [
             'connection' => env('DB_QUEUE_CONNECTION'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
-            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
+            // Must stay GREATER than the longest job timeout, otherwise Laravel
+            // re-dispatches a job that is still running and it executes twice.
+            // ForwardToIntegrations has timeout=120 (worker runs --timeout=120),
+            // so retry_after must be > 120. 150 leaves a safe margin and stops
+            // the duplicate forwards / duplicate forwarding_logs we were seeing.
+            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 150),
             'after_commit' => false,
         ],
 

@@ -746,20 +746,40 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
         if (flash?.success) setSuccessMsg(flash.success);
     }, [flash]);
 
-    // Manual MQTT poll — triggered by user clicking Refresh button
+    // Manual MQTT poll — triggered by user clicking Refresh button.
+    // The poll request now returns instantly: the server marks every logger
+    // "syncing" and hands the blocking MQTT work to the background "sync" queue
+    // (so it no longer ties up a web worker). We keep the spinner up and reload
+    // the loggers list every few seconds until none are "syncing" anymore — the
+    // UI looks the same, results just stream in as each device responds.
     const pollNow = useCallback(() => {
         if (polling) return;
         setPolling(true);
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+        const deadline = Date.now() + 90_000; // safety stop; the 30s auto-refresh backstops the rest
+
+        const reloadUntilDone = () => {
+            router.reload({
+                only: ['loggers'],
+                onSuccess: (page) => {
+                    const list = (page.props as { loggers?: Array<{ lastSyncStatus?: string }> }).loggers ?? [];
+                    const stillSyncing = list.some((l) => l.lastSyncStatus === 'syncing');
+                    if (stillSyncing && Date.now() < deadline) {
+                        setTimeout(reloadUntilDone, 3000);
+                    } else {
+                        setPolling(false);
+                    }
+                },
+                onError: () => setPolling(false),
+            });
+        };
+
         fetch('/api/mqtt/poll', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken || '' },
         })
-            .then(() => {
-                router.reload({ only: ['loggers'] });
-            })
-            .catch(() => { /* silent fail */ })
-            .finally(() => setPolling(false));
+            .then(() => reloadUntilDone())
+            .catch(() => setPolling(false));
     }, [polling]);
 
     // Auto-refresh UI every 30s to show latest cron sync results (no MQTT call)
