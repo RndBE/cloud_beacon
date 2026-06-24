@@ -147,3 +147,46 @@ test('mini stesy timeout does not advance the throttle so the next buffered poin
     $logger->refresh();
     expect($logger->ministesy_last_forwarded_data_at?->format('Y-m-d H:i:s'))->toBe('2026-06-09 10:01:00');
 });
+
+// ---------------------------------------------------------------------------
+// Raw forwarding (ignore interval, forward every record)
+// ---------------------------------------------------------------------------
+
+test('dynamic integration in raw mode forwards every record regardless of interval', function () {
+    Http::fake(['*' => Http::response(['ok' => true], 200)]);
+
+    $logger = fwdLogger();
+    LoggerIntegration::create([
+        'logger_id'        => $logger->id,
+        'name'             => 'Platform A',
+        'endpoint_url'     => 'https://platform.test/ingest',
+        'auth_type'        => 'none',
+        'interval_minutes' => 10,
+        'raw_forward'      => true,
+        'is_enabled'       => true,
+    ]);
+
+    // Two records only 1 minute of data time apart. The interval is 10, but raw
+    // mode ignores the interval entirely, so BOTH must be forwarded.
+    $this->postJson(route('api.v1.device.push'), pushData($logger, '2026-06-09', '10:00:00'))->assertOk();
+    $this->postJson(route('api.v1.device.push'), pushData($logger, '2026-06-09', '10:01:00'))->assertOk();
+
+    Http::assertSentCount(2);
+});
+
+test('mini stesy in raw mode forwards every record regardless of interval', function () {
+    config(['integrations.ministesy_endpoint' => 'https://ministesy.test/api']);
+    Http::fake(['*' => Http::response(['ok' => true], 200)]);
+
+    $logger = fwdLogger([
+        'ministesy_enabled'     => true,
+        'ministesy_key'         => 'KEY123',
+        'ministesy_interval'    => 10,
+        'ministesy_raw_forward' => true,
+    ]);
+
+    $this->postJson(route('api.v1.device.push'), pushData($logger, '2026-06-09', '10:00:00'))->assertOk();
+    $this->postJson(route('api.v1.device.push'), pushData($logger, '2026-06-09', '10:01:00'))->assertOk();
+
+    Http::assertSentCount(2);
+});

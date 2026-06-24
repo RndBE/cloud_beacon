@@ -58,6 +58,7 @@ class ForwardingAuditService
                 key:        (string) $integration->id,
                 name:       $integration->name,
                 interval:   (int) $integration->interval_minutes,
+                raw:        (bool) $integration->raw_forward,
                 present:    $present,
                 fromCount:  $fromCount,
                 rows:       ForwardingLog::where('logger_id', $logger->id)
@@ -73,6 +74,7 @@ class ForwardingAuditService
                 key:        'ministesy',
                 name:       'Mini STESY',
                 interval:   (int) ($logger->ministesy_interval ?? 10),
+                raw:        (bool) $logger->ministesy_raw_forward,
                 present:    $present,
                 fromCount:  $fromCount,
                 rows:       ForwardingLog::where('logger_id', $logger->id)
@@ -224,8 +226,12 @@ class ForwardingAuditService
         Collection $present,
         int $fromCount,
         Collection $rows,
+        bool $raw = false,
     ): array {
-        $due       = $this->dueForwards($present, $interval);
+        // Raw mode forwards every record, so the expected (due) count is simply
+        // the number of records the logger produced that day — the interval
+        // simulation does not apply.
+        $due       = $raw ? $present->count() : $this->dueForwards($present, $interval);
         $success   = $rows->where('status', 'success')->count();
         $skipped   = $rows->where('status', 'skipped')->count();
         $errorRows = $rows->where('status', 'error');

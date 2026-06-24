@@ -29,6 +29,7 @@ class IntegrationController extends Controller
             'auth_config.username'  => 'nullable|string|max:255',
             'auth_config.password'  => 'nullable|string|max:255',
             'interval_minutes' => 'required|integer|min:1|max:1440',
+            'raw_forward'      => 'boolean',
             'is_enabled'       => 'boolean',
         ]);
 
@@ -56,6 +57,7 @@ class IntegrationController extends Controller
             'auth_config.username'  => 'nullable|string|max:255',
             'auth_config.password'  => 'nullable|string|max:255',
             'interval_minutes' => 'required|integer|min:1|max:1440',
+            'raw_forward'      => 'boolean',
             'is_enabled'       => 'boolean',
         ]);
 

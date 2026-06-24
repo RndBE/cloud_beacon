@@ -101,3 +101,22 @@ it('computes interval-10 due count and counts skipped rows separately', function
     expect($audit['due'])->toBe(3);       // minutes 0,10,20 -> 3 due slots
     expect($audit['skipped'])->toBe(1);
 });
+
+it('counts every present record as due for a raw-mode integration', function () {
+    $logger = Logger::factory()->create();
+    $date = '2026-06-20';
+    seedMinutes($logger, $date, 30); // 00:00..00:29
+
+    $integration = LoggerIntegration::create([
+        'logger_id' => $logger->id, 'name' => 'Platform A',
+        'endpoint_url' => 'https://platform.test/ingest', 'auth_type' => 'none',
+        'interval_minutes' => 10, 'raw_forward' => true, 'is_enabled' => true,
+    ]);
+
+    $audit = collect(app(ForwardingAuditService::class)->integrationAudit($logger, Carbon::parse($date)))
+        ->firstWhere('key', (string) $integration->id);
+
+    // Raw mode forwards every record, so all 30 present minutes are "due"
+    // (not the 3 slots a 10-minute interval would otherwise yield).
+    expect($audit['due'])->toBe(30);
+});

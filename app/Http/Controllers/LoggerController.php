@@ -151,6 +151,7 @@ class LoggerController extends Controller
             'ministesyEnabled' => (bool) $logger->ministesy_enabled,
             'ministesyKey' => $logger->ministesy_key,
             'ministesyInterval' => $logger->ministesy_interval ?? 10,
+            'ministesyRawForward' => (bool) $logger->ministesy_raw_forward,
             'ftpHost' => $logger->ftp_host,
             'ftpPort' => $logger->ftp_port ?? 21,
             'ftpUser' => $logger->ftp_user,
@@ -197,6 +198,7 @@ class LoggerController extends Controller
                 'authType' => $i->auth_type,
                 'authConfig' => $i->auth_config ?? [],
                 'intervalMinutes' => $i->interval_minutes,
+                'rawForward' => (bool) $i->raw_forward,
                 'isEnabled' => $i->is_enabled,
                 'lastForwardedAt' => $i->last_forwarded_at?->format('Y-m-d H:i:s'),
                 'lastStatus' => $i->last_status,
@@ -315,6 +317,7 @@ class LoggerController extends Controller
             'ministesy_enabled' => 'required|boolean',
             'ministesy_key' => 'nullable|string|max:255',
             'ministesy_interval' => 'required|integer|min:1|max:1440',
+            'ministesy_raw_forward' => 'boolean',
         ]);
 
         $logger->update($validated);

@@ -180,7 +180,8 @@ class ForwardToIntegrations implements ShouldQueue
             return;
         }
 
-        if ($lastForwarded) {
+        // Raw mode: skip the interval check entirely — forward every record.
+        if ($lastForwarded && ! $logger->ministesy_raw_forward) {
             $nextDue = $lastForwarded->copy()->addMinutes($intervalMinutes);
             if ($this->recordedAt->lessThan($nextDue)) {
                 ForwardingLog::create([

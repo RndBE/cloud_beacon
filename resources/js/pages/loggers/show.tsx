@@ -146,6 +146,7 @@ interface Integration {
     authType: AuthType;
     authConfig: Record<string, string>;
     intervalMinutes: number;
+    rawForward: boolean;
     isEnabled: boolean;
     lastForwardedAt: string | null;
     lastStatus: 'success' | 'error' | null;
@@ -220,6 +221,7 @@ interface LoggerDetail {
     ministesyEnabled: boolean;
     ministesyKey: string | null;
     ministesyInterval: number;
+    ministesyRawForward: boolean;
     ftpHost: string | null;
     ftpPort: number;
     ftpUser: string | null;
@@ -2680,6 +2682,7 @@ const EMPTY_INTEGRATION_FORM = {
     auth_type: 'none' as AuthType,
     auth_config: {} as Record<string, string>,
     interval_minutes: 10,
+    raw_forward: false,
     is_enabled: true,
 };
 
@@ -2694,6 +2697,7 @@ function initialIntegrationForm(integration?: Integration | null): typeof EMPTY_
         auth_type: integration.authType,
         auth_config: { ...integration.authConfig },
         interval_minutes: integration.intervalMinutes,
+        raw_forward: integration.rawForward,
         is_enabled: integration.isEnabled,
     };
 }
@@ -2712,7 +2716,7 @@ function IntegrationFormModal({ open, onClose, loggerId, integration }: {
 
     const handleSubmit = () => {
         setSaving(true);
-        const payload = { name: form.name, endpoint_url: form.endpoint_url, auth_type: form.auth_type, auth_config: form.auth_config, interval_minutes: form.interval_minutes, is_enabled: form.is_enabled };
+        const payload = { name: form.name, endpoint_url: form.endpoint_url, auth_type: form.auth_type, auth_config: form.auth_config, interval_minutes: form.interval_minutes, raw_forward: form.raw_forward, is_enabled: form.is_enabled };
         if (isEdit) {
             router.put(`/loggers/${loggerId}/integrations/${integration!.id}`, payload, {
                 preserveScroll: true, onSuccess: () => onClose(), onFinish: () => setSaving(false),
@@ -2788,15 +2792,26 @@ function IntegrationFormModal({ open, onClose, loggerId, integration }: {
                         </div>
                     )}
 
+                    <div className="flex items-start gap-2.5 rounded-lg border bg-muted/30 p-3">
+                        <input id="int-raw" type="checkbox" checked={form.raw_forward}
+                            onChange={e => setForm(f => ({ ...f, raw_forward: e.target.checked }))}
+                            className="mt-0.5 size-4 shrink-0 rounded border-input accent-blue-600" />
+                        <div className="space-y-0.5">
+                            <Label htmlFor="int-raw" className="cursor-pointer">Raw forwarding</Label>
+                            <p className="text-xs text-muted-foreground">Abaikan interval — teruskan <strong>setiap</strong> data yang masuk langsung ke platform.</p>
+                        </div>
+                    </div>
+
                     <div className="space-y-1.5">
                         <Label htmlFor="int-interval" className="flex items-center gap-1.5">
                             <Timer className="size-3.5 text-blue-500" /> Interval Kirim
                         </Label>
                         <div className="flex items-center gap-2">
                             <input id="int-interval" type="number" min={1} max={1440} value={form.interval_minutes}
+                                disabled={form.raw_forward}
                                 onChange={e => setForm(f => ({ ...f, interval_minutes: parseInt(e.target.value) || 1 }))}
-                                className="flex h-9 w-32 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-                            <span className="text-sm text-muted-foreground">menit</span>
+                                className="flex h-9 w-32 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed" />
+                            <span className="text-sm text-muted-foreground">{form.raw_forward ? 'diabaikan (raw aktif)' : 'menit'}</span>
                         </div>
                     </div>
                 </div>
@@ -2887,7 +2902,7 @@ function IntegrationRow({ integration, loggerId, disabled }: {
                     <div className="border-t bg-muted/20 px-3 py-2">
                         <dl className="grid grid-cols-3 gap-x-4 text-xs">
                             <div><dt className="text-muted-foreground flex items-center gap-1"><ShieldCheck className="size-3" /> Auth</dt><dd className="font-medium">{AUTH_TYPE_LABELS[integration.authType] ?? integration.authType}</dd></div>
-                            <div><dt className="text-muted-foreground flex items-center gap-1"><Timer className="size-3" /> Interval</dt><dd className="font-medium">{integration.intervalMinutes} menit</dd></div>
+                            <div><dt className="text-muted-foreground flex items-center gap-1"><Timer className="size-3" /> Interval</dt><dd className="font-medium">{integration.rawForward ? 'Raw (semua data)' : `${integration.intervalMinutes} menit`}</dd></div>
                             <div><dt className="text-muted-foreground flex items-center gap-1"><Clock className="size-3" /> Terakhir kirim</dt><dd className="font-medium">{integration.lastForwardedAt ?? '—'}</dd></div>
                         </dl>
                         {integration.lastStatus === 'error' && integration.lastError && (
@@ -2924,11 +2939,12 @@ function IntegrationRow({ integration, loggerId, disabled }: {
 // =============================================================================
 // PlatformIntegrationCard (main)
 // =============================================================================
-function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, ministesyInterval, disabled, integrations }: {
+function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, ministesyInterval, ministesyRawForward, disabled, integrations }: {
     loggerId: string;
     ministesyEnabled: boolean;
     ministesyKey: string | null;
     ministesyInterval: number;
+    ministesyRawForward: boolean;
     disabled: boolean;
     integrations: Integration[];
 }) {
@@ -2938,6 +2954,7 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
         ministesy_enabled: ministesyEnabled,
         ministesy_key: ministesyKey || '',
         ministesy_interval: ministesyInterval,
+        ministesy_raw_forward: ministesyRawForward,
     });
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -3015,7 +3032,7 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                                         <dt className="text-muted-foreground flex items-center gap-1.5"><Key className="size-3.5 text-violet-500" /> {t('loggerDetail.encryption_key')}</dt>
                                         <dd className="font-mono text-xs">{maskedKey}</dd>
                                         <dt className="text-muted-foreground flex items-center gap-1.5"><Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_send')}</dt>
-                                        <dd className="font-medium">{ministesyInterval} {t('loggerDetail.minutes')}</dd>
+                                        <dd className="font-medium">{ministesyRawForward ? 'Raw (semua data)' : `${ministesyInterval} ${t('loggerDetail.minutes')}`}</dd>
                                     </dl>
                                     {saved && <span className="flex items-center gap-1 text-sm text-emerald-600"><CheckCircle2 className="size-4" /> {t('loggerDetail.saved')}</span>}
                                 </>
@@ -3038,17 +3055,27 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                                             <label className="text-sm font-medium flex items-center gap-1.5"><Timer className="size-4 text-blue-500" />{t('loggerDetail.interval_send')}</label>
                                             <div className="flex items-center gap-2">
                                                 <input type="number" min={1} max={1440} value={stesyValues.ministesy_interval}
+                                                    disabled={stesyValues.ministesy_raw_forward}
                                                     onChange={(e) => setStesyValues(v => ({ ...v, ministesy_interval: parseInt(e.target.value) || 1 }))}
-                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed" />
                                                 <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
                                             </div>
                                         </div>
                                     </div>
+                                    <label htmlFor="stesy-raw" className="flex items-start gap-2.5 rounded-lg border bg-background p-3 cursor-pointer">
+                                        <input id="stesy-raw" type="checkbox" checked={stesyValues.ministesy_raw_forward}
+                                            onChange={(e) => setStesyValues(v => ({ ...v, ministesy_raw_forward: e.target.checked }))}
+                                            className="mt-0.5 size-4 shrink-0 rounded border-input accent-blue-600" />
+                                        <div className="space-y-0.5">
+                                            <span className="text-sm font-medium">Raw forwarding</span>
+                                            <p className="text-xs text-muted-foreground">Abaikan interval — teruskan setiap data yang masuk langsung ke Mini STESY.</p>
+                                        </div>
+                                    </label>
                                     <div className="flex items-center gap-2">
                                         <Button onClick={() => setShowSaveDialog(true)} disabled={saving} size="sm" className="gap-2">
                                             <Save className="size-4" /> {saving ? t('loggerDetail.saving_dots') : t('common.save')}
                                         </Button>
-                                        <Button onClick={() => { setStesyValues({ ministesy_enabled: ministesyEnabled, ministesy_key: ministesyKey || '', ministesy_interval: ministesyInterval }); setEditingStesy(false); }}
+                                        <Button onClick={() => { setStesyValues({ ministesy_enabled: ministesyEnabled, ministesy_key: ministesyKey || '', ministesy_interval: ministesyInterval, ministesy_raw_forward: ministesyRawForward }); setEditingStesy(false); }}
                                             variant="outline" size="sm" className="gap-2">
                                             <XCircle className="size-4" /> {t('common.cancel')}
                                         </Button>
@@ -5208,6 +5235,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             ministesyEnabled={logger.ministesyEnabled}
                             ministesyKey={logger.ministesyKey}
                             ministesyInterval={logger.ministesyInterval}
+                            ministesyRawForward={logger.ministesyRawForward}
                             disabled={logger.status === 'offline'}
                             integrations={logger.integrations ?? []}
                         />

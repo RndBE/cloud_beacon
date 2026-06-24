@@ -15,6 +15,7 @@ class LoggerIntegration extends Model
         'auth_type',
         'auth_config',
         'interval_minutes',
+        'raw_forward',
         'is_enabled',
         'last_forwarded_at',
         'last_forwarded_data_at',
@@ -27,6 +28,7 @@ class LoggerIntegration extends Model
         return [
             'auth_config'            => 'array',
             'is_enabled'             => 'boolean',
+            'raw_forward'            => 'boolean',
             'interval_minutes'       => 'integer',
             'last_forwarded_at'      => 'datetime',
             'last_forwarded_data_at' => 'datetime',
@@ -66,6 +68,10 @@ class LoggerIntegration extends Model
      */
     public function isDueForForwarding(CarbonInterface $recordedAt): bool
     {
+        if ($this->raw_forward) {
+            return true; // Raw mode → ignore the interval, forward every record
+        }
+
         if (! $this->last_forwarded_data_at) {
             return true; // Never forwarded → send immediately
         }
