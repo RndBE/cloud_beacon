@@ -2,6 +2,7 @@
 // app/Services/ForwardingAuditService.php
 namespace App\Services;
 
+use App\Jobs\ResendForwarding;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
 use App\Models\LoggerIntegration;
@@ -84,6 +85,41 @@ class ForwardingAuditService
         }
 
         return $result;
+    }
+
+    public function resendFailed(Logger $logger, string $integrationKey, CarbonInterface $date): int
+    {
+        $day   = Carbon::parse($date);
+        $query = ForwardingLog::where('logger_id', $logger->id)
+            ->where('status', 'error')
+            ->whereNull('resend_of')
+            ->whereBetween('created_at', [$day->copy()->startOfDay(), $day->copy()->endOfDay()]);
+
+        if ($integrationKey === 'ministesy') {
+            $query->whereNull('integration_id')->where('target_name', 'Mini STESY');
+        } else {
+            $query->where('integration_id', (int) $integrationKey);
+        }
+
+        $errorIds = $query->pluck('id');
+
+        // Skip errors already resolved by a prior successful resend.
+        $resolved = ForwardingLog::whereIn('resend_of', $errorIds)
+            ->where('status', 'success')
+            ->pluck('resend_of')
+            ->unique()
+            ->flip();
+
+        $count = 0;
+        foreach ($errorIds as $id) {
+            if ($resolved->has($id)) {
+                continue;
+            }
+            ResendForwarding::dispatch($id)->onQueue('default');
+            $count++;
+        }
+
+        return $count;
     }
 
     private function buildBucket(
