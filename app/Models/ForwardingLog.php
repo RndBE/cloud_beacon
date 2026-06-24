@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ForwardingLog extends Model
 {
@@ -12,6 +13,7 @@ class ForwardingLog extends Model
     protected $fillable = [
         'logger_id',
         'integration_id',
+        'resend_of',
         'target_name',
         'target_url',
         'status',
@@ -40,5 +42,15 @@ class ForwardingLog extends Model
     public function integration(): BelongsTo
     {
         return $this->belongsTo(LoggerIntegration::class, 'integration_id');
+    }
+
+    public function resendOf(): BelongsTo
+    {
+        return $this->belongsTo(ForwardingLog::class, 'resend_of');
+    }
+
+    public function resends(): HasMany
+    {
+        return $this->hasMany(ForwardingLog::class, 'resend_of');
     }
 }
