@@ -1,32 +1,64 @@
 import { Head, router, useForm } from '@inertiajs/react';
-import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+    CalendarDays,
+    ChevronLeft,
+    ChevronRight,
+    RadioTower,
+    Repeat,
+} from 'lucide-react';
+import { useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BackfillProgress } from '@/components/data-audit/backfill-progress';
+import {
+    CoverageGrid,
+    CoverageLegend,
+    type HeatCell,
+    type LegendItem,
+} from '@/components/data-audit/coverage-grid';
 import { ResendProgress } from '@/components/data-audit/resend-progress';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import { useBackfillStatus  } from '@/hooks/use-backfill-status';
-import type {BackfillProgress as Progress} from '@/hooks/use-backfill-status';
+import { useBackfillStatus } from '@/hooks/use-backfill-status';
+import type { BackfillProgress as Progress } from '@/hooks/use-backfill-status';
 import { useResendStatus } from '@/hooks/use-resend-status';
-import type { ResendProgressMap } from '@/hooks/use-resend-status';
+import type {
+    ResendBucketProgress,
+    ResendProgressMap,
+} from '@/hooks/use-resend-status';
 import AppLayout from '@/layouts/app-layout';
+import { cn } from '@/lib/utils';
 import type { BreadcrumbItem } from '@/types';
 
 // -----------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------
 
+type Coverage = {
+    ok: string[];
+    failed: string[];
+    skipped: string[];
+    missing: string[];
+};
+
 type IntegrationAudit = {
     key: string;
     name: string;
     interval: number;
+    raw: boolean;
     from_logger: number;
     due: number;
     forwarded_ok: number;
     failed: number;
     skipped: number;
     never_attempted: number;
+    coverage: Coverage;
 };
 
 type Props = {
@@ -42,34 +74,76 @@ type Props = {
 };
 
 // -----------------------------------------------------------------------
-// Helpers
+// Heatmap builders
 // -----------------------------------------------------------------------
 
-function cellClass(key: string, missingSet: Set<string>, updates: Record<string, string>): string {
+/** 1 440 minute keys 00:00 → 23:59, one per minute of the day. */
+function minuteKeys(): string[] {
+    return Array.from({ length: 1440 }, (_, i) => {
+        const hh = String(Math.floor(i / 60)).padStart(2, '0');
+        const mm = String(i % 60).padStart(2, '0');
+        return `${hh}:${mm}`;
+    });
+}
+
+/** Logger backfill heatmap — overlay live backfill `updates` on the missing set. */
+function loggerCellClass(
+    key: string,
+    missingSet: Set<string>,
+    updates: Record<string, string>,
+): string {
     const u = updates[key];
-    if (u === 'filled') return 'aspect-square bg-emerald-500';
-    if (u === 'requested') return 'aspect-square animate-pulse bg-amber-500';
-    if (u === 'failed') return 'aspect-square bg-red-700';
-    if (u === 'no_file' || u === 'not_found' || u === 'future') return 'aspect-square bg-slate-400';
-    if (missingSet.has(key)) return 'aspect-square bg-destructive/70';
-    return 'aspect-square bg-muted';
+    if (u === 'filled') return 'bg-emerald-500';
+    if (u === 'requested') return 'animate-pulse bg-amber-500';
+    if (u === 'failed') return 'bg-red-700';
+    if (u === 'no_file' || u === 'not_found' || u === 'future')
+        return 'bg-slate-400';
+    if (missingSet.has(key)) return 'bg-destructive/70';
+    return 'bg-muted';
+}
+
+/** Per-integration forwarding heatmap — ok > failed > missing(due) > skipped. */
+function integrationCells(coverage: Coverage): HeatCell[] {
+    const ok = new Set(coverage.ok);
+    const failed = new Set(coverage.failed);
+    const skipped = new Set(coverage.skipped);
+    const missing = new Set(coverage.missing);
+
+    return minuteKeys().map((key) => {
+        let cls = 'bg-muted/60';
+        if (ok.has(key)) cls = 'bg-emerald-500';
+        else if (failed.has(key)) cls = 'bg-red-600';
+        else if (missing.has(key)) cls = 'bg-amber-500';
+        else if (skipped.has(key)) cls = 'bg-slate-300 dark:bg-slate-600';
+        return { key, cls };
+    });
 }
 
 // -----------------------------------------------------------------------
 // Page component
 // -----------------------------------------------------------------------
 
-export default function DataAuditShow({ logger, date, expected, present, missing, progress: initialProgress, integrations, resendProgress }: Props) {
+export default function DataAuditShow({
+    logger,
+    date,
+    expected,
+    present,
+    missing,
+    progress: initialProgress,
+    integrations,
+    resendProgress,
+}: Props) {
     const { t } = useTranslation();
 
     const { post, processing } = useForm({ date });
     const retry = useForm({ date });
-
     const resend = useForm({ date, integration: '' });
 
     function resendFailed(key: string) {
         resend.transform((data) => ({ ...data, integration: key }));
-        resend.post(`/data-audit/${logger.id}/resend`, { preserveScroll: true });
+        resend.post(`/data-audit/${logger.id}/resend`, {
+            preserveScroll: true,
+        });
     }
 
     const progress = useBackfillStatus(logger.id, date, initialProgress);
@@ -80,7 +154,11 @@ export default function DataAuditShow({ logger, date, expected, present, missing
 
     function goToDate(next: string) {
         if (!next || next === date) return;
-        router.get(`/data-audit/${logger.id}`, { date: next }, { preserveScroll: true, preserveState: false });
+        router.get(
+            `/data-audit/${logger.id}`,
+            { date: next },
+            { preserveScroll: true, preserveState: false },
+        );
     }
 
     function shiftDate(days: number) {
@@ -90,13 +168,40 @@ export default function DataAuditShow({ logger, date, expected, present, missing
     }
 
     // Live heatmap: overlay backfill `updates` on the initial missing set.
-    const missingSet = new Set(missing);
-    const cells = Array.from({ length: 1440 }, (_, i) => {
-        const hh = String(Math.floor(i / 60)).padStart(2, '0');
-        const mm = String(i % 60).padStart(2, '0');
-        const key = `${hh}:${mm}`;
-        return { key, cls: cellClass(key, missingSet, progress.updates) };
-    });
+    const loggerCells = useMemo<HeatCell[]>(() => {
+        const missingSet = new Set(missing);
+        return minuteKeys().map((key) => ({
+            key,
+            cls: loggerCellClass(key, missingSet, progress.updates),
+        }));
+    }, [missing, progress.updates]);
+
+    const loggerLegend: LegendItem[] = [
+        { cls: 'bg-muted', label: t('data_audit.legend_present', 'Ada') },
+        {
+            cls: 'bg-destructive/70',
+            label: t('data_audit.legend_missing', 'Hilang'),
+        },
+        {
+            cls: 'bg-emerald-500',
+            label: t('data_audit.legend_filled', 'Terisi (backfill)'),
+        },
+        {
+            cls: 'bg-amber-500',
+            label: t('data_audit.legend_requested', 'Sedang diminta'),
+        },
+        { cls: 'bg-red-700', label: t('data_audit.legend_failed', 'Gagal') },
+        {
+            cls: 'bg-slate-400',
+            label: t('data_audit.legend_unavailable', 'Tidak tersedia'),
+        },
+    ];
+
+    const completePct =
+        expected === 0 ? 100 : Math.min(100, (present / expected) * 100);
+    const hasGaps = missing.length > 0;
+    const estSeconds = missing.length * 10;
+    const estLabel = `${Math.floor(estSeconds / 3600)}h ${Math.round((estSeconds % 3600) / 60)}m`;
 
     const breadcrumbs: BreadcrumbItem[] = [
         { title: t('nav.dashboard', 'Dashboard'), href: '/dashboard' },
@@ -114,8 +219,10 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                 <Card>
                     <CardHeader>
                         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                            <div>
-                                <CardTitle>{logger.name}</CardTitle>
+                            <div className="min-w-0">
+                                <CardTitle className="truncate">
+                                    {logger.name}
+                                </CardTitle>
                                 <CardDescription className="mt-1 font-mono text-xs">
                                     {logger.device_identifier}
                                 </CardDescription>
@@ -127,7 +234,10 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                                         variant="outline"
                                         size="icon"
                                         className="size-10 rounded-lg border-border/60"
-                                        aria-label={t('data_audit.prev_day', 'Previous day')}
+                                        aria-label={t(
+                                            'data_audit.prev_day',
+                                            'Previous day',
+                                        )}
                                         onClick={() => shiftDate(-1)}
                                     >
                                         <ChevronLeft className="size-4" />
@@ -136,45 +246,71 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                                         <CalendarDays className="size-4 shrink-0 text-muted-foreground" />
                                         <input
                                             type="date"
-                                            aria-label={t('data_audit.pick_date', 'Pick date')}
+                                            aria-label={t(
+                                                'data_audit.pick_date',
+                                                'Pick date',
+                                            )}
                                             max={today}
                                             value={date}
-                                            onChange={(e) => goToDate(e.target.value)}
-                                            className="w-[120px] bg-transparent text-sm font-medium text-foreground outline-none [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                                            onChange={(e) =>
+                                                goToDate(e.target.value)
+                                            }
+                                            className="w-[120px] bg-transparent text-sm font-medium text-foreground [color-scheme:light] outline-none dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                                         />
                                     </label>
                                     <Button
                                         variant="outline"
                                         size="icon"
                                         className="size-10 rounded-lg border-border/60"
-                                        aria-label={t('data_audit.next_day', 'Next day')}
+                                        aria-label={t(
+                                            'data_audit.next_day',
+                                            'Next day',
+                                        )}
                                         disabled={date >= today}
                                         onClick={() => shiftDate(1)}
                                     >
                                         <ChevronRight className="size-4" />
                                     </Button>
                                 </div>
-                                <p className="text-sm text-muted-foreground">
-                                    <span
-                                        className={
-                                            missing.length === 0
-                                                ? 'font-semibold text-emerald-600 dark:text-emerald-400'
-                                                : 'font-semibold text-red-600 dark:text-red-400'
-                                        }
-                                    >
-                                        {present}/{expected}
-                                    </span>{' '}
-                                    {t('data_audit.minutes_present', 'minutes present')}
-                                    {' · '}
-                                    <span className="font-semibold">{missing.length}</span>{' '}
-                                    {t('data_audit.missing_lc', 'missing')}
-                                </p>
                             </div>
                         </div>
                     </CardHeader>
+                    <Separator />
+                    <CardContent className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
+                        <SummaryStat
+                            label={t('data_audit.completeness', 'Completeness')}
+                            value={`${completePct.toFixed(2)}%`}
+                            tone={
+                                hasGaps
+                                    ? completePct >= 90
+                                        ? 'warn'
+                                        : 'bad'
+                                    : 'ok'
+                            }
+                        />
+                        <SummaryStat
+                            label={t(
+                                'data_audit.minutes_present',
+                                'minutes present',
+                            )}
+                            value={`${present} / ${expected}`}
+                        />
+                        <SummaryStat
+                            label={t('data_audit.missing_lc', 'missing')}
+                            value={missing.length}
+                            tone={hasGaps ? 'bad' : 'ok'}
+                        />
+                        <SummaryStat
+                            label={t(
+                                'forwarding_audit.title_short',
+                                'Integrasi',
+                            )}
+                            value={integrations.length}
+                        />
+                    </CardContent>
                 </Card>
 
-                {/* ── Minute heatmap ──────────────────────────────────── */}
+                {/* ── Minute coverage + backfill ──────────────────────── */}
                 <Card>
                     <CardHeader>
                         <CardTitle className="text-base">
@@ -183,122 +319,110 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                         <CardDescription>
                             {t(
                                 'data_audit.heatmap_description',
-                                '1 440 cells — one per minute of the day. Red = missing, grey = present.',
+                                '1 440 sel — satu per menit. Klik backfill untuk meminta ulang menit yang kosong.',
                             )}
                         </CardDescription>
                     </CardHeader>
                     <Separator />
-                    <CardContent className="p-4">
-                        <div className="grid grid-cols-[repeat(60,minmax(0,1fr))] gap-px">
-                            {cells.map((cell) => (
-                                <div key={cell.key} title={cell.key} className={cell.cls} />
-                            ))}
-                        </div>
+                    <CardContent className="flex flex-col gap-4 p-4">
+                        <CoverageGrid cells={loggerCells} />
+                        <CoverageLegend items={loggerLegend} />
+
+                        <Separator />
+
+                        {/* Backfill action — ALWAYS available while gaps remain, even if a
+                            backfill has already run (re-request the leftover minutes). */}
+                        {!hasGaps && progress.total === 0 ? (
+                            <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                                {t(
+                                    'data_audit.all_present',
+                                    'All minutes are present. No backfill needed.',
+                                )}
+                            </p>
+                        ) : (
+                            <div className="flex flex-col gap-4">
+                                {hasGaps && (
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                        <p className="text-sm text-muted-foreground">
+                                            <span className="font-semibold text-foreground">
+                                                {missing.length}
+                                            </span>{' '}
+                                            {t(
+                                                'data_audit.gaps_remaining',
+                                                'menit masih kosong',
+                                            )}
+                                        </p>
+                                        <Button
+                                            disabled={processing}
+                                            onClick={() =>
+                                                post(
+                                                    `/data-audit/${logger.id}/backfill`,
+                                                )
+                                            }
+                                        >
+                                            <RadioTower className="size-4" />
+                                            {t(
+                                                'data_audit.backfill_btn',
+                                                'Backfill all gaps',
+                                            )}{' '}
+                                            ({missing.length}{' '}
+                                            {t('data_audit.min', 'min')} · ~
+                                            {estLabel})
+                                        </Button>
+                                    </div>
+                                )}
+                                {progress.total > 0 && (
+                                    <BackfillProgress
+                                        embedded
+                                        progress={progress}
+                                        retrying={retry.processing}
+                                        onRetryFailed={() =>
+                                            retry.post(
+                                                `/data-audit/${logger.id}/retry-failed`,
+                                            )
+                                        }
+                                    />
+                                )}
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
 
-                {/* ── Backfill hero ───────────────────────────────────── */}
-                {progress.total === 0 ? (
-                    <Card>
-                        <CardHeader>
-                            <CardTitle className="text-base">{t('data_audit.backfill_title', 'Backfill')}</CardTitle>
-                            <CardDescription>
-                                {missing.length === 0
-                                    ? t('data_audit.no_gaps', 'No gaps for this day — all minutes are present.')
-                                    : t('data_audit.backfill_description', 'Queue a backfill job for every missing minute of the day.')}
-                            </CardDescription>
-                        </CardHeader>
-                        <Separator />
-                        <CardContent className="p-4">
-                            {missing.length === 0 ? (
-                                <p className="text-sm text-emerald-600 dark:text-emerald-400">
-                                    {t('data_audit.all_present', 'All minutes are present. No backfill needed.')}
-                                </p>
-                            ) : (
-                                <Button disabled={processing} onClick={() => post(`/data-audit/${logger.id}/backfill`)}>
-                                    {t('data_audit.backfill_btn', 'Backfill all gaps')} ({missing.length} {t('data_audit.min', 'min')} · ~
-                                    {Math.floor((missing.length * 10) / 3600)}h {Math.round(((missing.length * 10) % 3600) / 60)}m)
-                                </Button>
-                            )}
-                        </CardContent>
-                    </Card>
-                ) : (
-                    <BackfillProgress
-                        progress={progress}
-                        retrying={retry.processing}
-                        onRetryFailed={() => retry.post(`/data-audit/${logger.id}/retry-failed`)}
-                    />
-                )}
                 {/* ── Integrasi & Forwarding ──────────────────────────── */}
                 <Card>
                     <CardHeader>
                         <CardTitle className="text-base">
-                            {t('forwarding_audit.title', 'Integrasi & Forwarding')}
+                            {t(
+                                'forwarding_audit.title',
+                                'Integrasi & Forwarding',
+                            )}
                         </CardTitle>
                         <CardDescription>
-                            {t('forwarding_audit.description', 'Rekonsiliasi jumlah data dari logger vs yang berhasil diteruskan ke tiap platform.')}
+                            {t(
+                                'forwarding_audit.description',
+                                'Rekonsiliasi jumlah data dari logger vs yang berhasil diteruskan ke tiap platform.',
+                            )}
                         </CardDescription>
                     </CardHeader>
                     <Separator />
                     <CardContent className="flex flex-col gap-4 p-4">
                         {integrations.length === 0 ? (
                             <p className="text-sm text-muted-foreground">
-                                {t('forwarding_audit.none', 'Belum ada integrasi aktif untuk logger ini.')}
+                                {t(
+                                    'forwarding_audit.none',
+                                    'Belum ada integrasi aktif untuk logger ini.',
+                                )}
                             </p>
                         ) : (
-                            integrations.map((it) => {
-                                const live = resendProg[it.key];
-                                return (
-                                    <div key={it.key} className="rounded-lg border border-border/60 p-4">
-                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                            <div>
-                                                <p className="font-semibold">{it.name}</p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    {t('forwarding_audit.interval', 'Interval')}: {it.interval} {t('data_audit.min', 'min')}
-                                                </p>
-                                            </div>
-                                            {/* While a resend is tracked, the embedded hero below owns status + retry. */}
-                                            {!live &&
-                                                (it.failed > 0 ? (
-                                                    <Button
-                                                        variant="destructive"
-                                                        disabled={resend.processing}
-                                                        onClick={() => resendFailed(it.key)}
-                                                    >
-                                                        {t('forwarding_audit.resend_btn', 'Kirim ulang')} {it.failed} {t('forwarding_audit.failed_lc', 'gagal')}
-                                                    </Button>
-                                                ) : (
-                                                    <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                                                        {t('forwarding_audit.all_ok', 'Semua terkirim')}
-                                                    </span>
-                                                ))}
-                                        </div>
-                                        <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
-                                            <Stat label={t('forwarding_audit.from_logger', 'Dari logger')} value={it.from_logger} />
-                                            <Stat label={t('forwarding_audit.due', 'Harus diteruskan')} value={it.due} />
-                                            <Stat label={t('forwarding_audit.forwarded_ok', 'Terkirim OK')} value={it.forwarded_ok} tone="ok" />
-                                            <Stat label={t('forwarding_audit.failed', 'Gagal')} value={it.failed} tone={it.failed > 0 ? 'bad' : undefined} />
-                                            <Stat label={t('forwarding_audit.skipped', 'Di-skip (interval)')} value={it.skipped} />
-                                        </div>
-                                        {it.never_attempted > 0 && (
-                                            <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
-                                                {it.never_attempted} {t('forwarding_audit.never_attempted_hint', 'menit punya data tapi belum pernah diteruskan (mis. hasil backfill). Replay raw_payload tidak tersedia untuk menit ini.')}
-                                            </p>
-                                        )}
-                                        {live && (
-                                            <>
-                                                <Separator className="my-4" />
-                                                <ResendProgress
-                                                    embedded
-                                                    progress={live}
-                                                    retrying={resend.processing}
-                                                    onRetry={() => resendFailed(it.key)}
-                                                />
-                                            </>
-                                        )}
-                                    </div>
-                                );
-                            })
+                            integrations.map((it) => (
+                                <IntegrationCard
+                                    key={it.key}
+                                    audit={it}
+                                    live={resendProg[it.key]}
+                                    resending={resend.processing}
+                                    onResend={() => resendFailed(it.key)}
+                                />
+                            ))
                         )}
                     </CardContent>
                 </Card>
@@ -307,7 +431,214 @@ export default function DataAuditShow({ logger, date, expected, present, missing
     );
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone?: 'ok' | 'bad' }) {
+// -----------------------------------------------------------------------
+// Sub-components
+// -----------------------------------------------------------------------
+
+function IntegrationCard({
+    audit,
+    live,
+    resending,
+    onResend,
+}: {
+    audit: IntegrationAudit;
+    live?: ResendBucketProgress;
+    resending: boolean;
+    onResend: () => void;
+}) {
+    const { t } = useTranslation();
+
+    const cells = useMemo(
+        () => integrationCells(audit.coverage),
+        [audit.coverage],
+    );
+    const legend: LegendItem[] = [
+        {
+            cls: 'bg-emerald-500',
+            label: t('forwarding_audit.legend_ok', 'Terkirim'),
+        },
+        {
+            cls: 'bg-red-600',
+            label: t('forwarding_audit.legend_failed', 'Gagal'),
+        },
+        {
+            cls: 'bg-amber-500',
+            label: t('forwarding_audit.legend_missing', 'Belum diteruskan'),
+        },
+        {
+            cls: 'bg-slate-300 dark:bg-slate-600',
+            label: t('forwarding_audit.legend_skipped', 'Di-skip (interval)'),
+        },
+        {
+            cls: 'bg-muted/60',
+            label: t('forwarding_audit.legend_idle', 'Tidak dijadwalkan'),
+        },
+    ];
+
+    const running =
+        !!live && (live.current !== null || live.counts.pending > 0);
+    const showResend = audit.failed > 0 && !running;
+
+    return (
+        <div className="rounded-lg border border-border/60 p-4">
+            {/* Header row */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                    <p className="truncate font-semibold">{audit.name}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <Badge>
+                            {t('forwarding_audit.interval', 'Interval')}:{' '}
+                            {audit.interval} {t('data_audit.min', 'min')}
+                        </Badge>
+                        {audit.raw && (
+                            <Badge tone="info">
+                                {t(
+                                    'forwarding_audit.raw_mode',
+                                    'Raw — semua record',
+                                )}
+                            </Badge>
+                        )}
+                    </div>
+                </div>
+                <div className="shrink-0">
+                    {showResend ? (
+                        <Button
+                            variant="destructive"
+                            disabled={resending}
+                            onClick={onResend}
+                        >
+                            <Repeat className="size-4" />
+                            {t(
+                                'forwarding_audit.resend_btn',
+                                'Kirim ulang',
+                            )}{' '}
+                            {audit.failed}{' '}
+                            {t('forwarding_audit.failed_lc', 'gagal')}
+                        </Button>
+                    ) : running ? (
+                        <span className="inline-flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400">
+                            <span className="relative flex size-2.5">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/60" />
+                                <span className="relative inline-flex size-2.5 rounded-full bg-amber-500" />
+                            </span>
+                            {t('forwarding_audit.resending', 'Mengirim ulang…')}
+                        </span>
+                    ) : audit.never_attempted > 0 ? (
+                        <span className="text-sm font-medium text-amber-600 dark:text-amber-400">
+                            {audit.never_attempted}{' '}
+                            {t(
+                                'forwarding_audit.pending_forward',
+                                'belum diteruskan',
+                            )}
+                        </span>
+                    ) : (
+                        <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                            {t('forwarding_audit.all_ok', 'Semua terkirim')}
+                        </span>
+                    )}
+                </div>
+            </div>
+
+            {/* Stats */}
+            <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
+                <Stat
+                    label={t('forwarding_audit.from_logger', 'Dari logger')}
+                    value={audit.from_logger}
+                />
+                <Stat
+                    label={t('forwarding_audit.due', 'Harus diteruskan')}
+                    value={audit.due}
+                />
+                <Stat
+                    label={t('forwarding_audit.forwarded_ok', 'Terkirim OK')}
+                    value={audit.forwarded_ok}
+                    tone="ok"
+                />
+                <Stat
+                    label={t('forwarding_audit.failed', 'Gagal')}
+                    value={audit.failed}
+                    tone={audit.failed > 0 ? 'bad' : undefined}
+                />
+                <Stat
+                    label={t('forwarding_audit.skipped', 'Di-skip (interval)')}
+                    value={audit.skipped}
+                />
+            </div>
+
+            {/* Coverage heatmap */}
+            <div className="mt-4 flex flex-col gap-2.5">
+                <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                    {t(
+                        'forwarding_audit.coverage_title',
+                        'Peta cakupan (waktu data)',
+                    )}
+                </p>
+                <CoverageGrid cells={cells} />
+                <CoverageLegend items={legend} />
+            </div>
+
+            {audit.never_attempted > 0 && (
+                <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
+                    {audit.never_attempted}{' '}
+                    {t(
+                        'forwarding_audit.never_attempted_hint',
+                        'menit (kuning) punya data tapi belum pernah diteruskan — mis. hasil backfill yang terlewat throttle. Replay raw_payload tidak tersedia untuk menit ini.',
+                    )}
+                </p>
+            )}
+
+            {/* Live resend progress */}
+            {live && (
+                <>
+                    <Separator className="my-4" />
+                    <ResendProgress embedded progress={live} />
+                </>
+            )}
+        </div>
+    );
+}
+
+function SummaryStat({
+    label,
+    value,
+    tone,
+}: {
+    label: string;
+    value: string | number;
+    tone?: 'ok' | 'warn' | 'bad';
+}) {
+    const color =
+        tone === 'ok'
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : tone === 'warn'
+              ? 'text-amber-600 dark:text-amber-400'
+              : tone === 'bad'
+                ? 'text-red-600 dark:text-red-400'
+                : 'text-foreground';
+    return (
+        <div className="rounded-lg bg-muted/40 px-3 py-2.5">
+            <p className="text-xs text-muted-foreground">{label}</p>
+            <p
+                className={cn(
+                    'mt-0.5 text-xl font-bold tracking-tight tabular-nums',
+                    color,
+                )}
+            >
+                {value}
+            </p>
+        </div>
+    );
+}
+
+function Stat({
+    label,
+    value,
+    tone,
+}: {
+    label: string;
+    value: number;
+    tone?: 'ok' | 'bad';
+}) {
     const color =
         tone === 'ok'
             ? 'text-emerald-600 dark:text-emerald-400'
@@ -317,7 +648,24 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: 'ok
     return (
         <div className="rounded-md bg-muted/40 p-2">
             <p className="text-xs text-muted-foreground">{label}</p>
-            <p className={`text-lg font-semibold ${color}`}>{value}</p>
+            <p className={cn('text-lg font-semibold tabular-nums', color)}>
+                {value}
+            </p>
         </div>
+    );
+}
+
+function Badge({ children, tone }: { children: ReactNode; tone?: 'info' }) {
+    return (
+        <span
+            className={cn(
+                'inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium',
+                tone === 'info'
+                    ? 'bg-primary/10 text-primary'
+                    : 'bg-muted text-muted-foreground',
+            )}
+        >
+            {children}
+        </span>
     );
 }
