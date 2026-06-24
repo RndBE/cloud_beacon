@@ -6,6 +6,7 @@ use App\Jobs\RunLoggerBackfill;
 use App\Models\Logger;
 use App\Models\LoggerDailyAudit;
 use App\Services\DataAuditService;
+use App\Services\ForwardingAuditService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -44,18 +45,19 @@ class DataAuditController extends Controller
         return Inertia::render('data-audit/index', ['audits' => $audits]);
     }
 
-    public function show(Request $request, int $id)
+    public function show(Request $request, int $id, ForwardingAuditService $forwarding)
     {
         $logger = $this->resolveLogger($id);
         $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
 
         return Inertia::render('data-audit/show', [
-            'logger'   => $logger->only('id', 'name', 'device_identifier'),
-            'date'     => $date->toDateString(),
-            'expected' => $this->audits->expectedFor($date),
-            'present'  => $this->audits->presentMinutes($logger, $date)->count(),
-            'missing'  => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
-            'progress' => $this->audits->backfillProgress($logger, $date),
+            'logger'       => $logger->only('id', 'name', 'device_identifier'),
+            'date'         => $date->toDateString(),
+            'expected'     => $this->audits->expectedFor($date),
+            'present'      => $this->audits->presentMinutes($logger, $date)->count(),
+            'missing'      => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
+            'progress'     => $this->audits->backfillProgress($logger, $date),
+            'integrations' => $forwarding->integrationAudit($logger, $date),
         ]);
     }
 
@@ -101,5 +103,18 @@ class DataAuditController extends Controller
         }
 
         return back()->with('status', "Retried {$count} failed minute(s).");
+    }
+
+    public function resendForwarding(Request $request, int $id, ForwardingAuditService $forwarding)
+    {
+        $logger = $this->resolveLogger($id);
+        $data = $request->validate([
+            'date'        => ['required', 'date'],
+            'integration' => ['required', 'string'],
+        ]);
+
+        $count = $forwarding->resendFailed($logger, $data['integration'], Carbon::parse($data['date']));
+
+        return back()->with('status', "Mengirim ulang {$count} forwarding yang gagal.");
     }
 }

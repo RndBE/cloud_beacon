@@ -203,6 +203,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('data-audit/{id}/status', [\App\Http\Controllers\DataAuditController::class, 'status'])->name('data-audit.status');
     Route::post('data-audit/{id}/backfill', [\App\Http\Controllers\DataAuditController::class, 'backfill'])->name('data-audit.backfill');
     Route::post('data-audit/{id}/retry-failed', [\App\Http\Controllers\DataAuditController::class, 'retryFailed'])->name('data-audit.retry-failed');
+    Route::post('data-audit/{id}/resend', [\App\Http\Controllers\DataAuditController::class, 'resendForwarding'])->name('data-audit.resend');
 
     // Projects CRUD
     Route::get('projects', [ProjectController::class, 'index'])
