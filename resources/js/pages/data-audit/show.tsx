@@ -2,11 +2,14 @@ import { Head, router, useForm } from '@inertiajs/react';
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { BackfillProgress } from '@/components/data-audit/backfill-progress';
+import { ResendProgress } from '@/components/data-audit/resend-progress';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { useBackfillStatus  } from '@/hooks/use-backfill-status';
 import type {BackfillProgress as Progress} from '@/hooks/use-backfill-status';
+import { useResendStatus } from '@/hooks/use-resend-status';
+import type { ResendProgressMap } from '@/hooks/use-resend-status';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
@@ -35,6 +38,7 @@ type Props = {
     missing: string[];
     progress: Progress;
     integrations: IntegrationAudit[];
+    resendProgress: ResendProgressMap;
 };
 
 // -----------------------------------------------------------------------
@@ -55,7 +59,7 @@ function cellClass(key: string, missingSet: Set<string>, updates: Record<string,
 // Page component
 // -----------------------------------------------------------------------
 
-export default function DataAuditShow({ logger, date, expected, present, missing, progress: initialProgress, integrations }: Props) {
+export default function DataAuditShow({ logger, date, expected, present, missing, progress: initialProgress, integrations, resendProgress }: Props) {
     const { t } = useTranslation();
 
     const { post, processing } = useForm({ date });
@@ -69,6 +73,7 @@ export default function DataAuditShow({ logger, date, expected, present, missing
     }
 
     const progress = useBackfillStatus(logger.id, date, initialProgress);
+    const resendProg = useResendStatus(logger.id, date, resendProgress);
 
     // Local "today" (browser timezone) — audits can't run into the future.
     const today = new Date().toLocaleDateString('en-CA');
@@ -241,43 +246,56 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                                 {t('forwarding_audit.none', 'Belum ada integrasi aktif untuk logger ini.')}
                             </p>
                         ) : (
-                            integrations.map((it) => (
-                                <div key={it.key} className="rounded-lg border border-border/60 p-4">
-                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                        <div>
-                                            <p className="font-semibold">{it.name}</p>
-                                            <p className="text-xs text-muted-foreground">
-                                                {t('forwarding_audit.interval', 'Interval')}: {it.interval} {t('data_audit.min', 'min')}
-                                            </p>
+                            integrations.map((it) => {
+                                const live = resendProg[it.key];
+                                if (live) {
+                                    return (
+                                        <ResendProgress
+                                            key={it.key}
+                                            progress={live}
+                                            retrying={resend.processing}
+                                            onRetry={() => resendFailed(it.key)}
+                                        />
+                                    );
+                                }
+                                return (
+                                    <div key={it.key} className="rounded-lg border border-border/60 p-4">
+                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                            <div>
+                                                <p className="font-semibold">{it.name}</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {t('forwarding_audit.interval', 'Interval')}: {it.interval} {t('data_audit.min', 'min')}
+                                                </p>
+                                            </div>
+                                            {it.failed > 0 ? (
+                                                <Button
+                                                    variant="destructive"
+                                                    disabled={resend.processing}
+                                                    onClick={() => resendFailed(it.key)}
+                                                >
+                                                    {t('forwarding_audit.resend_btn', 'Kirim ulang')} {it.failed} {t('forwarding_audit.failed_lc', 'gagal')}
+                                                </Button>
+                                            ) : (
+                                                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                                                    {t('forwarding_audit.all_ok', 'Semua terkirim')}
+                                                </span>
+                                            )}
                                         </div>
-                                        {it.failed > 0 ? (
-                                            <Button
-                                                variant="destructive"
-                                                disabled={resend.processing}
-                                                onClick={() => resendFailed(it.key)}
-                                            >
-                                                {t('forwarding_audit.resend_btn', 'Kirim ulang')} {it.failed} {t('forwarding_audit.failed_lc', 'gagal')}
-                                            </Button>
-                                        ) : (
-                                            <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                                                {t('forwarding_audit.all_ok', 'Semua terkirim')}
-                                            </span>
+                                        <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
+                                            <Stat label={t('forwarding_audit.from_logger', 'Dari logger')} value={it.from_logger} />
+                                            <Stat label={t('forwarding_audit.due', 'Harus diteruskan')} value={it.due} />
+                                            <Stat label={t('forwarding_audit.forwarded_ok', 'Terkirim OK')} value={it.forwarded_ok} tone="ok" />
+                                            <Stat label={t('forwarding_audit.failed', 'Gagal')} value={it.failed} tone={it.failed > 0 ? 'bad' : undefined} />
+                                            <Stat label={t('forwarding_audit.skipped', 'Di-skip (interval)')} value={it.skipped} />
+                                        </div>
+                                        {it.never_attempted > 0 && (
+                                            <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
+                                                {it.never_attempted} {t('forwarding_audit.never_attempted_hint', 'menit punya data tapi belum pernah diteruskan (mis. hasil backfill). Replay raw_payload tidak tersedia untuk menit ini.')}
+                                            </p>
                                         )}
                                     </div>
-                                    <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
-                                        <Stat label={t('forwarding_audit.from_logger', 'Dari logger')} value={it.from_logger} />
-                                        <Stat label={t('forwarding_audit.due', 'Harus diteruskan')} value={it.due} />
-                                        <Stat label={t('forwarding_audit.forwarded_ok', 'Terkirim OK')} value={it.forwarded_ok} tone="ok" />
-                                        <Stat label={t('forwarding_audit.failed', 'Gagal')} value={it.failed} tone={it.failed > 0 ? 'bad' : undefined} />
-                                        <Stat label={t('forwarding_audit.skipped', 'Di-skip (interval)')} value={it.skipped} />
-                                    </div>
-                                    {it.never_attempted > 0 && (
-                                        <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
-                                            {it.never_attempted} {t('forwarding_audit.never_attempted_hint', 'menit punya data tapi belum pernah diteruskan (mis. hasil backfill). Replay raw_payload tidak tersedia untuk menit ini.')}
-                                        </p>
-                                    )}
-                                </div>
-                            ))
+                                );
+                            })
                         )}
                     </CardContent>
                 </Card>
