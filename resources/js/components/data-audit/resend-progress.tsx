@@ -11,10 +11,14 @@ export function ResendProgress({
     progress,
     onRetry,
     retrying,
+    embedded,
 }: {
     progress: ResendBucketProgress;
     onRetry?: () => void;
     retrying?: boolean;
+    /** When true, render only the progress block (no outer Card/title) so it can
+     *  sit inside the integration reconciliation card. */
+    embedded?: boolean;
 }) {
     const { t } = useTranslation();
     const { total, done, pct, counts, current, eta_seconds } = progress;
@@ -39,6 +43,78 @@ export function ResendProgress({
     const running = counts.pending > 0;
     const failedAgain = counts.failed_again;
 
+    const body = (
+        <div className="flex flex-col gap-4">
+            <div className="flex items-end justify-between">
+                <div>
+                    <div className="text-3xl font-extrabold tabular-nums tracking-tight">
+                        {done}
+                        <span className="text-lg font-semibold text-muted-foreground"> / {total}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                        {pct}% {t('forwarding_audit.resend_done_lc', 'selesai')}
+                    </div>
+                </div>
+                {running && (
+                    <div className="text-right">
+                        <div className="text-sm font-semibold">~{eta_seconds}s</div>
+                        <div className="text-xs text-muted-foreground">{t('forwarding_audit.eta_left', 'estimasi sisa')}</div>
+                    </div>
+                )}
+            </div>
+
+            <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                <div
+                    className="h-full rounded-full bg-emerald-500 transition-[width] duration-500"
+                    style={{ width: `${pct}%` }}
+                />
+            </div>
+
+            {current && (
+                <div className="flex items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+                    <span className="relative flex h-2.5 w-2.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/60" />
+                        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+                    </span>
+                    <div className="flex-1">
+                        <div className="text-sm font-semibold">
+                            {current.count} {t('forwarding_audit.resend_inflight', 'pengiriman ulang berjalan')}{' '}
+                            <span className="font-normal text-muted-foreground">
+                                — {t('forwarding_audit.resend_waiting', 'menunggu target…')} ({waiting}s)
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <dl className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-sm">
+                {CHIP_STATUSES.map((status) => (
+                    <div key={status} className="flex items-center justify-between gap-2">
+                        <dt className="font-mono text-xs text-muted-foreground">{status}</dt>
+                        <dd className="font-semibold tabular-nums">{counts[status] ?? 0}</dd>
+                    </div>
+                ))}
+            </dl>
+
+            {!running && failedAgain > 0 && onRetry && (
+                <Button variant="destructive" disabled={retrying} onClick={onRetry}>
+                    {t('forwarding_audit.resend_retry', 'Kirim ulang lagi')} ({failedAgain})
+                </Button>
+            )}
+        </div>
+    );
+
+    if (embedded) {
+        return (
+            <div className="flex flex-col gap-2">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {t('forwarding_audit.resend_progress_title', 'Progres kirim ulang')}
+                </p>
+                {body}
+            </div>
+        );
+    }
+
     return (
         <Card>
             <CardHeader>
@@ -50,64 +126,7 @@ export function ResendProgress({
                 </CardTitle>
             </CardHeader>
             <Separator />
-            <CardContent className="flex flex-col gap-4 p-4">
-                <div className="flex items-end justify-between">
-                    <div>
-                        <div className="text-3xl font-extrabold tabular-nums tracking-tight">
-                            {done}
-                            <span className="text-lg font-semibold text-muted-foreground"> / {total}</span>
-                        </div>
-                        <div className="mt-0.5 text-xs text-muted-foreground">
-                            {pct}% {t('forwarding_audit.resend_done_lc', 'selesai')}
-                        </div>
-                    </div>
-                    {running && (
-                        <div className="text-right">
-                            <div className="text-sm font-semibold">~{eta_seconds}s</div>
-                            <div className="text-xs text-muted-foreground">{t('forwarding_audit.eta_left', 'estimasi sisa')}</div>
-                        </div>
-                    )}
-                </div>
-
-                <div className="h-2.5 overflow-hidden rounded-full bg-muted">
-                    <div
-                        className="h-full rounded-full bg-emerald-500 transition-[width] duration-500"
-                        style={{ width: `${pct}%` }}
-                    />
-                </div>
-
-                {current && (
-                    <div className="flex items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
-                        <span className="relative flex h-2.5 w-2.5">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/60" />
-                            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
-                        </span>
-                        <div className="flex-1">
-                            <div className="text-sm font-semibold">
-                                {current.count} {t('forwarding_audit.resend_inflight', 'pengiriman ulang berjalan')}{' '}
-                                <span className="font-normal text-muted-foreground">
-                                    — {t('forwarding_audit.resend_waiting', 'menunggu target…')} ({waiting}s)
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                <dl className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-sm">
-                    {CHIP_STATUSES.map((status) => (
-                        <div key={status} className="flex items-center justify-between gap-2">
-                            <dt className="font-mono text-xs text-muted-foreground">{status}</dt>
-                            <dd className="font-semibold tabular-nums">{counts[status] ?? 0}</dd>
-                        </div>
-                    ))}
-                </dl>
-
-                {!running && failedAgain > 0 && onRetry && (
-                    <Button variant="destructive" disabled={retrying} onClick={onRetry}>
-                        {t('forwarding_audit.resend_retry', 'Kirim ulang lagi')} ({failedAgain})
-                    </Button>
-                )}
-            </CardContent>
+            <CardContent className="p-4">{body}</CardContent>
         </Card>
     );
 }

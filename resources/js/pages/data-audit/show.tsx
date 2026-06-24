@@ -248,16 +248,6 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                         ) : (
                             integrations.map((it) => {
                                 const live = resendProg[it.key];
-                                if (live) {
-                                    return (
-                                        <ResendProgress
-                                            key={it.key}
-                                            progress={live}
-                                            retrying={resend.processing}
-                                            onRetry={() => resendFailed(it.key)}
-                                        />
-                                    );
-                                }
                                 return (
                                     <div key={it.key} className="rounded-lg border border-border/60 p-4">
                                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -267,19 +257,21 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                                                     {t('forwarding_audit.interval', 'Interval')}: {it.interval} {t('data_audit.min', 'min')}
                                                 </p>
                                             </div>
-                                            {it.failed > 0 ? (
-                                                <Button
-                                                    variant="destructive"
-                                                    disabled={resend.processing}
-                                                    onClick={() => resendFailed(it.key)}
-                                                >
-                                                    {t('forwarding_audit.resend_btn', 'Kirim ulang')} {it.failed} {t('forwarding_audit.failed_lc', 'gagal')}
-                                                </Button>
-                                            ) : (
-                                                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                                                    {t('forwarding_audit.all_ok', 'Semua terkirim')}
-                                                </span>
-                                            )}
+                                            {/* While a resend is tracked, the embedded hero below owns status + retry. */}
+                                            {!live &&
+                                                (it.failed > 0 ? (
+                                                    <Button
+                                                        variant="destructive"
+                                                        disabled={resend.processing}
+                                                        onClick={() => resendFailed(it.key)}
+                                                    >
+                                                        {t('forwarding_audit.resend_btn', 'Kirim ulang')} {it.failed} {t('forwarding_audit.failed_lc', 'gagal')}
+                                                    </Button>
+                                                ) : (
+                                                    <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                                                        {t('forwarding_audit.all_ok', 'Semua terkirim')}
+                                                    </span>
+                                                ))}
                                         </div>
                                         <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
                                             <Stat label={t('forwarding_audit.from_logger', 'Dari logger')} value={it.from_logger} />
@@ -292,6 +284,17 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                                             <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
                                                 {it.never_attempted} {t('forwarding_audit.never_attempted_hint', 'menit punya data tapi belum pernah diteruskan (mis. hasil backfill). Replay raw_payload tidak tersedia untuk menit ini.')}
                                             </p>
+                                        )}
+                                        {live && (
+                                            <>
+                                                <Separator className="my-4" />
+                                                <ResendProgress
+                                                    embedded
+                                                    progress={live}
+                                                    retrying={resend.processing}
+                                                    onRetry={() => resendFailed(it.key)}
+                                                />
+                                            </>
                                         )}
                                     </div>
                                 );
