@@ -14,6 +14,7 @@ class ForwardingLog extends Model
         'logger_id',
         'integration_id',
         'resend_of',
+        'resend_requested_at',
         'target_name',
         'target_url',
         'status',
@@ -28,9 +29,10 @@ class ForwardingLog extends Model
     protected function casts(): array
     {
         return [
-            'payload_summary' => 'array',
-            'raw_payload'     => 'array',
-            'created_at'      => 'datetime',
+            'payload_summary'     => 'array',
+            'raw_payload'         => 'array',
+            'created_at'          => 'datetime',
+            'resend_requested_at' => 'datetime',
         ];
     }
 

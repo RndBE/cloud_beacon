@@ -115,6 +115,7 @@ class ForwardingAuditService
             if ($resolved->has($id)) {
                 continue;
             }
+            ForwardingLog::whereKey($id)->update(['resend_requested_at' => now()]);
             ResendForwarding::dispatch($id)->onQueue('default');
             $count++;
         }
