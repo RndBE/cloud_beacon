@@ -115,11 +115,106 @@ class ForwardingAuditService
             if ($resolved->has($id)) {
                 continue;
             }
+            ForwardingLog::whereKey($id)->update(['resend_requested_at' => now()]);
             ResendForwarding::dispatch($id)->onQueue('default');
             $count++;
         }
 
         return $count;
+    }
+
+    public function resendProgress(Logger $logger, CarbonInterface $date): array
+    {
+        $day        = Carbon::parse($date);
+        $dayStart   = $day->copy()->startOfDay();
+        $dayEnd     = $day->copy()->endOfDay();
+        $etaUnit    = (int) config('resend.interval', 2);
+        $staleAfter = (int) config('resend.stale_after', 300);
+
+        // Build the same bucket set as integrationAudit/resendFailed.
+        $buckets = [];
+        foreach (LoggerIntegration::where('logger_id', $logger->id)->where('is_enabled', true)->get() as $integration) {
+            $buckets[] = ['key' => (string) $integration->id, 'name' => $integration->name, 'apply' => function ($q) use ($integration) {
+                $q->where('integration_id', $integration->id);
+            }];
+        }
+        if ($logger->ministesy_enabled) {
+            $buckets[] = ['key' => 'ministesy', 'name' => 'Mini STESY', 'apply' => function ($q) {
+                $q->whereNull('integration_id')->where('target_name', 'Mini STESY');
+            }];
+        }
+
+        $result = [];
+
+        foreach ($buckets as $bucket) {
+            $query = ForwardingLog::where('logger_id', $logger->id)
+                ->where('status', 'error')
+                ->whereNull('resend_of')
+                ->whereNotNull('resend_requested_at')
+                ->whereBetween('created_at', [$dayStart, $dayEnd]);
+            ($bucket['apply'])($query);
+            $rows = $query->get(['id', 'resend_requested_at']);
+
+            $total = $rows->count();
+            if ($total === 0) {
+                continue;
+            }
+
+            // Children matched purely by resend_of linkage (no day filter — a resend
+            // may run after midnight relative to the audited day).
+            $children = ForwardingLog::whereIn('resend_of', $rows->pluck('id'))
+                ->get(['resend_of', 'status'])
+                ->groupBy('resend_of');
+
+            $resolved = 0;
+            $failedAgain = 0;
+            $pending = 0;
+            $pendingOldest = null;
+
+            foreach ($rows as $row) {
+                $kids = $children->get($row->id);
+
+                if (! $kids || $kids->isEmpty()) {
+                    $requestedAt = Carbon::parse($row->resend_requested_at);
+                    if (abs(now()->diffInSeconds($requestedAt)) > $staleAfter) {
+                        $failedAgain++;          // stuck/guarded job — let the hero finish
+                    } else {
+                        $pending++;
+                        if ($pendingOldest === null || $requestedAt->lt($pendingOldest)) {
+                            $pendingOldest = $requestedAt;
+                        }
+                    }
+                    continue;
+                }
+
+                if ($kids->firstWhere('status', 'success')) {
+                    $resolved++;
+                } else {
+                    $failedAgain++;
+                }
+            }
+
+            $done = $resolved + $failedAgain;
+
+            $result[$bucket['key']] = [
+                'key'         => $bucket['key'],
+                'name'        => $bucket['name'],
+                'total'       => $total,
+                'done'        => $done,
+                'pct'         => (int) round($done / $total * 100),
+                'counts'      => [
+                    'resolved'     => $resolved,
+                    'failed_again' => $failedAgain,
+                    'pending'      => $pending,
+                ],
+                'current'     => $pending > 0
+                    ? ['count' => $pending, 'oldest_seconds' => (int) abs(now()->diffInSeconds($pendingOldest))]
+                    : null,
+                'eta_seconds' => $pending * $etaUnit,
+            ];
+        }
+
+        return $result;
     }
 
     private function buildBucket(

@@ -57,7 +57,8 @@ class DataAuditController extends Controller
             'present'      => $this->audits->presentMinutes($logger, $date)->count(),
             'missing'      => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
             'progress'     => $this->audits->backfillProgress($logger, $date),
-            'integrations' => $forwarding->integrationAudit($logger, $date),
+            'integrations'   => $forwarding->integrationAudit($logger, $date),
+            'resendProgress' => $forwarding->resendProgress($logger, $date),
         ]);
     }
 
@@ -116,5 +117,13 @@ class DataAuditController extends Controller
         $count = $forwarding->resendFailed($logger, $data['integration'], Carbon::parse($data['date']));
 
         return back()->with('status', "Mengirim ulang {$count} forwarding yang gagal.");
+    }
+
+    public function resendStatus(Request $request, int $id, ForwardingAuditService $forwarding)
+    {
+        $logger = $this->resolveLogger($id);
+        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
+
+        return response()->json($forwarding->resendProgress($logger, $date));
     }
 }
