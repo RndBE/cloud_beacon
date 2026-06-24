@@ -45,18 +45,19 @@ class DataAuditController extends Controller
         return Inertia::render('data-audit/index', ['audits' => $audits]);
     }
 
-    public function show(Request $request, int $id)
+    public function show(Request $request, int $id, ForwardingAuditService $forwarding)
     {
         $logger = $this->resolveLogger($id);
         $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
 
         return Inertia::render('data-audit/show', [
-            'logger'   => $logger->only('id', 'name', 'device_identifier'),
-            'date'     => $date->toDateString(),
-            'expected' => $this->audits->expectedFor($date),
-            'present'  => $this->audits->presentMinutes($logger, $date)->count(),
-            'missing'  => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
-            'progress' => $this->audits->backfillProgress($logger, $date),
+            'logger'       => $logger->only('id', 'name', 'device_identifier'),
+            'date'         => $date->toDateString(),
+            'expected'     => $this->audits->expectedFor($date),
+            'present'      => $this->audits->presentMinutes($logger, $date)->count(),
+            'missing'      => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
+            'progress'     => $this->audits->backfillProgress($logger, $date),
+            'integrations' => $forwarding->integrationAudit($logger, $date),
         ]);
     }
 

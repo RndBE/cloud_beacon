@@ -14,6 +14,18 @@ import type { BreadcrumbItem } from '@/types';
 // Types
 // -----------------------------------------------------------------------
 
+type IntegrationAudit = {
+    key: string;
+    name: string;
+    interval: number;
+    from_logger: number;
+    due: number;
+    forwarded_ok: number;
+    failed: number;
+    skipped: number;
+    never_attempted: number;
+};
+
 type Props = {
     logger: { id: number; name: string; device_identifier: string };
     date: string;
@@ -22,6 +34,7 @@ type Props = {
     /** Array of 'H:i' strings for every missing minute of the day. */
     missing: string[];
     progress: Progress;
+    integrations: IntegrationAudit[];
 };
 
 // -----------------------------------------------------------------------
@@ -42,11 +55,18 @@ function cellClass(key: string, missingSet: Set<string>, updates: Record<string,
 // Page component
 // -----------------------------------------------------------------------
 
-export default function DataAuditShow({ logger, date, expected, present, missing, progress: initialProgress }: Props) {
+export default function DataAuditShow({ logger, date, expected, present, missing, progress: initialProgress, integrations }: Props) {
     const { t } = useTranslation();
 
     const { post, processing } = useForm({ date });
     const retry = useForm({ date });
+
+    const resend = useForm({ date, integration: '' });
+
+    function resendFailed(key: string) {
+        resend.transform((data) => ({ ...data, integration: key }));
+        resend.post(`/data-audit/${logger.id}/resend`, { preserveScroll: true });
+    }
 
     const progress = useBackfillStatus(logger.id, date, initialProgress);
 
@@ -204,7 +224,79 @@ export default function DataAuditShow({ logger, date, expected, present, missing
                         onRetryFailed={() => retry.post(`/data-audit/${logger.id}/retry-failed`)}
                     />
                 )}
+                {/* ── Integrasi & Forwarding ──────────────────────────── */}
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="text-base">
+                            {t('forwarding_audit.title', 'Integrasi & Forwarding')}
+                        </CardTitle>
+                        <CardDescription>
+                            {t('forwarding_audit.description', 'Rekonsiliasi jumlah data dari logger vs yang berhasil diteruskan ke tiap platform.')}
+                        </CardDescription>
+                    </CardHeader>
+                    <Separator />
+                    <CardContent className="flex flex-col gap-4 p-4">
+                        {integrations.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">
+                                {t('forwarding_audit.none', 'Belum ada integrasi aktif untuk logger ini.')}
+                            </p>
+                        ) : (
+                            integrations.map((it) => (
+                                <div key={it.key} className="rounded-lg border border-border/60 p-4">
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                        <div>
+                                            <p className="font-semibold">{it.name}</p>
+                                            <p className="text-xs text-muted-foreground">
+                                                {t('forwarding_audit.interval', 'Interval')}: {it.interval} {t('data_audit.min', 'min')}
+                                            </p>
+                                        </div>
+                                        {it.failed > 0 ? (
+                                            <Button
+                                                variant="destructive"
+                                                disabled={resend.processing}
+                                                onClick={() => resendFailed(it.key)}
+                                            >
+                                                {t('forwarding_audit.resend_btn', 'Kirim ulang')} {it.failed} {t('forwarding_audit.failed_lc', 'gagal')}
+                                            </Button>
+                                        ) : (
+                                            <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                                                {t('forwarding_audit.all_ok', 'Semua terkirim')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
+                                        <Stat label={t('forwarding_audit.from_logger', 'Dari logger')} value={it.from_logger} />
+                                        <Stat label={t('forwarding_audit.due', 'Harus diteruskan')} value={it.due} />
+                                        <Stat label={t('forwarding_audit.forwarded_ok', 'Terkirim OK')} value={it.forwarded_ok} tone="ok" />
+                                        <Stat label={t('forwarding_audit.failed', 'Gagal')} value={it.failed} tone={it.failed > 0 ? 'bad' : undefined} />
+                                        <Stat label={t('forwarding_audit.skipped', 'Di-skip (interval)')} value={it.skipped} />
+                                    </div>
+                                    {it.never_attempted > 0 && (
+                                        <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
+                                            {it.never_attempted} {t('forwarding_audit.never_attempted_hint', 'menit punya data tapi belum pernah diteruskan (mis. hasil backfill). Replay raw_payload tidak tersedia untuk menit ini.')}
+                                        </p>
+                                    )}
+                                </div>
+                            ))
+                        )}
+                    </CardContent>
+                </Card>
             </div>
         </AppLayout>
+    );
+}
+
+function Stat({ label, value, tone }: { label: string; value: number; tone?: 'ok' | 'bad' }) {
+    const color =
+        tone === 'ok'
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : tone === 'bad'
+              ? 'text-red-600 dark:text-red-400'
+              : 'text-foreground';
+    return (
+        <div className="rounded-md bg-muted/40 p-2">
+            <p className="text-xs text-muted-foreground">{label}</p>
+            <p className={`text-lg font-semibold ${color}`}>{value}</p>
+        </div>
     );
 }
