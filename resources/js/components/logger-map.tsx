@@ -1,7 +1,18 @@
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap } from 'react-leaflet';
+import { useEffect } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { Link } from '@inertiajs/react';
+// Marker clustering: groups nearby markers, splits on click/zoom (spiderfy).
+import 'leaflet.markercluster';
+import 'leaflet.markercluster/dist/MarkerCluster.css';
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
+
+// Fit the whole Indonesian archipelago and keep the center over Indonesia.
+// SW (south of Java / west of Sumatra) → NE (north Sulawesi / east Papua).
+const INDONESIA_BOUNDS: L.LatLngBoundsLiteral = [
+    [-11.2, 94.7],
+    [6.3, 141.2],
+];
 
 // Fix default marker icons in webpack/vite bundled environments
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -58,9 +69,98 @@ interface LoggerMapProps {
     loggers: LoggerMarker[];
 }
 
+const statusLabel: Record<string, string> = {
+    online: '🟢 Online',
+    warning: '🟡 Warning',
+    offline: '🔴 Offline',
+};
+
+function escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[c] as string));
+}
+
+// Build the marker popup as an HTML string (markercluster works with raw
+// Leaflet markers, so we render the popup via bindPopup instead of <Popup/>).
+function buildPopupHtml(logger: LoggerMarker): string {
+    const row = (label: string, value: string) => `
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="color:#6b7280;">${label}</span>
+            <span>${value}</span>
+        </div>`;
+
+    const serial = logger.serialNumber
+        ? `<div style="font-size:11px;font-family:monospace;color:#9ca3af;margin-bottom:6px;">${escapeHtml(logger.serialNumber)}</div>`
+        : '';
+
+    const location = logger.location
+        ? row('Lokasi', `<span style="text-align:right;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;">${escapeHtml(logger.location)}</span>`)
+        : '';
+
+    const mode = logger.loggerMode
+        ? row('Mode', `<span style="font-family:monospace;font-size:11px;background:#f3f4f6;padding:1px 6px;border-radius:4px;">${escapeHtml(logger.loggerMode)}</span>`)
+        : '';
+
+    const project = logger.projectName
+        ? row('Project', `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:8px;height:8px;border-radius:50%;background:${logger.projectColor || '#6b7280'};display:inline-block;"></span>${escapeHtml(logger.projectName)}</span>`)
+        : '';
+
+    return `
+        <div style="min-width:200px;font-family:system-ui,sans-serif;">
+            <div style="font-weight:700;font-size:14px;margin-bottom:2px;color:#111;">${escapeHtml(logger.name)}</div>
+            ${serial}
+            <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;margin-bottom:8px;">
+                ${row('Status', statusLabel[logger.status] || logger.status)}
+                ${location}
+                ${row('Sensors', `${logger.sensorsCount} sensor${logger.sensorsCount !== 1 ? 's' : ''}`)}
+                ${mode}
+                ${project}
+            </div>
+            <div style="height:1px;background:#e5e7eb;margin-bottom:8px;"></div>
+            <a href="/loggers/${logger.id}" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;color:#3b82f6;text-decoration:none;">View Details →</a>
+        </div>`;
+}
+
+// Adds all loggers to a marker cluster group on the map. Nearby markers merge
+// into a numbered cluster; clicking a cluster zooms to its bounds and, once at
+// max zoom, spiderfies so individual markers fan out.
+function ClusteredMarkers({ loggers }: { loggers: LoggerMarker[] }) {
+    const map = useMap();
+
+    useEffect(() => {
+        const group = L.markerClusterGroup({
+            showCoverageOnHover: false,
+            maxClusterRadius: 60,
+            spiderfyOnMaxZoom: true,
+            zoomToBoundsOnClick: true,
+        });
+
+        loggers.forEach((logger) => {
+            const marker = L.marker([logger.lat, logger.lng], {
+                icon: createStatusIcon(logger.status),
+            });
+            marker.bindPopup(buildPopupHtml(logger), { minWidth: 200 });
+            group.addLayer(marker);
+        });
+
+        map.addLayer(group);
+
+        return () => {
+            map.removeLayer(group);
+        };
+    }, [loggers, map]);
+
+    return null;
+}
+
 export default function LoggerMap({ loggers }: LoggerMapProps) {
     // Filter loggers that have valid coordinates
-    const validLoggers = loggers.filter(l => l.lat !== 0 && l.lng !== 0);
+    const validLoggers = loggers.filter((l) => l.lat !== 0 && l.lng !== 0);
 
     if (validLoggers.length === 0) {
         return (
@@ -70,20 +170,9 @@ export default function LoggerMap({ loggers }: LoggerMapProps) {
         );
     }
 
-    // Calculate center from all markers
-    const centerLat = validLoggers.reduce((sum, l) => sum + l.lat, 0) / validLoggers.length;
-    const centerLng = validLoggers.reduce((sum, l) => sum + l.lng, 0) / validLoggers.length;
-
-    const statusLabel: Record<string, string> = {
-        online: '🟢 Online',
-        warning: '🟡 Warning',
-        offline: '🔴 Offline',
-    };
-
     return (
         <MapContainer
-            center={[centerLat, centerLng]}
-            zoom={10}
+            bounds={INDONESIA_BOUNDS}
             scrollWheelZoom={true}
             style={{ height: '400px', width: '100%', borderRadius: '0.5rem', zIndex: 0 }}
         >
@@ -91,79 +180,7 @@ export default function LoggerMap({ loggers }: LoggerMapProps) {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
-            {validLoggers.map((logger) => (
-                <Marker
-                    key={logger.id}
-                    position={[logger.lat, logger.lng]}
-                    icon={createStatusIcon(logger.status)}
-                >
-                    <Popup>
-                        <div style={{ minWidth: '200px', fontFamily: 'system-ui, sans-serif' }}>
-                            {/* Header */}
-                            <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '2px', color: '#111' }}>
-                                {logger.name}
-                            </div>
-                            {logger.serialNumber && (
-                                <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#9ca3af', marginBottom: '6px' }}>
-                                    {logger.serialNumber}
-                                </div>
-                            )}
-
-                            {/* Info rows */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', marginBottom: '8px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <span style={{ color: '#6b7280' }}>Status</span>
-                                    <span>{statusLabel[logger.status] || logger.status}</span>
-                                </div>
-                                {logger.location && (
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                        <span style={{ color: '#6b7280' }}>Lokasi</span>
-                                        <span style={{ textAlign: 'right', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{logger.location}</span>
-                                    </div>
-                                )}
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <span style={{ color: '#6b7280' }}>Sensors</span>
-                                    <span>{logger.sensorsCount} sensor{logger.sensorsCount !== 1 ? 's' : ''}</span>
-                                </div>
-                                {logger.loggerMode && (
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                        <span style={{ color: '#6b7280' }}>Mode</span>
-                                        <span style={{ fontFamily: 'monospace', fontSize: '11px', background: '#f3f4f6', padding: '1px 6px', borderRadius: '4px' }}>{logger.loggerMode}</span>
-                                    </div>
-                                )}
-                                {logger.projectName && (
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                        <span style={{ color: '#6b7280' }}>Project</span>
-                                        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: logger.projectColor || '#6b7280', display: 'inline-block' }}></span>
-                                            {logger.projectName}
-                                        </span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Divider */}
-                            <div style={{ height: '1px', background: '#e5e7eb', marginBottom: '8px' }}></div>
-
-                            {/* Link */}
-                            <a
-                                href={`/loggers/${logger.id}`}
-                                style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    fontSize: '12px',
-                                    fontWeight: 600,
-                                    color: '#3b82f6',
-                                    textDecoration: 'none',
-                                }}
-                            >
-                                View Details →
-                            </a>
-                        </div>
-                    </Popup>
-                </Marker>
-            ))}
+            <ClusteredMarkers loggers={validLoggers} />
         </MapContainer>
     );
 }
