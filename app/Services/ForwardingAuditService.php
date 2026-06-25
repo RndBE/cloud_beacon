@@ -21,21 +21,38 @@ class ForwardingAuditService
      */
     public function dueForwards(Collection $presentMinutes, int $interval): int
     {
+        return $this->dueMinutesList($presentMinutes, $interval, false)->count();
+    }
+
+    /**
+     * Exact list of 'H:i' minutes that SHOULD have been forwarded, mirroring the
+     * greedy interval simulation in LoggerIntegration::isDueForForwarding.
+     * In raw mode every present minute is due (the interval is ignored).
+     *
+     * @param  Collection<int,\Carbon\CarbonInterface>  $presentMinutes  sorted ascending
+     * @return Collection<int,string>  'H:i' strings
+     */
+    public function dueMinutesList(Collection $presentMinutes, int $interval, bool $raw): Collection
+    {
         if ($presentMinutes->isEmpty()) {
-            return 0;
+            return collect();
         }
+        if ($raw) {
+            return $presentMinutes->map(fn ($m) => $m->format('H:i'))->unique()->values();
+        }
+
         $interval = max(1, $interval);
-        $count    = 0;
+        $out      = collect();
         $lastDue  = null;
 
         foreach ($presentMinutes as $minute) {
             if ($lastDue === null || $minute->greaterThanOrEqualTo($lastDue->copy()->addMinutes($interval))) {
-                $count++;
+                $out->push($minute->format('H:i'));
                 $lastDue = $minute;
             }
         }
 
-        return $count;
+        return $out->unique()->values();
     }
 
     public function integrationAudit(Logger $logger, CarbonInterface $date): array
@@ -43,6 +60,7 @@ class ForwardingAuditService
         $day        = Carbon::parse($date);
         $dayStart   = $day->copy()->startOfDay();
         $dayEnd     = $day->copy()->endOfDay();
+        $dateStr    = $day->toDateString();
         $fromLogger = $this->audits->presentMinutes($logger, $date);
         $present    = $fromLogger->map(fn ($m) => Carbon::parse($m))->values();
         $fromCount  = $fromLogger->count();
@@ -61,11 +79,12 @@ class ForwardingAuditService
                 raw:        (bool) $integration->raw_forward,
                 present:    $present,
                 fromCount:  $fromCount,
+                date:       $dateStr,
                 rows:       ForwardingLog::where('logger_id', $logger->id)
                                 ->where('integration_id', $integration->id)
                                 ->whereNull('resend_of')
                                 ->whereBetween('created_at', [$dayStart, $dayEnd])
-                                ->get(['id', 'status']),
+                                ->get(['id', 'status', 'created_at', 'payload_summary']),
             );
         }
 
@@ -77,12 +96,13 @@ class ForwardingAuditService
                 raw:        (bool) $logger->ministesy_raw_forward,
                 present:    $present,
                 fromCount:  $fromCount,
+                date:       $dateStr,
                 rows:       ForwardingLog::where('logger_id', $logger->id)
                                 ->whereNull('integration_id')
                                 ->where('target_name', 'Mini STESY')
                                 ->whereNull('resend_of')
                                 ->whereBetween('created_at', [$dayStart, $dayEnd])
-                                ->get(['id', 'status']),
+                                ->get(['id', 'status', 'created_at', 'payload_summary']),
             );
         }
 
@@ -226,16 +246,18 @@ class ForwardingAuditService
         Collection $present,
         int $fromCount,
         Collection $rows,
+        string $date,
         bool $raw = false,
     ): array {
         // Raw mode forwards every record, so the expected (due) count is simply
         // the number of records the logger produced that day — the interval
         // simulation does not apply.
-        $due       = $raw ? $present->count() : $this->dueForwards($present, $interval);
-        $success   = $rows->where('status', 'success')->count();
-        $skipped   = $rows->where('status', 'skipped')->count();
-        $errorRows = $rows->where('status', 'error');
-        $errorIds  = $errorRows->pluck('id');
+        $dueMinutes = $this->dueMinutesList($present, $interval, $raw);
+        $due        = $dueMinutes->count();
+        $success    = $rows->where('status', 'success')->count();
+        $skipped    = $rows->where('status', 'skipped')->count();
+        $errorRows  = $rows->where('status', 'error');
+        $errorIds   = $errorRows->pluck('id');
 
         $resolvedIds = $errorIds->isEmpty()
             ? collect()
@@ -251,12 +273,103 @@ class ForwardingAuditService
             'key'             => $key,
             'name'            => $name,
             'interval'        => $interval,
+            'raw'             => $raw,
             'from_logger'     => $fromCount,
             'due'             => $due,
             'forwarded_ok'    => $success + $resolved,
             'failed'          => $outstanding,
             'skipped'         => $skipped,
             'never_attempted' => max(0, $due - ($success + $errorRows->count())),
+            'coverage'        => $this->buildCoverage($rows, $dueMinutes, $resolvedIds->flip(), $date),
         ];
+    }
+
+    /**
+     * Map each minute of the day to a forwarding status, keyed on the DATA
+     * timestamp of the record (payload_summary hari+jam), falling back to the
+     * row's wall-clock created_at. Returns 'H:i' lists per status so the UI can
+     * paint a minute heatmap identical in spirit to the logger coverage map.
+     *
+     *   ok      — at least one successful forward (or a resolved error) that minute
+     *   failed  — outstanding error, no successful forward
+     *   skipped — only skipped (interval throttle) that minute
+     *   missing — a due minute with no forwarding attempt at all (e.g. backfilled
+     *             data the throttle never forwarded)
+     *
+     * @param  Collection<int,\App\Models\ForwardingLog>  $rows
+     * @param  Collection<int,string>                     $dueMinutes  'H:i'
+     * @param  Collection<int,mixed>                      $resolvedSet flip()'d error ids resolved by a resend
+     */
+    private function buildCoverage(Collection $rows, Collection $dueMinutes, Collection $resolvedSet, string $date): array
+    {
+        $byMinute = [];
+
+        foreach ($rows as $row) {
+            $minute = $this->rowDataMinute($row, $date);
+            if ($minute === null) {
+                continue;
+            }
+
+            $status = $row->status;
+            if ($status === 'error' && $resolvedSet->has($row->id)) {
+                $status = 'success'; // a later resend delivered this minute
+            }
+
+            $byMinute[$minute] = $this->mergeMinuteStatus($byMinute[$minute] ?? null, $status);
+        }
+
+        $ok = $failed = $skipped = [];
+        foreach ($byMinute as $minute => $status) {
+            if ($status === 'success') {
+                $ok[] = $minute;
+            } elseif ($status === 'error') {
+                $failed[] = $minute;
+            } else {
+                $skipped[] = $minute;
+            }
+        }
+        sort($ok);
+        sort($failed);
+        sort($skipped);
+
+        $missing = $dueMinutes->reject(fn ($m) => array_key_exists($m, $byMinute))->values()->all();
+
+        return [
+            'ok'      => $ok,
+            'failed'  => $failed,
+            'skipped' => $skipped,
+            'missing' => $missing,
+        ];
+    }
+
+    /** Resolve a forwarding row to its data-time 'H:i', or null if it isn't on $date. */
+    private function rowDataMinute(ForwardingLog $row, string $date): ?string
+    {
+        $summary = $row->payload_summary;
+        if (is_array($summary) && ! empty($summary['hari']) && ! empty($summary['jam'])) {
+            if ($summary['hari'] !== $date) {
+                return null; // data belongs to a different day than the audited one
+            }
+            try {
+                return Carbon::parse($summary['hari'] . ' ' . $summary['jam'])->format('H:i');
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        // No data timestamp recorded — fall back to wall-clock (already on $date by query filter).
+        return $row->created_at ? Carbon::parse($row->created_at)->format('H:i') : null;
+    }
+
+    /** Pick the strongest status for a minute: success > error > skipped. */
+    private function mergeMinuteStatus(?string $current, string $next): string
+    {
+        $rank = ['skipped' => 0, 'error' => 1, 'success' => 2];
+
+        if ($current === null) {
+            return $next;
+        }
+
+        return ($rank[$next] ?? 0) > ($rank[$current] ?? 0) ? $next : $current;
     }
 }

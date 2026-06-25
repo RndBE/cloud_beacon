@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\SyncLoggerInfo;
 use App\Models\Logger;
-use App\Services\MqttService;
 use Illuminate\Console\Command;
 
 class SyncLoggers extends Command
@@ -22,50 +22,18 @@ class SyncLoggers extends Command
             return self::SUCCESS;
         }
 
-        $mqtt = new MqttService();
-        $successCount = 0;
-        $errorCount = 0;
-
+        // Each logger's INFO request blocks for up to mqtt.timeout seconds. Doing
+        // them inline here used to pin this scheduler process for loggers × timeout
+        // (≈4.5 min for 18 devices), barely fitting the 5-minute tick and competing
+        // with the web server for the broker/DB. Hand each to the "sync" queue so
+        // the dedicated workers do the blocking work in parallel instead.
         foreach ($loggers as $logger) {
-            // Mark as syncing so the UI can show spinner
+            // Mark as syncing so the UI can show spinner.
             $logger->update(['last_sync_status' => 'syncing']);
-
-            $info = $mqtt->requestInfo($logger->device_identifier);
-
-            if ($info !== null) {
-                $parsed = MqttService::parseInfoResponse($info);
-
-                $logger->update(array_merge(
-                    array_filter($parsed, fn($v) => $v !== null),
-                    [
-                        'status' => 'online',
-                        'last_connected_at' => now(),
-                        'last_seen_at' => now(),
-                        'last_sync_status' => 'success',
-                        'last_sync_error' => null,
-                    ]
-                ));
-
-                $successCount++;
-            } else {
-                // Mark offline if threshold exceeded
-                if ($logger->status !== 'offline') {
-                    $threshold = now()->subSeconds(30);
-                    if (!$logger->last_connected_at || $logger->last_connected_at->lt($threshold)) {
-                        $logger->update(['status' => 'offline']);
-                    }
-                }
-
-                $logger->update([
-                    'last_sync_status' => 'error',
-                    'last_sync_error' => 'No response from device',
-                ]);
-
-                $errorCount++;
-            }
+            SyncLoggerInfo::dispatch($logger);
         }
 
-        $this->info("Sync complete: {$successCount} success, {$errorCount} failed out of {$loggers->count()} loggers.");
+        $this->info("Dispatched sync for {$loggers->count()} loggers to the 'sync' queue.");
 
         return self::SUCCESS;
     }
