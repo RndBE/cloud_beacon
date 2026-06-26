@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Jobs\RunLoggerBackfill;
 use App\Models\Logger;
-use App\Models\LoggerDailyAudit;
 use App\Services\DataAuditService;
 use App\Services\ForwardingAuditService;
 use Carbon\Carbon;
@@ -25,24 +24,61 @@ class DataAuditController extends Controller
         return $query->findOrFail($id);
     }
 
-    public function index()
+    public function index(Request $request, ForwardingAuditService $forwarding)
     {
-        $scope = Logger::query();
+        $scope = Logger::query()->with('project:id,name,color');
         if (! auth()->user()->isSuperAdmin()) {
             $scope->where('user_id', auth()->id());
         }
-        $loggerIds = $scope->pluck('id');
+        // ministesy_* columns are needed by the forwarding aggregate below.
+        $loggers = $scope->get([
+            'id', 'name', 'device_identifier', 'project_id',
+            'ministesy_enabled', 'ministesy_interval', 'ministesy_raw_forward',
+        ]);
+        $loggerIds = $loggers->pluck('id');
 
-        $audits = LoggerDailyAudit::with(['logger:id,name,device_identifier,project_id', 'logger.project:id,name,color'])
-            ->whereIn('logger_id', $loggerIds)
-            ->whereIn('id', function ($q) use ($loggerIds) {
-                $q->selectRaw('MAX(id)')->from('logger_daily_audits')
-                    ->whereIn('logger_id', $loggerIds)->groupBy('logger_id');
-            })
-            ->orderByDesc('missing')
-            ->get();
+        // Completeness is computed live for the chosen date (default today), so
+        // any day can be inspected regardless of whether the hourly scan stored
+        // a row for it. Future dates clamp to today.
+        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
+        if ($date->gt(Carbon::today())) {
+            $date = Carbon::today();
+        }
 
-        return Inertia::render('data-audit/index', ['audits' => $audits]);
+        $expected = $this->audits->expectedFor($date);
+        $present = $this->audits->presentCountsForLoggers($loggerIds, $date);
+        $fwd = $forwarding->completenessForLoggers($loggers, $date);
+
+        $audits = $loggers->map(function (Logger $logger) use ($present, $expected, $date, $fwd) {
+            $p = (int) ($present[$logger->id] ?? 0);
+
+            return [
+                'id' => $logger->id,
+                'date' => $date->toDateString(),
+                'expected' => $expected,
+                'present' => $p,
+                'missing' => max(0, $expected - $p),
+                'forwarding' => $fwd[$logger->id] ?? null,
+                'logger' => [
+                    'id' => $logger->id,
+                    'name' => $logger->name,
+                    'device_identifier' => $logger->device_identifier,
+                    'project' => $logger->project ? [
+                        'id' => $logger->project->id,
+                        'name' => $logger->project->name,
+                        'color' => $logger->project->color,
+                    ] : null,
+                ],
+            ];
+        })
+            ->sortByDesc('missing')
+            ->values();
+
+        return Inertia::render('data-audit/index', [
+            'audits' => $audits,
+            'date' => $date->toDateString(),
+            'today' => Carbon::today()->toDateString(),
+        ]);
     }
 
     public function show(Request $request, int $id, ForwardingAuditService $forwarding)
@@ -51,13 +87,13 @@ class DataAuditController extends Controller
         $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
 
         return Inertia::render('data-audit/show', [
-            'logger'       => $logger->only('id', 'name', 'device_identifier'),
-            'date'         => $date->toDateString(),
-            'expected'     => $this->audits->expectedFor($date),
-            'present'      => $this->audits->presentMinutes($logger, $date)->count(),
-            'missing'      => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
-            'progress'     => $this->audits->backfillProgress($logger, $date),
-            'integrations'   => $forwarding->integrationAudit($logger, $date),
+            'logger' => $logger->only('id', 'name', 'device_identifier'),
+            'date' => $date->toDateString(),
+            'expected' => $this->audits->expectedFor($date),
+            'present' => $this->audits->presentMinutes($logger, $date)->count(),
+            'missing' => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
+            'progress' => $this->audits->backfillProgress($logger, $date),
+            'integrations' => $forwarding->integrationAudit($logger, $date),
             'resendProgress' => $forwarding->resendProgress($logger, $date),
         ]);
     }
@@ -68,12 +104,12 @@ class DataAuditController extends Controller
         $data = $request->validate([
             'date' => ['required', 'date'],
             'from' => ['nullable', 'date_format:H:i'],
-            'to'   => ['nullable', 'date_format:H:i'],
+            'to' => ['nullable', 'date_format:H:i'],
         ]);
 
         $date = Carbon::parse($data['date']);
-        $from = ! empty($data['from']) ? Carbon::parse($data['date'] . ' ' . $data['from']) : null;
-        $to   = ! empty($data['to'])   ? Carbon::parse($data['date'] . ' ' . $data['to'])   : null;
+        $from = ! empty($data['from']) ? Carbon::parse($data['date'].' '.$data['from']) : null;
+        $to = ! empty($data['to']) ? Carbon::parse($data['date'].' '.$data['to']) : null;
 
         $count = $this->audits->enqueueBackfill($logger, $date, $from, $to);
 
@@ -110,7 +146,7 @@ class DataAuditController extends Controller
     {
         $logger = $this->resolveLogger($id);
         $data = $request->validate([
-            'date'        => ['required', 'date'],
+            'date' => ['required', 'date'],
             'integration' => ['required', 'string'],
         ]);
 

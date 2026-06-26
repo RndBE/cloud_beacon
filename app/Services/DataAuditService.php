@@ -14,7 +14,7 @@ class DataAuditService
 {
     public function expectedFor(CarbonInterface $date): int
     {
-        $day   = Carbon::parse($date)->startOfDay();
+        $day = Carbon::parse($date)->startOfDay();
         $today = Carbon::today();
 
         if ($day->lt($today)) {
@@ -26,6 +26,31 @@ class DataAuditService
 
         // Today: count complete minutes elapsed since 00:00 (e.g. at 02:00:00 → 120).
         return (int) $day->diffInMinutes(Carbon::now());
+    }
+
+    /**
+     * Distinct present-minute counts for many loggers on one date, in a single
+     * grouped query. Returns [logger_id => present_minute_count]. Used by the
+     * Data Audit list to compute completeness for any chosen date without
+     * relying on the hourly scan having stored a row.
+     */
+    public function presentCountsForLoggers(Collection $loggerIds, CarbonInterface $date): Collection
+    {
+        $day = Carbon::parse($date)->startOfDay();
+
+        if ($loggerIds->isEmpty()) {
+            return collect();
+        }
+
+        // substr(recorded_at, 1, 16) → "YYYY-MM-DD HH:MM" minute key. Works on
+        // both MySQL (casts datetime to string) and SQLite (stored as text), so
+        // production and the test DB agree.
+        return SensorLog::query()
+            ->whereIn('logger_id', $loggerIds)
+            ->whereBetween('recorded_at', [$day, (clone $day)->endOfDay()])
+            ->selectRaw('logger_id, COUNT(DISTINCT substr(recorded_at, 1, 16)) as present')
+            ->groupBy('logger_id')
+            ->pluck('present', 'logger_id');
     }
 
     public function presentMinutes(Logger $logger, CarbonInterface $date): Collection
@@ -44,8 +69,8 @@ class DataAuditService
 
     public function missingMinutes(Logger $logger, CarbonInterface $date): Collection
     {
-        $present  = $this->presentMinutes($logger, $date)->flip();
-        $day      = Carbon::parse($date)->startOfDay();
+        $present = $this->presentMinutes($logger, $date)->flip();
+        $day = Carbon::parse($date)->startOfDay();
         $expected = $this->expectedFor($date);
 
         $missing = collect();
@@ -88,8 +113,8 @@ class DataAuditService
             }
             DataBackfillTask::create([
                 'logger_id' => $logger->id,
-                'minute'    => $minute,
-                'status'    => DataBackfillTask::PENDING,
+                'minute' => $minute,
+                'status' => DataBackfillTask::PENDING,
             ]);
             $count++;
         }
@@ -114,7 +139,7 @@ class DataAuditService
             ];
         }
 
-        $counts  = [];
+        $counts = [];
         $updates = [];
         $current = null;
 
@@ -127,7 +152,7 @@ class DataAuditService
 
             if ($task->status === DataBackfillTask::REQUESTED && $current === null) {
                 $current = [
-                    'minute'          => Carbon::parse($task->minute)->format('H:i'),
+                    'minute' => Carbon::parse($task->minute)->format('H:i'),
                     'waiting_seconds' => $task->last_attempt_at
                         ? (int) abs(now()->diffInSeconds($task->last_attempt_at))
                         : 0,
@@ -135,32 +160,32 @@ class DataAuditService
             }
         }
 
-        $pending   = $counts[DataBackfillTask::PENDING] ?? 0;
+        $pending = $counts[DataBackfillTask::PENDING] ?? 0;
         $requested = $counts[DataBackfillTask::REQUESTED] ?? 0;
-        $done      = $total - $pending - $requested;
+        $done = $total - $pending - $requested;
 
         return [
-            'total'       => $total,
-            'done'        => $done,
-            'pct'         => (int) round($done / $total * 100),
-            'counts'      => $counts,
-            'current'     => $current,
+            'total' => $total,
+            'done' => $done,
+            'pct' => (int) round($done / $total * 100),
+            'counts' => $counts,
+            'current' => $current,
             'eta_seconds' => $pending * (int) config('backfill.interval', 10),
-            'updates'     => $updates ?: (object) [],
+            'updates' => $updates ?: (object) [],
         ];
     }
 
     public function rescan(Logger $logger, CarbonInterface $date): LoggerDailyAudit
     {
         $expected = $this->expectedFor($date);
-        $present  = $this->presentMinutes($logger, $date)->count();
+        $present = $this->presentMinutes($logger, $date)->count();
 
         return LoggerDailyAudit::updateOrCreate(
             ['logger_id' => $logger->id, 'date' => Carbon::parse($date)->toDateString()],
             [
-                'expected'        => $expected,
-                'present'         => $present,
-                'missing'         => max(0, $expected - $present),
+                'expected' => $expected,
+                'present' => $present,
+                'missing' => max(0, $expected - $present),
                 'last_scanned_at' => now(),
             ]
         );
@@ -174,9 +199,9 @@ class DataAuditService
             ->whereBetween('minute', [$day->copy()->startOfDay(), $day->copy()->endOfDay()])
             ->where('status', DataBackfillTask::FAILED)
             ->update([
-                'status'   => DataBackfillTask::PENDING,
+                'status' => DataBackfillTask::PENDING,
                 'attempts' => 0,
-                'error'    => null,
+                'error' => null,
             ]);
     }
 }

@@ -3,8 +3,49 @@
 use App\Jobs\RunLoggerBackfill;
 use App\Models\DataBackfillTask;
 use App\Models\Logger;
+use App\Models\SensorLog;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Bus;
+use Inertia\Testing\AssertableInertia as Assert;
+
+it('lists completeness for the requested date', function () {
+    $user = User::factory()->create();
+    $logger = Logger::factory()->create(['user_id' => $user->id]);
+
+    SensorLog::create([
+        'logger_id' => $logger->id, 'sensor_key' => 's1', 'sensor_name' => 'Rain',
+        'value' => 1.0, 'unit' => 'mm', 'recorded_at' => '2026-06-20 00:00:00',
+    ]);
+
+    $this->actingAs($user)
+        ->get('/data-audit?date=2026-06-20')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('data-audit/index')
+            ->where('date', '2026-06-20')
+            ->where('audits.0.logger.id', $logger->id)
+            ->where('audits.0.present', 1)
+            ->where('audits.0.expected', 1440)
+            ->where('audits.0.missing', 1439)
+        );
+});
+
+it('clamps a future date to today', function () {
+    Carbon::setTestNow(Carbon::parse('2026-06-23 10:00:00'));
+    $user = User::factory()->create();
+    Logger::factory()->create(['user_id' => $user->id]);
+
+    $this->actingAs($user)
+        ->get('/data-audit?date=2030-01-01')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('data-audit/index')
+            ->where('date', '2026-06-23')
+        );
+
+    Carbon::setTestNow();
+});
 
 it('enqueues backfill and dispatches the job from the endpoint', function () {
     Bus::fake([RunLoggerBackfill::class]);

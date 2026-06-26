@@ -1,5 +1,7 @@
 <?php
+
 // app/Services/ForwardingAuditService.php
+
 namespace App\Services;
 
 use App\Jobs\ResendForwarding;
@@ -30,7 +32,7 @@ class ForwardingAuditService
      * In raw mode every present minute is due (the interval is ignored).
      *
      * @param  Collection<int,\Carbon\CarbonInterface>  $presentMinutes  sorted ascending
-     * @return Collection<int,string>  'H:i' strings
+     * @return Collection<int,string> 'H:i' strings
      */
     public function dueMinutesList(Collection $presentMinutes, int $interval, bool $raw): Collection
     {
@@ -42,8 +44,8 @@ class ForwardingAuditService
         }
 
         $interval = max(1, $interval);
-        $out      = collect();
-        $lastDue  = null;
+        $out = collect();
+        $lastDue = null;
 
         foreach ($presentMinutes as $minute) {
             if ($lastDue === null || $minute->greaterThanOrEqualTo($lastDue->copy()->addMinutes($interval))) {
@@ -55,15 +57,43 @@ class ForwardingAuditService
         return $out->unique()->values();
     }
 
+    /**
+     * Aggregate forwarding completeness per logger for the Data Audit list:
+     * sums due / forwarded_ok across every enabled integration (+ Mini STESY)
+     * of each logger. Returns [logger_id => ['due','ok','failed','targets']] or
+     * [logger_id => null] when the logger has no enabled forwarding target (the
+     * UI shows "—"). Reuses integrationAudit() so the numbers match the detail
+     * page exactly.
+     *
+     * @param  Collection<int,Logger>  $loggers
+     */
+    public function completenessForLoggers(Collection $loggers, CarbonInterface $date): Collection
+    {
+        return $loggers->mapWithKeys(function (Logger $logger) use ($date) {
+            $buckets = $this->integrationAudit($logger, $date);
+
+            if (empty($buckets)) {
+                return [$logger->id => null];
+            }
+
+            return [$logger->id => [
+                'due' => array_sum(array_column($buckets, 'due')),
+                'ok' => array_sum(array_column($buckets, 'forwarded_ok')),
+                'failed' => array_sum(array_column($buckets, 'failed')),
+                'targets' => count($buckets),
+            ]];
+        });
+    }
+
     public function integrationAudit(Logger $logger, CarbonInterface $date): array
     {
-        $day        = Carbon::parse($date);
-        $dayStart   = $day->copy()->startOfDay();
-        $dayEnd     = $day->copy()->endOfDay();
-        $dateStr    = $day->toDateString();
+        $day = Carbon::parse($date);
+        $dayStart = $day->copy()->startOfDay();
+        $dayEnd = $day->copy()->endOfDay();
+        $dateStr = $day->toDateString();
         $fromLogger = $this->audits->presentMinutes($logger, $date);
-        $present    = $fromLogger->map(fn ($m) => Carbon::parse($m))->values();
-        $fromCount  = $fromLogger->count();
+        $present = $fromLogger->map(fn ($m) => Carbon::parse($m))->values();
+        $fromCount = $fromLogger->count();
 
         $result = [];
 
@@ -73,36 +103,36 @@ class ForwardingAuditService
 
         foreach ($integrations as $integration) {
             $result[] = $this->buildBucket(
-                key:        (string) $integration->id,
-                name:       $integration->name,
-                interval:   (int) $integration->interval_minutes,
-                raw:        (bool) $integration->raw_forward,
-                present:    $present,
-                fromCount:  $fromCount,
-                date:       $dateStr,
-                rows:       ForwardingLog::where('logger_id', $logger->id)
-                                ->where('integration_id', $integration->id)
-                                ->whereNull('resend_of')
-                                ->whereBetween('created_at', [$dayStart, $dayEnd])
-                                ->get(['id', 'status', 'created_at', 'payload_summary']),
+                key: (string) $integration->id,
+                name: $integration->name,
+                interval: (int) $integration->interval_minutes,
+                raw: (bool) $integration->raw_forward,
+                present: $present,
+                fromCount: $fromCount,
+                date: $dateStr,
+                rows: ForwardingLog::where('logger_id', $logger->id)
+                    ->where('integration_id', $integration->id)
+                    ->whereNull('resend_of')
+                    ->whereBetween('created_at', [$dayStart, $dayEnd])
+                    ->get(['id', 'status', 'created_at', 'payload_summary']),
             );
         }
 
         if ($logger->ministesy_enabled) {
             $result[] = $this->buildBucket(
-                key:        'ministesy',
-                name:       'Mini STESY',
-                interval:   (int) ($logger->ministesy_interval ?? 10),
-                raw:        (bool) $logger->ministesy_raw_forward,
-                present:    $present,
-                fromCount:  $fromCount,
-                date:       $dateStr,
-                rows:       ForwardingLog::where('logger_id', $logger->id)
-                                ->whereNull('integration_id')
-                                ->where('target_name', 'Mini STESY')
-                                ->whereNull('resend_of')
-                                ->whereBetween('created_at', [$dayStart, $dayEnd])
-                                ->get(['id', 'status', 'created_at', 'payload_summary']),
+                key: 'ministesy',
+                name: 'Mini STESY',
+                interval: (int) ($logger->ministesy_interval ?? 10),
+                raw: (bool) $logger->ministesy_raw_forward,
+                present: $present,
+                fromCount: $fromCount,
+                date: $dateStr,
+                rows: ForwardingLog::where('logger_id', $logger->id)
+                    ->whereNull('integration_id')
+                    ->where('target_name', 'Mini STESY')
+                    ->whereNull('resend_of')
+                    ->whereBetween('created_at', [$dayStart, $dayEnd])
+                    ->get(['id', 'status', 'created_at', 'payload_summary']),
             );
         }
 
@@ -111,7 +141,7 @@ class ForwardingAuditService
 
     public function resendFailed(Logger $logger, string $integrationKey, CarbonInterface $date): int
     {
-        $day   = Carbon::parse($date);
+        $day = Carbon::parse($date);
         $query = ForwardingLog::where('logger_id', $logger->id)
             ->where('status', 'error')
             ->whereNull('resend_of')
@@ -147,10 +177,10 @@ class ForwardingAuditService
 
     public function resendProgress(Logger $logger, CarbonInterface $date): array
     {
-        $day        = Carbon::parse($date);
-        $dayStart   = $day->copy()->startOfDay();
-        $dayEnd     = $day->copy()->endOfDay();
-        $etaUnit    = (int) config('resend.interval', 2);
+        $day = Carbon::parse($date);
+        $dayStart = $day->copy()->startOfDay();
+        $dayEnd = $day->copy()->endOfDay();
+        $etaUnit = (int) config('resend.interval', 2);
         $staleAfter = (int) config('resend.stale_after', 300);
 
         // Build the same bucket set as integrationAudit/resendFailed.
@@ -206,6 +236,7 @@ class ForwardingAuditService
                             $pendingOldest = $requestedAt;
                         }
                     }
+
                     continue;
                 }
 
@@ -219,17 +250,17 @@ class ForwardingAuditService
             $done = $resolved + $failedAgain;
 
             $result[$bucket['key']] = [
-                'key'         => $bucket['key'],
-                'name'        => $bucket['name'],
-                'total'       => $total,
-                'done'        => $done,
-                'pct'         => (int) round($done / $total * 100),
-                'counts'      => [
-                    'resolved'     => $resolved,
+                'key' => $bucket['key'],
+                'name' => $bucket['name'],
+                'total' => $total,
+                'done' => $done,
+                'pct' => (int) round($done / $total * 100),
+                'counts' => [
+                    'resolved' => $resolved,
                     'failed_again' => $failedAgain,
-                    'pending'      => $pending,
+                    'pending' => $pending,
                 ],
-                'current'     => $pending > 0
+                'current' => $pending > 0
                     ? ['count' => $pending, 'oldest_seconds' => (int) abs(now()->diffInSeconds($pendingOldest))]
                     : null,
                 'eta_seconds' => $pending * $etaUnit,
@@ -253,11 +284,11 @@ class ForwardingAuditService
         // the number of records the logger produced that day — the interval
         // simulation does not apply.
         $dueMinutes = $this->dueMinutesList($present, $interval, $raw);
-        $due        = $dueMinutes->count();
-        $success    = $rows->where('status', 'success')->count();
-        $skipped    = $rows->where('status', 'skipped')->count();
-        $errorRows  = $rows->where('status', 'error');
-        $errorIds   = $errorRows->pluck('id');
+        $due = $dueMinutes->count();
+        $success = $rows->where('status', 'success')->count();
+        $skipped = $rows->where('status', 'skipped')->count();
+        $errorRows = $rows->where('status', 'error');
+        $errorIds = $errorRows->pluck('id');
 
         $resolvedIds = $errorIds->isEmpty()
             ? collect()
@@ -266,21 +297,21 @@ class ForwardingAuditService
                 ->pluck('resend_of')
                 ->unique();
 
-        $resolved    = $resolvedIds->count();
+        $resolved = $resolvedIds->count();
         $outstanding = $errorRows->count() - $resolved;
 
         return [
-            'key'             => $key,
-            'name'            => $name,
-            'interval'        => $interval,
-            'raw'             => $raw,
-            'from_logger'     => $fromCount,
-            'due'             => $due,
-            'forwarded_ok'    => $success + $resolved,
-            'failed'          => $outstanding,
-            'skipped'         => $skipped,
+            'key' => $key,
+            'name' => $name,
+            'interval' => $interval,
+            'raw' => $raw,
+            'from_logger' => $fromCount,
+            'due' => $due,
+            'forwarded_ok' => $success + $resolved,
+            'failed' => $outstanding,
+            'skipped' => $skipped,
             'never_attempted' => max(0, $due - ($success + $errorRows->count())),
-            'coverage'        => $this->buildCoverage($rows, $dueMinutes, $resolvedIds->flip(), $date),
+            'coverage' => $this->buildCoverage($rows, $dueMinutes, $resolvedIds->flip(), $date),
         ];
     }
 
@@ -297,8 +328,8 @@ class ForwardingAuditService
      *             data the throttle never forwarded)
      *
      * @param  Collection<int,\App\Models\ForwardingLog>  $rows
-     * @param  Collection<int,string>                     $dueMinutes  'H:i'
-     * @param  Collection<int,mixed>                      $resolvedSet flip()'d error ids resolved by a resend
+     * @param  Collection<int,string>  $dueMinutes  'H:i'
+     * @param  Collection<int,mixed>  $resolvedSet  flip()'d error ids resolved by a resend
      */
     private function buildCoverage(Collection $rows, Collection $dueMinutes, Collection $resolvedSet, string $date): array
     {
@@ -335,8 +366,8 @@ class ForwardingAuditService
         $missing = $dueMinutes->reject(fn ($m) => array_key_exists($m, $byMinute))->values()->all();
 
         return [
-            'ok'      => $ok,
-            'failed'  => $failed,
+            'ok' => $ok,
+            'failed' => $failed,
             'skipped' => $skipped,
             'missing' => $missing,
         ];
@@ -351,7 +382,7 @@ class ForwardingAuditService
                 return null; // data belongs to a different day than the audited one
             }
             try {
-                return Carbon::parse($summary['hari'] . ' ' . $summary['jam'])->format('H:i');
+                return Carbon::parse($summary['hari'].' '.$summary['jam'])->format('H:i');
             } catch (\Throwable) {
                 return null;
             }
