@@ -15,9 +15,11 @@ import {
     Network,
     Plus,
     Power,
+    RefreshCw,
     Send,
     Server,
     Siren,
+    Table2,
     Terminal,
     Trash2,
     UploadCloud,
@@ -32,6 +34,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
@@ -133,6 +136,15 @@ interface CommandResult {
     data?: JsonValue;
     raw?: string;
 }
+
+// MODBUSTCP GETMAP — the device's live register map so a SCADA configurator can see which
+// Modbus register a value starts at and its data type.
+//   n = name, t = data type, a = start address, r = register count. Next value starts at a + r.
+//   `fixed` = built-in system registers (no slot); `slots` = configurable sensor slots (s = slot).
+//   sbase = first slot register; dbase = data base / function area.
+type ModbusMapEntry = { n: string; t: string; a: number; r: number };
+type ModbusMapSlot = ModbusMapEntry & { s: number };
+type ModbusMap = { status?: string; sbase?: number; dbase?: number; fixed?: ModbusMapEntry[]; slots?: ModbusMapSlot[] };
 
 const inputClass = 'h-8';
 const selectClass = 'h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -320,7 +332,7 @@ function LogicOutCard({
     }
 
     return (
-        <CommandCard title="Logic Output" icon={Power}>
+        <CommandCard title="Digital Output" icon={Power}>
             <div className="space-y-3">
                 {rows.map((c, idx) => {
                     const ch = idx + 1;
@@ -518,6 +530,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     const [doorCloseState, setDoorCloseState] = useState(ioSnapshot?.doorClose ?? '1');
     const [alertState, setAlertState] = useState(ioSnapshot?.alert ?? '1');
     const [modbusTcp, setModbusTcp] = useState(ioSnapshot?.modbusTcp ?? { enable: '1', port: '502' });
+    // MODBUSTCP GETMAP register-map viewer (popup, mirrors the FTP read flow).
+    const [modbusMapOpen, setModbusMapOpen] = useState(false);
+    const [modbusMapLoading, setModbusMapLoading] = useState(false);
+    const [modbusMap, setModbusMap] = useState<ModbusMap | null>(null);
+    const [modbusMapError, setModbusMapError] = useState<string | null>(null);
     const [powerCal, setPowerCal] = useState({
         sensor: 'bat',
         vRef: '',
@@ -784,6 +801,30 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     async function gcmGet(module: string, payload: Payload): Promise<CommandResult> {
         const resp = await postJson('/api/mqtt/protocol/command', { id_logger: logger.deviceIdentifier, module, payload });
         return (await resp.json()) as CommandResult;
+    }
+
+    // Open the register-map popup and pull it from the device with {"MODBUSTCP":{"cmd":"GETMAP"}}.
+    // The firmware replies {"MODBUSTCP":{"status":"OK","sbase":..,"dbase":..,"slots":[…]}}.
+    async function loadModbusMap() {
+        if (!canSend) return;
+        setModbusMapOpen(true);
+        setModbusMapLoading(true);
+        setModbusMapError(null);
+        try {
+            const res = await gcmGet('MODBUSTCP', { MODBUSTCP: { cmd: 'GETMAP' } });
+            const inner = (res.data as { MODBUSTCP?: ModbusMap } | undefined)?.MODBUSTCP;
+            if (res.success && inner && (Array.isArray(inner.fixed) || Array.isArray(inner.slots))) {
+                setModbusMap(inner);
+            } else {
+                setModbusMap(null);
+                setModbusMapError(res.message ?? 'Gagal membaca register map dari device.');
+            }
+        } catch (error) {
+            setModbusMap(null);
+            setModbusMapError(error instanceof Error ? error.message : 'Request gagal.');
+        } finally {
+            setModbusMapLoading(false);
+        }
     }
 
     function cancelSync() {
@@ -1736,6 +1777,18 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         </div>
                         {actionButton('SET', 'MODBUSTCP', () => send('MODBUSTCP', { MODBUSTCP: { cmd: 'SET', enable: numberValue(modbusTcp.enable), port: numberValue(modbusTcp.port, 502) } }, 'MODBUSTCP'))}
                     </div>
+                    {/* Read the live register map (GETMAP) so a SCADA configurator can see slot → register/type. */}
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-2 w-full gap-1.5"
+                        disabled={!canSend || modbusMapLoading}
+                        onClick={loadModbusMap}
+                    >
+                        {modbusMapLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Table2 className="size-3.5" />}
+                        Baca Register Map
+                    </Button>
                 </CommandCard>
             )}
 
@@ -1861,6 +1914,88 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{ioCards}</div>
                 <div className="grid gap-4 lg:grid-cols-3">{deviceConfigRow}</div>
 
+                {/* ══════ Modbus TCP Register Map (GETMAP) popup ══════ */}
+                <Dialog open={modbusMapOpen} onOpenChange={setModbusMapOpen}>
+                    <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+                        <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2">
+                                <Table2 className="size-5" /> Modbus TCP Register Map
+                            </DialogTitle>
+                        </DialogHeader>
+
+                        <div className="py-1">
+                            {modbusMapLoading ? (
+                                <div className="flex flex-col items-center gap-3 py-10">
+                                    <Loader2 className="size-8 animate-spin text-muted-foreground" />
+                                    <p className="text-sm text-muted-foreground">Membaca register map dari device…</p>
+                                </div>
+                            ) : modbusMapError ? (
+                                <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-6 text-center">
+                                    <CircleAlert className="mx-auto size-8 text-destructive/70" />
+                                    <p className="mt-2 text-sm text-destructive">{modbusMapError}</p>
+                                </div>
+                            ) : modbusMap ? (
+                                <div className="max-h-[60vh] overflow-y-auto rounded-lg border">
+                                    <table className="w-full text-sm">
+                                        <thead className="sticky top-0 z-20 bg-muted text-xs text-muted-foreground">
+                                            <tr>
+                                                <th className="px-3 py-2 text-left font-medium">Slot</th>
+                                                <th className="px-3 py-2 text-left font-medium">Nama</th>
+                                                <th className="px-3 py-2 text-left font-medium">Tipe</th>
+                                                <th className="px-3 py-2 text-right font-medium">Alamat</th>
+                                                <th className="px-3 py-2 text-right font-medium">Register</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(modbusMap.fixed ?? []).length > 0 && (
+                                                <tr className="border-t bg-muted/40">
+                                                    <td colSpan={5} className="px-3 py-1.5 text-xs font-medium text-muted-foreground">Register Sistem</td>
+                                                </tr>
+                                            )}
+                                            {[...(modbusMap.fixed ?? [])].sort((a, b) => a.a - b.a).map((reg) => (
+                                                <tr key={`fixed-${reg.a}`} className="border-t">
+                                                    <td className="px-3 py-2 text-center font-mono text-muted-foreground">—</td>
+                                                    <td className="px-3 py-2 font-medium">{reg.n}</td>
+                                                    <td className="px-3 py-2">
+                                                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{reg.t}</span>
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right font-mono">{reg.a}</td>
+                                                    <td className="px-3 py-2 text-right font-mono text-muted-foreground">{reg.r}</td>
+                                                </tr>
+                                            ))}
+                                            {(modbusMap.slots ?? []).length > 0 && (
+                                                <tr className="border-t bg-muted/40">
+                                                    <td colSpan={5} className="px-3 py-1.5 text-xs font-medium text-muted-foreground">Slot Sensor</td>
+                                                </tr>
+                                            )}
+                                            {[...(modbusMap.slots ?? [])].sort((a, b) => a.a - b.a).map((slot) => (
+                                                <tr key={`slot-${slot.s}`} className="border-t">
+                                                    <td className="px-3 py-2 font-mono text-muted-foreground">{slot.s}</td>
+                                                    <td className="px-3 py-2 font-medium">{slot.n}</td>
+                                                    <td className="px-3 py-2">
+                                                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{slot.t}</span>
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right font-mono">{slot.a}</td>
+                                                    <td className="px-3 py-2 text-right font-mono text-muted-foreground">{slot.r}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : null}
+                        </div>
+
+                        <DialogFooter className="gap-2 sm:gap-2">
+                            <Button variant="outline" onClick={() => setModbusMapOpen(false)}>Tutup</Button>
+                            {!modbusMapLoading && (
+                                <Button variant="outline" className="gap-1.5" onClick={loadModbusMap} disabled={!canSend}>
+                                    <RefreshCw className="size-4" /> Refresh
+                                </Button>
+                            )}
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
+
                 {syncState && (
                     <SyncProgressOverlay data={syncState} overallProgress={syncOverall} stepProgress={syncProgress} onCancel={cancelSync} />
                 )}
@@ -1943,7 +2078,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         {shownTabs.includes('logs') && <TabsTrigger value="logs">Logs</TabsTrigger>}
                         {shownTabs.includes('ews') && <TabsTrigger value="ews">EWS</TabsTrigger>}
                         {shownTabs.includes('gcm') && <TabsTrigger value="gcm">GCM</TabsTrigger>}
-                        {shownTabs.includes('logicout') && <TabsTrigger value="logicout">Logic OUT</TabsTrigger>}
+                        {shownTabs.includes('logicout') && <TabsTrigger value="logicout">Digital Output</TabsTrigger>}
                         {shownTabs.includes('map') && <TabsTrigger value="map">Data Map</TabsTrigger>}
                     </TabsList>
 
