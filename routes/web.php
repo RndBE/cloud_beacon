@@ -114,6 +114,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.ftp.get');
     Route::post('api/mqtt/ftp/download', [MqttController::class, 'downloadFtpFile'])
         ->name('api.mqtt.ftp.download');
+    // Read a system-log file's text content from FTP (for the in-app log viewer).
+    Route::post('api/mqtt/ftp/logview', [MqttController::class, 'viewFtpLog'])
+        ->name('api.mqtt.ftp.logview');
     Route::post('api/mqtt/system/set-mode', [MqttController::class, 'setMode'])
         ->name('api.mqtt.system.set-mode');
     Route::post('api/mqtt/calibration/set', [MqttController::class, 'setCalibration'])

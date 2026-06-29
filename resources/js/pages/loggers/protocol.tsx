@@ -39,7 +39,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
-import { fetchSensorNames, getCachedSensorNames, getCachedMapSlots, setCachedMapSlots, subscribeDeviceCache } from '@/lib/device-sync-cache';
+import { fetchSensorNames, getCachedSensorNames, getCachedMapSlots, setCachedMapSlots, getCachedPanelState, setCachedPanelState, subscribeDeviceCache } from '@/lib/device-sync-cache';
 import { notifyModuleResponse, pushToast } from '@/lib/logger-toast';
 import type { BreadcrumbItem } from '@/types';
 
@@ -47,6 +47,25 @@ type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string
 type Payload = Record<string, JsonValue>;
 // Each GCM module binding: slave = Modbus RTU ID (0 = disabled), mode = 1 AWGC | 2 PUMP.
 type GcmModule = { slave: string; mode: string };
+
+// Snapshots persisted to the device cache so the Mode tab's panels (which unmount on tab
+// switch) restore their last-synced values on remount instead of forcing a re-sync.
+type IoSnapshot = {
+    out24: string; out12: string; doorClose: string; alert: string;
+    modbusTcp: { enable: string; port: string };
+    net: { dhcp: string; ip: string; subnet: string; gateway: string; dns: string };
+    rtc: { date: string; time: string; timezone: string };
+};
+type ModuleSnapshot = {
+    gcm: { enable: string; id1: GcmModule; id2: GcmModule; id3: GcmModule; id4: GcmModule; id5: GcmModule };
+    gcmMapRows: { reg: string; name: string }[];
+    gcmMapId: string;
+    ewsEnable: boolean;
+    ewsMode: 'MANUAL' | 'AUTO';
+    ewsSourceName: string;
+    ewsRules: { min: string; max: string; level: string }[];
+    ewsCh: string;
+};
 
 export interface ProtocolLogger {
     id: string;
@@ -62,15 +81,15 @@ export interface ProtocolLogger {
     sensors: ProtocolSensor[];
 }
 
-type ProtocolTabKey = 'system' | 'network' | 'io' | 'power' | 'logs' | 'ews' | 'gcm' | 'map';
-const ALL_PROTOCOL_TABS: ProtocolTabKey[] = ['system', 'network', 'io', 'power', 'logs', 'ews', 'gcm', 'map'];
+type ProtocolTabKey = 'system' | 'network' | 'io' | 'power' | 'logs' | 'ews' | 'gcm' | 'logicout' | 'map';
+const ALL_PROTOCOL_TABS: ProtocolTabKey[] = ['system', 'network', 'io', 'power', 'logs', 'ews', 'gcm', 'logicout', 'map'];
 // EWS & GCM live in the logger's "Mode" tab (MODULE_PROTOCOL_TABS, the only tabbed usage left).
 // Everything else is rendered standalone via dedicated flags on ProtocolPanel:
 //   ioRow      → Power Output / SENS_DOOR / ALERT + NET·SIM / Modbus TCP / RTC (Mode → Device Configuration)
 //   powerOnly  → POWER + POWER_CAL                                (System tab)
 //   ftpOnly    → FTP System Logs                                  (Logs tab)
 //   mapOnly    → Data Map (MAP_DATA)                              (Sensors tab)
-export const MODULE_PROTOCOL_TABS: ProtocolTabKey[] = ['ews', 'gcm'];
+export const MODULE_PROTOCOL_TABS: ProtocolTabKey[] = ['ews', 'gcm', 'logicout'];
 
 interface ProtocolPageProps {
     logger: ProtocolLogger;
@@ -99,7 +118,10 @@ export interface ProtocolPanelHandle {
 export interface ProtocolSensor {
     id: number;
     name: string;
+    type: string;
+    value: number;
     connectionType: string | null;
+    analogMode: number | null;
     modbusSlaveId: number | null;
     port: number | null;
     channel: number | null;
@@ -133,6 +155,11 @@ function inferBoardVariant(logger: ProtocolLogger): 'BL11' | 'BL110' | 'BL1100' 
     if (normalized.includes('BL110')) return 'BL110';
     if (normalized.includes('BL11') || logger.connectionType === 'cellular') return 'BL11';
     return null;
+}
+
+// Spec §3.2.9: digital channels 1–2 (BL11/BL110), 1–4 (BL1100).
+function maxDigitalChannel(logger: ProtocolLogger): number {
+    return inferBoardVariant(logger) === 'BL1100' ? 4 : 2;
 }
 
 
@@ -209,6 +236,146 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
             <Label className="text-xs">{label}</Label>
             {children}
         </div>
+    );
+}
+
+// Logic Output (digital mode 3): per-channel relay config + live ON/OFF control + delete.
+// Config  → {"SENSORS":{"cmd":"SET","type":"DIGITAL","ch":N,"mode":3,"s":[name,default,failsafe]}}
+// Control → {"SENSORS":{"cmd":"CTRL","type":"DIGITAL","ch":N,"state":0|1}}
+// Delete  → {"SENSORS":{"cmd":"DEL","type":"DIGITAL","ch":N}}
+// State is NOT read here: the channel name + Aktif/Non-Aktif status come from the global
+// "Sync from Device" (synced DB sensors). ON/OFF/Hapus only show for channels the device has
+// configured (else CTRL → "ERR not output").
+type LogicOutDevice = { ch: number; name: string; value: number };
+type LogicOutRow = { name: string; defaultState: number; failsafe: number; configured: boolean; active: boolean };
+
+function LogicOutCard({
+    maxChannels,
+    devices,
+    canSend,
+    command,
+}: {
+    maxChannels: number;
+    devices: LogicOutDevice[];
+    canSend: boolean;
+    command: (module: string, payload: Payload) => Promise<CommandResult>;
+}) {
+    const [rows, setRows] = useState<LogicOutRow[]>(() =>
+        Array.from({ length: maxChannels }, (_, i) => ({ name: `Relay${i + 1}`, defaultState: 0, failsafe: 0, configured: false, active: false })),
+    );
+    // Only the channel+action currently in flight spins — the other channels stay idle.
+    const [busy, setBusy] = useState<{ ch: number; action: 'set' | 'on' | 'off' | 'del' } | null>(null);
+
+    // Hydrate channel name + status from the synced DB sensors. Keyed on content (not array
+    // identity) so the page's periodic reload doesn't wipe in-progress edits when nothing changed.
+    const devicesSig = useMemo(() => JSON.stringify(devices), [devices]);
+    useEffect(() => {
+        const list: LogicOutDevice[] = JSON.parse(devicesSig);
+        setRows((cur) =>
+            cur.map((row, i) => {
+                const dev = list.find((d) => d.ch === i + 1);
+                if (!dev) return { ...row, configured: false, active: false };
+                return { ...row, name: dev.name || row.name, configured: true, active: Number(dev.value) === 1 };
+            }),
+        );
+    }, [devicesSig]);
+
+    function update(idx: number, patch: Partial<LogicOutRow>) {
+        setRows((cur) => cur.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+    }
+
+    async function runCmd(ch: number, action: 'set' | 'on' | 'off' | 'del', payload: Payload, okTitle: string): Promise<boolean> {
+        setBusy({ ch, action });
+        try {
+            const r = await command('SENSORS', payload);
+            pushToast(r.success
+                ? { title: okTitle, variant: 'success' }
+                : { title: `${okTitle} gagal`, description: r.message, variant: 'error' });
+            return r.success;
+        } catch (e) {
+            pushToast({ title: `${okTitle} gagal`, description: e instanceof Error ? e.message : undefined, variant: 'error' });
+            return false;
+        } finally {
+            setBusy(null);
+        }
+    }
+
+    async function save(idx: number) {
+        const ch = idx + 1;
+        const c = rows[idx];
+        const ok = await runCmd(ch, 'set', { SENSORS: { cmd: 'SET', type: 'DIGITAL', ch, mode: 3, s: [c.name, c.defaultState, c.failsafe] } }, `Channel ${ch} disimpan`);
+        if (ok) update(idx, { configured: true });
+    }
+
+    async function control(idx: number, state: 0 | 1) {
+        const ch = idx + 1;
+        const ok = await runCmd(ch, state ? 'on' : 'off', { SENSORS: { cmd: 'CTRL', type: 'DIGITAL', ch, state } }, `Channel ${ch} ${state ? 'ON' : 'OFF'}`);
+        if (ok) update(idx, { active: state === 1 });
+    }
+
+    async function remove(idx: number) {
+        const ch = idx + 1;
+        const ok = await runCmd(ch, 'del', { SENSORS: { cmd: 'DEL', type: 'DIGITAL', ch } }, `Channel ${ch} dihapus`);
+        if (ok) update(idx, { configured: false, active: false });
+    }
+
+    return (
+        <CommandCard title="Logic Output" icon={Power}>
+            <div className="space-y-3">
+                {rows.map((c, idx) => {
+                    const ch = idx + 1;
+                    const rowBusy = busy?.ch === ch ? busy.action : null;
+                    return (
+                        <div key={ch} className="space-y-2 rounded-md border p-3">
+                            <div className="flex items-center justify-between">
+                                <span className="text-sm font-medium">Channel {ch}</span>
+                                {c.configured && (
+                                    <Badge variant="outline" className={c.active ? 'text-emerald-600' : 'text-muted-foreground'}>
+                                        {c.active ? 'Aktif' : 'Non Aktif'}
+                                    </Badge>
+                                )}
+                            </div>
+                            <div className="grid gap-2 sm:grid-cols-3">
+                                <Field label="Nama">
+                                    <Input className={inputClass} value={c.name} onChange={(e) => update(idx, { name: e.target.value })} placeholder="e.g. Relay1" />
+                                </Field>
+                                <Field label="Default State (boot)">
+                                    <select className={selectClass} value={c.defaultState} onChange={(e) => update(idx, { defaultState: Number(e.target.value) })}>
+                                        <option value={0}>OFF saat boot</option>
+                                        <option value={1}>ON saat boot</option>
+                                    </select>
+                                </Field>
+                                <Field label="Failsafe">
+                                    <select className={selectClass} value={c.failsafe} onChange={(e) => update(idx, { failsafe: Number(e.target.value) })}>
+                                        <option value={0}>Keep last state</option>
+                                        <option value={1}>Force OFF</option>
+                                    </select>
+                                </Field>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                                <Button size="sm" variant="outline" disabled={!canSend || rowBusy !== null} onClick={() => save(idx)}>
+                                    {rowBusy === 'set' ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Simpan
+                                </Button>
+                                {c.configured && (
+                                    <>
+                                        <span className="mx-1 h-5 w-px bg-border" />
+                                        <Button size="sm" variant="outline" disabled={!canSend || rowBusy !== null} onClick={() => control(idx, 1)}>
+                                            {rowBusy === 'on' ? <Loader2 className="size-3.5 animate-spin" /> : null} ON
+                                        </Button>
+                                        <Button size="sm" variant="outline" disabled={!canSend || rowBusy !== null} onClick={() => control(idx, 0)}>
+                                            {rowBusy === 'off' ? <Loader2 className="size-3.5 animate-spin" /> : null} OFF
+                                        </Button>
+                                        <Button size="sm" variant="outline" className="text-red-600 hover:text-red-600" disabled={!canSend || rowBusy !== null} onClick={() => remove(idx)}>
+                                            {rowBusy === 'del' ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />} Hapus
+                                        </Button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </CommandCard>
     );
 }
 
@@ -319,16 +486,25 @@ function SyncProgressOverlay({ data, overallProgress, stepProgress, onCancel }: 
 export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(function ProtocolPanel({ logger, tabs, ioRow = false, mapOnly = false, ftpOnly = false, powerOnly = false, manualSync = false }, ref) {
     const shownTabs = tabs ?? ALL_PROTOCOL_TABS;
     const now = useMemo(() => new Date(), []);
+
+    // Which Mode-tab panel this is, for hydrating/persisting its last-synced form state.
+    // Device Configuration → ioRow; Module (EWS/GCM) → the tabbed panel without the other flags.
+    const deviceId = logger.deviceIdentifier ?? '';
+    const isModulePanel = !ioRow && !mapOnly && !ftpOnly && !powerOnly && tabs != null;
+    // Read once at init so the useState defaults below can hydrate from the cache.
+    const ioSnapshot = ioRow ? getCachedPanelState<IoSnapshot>(deviceId, 'io') : null;
+    const moduleSnapshot = isModulePanel ? getCachedPanelState<ModuleSnapshot>(deviceId, 'module') : null;
+
     const [loading, setLoading] = useState<string | null>(null);
     const [responses, setResponses] = useState<Record<string, CommandResult | null>>({});
     const [activeTab, setActiveTab] = useState<string>(shownTabs[0] ?? 'system');
 
-    const [rtc, setRtc] = useState({
+    const [rtc, setRtc] = useState(ioSnapshot?.rtc ?? {
         date: now.toISOString().slice(0, 10),
         time: now.toTimeString().slice(0, 8),
         timezone: '+7',
     });
-    const [net, setNet] = useState({
+    const [net, setNet] = useState(ioSnapshot?.net ?? {
         dhcp: '1',
         ip: '192.168.1.100',
         subnet: '255.255.255.0',
@@ -337,11 +513,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     });
     const [simApn, setSimApn] = useState('internet');
     const [pumpState, setPumpState] = useState('1');
-    const [out24State, setOut24State] = useState('1');
-    const [out12State, setOut12State] = useState('1');
-    const [doorCloseState, setDoorCloseState] = useState('1');
-    const [alertState, setAlertState] = useState('1');
-    const [modbusTcp, setModbusTcp] = useState({ enable: '1', port: '502' });
+    const [out24State, setOut24State] = useState(ioSnapshot?.out24 ?? '1');
+    const [out12State, setOut12State] = useState(ioSnapshot?.out12 ?? '1');
+    const [doorCloseState, setDoorCloseState] = useState(ioSnapshot?.doorClose ?? '1');
+    const [alertState, setAlertState] = useState(ioSnapshot?.alert ?? '1');
+    const [modbusTcp, setModbusTcp] = useState(ioSnapshot?.modbusTcp ?? { enable: '1', port: '502' });
     const [powerCal, setPowerCal] = useState({
         sensor: 'bat',
         vRef: '',
@@ -351,7 +527,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
 
     // ── Protocol v3 modules: GCM / GCM_PUMP / GCM_GATE / GCM_MAP ──
     const gcmModuleEmpty: GcmModule = { slave: '0', mode: '1' };
-    const [gcm, setGcm] = useState<{ enable: string; id1: GcmModule; id2: GcmModule; id3: GcmModule; id4: GcmModule; id5: GcmModule }>({
+    const [gcm, setGcm] = useState<{ enable: string; id1: GcmModule; id2: GcmModule; id3: GcmModule; id4: GcmModule; id5: GcmModule }>(moduleSnapshot?.gcm ?? {
         enable: '1',
         id1: { ...gcmModuleEmpty }, id2: { ...gcmModuleEmpty }, id3: { ...gcmModuleEmpty },
         id4: { ...gcmModuleEmpty }, id5: { ...gcmModuleEmpty },
@@ -371,9 +547,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     const [gcmWarnStatus, setGcmWarnStatus] = useState<
         { ews_ready: number; active: number; phase: string; cycle: number; remaining_sec: number; last_error: string } | null
     >(null);
-    const [gcmMapId, setGcmMapId] = useState('1');
+    const [gcmMapId, setGcmMapId] = useState(moduleSnapshot?.gcmMapId ?? '1');
     // GCM_MAP is name-based like MAP_DATA: each register (16–20) maps to a sensor name. '-' = empty.
-    const [gcmMapRows, setGcmMapRows] = useState<{ reg: string; name: string }[]>([
+    const [gcmMapRows, setGcmMapRows] = useState<{ reg: string; name: string }[]>(moduleSnapshot?.gcmMapRows ?? [
         { reg: '16', name: '-' },
         { reg: '17', name: '-' },
         { reg: '18', name: '-' },
@@ -402,6 +578,20 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         () => logger.sensors.filter((sensor) => (sensor.name ?? '').trim() !== ''),
         [logger.sensors],
     );
+    // Digital Output relays as last read by the global "Sync from Device" (persisted to DB).
+    // A digital output is connection_type 'digital' + mode 3 (same identity the CTRL endpoint
+    // uses) — NOT the heuristic `type` field, which guessType never sets to 'digital-output'.
+    // The Logic OUT tab hydrates each channel's name from here and shows Aktif/Non-Aktif from
+    // the synced value (1 = ON, 0 = OFF) — so the Module sync never needs its own SENSORS GET.
+    const digitalOutputs = useMemo(() => {
+        const list: { ch: number; name: string; value: number }[] = [];
+        for (const s of logger.sensors) {
+            if (s.connectionType === 'digital' && Number(s.analogMode) === 3 && s.channel != null) {
+                list.push({ ch: s.channel, name: s.name, value: Number(s.value ?? 0) });
+            }
+        }
+        return list;
+    }, [logger.sensors]);
     // Current device mapping (slot -> sensor name) shown to the user; sourced from MAP_DATA GET.
     // A row with name === '' is an unsaved placeholder waiting for the user to pick a sensor.
     const [mapSlots, setMapSlots] = useState<{ slot: number; name: string }[]>([]);
@@ -412,11 +602,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     const [deviceSensors, setDeviceSensors] = useState<{ nama: string; nilai: number | null; satuan: string }[] | null>(null);
 
     type EwsRuleRow = { min: string; max: string; level: string };
-    const [ewsEnable, setEwsEnable] = useState(false);
-    const [ewsMode, setEwsMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
+    const [ewsEnable, setEwsEnable] = useState(moduleSnapshot?.ewsEnable ?? false);
+    const [ewsMode, setEwsMode] = useState<'MANUAL' | 'AUTO'>(moduleSnapshot?.ewsMode ?? 'MANUAL');
     // AUTO source is now just a sensor name (same pool as GCM map / Data Mapping / Calibration).
-    const [ewsSourceName, setEwsSourceName] = useState('');
-    const [ewsRules, setEwsRules] = useState<EwsRuleRow[]>([
+    const [ewsSourceName, setEwsSourceName] = useState(moduleSnapshot?.ewsSourceName ?? '');
+    const [ewsRules, setEwsRules] = useState<EwsRuleRow[]>(moduleSnapshot?.ewsRules ?? [
         { min: '0', max: '10', level: '0' },
         { min: '10', max: '70', level: '1' },
         { min: '70', max: '90', level: '2' },
@@ -424,7 +614,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     ]);
     const [ewsManualLevel, setEwsManualLevel] = useState('0');
     // RS232 channel the EWS module is wired to (1 or 2). Sent together with enable on SET.
-    const [ewsCh, setEwsCh] = useState('1');
+    const [ewsCh, setEwsCh] = useState(moduleSnapshot?.ewsCh ?? '1');
 
     const canSend = Boolean(logger.deviceIdentifier);
     const variant = inferBoardVariant(logger);
@@ -839,38 +1029,45 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         if (errBox.msg) setGcmError(errBox.msg);
     }
 
-    // Combined Module sync (the Module card's Sync button): EWS module check + the full GCM
-    // read sequence, shown as a single progress overlay.
+    // Combined Module sync (the Module card's Sync button). The overlay shows just two rows:
+    //   "Module"           → EWS read + GCM slave binding (the two GETs folded into one step)
+    //   "Mapping Parameter" → GCM_MAP read
+    // Logic Output is intentionally NOT read here — its config/status comes from the global
+    // "Sync from Device" (synced DB sensors), so the Module sync never touches SENSORS.
     async function loadModule() {
         if (!logger.deviceIdentifier) return;
         setLoading('GCM');
         setGcmError(null);
         const bound: { n: number; slave: number; mode: number }[] = [];
         const errBox = { msg: null as string | null };
-        const ewsStep = {
-            label: 'EWS',
-            description: 'Membaca konfigurasi & status EWS…',
-            icon: Siren,
+        const [bindingStep, mappingStep] = gcmSyncSteps(bound, errBox);
+
+        const moduleStep = {
+            label: 'Module',
+            description: 'Membaca EWS & binding modul…',
+            icon: Cpu,
             run: async () => {
-                // EWS GET → {"EWS":{"status":"OK","enable":..,"mode":..,"source":..,"rules":[..],..}}.
-                // Populates the enable toggle, mode, source, and rules from the device.
-                const e = await gcmGet('EWS', { EWS: { cmd: 'GET' } });
-                setResponses((current) => ({ ...current, EWS: e }));
-                const inner = (e.data as { EWS?: { enable?: number; mode?: string; source?: string; ch?: number; rules?: { min: number; max: number; level: number }[] } } | undefined)?.EWS;
-                if (e.success && inner) {
-                    setEwsEnable(Number(inner.enable) === 1);
-                    if (inner.mode === 'AUTO' || inner.mode === 'MANUAL') setEwsMode(inner.mode);
-                    if (inner.ch !== undefined) setEwsCh(String(inner.ch));
-                    if (typeof inner.source === 'string' && inner.source !== 'NONE') setEwsSourceName(inner.source);
-                    if (Array.isArray(inner.rules) && inner.rules.length > 0) {
-                        setEwsRules(inner.rules.map((r) => ({ min: String(r.min), max: String(r.max), level: String(r.level) })));
+                // EWS is best-effort here: a read failure must not block the GCM binding read.
+                try {
+                    const e = await gcmGet('EWS', { EWS: { cmd: 'GET' } });
+                    setResponses((current) => ({ ...current, EWS: e }));
+                    const inner = (e.data as { EWS?: { enable?: number; mode?: string; source?: string; ch?: number; rules?: { min: number; max: number; level: number }[] } } | undefined)?.EWS;
+                    if (e.success && inner) {
+                        setEwsEnable(Number(inner.enable) === 1);
+                        if (inner.mode === 'AUTO' || inner.mode === 'MANUAL') setEwsMode(inner.mode);
+                        if (inner.ch !== undefined) setEwsCh(String(inner.ch));
+                        if (typeof inner.source === 'string' && inner.source !== 'NONE') setEwsSourceName(inner.source);
+                        if (Array.isArray(inner.rules) && inner.rules.length > 0) {
+                            setEwsRules(inner.rules.map((r) => ({ min: String(r.min), max: String(r.max), level: String(r.level) })));
+                        }
                     }
-                } else if (!e.success) {
-                    throw new Error(e.message ?? 'EWS read failed.');
+                } catch {
+                    /* EWS read failed — non-fatal, keep going to the GCM binding read */
                 }
+                await bindingStep.run();
             },
         };
-        await runSyncSteps('Sinkronisasi Module', `Mengambil data terbaru dari ${logger.deviceIdentifier}…`, [ewsStep, ...gcmSyncSteps(bound, errBox)]);
+        await runSyncSteps('Sinkronisasi Module', `Mengambil data terbaru dari ${logger.deviceIdentifier}…`, [moduleStep, mappingStep]);
         setLoading(null);
         if (errBox.msg) setGcmError(errBox.msg);
     }
@@ -884,6 +1081,26 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             else void loadModule();
         },
     }));
+
+    // Persist the Device Configuration (I/O) form to the device cache whenever it changes, so
+    // leaving the Mode tab (which unmounts this panel) and returning restores the last-synced
+    // values from cache — no forced re-sync. Mirrors the sensor-name / map-slot caching.
+    useEffect(() => {
+        if (!ioRow || !deviceId) return;
+        setCachedPanelState(deviceId, 'io', {
+            out24: out24State, out12: out12State, doorClose: doorCloseState,
+            alert: alertState, modbusTcp, net, rtc,
+        } satisfies IoSnapshot);
+    }, [ioRow, deviceId, out24State, out12State, doorCloseState, alertState, modbusTcp, net, rtc]);
+
+    // Same persistence for the Module (EWS + GCM) panel.
+    useEffect(() => {
+        if (!isModulePanel || !deviceId) return;
+        setCachedPanelState(deviceId, 'module', {
+            gcm, gcmMapRows, gcmMapId,
+            ewsEnable, ewsMode, ewsSourceName, ewsRules, ewsCh,
+        } satisfies ModuleSnapshot);
+    }, [isModulePanel, deviceId, gcm, gcmMapRows, gcmMapId, ewsEnable, ewsMode, ewsSourceName, ewsRules, ewsCh]);
 
     // Map GET response m:[[reg, name], …] → rows. Empty name → '-' (the UI's empty sentinel).
     function parseGcmMapRows(m: Array<[number, number | string]>): { reg: string; name: string }[] {
@@ -1726,6 +1943,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         {shownTabs.includes('logs') && <TabsTrigger value="logs">Logs</TabsTrigger>}
                         {shownTabs.includes('ews') && <TabsTrigger value="ews">EWS</TabsTrigger>}
                         {shownTabs.includes('gcm') && <TabsTrigger value="gcm">GCM</TabsTrigger>}
+                        {shownTabs.includes('logicout') && <TabsTrigger value="logicout">Logic OUT</TabsTrigger>}
                         {shownTabs.includes('map') && <TabsTrigger value="map">Data Map</TabsTrigger>}
                     </TabsList>
 
@@ -2189,6 +2407,16 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                 </div>
                             )}
                         </CommandCard>
+                    </TabsContent>
+
+                    {/* ── Logic Output: digital mode-3 relay config + ON/OFF control ── */}
+                    <TabsContent value="logicout" className="mt-4 grid gap-4">
+                        <LogicOutCard
+                            maxChannels={maxDigitalChannel(logger)}
+                            devices={digitalOutputs}
+                            canSend={canSend}
+                            command={gcmGet}
+                        />
                     </TabsContent>
 
                     {/* ── MAP_DATA: name-based telemetry/LCD/SD ordering ── */}

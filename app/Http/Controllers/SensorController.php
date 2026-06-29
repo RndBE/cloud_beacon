@@ -41,13 +41,15 @@ class SensorController extends Controller
             'max_value' => 'required_if:connection_type,analog|nullable|numeric|gte:min_value',
             // Protocol fields (optional — only for protocol-configured sensors)
             'connection_type' => 'nullable|string|in:rs485,rs232,analog,digital',
-            'modbus_slave_id' => 'nullable|integer|min:1|max:5',
+            'modbus_slave_id' => 'nullable|integer|min:1|max:10',
             'device_name' => 'nullable|string|max:50',
             'function_code' => 'nullable|integer|in:3,4',
             'register_address' => 'nullable|integer|min:0|max:65535',
-            // reg_count: 1=U16, 2=FLOAT32 (2 reg), 4=U32 (4 reg). Replaces the old item_count "quantity".
-            'reg_count' => 'nullable|integer|in:1,2,4',
-            'quantity' => 'nullable|integer|in:1,2,4', // legacy alias
+            // reg_count holds the Modbus data type (dtype) code 1..27 — type + byte order combined.
+            // The firmware derives the register span from the code. See docs/modbus_data_type_codes.md
+            // (MB_TYPE_TABLE) for the full mapping; 1/2/4 are locked legacy codes.
+            'reg_count' => 'nullable|integer|in:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27',
+            'quantity' => 'nullable|integer|in:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27', // legacy alias
             'baudrate' => 'nullable|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
             'serial_format' => 'nullable|string|in:8N1,8E1,8O1',
             'scale_factor' => 'nullable|numeric',
@@ -419,7 +421,7 @@ class SensorController extends Controller
 
         if ($connType === 'rs485') {
             $validated = $request->validate([
-                'modbus_slave_id' => 'required|integer|min:1|max:5',
+                'modbus_slave_id' => 'required|integer|min:1|max:10',
                 'device_name' => 'nullable|string|max:50',
                 'function_code' => 'required|integer|in:3,4',
                 'baudrate' => 'required|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
@@ -494,7 +496,7 @@ class SensorController extends Controller
     private function saveRs485Device(Logger $logger, Request $request, ?int $groupId): RedirectResponse
     {
         $validated = $request->validate([
-            'modbus_slave_id' => 'required|integer|min:1|max:5',
+            'modbus_slave_id' => 'required|integer|min:1|max:10',
             'device_name' => 'nullable|string|max:50',
             'function_code' => 'required|integer|in:3,4',
             'baudrate' => 'required|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
@@ -505,7 +507,7 @@ class SensorController extends Controller
             'params.*.unit' => 'nullable|string|max:50',
             'params.*.scale_factor' => 'nullable|numeric',
             'params.*.register_address' => 'nullable|integer|min:0|max:65535',
-            'params.*.reg_count' => 'nullable|integer|in:1,2,4',
+            'params.*.reg_count' => 'nullable|integer|in:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27',
             'params.*.fast_poll' => 'nullable|boolean',
         ]);
 

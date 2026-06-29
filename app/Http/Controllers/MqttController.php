@@ -434,13 +434,14 @@ class MqttController extends Controller
             // RS485 / RS232 only
             'scale_factor'    => 'nullable|numeric',
             // RS485-specific
-            'modbus_slave_id' => 'required_if:connection_type,rs485|integer|min:1|max:5',
+            'modbus_slave_id' => 'required_if:connection_type,rs485|integer|min:1|max:10',
             'device_name'     => 'nullable|string|max:50',
             'function_code'   => 'required_if:connection_type,rs485|integer|in:3,4',
             'register_address'=> 'required_if:connection_type,rs485|integer|min:0',
-            // reg_count: 1=U16, 2=FLOAT32 (2 reg), 4=U32 (4 reg). Replaces the old item_count "quantity".
-            'reg_count'       => 'required_if:connection_type,rs485|integer|in:1,2,4',
-            'quantity'        => 'nullable|integer|in:1,2,4', // legacy alias, accepted for backward-compat
+            // reg_count holds the Modbus data type (dtype) code 1..27 — type + byte order combined.
+            // The firmware derives the register span from the code. See docs/modbus_data_type_codes.md.
+            'reg_count'       => 'required_if:connection_type,rs485|integer|in:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27',
+            'quantity'        => 'nullable|integer|in:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27', // legacy alias, accepted for backward-compat
             'baudrate'        => 'nullable|integer|in:1200,2400,4800,9600,19200,38400,57600,115200',
             'serial_format'   => 'nullable|string|in:8N1,8E1,8O1',
             'fast_poll'       => 'nullable|boolean',
@@ -881,6 +882,7 @@ class MqttController extends Controller
             'POWER_CAL',
             'FTP',
             'EWS',
+            'SENSORS',      // §3.2 — channel-based sensor SET/CTRL (Logic Output mode-3 relay config + control)
             'OTA',          // §3.26 — firmware update (firmware returns INVALID on non-modem boards)
         ];
 
@@ -1055,6 +1057,113 @@ class MqttController extends Controller
         } catch (\Throwable $e) {
             @unlink($tempFile);
             \Log::error("[FTP DOWNLOAD] Error: {$e->getMessage()}");
+            return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Read a system-log file's text content for the in-app log viewer.
+     *
+     * READLOGS lists device-local names like "20260624.txt"; this endpoint runs GETLOG (which
+     * uploads the file to FTP as "syslog_20260624.txt", waiting for the final OK) then downloads
+     * that file and returns its text — so the UI renders a colored viewer instead of a download.
+     */
+    public function viewFtpLog(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'filename' => 'required|string|max:255',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $logger = $this->resolveLogger($idLogger);
+
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
+        if (!$logger->ftp_host || !$logger->ftp_user || !$logger->ftp_pass) {
+            return response()->json(['success' => false, 'message' => 'FTP belum dikonfigurasi'], 400);
+        }
+
+        // READLOGS name (e.g. "20260624.txt"). On FTP the firmware stores it as "syslog_<name>".
+        $rawName = basename($request->input('filename'));
+        $prefixed = str_starts_with($rawName, 'syslog_') ? $rawName : 'syslog_' . $rawName;
+
+        // Step 1: GETLOG — make the device upload this log file to FTP. This waits for the final
+        // OK (skipping streaming progress frames) so the download below sees a complete file.
+        $mqtt = new MqttService();
+        $upload = $mqtt->sendFtpGetLog($idLogger, $rawName);
+        if (!($upload['success'] ?? false)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'GETLOG gagal: ' . ($upload['message'] ?? 'perangkat tidak merespons'),
+            ]);
+        }
+
+        // Step 2: download the uploaded file from FTP and read its text.
+        $tempFile = tempnam(sys_get_temp_dir(), 'ftplog_');
+        @unlink($tempFile);
+
+        try {
+            $ftp = ftp_connect($logger->ftp_host, $logger->ftp_port ?? 21, 10);
+            if (!$ftp) {
+                return response()->json(['success' => false, 'message' => 'Gagal terhubung ke FTP server'], 500);
+            }
+
+            if (!@ftp_login($ftp, $logger->ftp_user, $logger->ftp_pass)) {
+                ftp_close($ftp);
+                return response()->json(['success' => false, 'message' => 'Login FTP gagal'], 401);
+            }
+
+            ftp_pasv($ftp, true);
+            $currentDir = ftp_pwd($ftp) ?: '.';
+
+            // Try the syslog-prefixed name first, then the bare name, across a few likely dirs.
+            $names = array_unique([$prefixed, $rawName]);
+            $dirs = array_unique(['', rtrim($currentDir, '/') . '/', 'logs/', 'syslog/', 'log/']);
+            $candidates = [];
+            foreach ($dirs as $dir) {
+                foreach ($names as $name) {
+                    $candidates[] = $dir . $name;
+                }
+            }
+
+            $downloaded = false;
+            $triedPath = null;
+            foreach ($candidates as $candidate) {
+                ftp_pasv($ftp, true);
+                @unlink($tempFile);
+                if (@ftp_get($ftp, $tempFile, $candidate, FTP_ASCII)
+                    && file_exists($tempFile) && filesize($tempFile) > 0) {
+                    $downloaded = true;
+                    $triedPath = $candidate;
+                    break;
+                }
+            }
+
+            ftp_close($ftp);
+
+            if (!$downloaded) {
+                @unlink($tempFile);
+                return response()->json([
+                    'success' => false,
+                    'message' => "File log '{$prefixed}' tidak ditemukan di FTP.",
+                ], 404);
+            }
+
+            $content = (string) file_get_contents($tempFile);
+            @unlink($tempFile);
+            \Log::info("[FTP LOGVIEW] ✅ '{$prefixed}' from '{$triedPath}' — " . strlen($content) . ' bytes');
+
+            return response()->json([
+                'success' => true,
+                'filename' => $prefixed,
+                'content' => $content,
+            ]);
+        } catch (\Throwable $e) {
+            @unlink($tempFile);
+            \Log::error("[FTP LOGVIEW] Error: {$e->getMessage()}");
             return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
         }
     }

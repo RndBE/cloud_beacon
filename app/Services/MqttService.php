@@ -693,8 +693,11 @@ class MqttService
         // RS485 — cfg: [slave_id, name, function, register_address, baudrate, format]  (item_count removed)
         //          s:   [sensor_type, scale, unit, register_address, reg_count, fast_poll]  (lcd/sd/server removed)
         $registerAddress = (int) ($data['register_address'] ?? 0);
+        // reg_count carries the Modbus data type (dtype) code 1..27 (type + byte order); the
+        // firmware derives the register span. Unknown → fall back to U16 (1). See
+        // docs/modbus_data_type_codes.md (MB_TYPE_TABLE).
         $regCount = (int) ($data['reg_count'] ?? $data['quantity'] ?? 1);
-        if (!in_array($regCount, [1, 2, 4], true)) {
+        if ($regCount < 1 || $regCount > 27) {
             $regCount = 1;
         }
 
@@ -792,8 +795,9 @@ class MqttService
                         (string) ($device['serial_format'] ?? '8N1'),
                     ],
                     's' => array_map(static function (array $p) {
+                        // reg_count carries the Modbus dtype code 1..27 (see buildSensorSetPayload).
                         $regCount = (int) ($p['reg_count'] ?? $p['quantity'] ?? 1);
-                        if (!in_array($regCount, [1, 2, 4], true)) {
+                        if ($regCount < 1 || $regCount > 27) {
                             $regCount = 1;
                         }
                         return [
@@ -1118,6 +1122,103 @@ class MqttService
             Log::info("[MQTT] ═══════════════════════════════════════════════");
         } catch (\Throwable $e) {
             Log::error("[MQTT] ❌ [FTP GET] Error: {$e->getMessage()}");
+            return ['success' => false, 'message' => 'Koneksi MQTT gagal: ' . $e->getMessage()];
+        }
+
+        return $result;
+    }
+
+    /**
+     * GETLOG — ask the device to upload one system-log file (YYYYMMDD.txt) to the FTP server.
+     *
+     * Mirrors sendFtpGet(): the firmware streams progress frames ({"FTP UPLOAD":"BEGIN"},
+     * {"PROSESS":"x%"}, {"FTP UPLOAD":"END"}) and only the final {"FTP":{"status":"OK"}} is
+     * conclusive. We must NOT route this through the generic sendProtocolCommand(), which would
+     * resolve early on the "FTP UPLOAD" frame before the upload actually completes.
+     */
+    public function sendFtpGetLog(string $idLogger, string $filename): array
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $result = null;
+
+        Log::info("[MQTT] ═══════════════════════════════════════════════");
+        Log::info("[MQTT] [FTP GETLOG] Requesting log: {$filename} from: {$idLogger}");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->ftpTimeout)
+                ->setKeepAliveInterval(60);
+
+            $mqtt->connect($connectionSettings, true);
+            Log::info("[MQTT] ✅ Connected");
+
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use (&$result, $mqtt, $filename) {
+                Log::info("[MQTT] 📩 [FTP GETLOG] Received: {$message}");
+
+                $error = self::parseErrorResponse($message);
+                if ($error) {
+                    $result = ['success' => false, 'message' => $error];
+                    $mqtt->interrupt();
+                    return;
+                }
+
+                try {
+                    $data = json_decode($message, true);
+                    if (!$data) {
+                        return;
+                    }
+
+                    // Skip streaming progress frames — keep waiting for the final OK/ERR.
+                    if (isset($data['FTP UPLOAD']) || isset($data['PROSESS'])) {
+                        Log::info("[MQTT] 📊 [FTP GETLOG] Progress: {$message}");
+                        return;
+                    }
+
+                    if (isset($data['FTP']['status'])) {
+                        if ($data['FTP']['status'] === 'OK') {
+                            $result = ['success' => true, 'message' => "Log {$filename} berhasil diupload", 'filename' => $data['FTP']['f'] ?? $filename];
+                            Log::info("[MQTT] ✅ [FTP GETLOG] OK — log: {$filename}");
+                        } else {
+                            $errMsg = $data['FTP']['msg'] ?? 'Gagal mengupload log';
+                            $result = ['success' => false, 'message' => $errMsg];
+                            Log::warning("[MQTT] ❌ [FTP GETLOG] ERR: {$errMsg}");
+                        }
+                        $mqtt->interrupt();
+                        return;
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning("[MQTT] ⚠️ [FTP GETLOG] Parse error: {$e->getMessage()}");
+                }
+            }, 0);
+
+            $payload = json_encode(['FTP' => ['cmd' => 'GETLOG', 'f' => $filename]]);
+            Log::info("[MQTT] 📤 [FTP GETLOG] Publishing: {$payload}");
+            $mqtt->publish($subTopic, $payload, 0);
+
+            $startTime = microtime(true);
+            while ($result === null && (microtime(true) - $startTime) < $this->ftpTimeout) {
+                $mqtt->loopOnce(microtime(true) - $startTime, true);
+                usleep(100_000);
+            }
+
+            $elapsed = round(microtime(true) - $startTime, 2);
+            if ($result === null) {
+                Log::warning("[MQTT] ⏰ [FTP GETLOG] Timeout after {$elapsed}s");
+                $result = ['success' => false, 'message' => 'Timeout — perangkat tidak merespons'];
+            } else {
+                Log::info("[MQTT] ✅ [FTP GETLOG] Done in {$elapsed}s");
+            }
+
+            $mqtt->disconnect();
+            Log::info("[MQTT] ═══════════════════════════════════════════════");
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [FTP GETLOG] Error: {$e->getMessage()}");
             return ['success' => false, 'message' => 'Koneksi MQTT gagal: ' . $e->getMessage()];
         }
 
@@ -1609,8 +1710,9 @@ class MqttService
                         }
 
                         if (is_string($value)) {
-                            if (strtoupper($value) === 'ERR') {
-                                $result = ['success' => false, 'message' => (string) ($data['msg'] ?? "{$key}: ERR"), 'data' => $data, 'raw' => $message];
+                            // Flat error per spec §6, e.g. {"DIGITAL CTRL":"ERR not output"} / {"DIGITAL DEL":"ERR"}.
+                            if (str_starts_with(strtoupper(trim($value)), 'ERR')) {
+                                $result = ['success' => false, 'message' => (string) ($data['msg'] ?? "{$key}: {$value}"), 'data' => $data, 'raw' => $message];
                                 $mqtt->interrupt();
                                 return;
                             }
@@ -1829,9 +1931,24 @@ class MqttService
 
     private static function protocolKeyMatches(string $module, string $key): bool
     {
-        return $key === $module
+        if ($key === $module
             || str_starts_with($key, $module . ' ')
-            || str_starts_with($key, $module . '_');
+            || str_starts_with($key, $module . '_')) {
+            return true;
+        }
+
+        // SENSORS commands are echoed by interface type, not the module name:
+        //   {"DIGITAL SET":"OK"}  {"DIGITAL CTRL":"OK",...}  {"DIGITAL DEL":"OK"} (spec §3.2).
+        // The GET reply still uses {"SENSORS":{...}}, which matched above.
+        if ($module === 'SENSORS') {
+            foreach (['DIGITAL ', 'ANALOG ', 'RS485 ', 'RS232 '] as $prefix) {
+                if (str_starts_with($key, $prefix)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

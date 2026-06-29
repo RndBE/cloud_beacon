@@ -146,3 +146,23 @@ export async function fetchMapSlots(deviceId: string, force = false): Promise<De
     }
     return mapSlotCache.get(deviceId) ?? null;
 }
+
+// ── Panel form snapshots (Module EWS/GCM + Device Configuration) ──────────────
+// The Module (EWS/GCM) and Device Configuration panels live in the logger's "Mode"
+// tab, whose Radix TabsContent UNMOUNTS when another tab is active. Their synced
+// values live in component state, so leaving the tab (e.g. to Sensors) and coming
+// back used to drop them and force a re-sync. We snapshot each panel's form state
+// here (per device + panel key) so it can hydrate from cache on remount instead.
+// No notify(): a snapshot is owned by the single panel that wrote it, so there are
+// no cross-tree subscribers to wake.
+const panelStateCache = new Map<string, unknown>();
+
+export function getCachedPanelState<T = unknown>(deviceId: string, panel: string): T | null {
+    if (!deviceId) return null;
+    return (panelStateCache.get(`${deviceId}::${panel}`) as T | undefined) ?? null;
+}
+
+export function setCachedPanelState(deviceId: string, panel: string, state: unknown): void {
+    if (!deviceId) return;
+    panelStateCache.set(`${deviceId}::${panel}`, state);
+}
