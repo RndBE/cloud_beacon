@@ -271,7 +271,10 @@ class LoggerController extends Controller
                 'sensors' => $logger->externalSensors->map(fn(Sensor $sensor) => [
                     'id' => $sensor->id,
                     'name' => $sensor->name,
+                    'type' => $sensor->type,
+                    'value' => $sensor->value,
                     'connectionType' => $sensor->connection_type,
+                    'analogMode' => $sensor->analog_mode,
                     'modbusSlaveId' => $sensor->modbus_slave_id,
                     'port' => $sensor->port,
                     'channel' => $sensor->channel,

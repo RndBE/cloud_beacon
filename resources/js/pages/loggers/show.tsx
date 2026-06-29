@@ -32,15 +32,18 @@ import {
     RefreshCw,
     RotateCcw,
     Save,
+    ScrollText,
     Settings,
     Signal,
     SlidersHorizontal,
+    FileText,
     Terminal,
     Thermometer,
     Trash2,
     Timer,
     Upload,
     Wifi,
+    WifiOff,
     XCircle,
     Zap,
     Loader2,
@@ -52,7 +55,7 @@ import {
     HeartPulse,
     ShieldAlert,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LoggerToaster } from '@/components/logger-toaster';
 import {
@@ -77,6 +80,16 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuSub,
+    DropdownMenuSubContent,
+    DropdownMenuSubTrigger,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
@@ -343,6 +356,102 @@ type Rs485Param = {
 };
 
 const BLANK_RS485_PARAM: Rs485Param = { name: '', unit: '', scale_factor: '1', register_address: 0, reg_count: 1, fast_poll: false };
+
+// ── Modbus data type codes (dtype) ───────────────────────────────────────────
+// The `reg_count` field carries the Modbus data TYPE code (1..27), not a literal register
+// count — the firmware derives the register span from the code. Source of truth: MB_TYPE_TABLE
+// in the firmware (see docs/modbus_data_type_codes.md). The cloud only stores/forwards the code.
+// The picker mirrors a Modbus-Poll-style cascading menu: pick a type, then its byte order. 16-bit
+// types have no byte-order choice; code 4 (U32 bulat.pecahan) is a locked legacy mode kept reachable.
+const DTYPE_BYTE_ORDERS = ['Big-endian', 'Little-endian', 'Big-endian byte swap', 'Little-endian byte swap'] as const;
+
+type DtypeGroup =
+    | { kind: 'single'; code: number; label: string; note: string }
+    | { kind: 'sub'; label: string; codes: [number, number, number, number] };
+
+// Order within each `codes` tuple matches DTYPE_BYTE_ORDERS (BE, LE, BE swap, LE swap).
+const DTYPE_GROUPS: DtypeGroup[] = [
+    { kind: 'single', code: 3, label: 'Signed', note: '16-bit' },           // INT16
+    { kind: 'single', code: 1, label: 'Unsigned', note: '16-bit' },         // UINT16 (legacy code 1)
+    { kind: 'sub', label: '32 Bit signed', codes: [9, 10, 11, 12] },        // INT32
+    { kind: 'sub', label: '32 Bit unsigned', codes: [5, 6, 7, 8] },         // UINT32
+    { kind: 'sub', label: '64 Bit signed', codes: [20, 21, 22, 23] },       // INT64
+    { kind: 'sub', label: '64 Bit unsigned', codes: [16, 17, 18, 19] },     // UINT64
+    { kind: 'sub', label: '32 Bit float', codes: [2, 13, 14, 15] },         // FLOAT32 (BE = legacy code 2)
+    { kind: 'sub', label: '64 Bit double', codes: [24, 25, 26, 27] },       // FLOAT64
+    { kind: 'single', code: 4, label: 'U32 bulat.pecahan', note: 'legacy' }, // locked legacy
+];
+
+// Reverse lookup: dtype code → compact label for the trigger button.
+function dtypeLabel(code: number): string {
+    for (const g of DTYPE_GROUPS) {
+        if (g.kind === 'single' && g.code === code) return `${g.label} (${g.note})`;
+        if (g.kind === 'sub') {
+            const idx = g.codes.indexOf(code);
+            if (idx >= 0) return `${g.label} · ${DTYPE_BYTE_ORDERS[idx]}`;
+        }
+    }
+    return `Kode ${code}`;
+}
+
+// A 16px slot that holds the check mark for the selected row (keeps every row left-aligned
+// whether or not it is the current selection).
+function DtypeCheck({ active }: { active: boolean }) {
+    return <span className="flex size-4 shrink-0 items-center justify-center">{active && <Check className="size-4" />}</span>;
+}
+
+// Cascading data-type picker (Modbus-Poll style): pick a type, then a byte order.
+function DtypeSelect({ value, onChange }: { value: number; onChange: (code: number) => void }) {
+    return (
+        <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <button
+                    type="button"
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-1 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    title={dtypeLabel(value)}
+                >
+                    <span className="min-w-0 truncate">{dtypeLabel(value)}</span>
+                    <ChevronDown className="size-4 shrink-0 opacity-50" />
+                </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-60">
+                {DTYPE_GROUPS.map((g) => {
+                    if (g.kind === 'single') {
+                        const active = value === g.code;
+                        const row = (
+                            <DropdownMenuItem key={g.code} onSelect={() => onChange(g.code)} className={active ? 'font-medium text-primary' : undefined}>
+                                <DtypeCheck active={active} />
+                                <span>{g.label}</span>
+                                {g.note === 'legacy' && <span className="ml-auto text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">legacy</span>}
+                            </DropdownMenuItem>
+                        );
+                        // Set the trailing legacy entry (code 4) off with a separator.
+                        return g.code === 4 ? [<DropdownMenuSeparator key="dtype-sep" />, row] : row;
+                    }
+                    const activeInSub = g.codes.includes(value);
+                    return (
+                        <DropdownMenuSub key={g.label}>
+                            <DropdownMenuSubTrigger className={activeInSub ? 'font-medium text-primary' : undefined}>
+                                {g.label}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="w-52">
+                                {g.codes.map((code, i) => {
+                                    const active = value === code;
+                                    return (
+                                        <DropdownMenuItem key={code} onSelect={() => onChange(code)} className={active ? 'font-medium text-primary' : undefined}>
+                                            <DtypeCheck active={active} />
+                                            <span>{DTYPE_BYTE_ORDERS[i]}</span>
+                                        </DropdownMenuItem>
+                                    );
+                                })}
+                            </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                    );
+                })}
+            </DropdownMenuContent>
+        </DropdownMenu>
+    );
+}
 
 // Virtual/profile sensors (AWLR_TD.*, AWLR_US.*, ARR.*, GNSS.*) are computed outputs with no
 // raw reading (value still empty) — they must never be offered as a data SOURCE.
@@ -1958,7 +2067,7 @@ function SensorCrudPanel({
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Slave ID</Label>
-                                        <Input type="number" min={1} max={5} value={rs485Form.modbus_slave_id} onChange={e => setRs485({ modbus_slave_id: parseInt(e.target.value) || 1 })} />
+                                        <Input type="number" min={1} max={10} value={rs485Form.modbus_slave_id} onChange={e => setRs485({ modbus_slave_id: parseInt(e.target.value) || 1 })} />
                                         {errors.modbus_slave_id && <p className="text-xs text-red-500">{errors.modbus_slave_id}</p>}
                                         {errors.mqtt && <p className="text-xs text-red-500">{errors.mqtt}</p>}
                                     </div>
@@ -2021,7 +2130,7 @@ function SensorCrudPanel({
                                                 <Input value={p.unit} onChange={e => updateRs485Param(i, { unit: e.target.value })} placeholder="e.g. mm" />
                                             </div>
                                         </div>
-                                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                        <div className="grid grid-cols-2 gap-3">
                                             <div className="grid gap-1.5">
                                                 <Label className="text-xs">Scale</Label>
                                                 <Input inputMode="decimal" value={p.scale_factor} onChange={e => updateRs485Param(i, { scale_factor: e.target.value })} placeholder="1.0" />
@@ -2030,15 +2139,13 @@ function SensorCrudPanel({
                                                 <Label className="text-xs">Address</Label>
                                                 <Input type="number" min={0} max={65535} value={p.register_address} onChange={e => updateRs485Param(i, { register_address: parseInt(e.target.value) || 0 })} />
                                             </div>
-                                            <div className="grid gap-1.5">
-                                                <Label className="text-xs">Register Count</Label>
-                                                <select value={p.reg_count} onChange={e => updateRs485Param(i, { reg_count: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                                    <option value={1}>1 — U16</option>
-                                                    <option value={2}>2 — FLOAT32 (ABCD)</option>
-                                                    <option value={4}>4 — U32 (bulat.pecahan)</option>
-                                                </select>
+                                        </div>
+                                        <div className="flex items-end gap-3">
+                                            <div className="grid min-w-0 flex-1 gap-1.5">
+                                                <Label className="text-xs">Tipe Data (dtype)</Label>
+                                                <DtypeSelect value={p.reg_count} onChange={code => updateRs485Param(i, { reg_count: code })} />
                                             </div>
-                                            <label className="flex items-center gap-2 pt-5 text-xs">
+                                            <label className="flex h-9 shrink-0 items-center gap-2 whitespace-nowrap text-xs">
                                                 <input type="checkbox" checked={p.fast_poll} onChange={e => updateRs485Param(i, { fast_poll: e.target.checked })} className="rounded" />
                                                 Fast Poll
                                             </label>
@@ -2134,7 +2241,9 @@ function SensorCrudPanel({
                                             <option value={0}>Logic Input</option>
                                             <option value={1}>Pulse Volatile</option>
                                             <option value={2}>Pulse Persistent</option>
-                                            <option value={3}>Logic Output</option>
+                                            {/* Logic Output (mode 3) moved to Mode → Module → "Logic OUT".
+                                                Option kept hidden so legacy mode-3 sensors still open for edit/control. */}
+                                            {form.digital_mode === 3 && <option value={3}>Logic Output (legacy)</option>}
                                         </select>
                                     </div>
                                 </div>
@@ -3858,6 +3967,510 @@ function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, i
 }
 
 // =============================================================================
+// System Logs Card (FTP black-box recorder — READLOGS list + in-app colored viewer)
+// =============================================================================
+
+// Shared matcher for a standard syslog line: "[HH:MM:SS] [LEVEL] [MODULE] message".
+const SYSLOG_LINE_RE = /^\[(\d{2}:\d{2}:\d{2})\]\s*\[([A-Za-z ]+?)\]\s*\[([^\]]*)\]\s*(.*)$/;
+
+interface LogSummary {
+    totalLines: number;
+    firstTime: string | null;
+    lastTime: string | null;
+    errors: number;
+    warnings: number;
+    cfg: number;
+    reboots: number;
+    netOffline: number;
+    ftpUploads: number;
+    topErrorModules: { module: string; count: number }[];
+    // Timestamps of notable events so the summary can show "when", not just "how many".
+    netOfflineTimes: string[];
+    rebootTimes: string[];
+    lastFtpUploadTime: string | null;
+    firstErrorTime: string | null;
+    lastErrorTime: string | null;
+}
+
+// Derive an at-a-glance health summary from a syslog file's text (frontend only — no backend).
+function summarizeSyslog(content: string): LogSummary {
+    const lines = content.replace(/\r\n/g, '\n').split('\n');
+    let totalLines = 0;
+    let errors = 0;
+    let warnings = 0;
+    let cfg = 0;
+    let reboots = 0;
+    let netOffline = 0;
+    let ftpUploads = 0;
+    let firstTime: string | null = null;
+    let lastTime: string | null = null;
+    let lastFtpUploadTime: string | null = null;
+    let firstErrorTime: string | null = null;
+    let lastErrorTime: string | null = null;
+    const netOfflineTimes: string[] = [];
+    const rebootTimes: string[] = [];
+    const errorByModule: Record<string, number> = {};
+
+    for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        totalLines++;
+        const m = line.match(SYSLOG_LINE_RE);
+        if (!m) continue;
+        const [, time, levelRaw, modRaw, msg] = m;
+        const level = levelRaw.trim().toUpperCase();
+        const mod = modRaw.trim();
+        if (firstTime === null) firstTime = time;
+        lastTime = time;
+        if (level === 'ERROR') {
+            errors++;
+            errorByModule[mod] = (errorByModule[mod] || 0) + 1;
+            if (firstErrorTime === null) firstErrorTime = time;
+            lastErrorTime = time;
+        } else if (level === 'WARN') {
+            warnings++;
+        } else if (level === 'CFG') {
+            cfg++;
+        }
+        if (/reboot/i.test(msg)) { reboots++; rebootTimes.push(time); }
+        if (mod === 'NET' && /offline/i.test(msg)) { netOffline++; netOfflineTimes.push(time); }
+        if (/upload ok/i.test(msg)) { ftpUploads++; lastFtpUploadTime = time; }
+    }
+
+    const topErrorModules = Object.entries(errorByModule)
+        .map(([module, count]) => ({ module, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3);
+
+    return {
+        totalLines, firstTime, lastTime, errors, warnings, cfg, reboots, netOffline, ftpUploads, topErrorModules,
+        netOfflineTimes, rebootTimes, lastFtpUploadTime, firstErrorTime, lastErrorTime,
+    };
+}
+
+function LogStatTile({ label, value, tone = 'default' }: {
+    label: string;
+    value: string | number;
+    tone?: 'default' | 'error' | 'warn' | 'ok';
+}) {
+    const toneClass =
+        tone === 'error' ? 'text-red-600 dark:text-red-400'
+            : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
+                : tone === 'ok' ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-foreground';
+    return (
+        <div className="rounded-lg border bg-background px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+            <p className={`mt-0.5 truncate font-mono text-sm font-semibold ${toneClass}`}>{value}</p>
+        </div>
+    );
+}
+
+// Join a list of timestamps for display, capping the count so the line stays readable.
+function formatTimeList(times: string[], max = 8): string {
+    if (times.length <= max) return times.join(', ');
+    return `${times.slice(0, max).join(', ')} … (+${times.length - max} lagi)`;
+}
+
+// Insight/health panel rendered above the raw log viewer.
+function SyslogSummary({ summary }: { summary: LogSummary }) {
+    const maxErr = summary.topErrorModules[0]?.count ?? 1;
+    const topFault = summary.topErrorModules[0];
+
+    // Plain-language verdict so the user gets the gist without reading every line.
+    const status: 'error' | 'warn' | 'ok' =
+        summary.errors > 0 ? 'error'
+            : (summary.netOffline > 0 || summary.reboots > 0 || summary.warnings > 0) ? 'warn'
+                : 'ok';
+
+    const verdictParts: string[] = [];
+    if (summary.errors > 0) verdictParts.push(`${summary.errors} error${topFault ? ` (mayoritas ${topFault.module}, ${topFault.count}×)` : ''}`);
+    if (summary.warnings > 0) verdictParts.push(`${summary.warnings} warning`);
+    if (summary.netOffline > 0) verdictParts.push(`jaringan terputus ${summary.netOffline}×`);
+    if (summary.reboots > 0) verdictParts.push(`reboot ${summary.reboots}×`);
+
+    const verdictText = status === 'ok'
+        ? 'Tidak ada error terdeteksi — perangkat berjalan normal.'
+        : `Terdeteksi ${verdictParts.join(', ')}.`;
+
+    const verdict = status === 'error'
+        ? { box: 'border-red-500/20 bg-red-500/5', text: 'text-red-600 dark:text-red-400', Icon: ShieldAlert }
+        : status === 'warn'
+            ? { box: 'border-amber-500/20 bg-amber-500/5', text: 'text-amber-600 dark:text-amber-500', Icon: AlertTriangle }
+            : { box: 'border-emerald-500/20 bg-emerald-500/5', text: 'text-emerald-600 dark:text-emerald-400', Icon: ShieldCheck };
+    const VerdictIcon = verdict.Icon;
+
+    const hasEvents = summary.netOfflineTimes.length > 0 || summary.rebootTimes.length > 0
+        || summary.lastFtpUploadTime !== null || summary.firstErrorTime !== null;
+
+    return (
+        <div className="mb-3 space-y-3">
+            {/* Plain-language health verdict */}
+            <div className={`flex items-start gap-2.5 rounded-lg border p-3 ${verdict.box}`}>
+                <VerdictIcon className={`mt-0.5 size-4 shrink-0 ${verdict.text}`} />
+                <div className="min-w-0">
+                    <p className={`text-sm font-medium ${verdict.text}`}>{verdictText}</p>
+                    {summary.firstTime && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                            Rentang {summary.firstTime}–{summary.lastTime} · {summary.totalLines} baris
+                        </p>
+                    )}
+                </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <LogStatTile label="Baris" value={summary.totalLines} />
+                <LogStatTile label="Rentang" value={`${summary.firstTime ?? '—'}–${summary.lastTime ?? '—'}`} />
+                <LogStatTile label="Error" value={summary.errors} tone={summary.errors > 0 ? 'error' : 'default'} />
+                <LogStatTile label="Warning" value={summary.warnings} tone={summary.warnings > 0 ? 'warn' : 'default'} />
+                <LogStatTile label="Reboot" value={summary.reboots} />
+                <LogStatTile label="Putus jaringan" value={summary.netOffline} tone={summary.netOffline > 0 ? 'warn' : 'default'} />
+                <LogStatTile label="Upload FTP" value={summary.ftpUploads} tone={summary.ftpUploads > 0 ? 'ok' : 'default'} />
+                <LogStatTile label="Perintah CFG" value={summary.cfg} />
+            </div>
+
+            {/* Key events with timestamps — answers "kapan", not just "berapa kali". */}
+            {hasEvents && (
+                <div className="rounded-lg border bg-background p-3">
+                    <p className="mb-2 text-xs font-medium text-muted-foreground">Kejadian penting</p>
+                    <ul className="space-y-1.5 text-xs">
+                        {summary.netOfflineTimes.length > 0 && (
+                            <li className="flex items-start gap-2">
+                                <WifiOff className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+                                <span>
+                                    <span className="font-medium">Jaringan terputus {summary.netOfflineTimes.length}×</span> — {formatTimeList(summary.netOfflineTimes)}
+                                </span>
+                            </li>
+                        )}
+                        {summary.rebootTimes.length > 0 && (
+                            <li className="flex items-start gap-2">
+                                <Power className="mt-0.5 size-3.5 shrink-0 text-violet-500" />
+                                <span>
+                                    <span className="font-medium">Reboot {summary.rebootTimes.length}×</span> — {formatTimeList(summary.rebootTimes)}
+                                </span>
+                            </li>
+                        )}
+                        {summary.firstErrorTime && (
+                            <li className="flex items-start gap-2">
+                                <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-red-500" />
+                                <span>
+                                    <span className="font-medium">Error pertama {summary.firstErrorTime}</span>, terakhir {summary.lastErrorTime}
+                                </span>
+                            </li>
+                        )}
+                        {summary.lastFtpUploadTime && (
+                            <li className="flex items-start gap-2">
+                                <Upload className="mt-0.5 size-3.5 shrink-0 text-emerald-500" />
+                                <span>
+                                    <span className="font-medium">Upload FTP terakhir {summary.lastFtpUploadTime}</span> ({summary.ftpUploads}× total)
+                                </span>
+                            </li>
+                        )}
+                    </ul>
+                </div>
+            )}
+
+            {summary.topErrorModules.length > 0 && (
+                <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                    <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-red-600 dark:text-red-400">
+                        <AlertCircle className="size-3.5" /> Fault terbanyak
+                    </p>
+                    <div className="space-y-1.5">
+                        {summary.topErrorModules.map((f) => (
+                            <div key={f.module} className="flex items-center gap-2">
+                                <span className="w-28 shrink-0 truncate font-mono text-xs">{f.module}</span>
+                                <div className="h-2 flex-1 overflow-hidden rounded-full bg-red-500/10">
+                                    <div className="h-full rounded-full bg-red-500/60" style={{ width: `${(f.count / maxErr) * 100}%` }} />
+                                </div>
+                                <span className="w-12 shrink-0 text-right font-mono text-xs text-muted-foreground">{f.count}×</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// Render one syslog line: "[HH:MM:SS] [LEVEL] [MODULE] message" with per-level coloring.
+// Non-standard lines (e.g. "[SYSLOG] Daily flush summary: …") fall back to plain text.
+function SyslogLine({ line }: { line: string }) {
+    const m = line.match(SYSLOG_LINE_RE);
+    if (!m) {
+        return <div className="whitespace-pre-wrap text-muted-foreground">{line || ' '}</div>;
+    }
+    const [, time, levelRaw, mod, msg] = m;
+    const level = levelRaw.trim().toUpperCase();
+    const levelColor =
+        level === 'ERROR' ? 'text-red-500'
+            : level === 'WARN' ? 'text-amber-500'
+                : level === 'CFG' ? 'text-violet-500'
+                    : level === 'INFO' ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-muted-foreground';
+    return (
+        <div className="flex gap-2 whitespace-pre-wrap">
+            <span className="shrink-0 text-muted-foreground">[{time}]</span>
+            <span className={`shrink-0 font-medium ${levelColor}`}>[{level}]</span>
+            <span className="shrink-0 text-sky-600 dark:text-sky-400">[{mod}]</span>
+            <span className={level === 'ERROR' ? 'text-red-500/90' : 'text-foreground'}>{msg}</span>
+        </div>
+    );
+}
+
+function SystemLogsCard({ deviceIdentifier, disabled, ftpConfigured }: {
+    deviceIdentifier: string;
+    disabled: boolean;
+    ftpConfigured: boolean;
+}) {
+    const [open, setOpen] = useState(false);
+    const [view, setView] = useState<'list' | 'viewer'>('list');
+    const [files, setFiles] = useState<string[]>([]);
+    const [loadingList, setLoadingList] = useState(false);
+    const [listError, setListError] = useState<string | null>(null);
+
+    const [selectedFile, setSelectedFile] = useState<string | null>(null);
+    const [content, setContent] = useState<string | null>(null);
+    const [loadingContent, setLoadingContent] = useState(false);
+    const [contentError, setContentError] = useState<string | null>(null);
+
+    // READLOGS — list device-local syslog files (an MQTT round-trip, no FTP needed).
+    async function loadList() {
+        setLoadingList(true);
+        setListError(null);
+        setFiles([]);
+        try {
+            const res = await apiFetch('/api/mqtt/protocol/command', {
+                id_logger: deviceIdentifier,
+                module: 'FTP',
+                payload: { FTP: { cmd: 'READLOGS' } },
+            });
+            const data = await res.json();
+            if (!data.success) {
+                setListError(data.message || 'Perangkat tidak merespons (READLOGS).');
+                return;
+            }
+            const raw = data?.data?.FTP?.files;
+            const list: string[] = Array.isArray(raw) ? raw.filter((f: unknown): f is string => typeof f === 'string') : [];
+            // Oldest first (ascending) — filenames are YYYYMMDD.txt so a lexicographic sort works.
+            list.sort((a, b) => a.localeCompare(b));
+            setFiles(list);
+        } catch {
+            setListError('Network error — tidak dapat terhubung ke server.');
+        } finally {
+            setLoadingList(false);
+        }
+    }
+
+    function openBrowser() {
+        setOpen(true);
+        setView('list');
+        setSelectedFile(null);
+        setContent(null);
+        setContentError(null);
+        loadList();
+    }
+
+    // Open one file. The /logview endpoint runs GETLOG (device → FTP upload, waiting for the
+    // final OK) then reads the uploaded file's text back from FTP — one round-trip from the UI.
+    async function openFile(file: string) {
+        setSelectedFile(file);
+        setView('viewer');
+        setContent(null);
+        setContentError(null);
+        setLoadingContent(true);
+        try {
+            const viewRes = await apiFetch('/api/mqtt/ftp/logview', {
+                id_logger: deviceIdentifier,
+                filename: file,
+            });
+            const viewData = await viewRes.json();
+            if (!viewData.success) {
+                setContentError(viewData.message || 'Gagal mengambil isi file dari perangkat/FTP.');
+                return;
+            }
+            setContent(typeof viewData.content === 'string' ? viewData.content : '');
+        } catch {
+            setContentError('Network error — tidak dapat terhubung ke server.');
+        } finally {
+            setLoadingContent(false);
+        }
+    }
+
+    function backToList() {
+        setView('list');
+        setSelectedFile(null);
+        setContent(null);
+        setContentError(null);
+    }
+
+    // Save the already-loaded log text to a local .txt file (no extra round-trip).
+    function downloadLog() {
+        if (content === null || !selectedFile) return;
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = selectedFile;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    const lines = content !== null ? content.replace(/\r\n/g, '\n').split('\n') : [];
+    const summary = useMemo(() => (content !== null ? summarizeSyslog(content) : null), [content]);
+
+    return (
+        <Card>
+            <CardHeader>
+                <div className="flex items-center justify-between">
+                    <div>
+                        <CardTitle className="flex items-center gap-2"><ScrollText className="size-5" /> System Logs</CardTitle>
+                        <CardDescription className="mt-1">Black-box recorder — log sistem harian dari perangkat</CardDescription>
+                    </div>
+                </div>
+            </CardHeader>
+            <CardContent>
+                <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
+                    <div className="mb-3 flex items-center gap-2">
+                        <ScrollText className="size-4 text-blue-500" />
+                        <span className="text-sm font-medium">Log Sistem Harian</span>
+                    </div>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5"
+                        onClick={openBrowser}
+                        disabled={disabled || !ftpConfigured}
+                        title={
+                            disabled ? 'Device offline — tidak bisa mengirim'
+                                : !ftpConfigured ? 'Konfigurasi FTP diperlukan terlebih dahulu'
+                                    : ''
+                        }
+                    >
+                        <HardDrive className="size-4" /> Lihat Log Sistem
+                    </Button>
+                </div>
+            </CardContent>
+
+            {/* ══════ System Logs Browser / Viewer Dialog ══════ */}
+            <Dialog open={open} onOpenChange={setOpen}>
+                <DialogContent className={`flex max-h-[85vh] flex-col overflow-hidden ${view === 'list' ? 'sm:max-w-lg' : 'sm:max-w-3xl'}`}>
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <ScrollText className="size-5" /> System Logs
+                        </DialogTitle>
+                        <DialogDescription>
+                            {view === 'list'
+                                ? 'Daftar file log sistem di perangkat'
+                                : `syslog_${selectedFile ?? ''}`}
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className={`min-h-0 flex-1 py-2 ${view === 'list' ? 'overflow-y-auto' : 'flex flex-col overflow-hidden'}`}>
+                        {view === 'list' ? (
+                            loadingList ? (
+                                <div className="flex flex-col items-center gap-3 py-8">
+                                    <Loader2 className="size-8 animate-spin text-muted-foreground" />
+                                    <p className="text-sm text-muted-foreground">Memuat daftar log (READLOGS)...</p>
+                                </div>
+                            ) : listError ? (
+                                <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
+                                    <AlertCircle className="mx-auto size-8 text-red-500/60" />
+                                    <p className="mt-2 text-sm text-red-600 dark:text-red-400">{listError}</p>
+                                </div>
+                            ) : files.length === 0 ? (
+                                <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+                                    <ScrollText className="mx-auto size-8 text-muted-foreground/40" />
+                                    <p className="mt-2 text-sm text-muted-foreground">Tidak ada file log ditemukan</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-1">
+                                    <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">{files.length} file log tersedia</div>
+                                    <div className="space-y-0.5">
+                                        {files.map((file) => (
+                                            <button
+                                                key={file}
+                                                onClick={() => openFile(file)}
+                                                className="flex w-full items-center justify-between rounded-md border px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/50"
+                                            >
+                                                <div className="flex min-w-0 items-center gap-2.5">
+                                                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
+                                                        <FileText className="size-4 text-blue-500" />
+                                                    </div>
+                                                    <span className="truncate font-mono text-xs">{file.replace(/\.txt$/i, '')}</span>
+                                                </div>
+                                                <Download className="size-4 shrink-0 text-muted-foreground" />
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )
+                        ) : (
+                            /* ─── Viewer ─── */
+                            <>
+                                <button
+                                    onClick={backToList}
+                                    className="mb-2 flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                                >
+                                    <ArrowLeft className="size-4" />
+                                    <span>Kembali ke daftar file</span>
+                                </button>
+                                {loadingContent ? (
+                                    <div className="flex flex-col items-center gap-3 py-10">
+                                        <Loader2 className="size-8 animate-spin text-muted-foreground" />
+                                        <p className="text-sm text-muted-foreground">Mengupload (GETLOG) &amp; membaca isi log...</p>
+                                    </div>
+                                ) : contentError ? (
+                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
+                                        <AlertCircle className="mx-auto size-8 text-red-500/60" />
+                                        <p className="mt-2 text-sm text-red-600 dark:text-red-400">{contentError}</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {summary && (
+                                            <div className="shrink-0">
+                                                <SyslogSummary summary={summary} />
+                                            </div>
+                                        )}
+                                        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-muted/30">
+                                            <div className="flex-1 overflow-auto p-3 font-mono text-[11px] leading-relaxed">
+                                                {lines.map((line, i) => (
+                                                    <SyslogLine key={i} line={line} />
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+                            </>
+                        )}
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setOpen(false)}>Tutup</Button>
+                        {view === 'list' && !loadingList && (
+                            <Button variant="outline" className="gap-1.5" onClick={loadList}>
+                                <RefreshCw className="size-4" /> Refresh
+                            </Button>
+                        )}
+                        {view === 'viewer' && !loadingContent && content !== null && selectedFile && (
+                            <Button variant="outline" className="gap-1.5" onClick={downloadLog}>
+                                <Download className="size-4" /> Unduh
+                            </Button>
+                        )}
+                        {view === 'viewer' && !loadingContent && selectedFile && (
+                            <Button variant="outline" className="gap-1.5" onClick={() => openFile(selectedFile)}>
+                                <RefreshCw className="size-4" /> Muat ulang
+                            </Button>
+                        )}
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </Card>
+    );
+}
+
+// =============================================================================
 // Set Mode Card
 // =============================================================================
 type SetModePhase = 'idle' | 'sending' | 'success' | 'error';
@@ -4834,7 +5447,10 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
         sensors: logger.sensors.map((s) => ({
             id: s.id,
             name: s.name,
+            type: s.type,
+            value: s.value,
             connectionType: s.connectionType,
+            analogMode: s.analogMode,
             modbusSlaveId: s.modbusSlaveId,
             port: s.port,
             channel: s.channel,
@@ -5308,8 +5924,15 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
                     {/* ==================== LOGS ==================== */}
                     <TabsContent value="logs" className="mt-6 space-y-4">
-                        {/* FTP System Logs (READLOGS / GETLOG black-box recorder) moved here from Advanced. */}
-                        <ProtocolPanel logger={protocolLogger} ftpOnly />
+                        {/* FTP System Logs (READLOGS / GETLOG black-box recorder) — styled like the
+                            Konfigurasi FTP card, with an in-app browser + colored log viewer. */}
+                        {logger.deviceIdentifier && (
+                            <SystemLogsCard
+                                deviceIdentifier={logger.deviceIdentifier}
+                                disabled={logger.status === 'offline'}
+                                ftpConfigured={Boolean(logger.ftpHost && logger.ftpUser)}
+                            />
+                        )}
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2"><Terminal className="size-5" /> {t('loggerDetail.activity_logs')}</CardTitle>
