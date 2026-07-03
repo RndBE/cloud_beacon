@@ -4217,6 +4217,364 @@ function SyslogLine({ line }: { line: string }) {
     );
 }
 
+// SD Card → USB copy. Mirrors the FTP file browser's month → day drill-down: LISTMONTH lists
+// months, LISTDAY lists that month's date-files. "Copy semua ke USB" (COPY_ALL) lives in the
+// month view; each day-file has its own copy action (COPY src). Both stream live progress over
+// EventSource (/api/mqtt/usb/stream) until DONE/ERR.
+function UsbCopyCard({ deviceIdentifier, disabled }: {
+    deviceIdentifier: string;
+    disabled: boolean;
+}) {
+    const [open, setOpen] = useState(false);
+    const [months, setMonths] = useState<string[]>([]);
+    const [files, setFiles] = useState<string[]>([]);
+    const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+    const [browseView, setBrowseView] = useState<'months' | 'files'>('months');
+    const [loading, setLoading] = useState(false);
+    const [listError, setListError] = useState<string | null>(null);
+
+    const [copying, setCopying] = useState(false);
+    const [copyTarget, setCopyTarget] = useState<string | null>(null); // 'all' or a filename
+    const [percent, setPercent] = useState(0);
+    const [copied, setCopied] = useState<{ file: string; size?: string }[]>([]);
+    const [copyError, setCopyError] = useState<string | null>(null);
+    const [doneMsg, setDoneMsg] = useState<string | null>(null);
+    const esRef = useRef<EventSource | null>(null);
+
+    function closeStream() {
+        if (esRef.current) {
+            esRef.current.close();
+            esRef.current = null;
+        }
+    }
+
+    function formatMonth(monthStr: string) {
+        const [yearStr, monthNum] = monthStr.split('-');
+        const monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+        return `${monthNames[parseInt(monthNum) - 1]} ${yearStr}`;
+    }
+
+    // LISTMONTH — months that have data on the SD card ({"USB":{"months":["2026-06",...]}}).
+    async function loadMonths() {
+        setLoading(true);
+        setListError(null);
+        setMonths([]);
+        setFiles([]);
+        setSelectedMonth(null);
+        setBrowseView('months');
+        try {
+            const res = await apiFetch('/api/mqtt/protocol/command', {
+                id_logger: deviceIdentifier,
+                module: 'USB',
+                payload: { USB: { cmd: 'LISTMONTH' } },
+            });
+            const data = await res.json();
+            if (!data.success) {
+                setListError(data.message || 'Perangkat tidak merespons (LISTMONTH).');
+                return;
+            }
+            const raw = data?.data?.USB?.months;
+            const list: string[] = Array.isArray(raw) ? raw.filter((m: unknown): m is string => typeof m === 'string') : [];
+            list.sort((a, b) => a.localeCompare(b));
+            setMonths(list);
+        } catch {
+            setListError('Network error — tidak dapat terhubung ke server.');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    // LISTDAY — date-files within one month ({"USB":{"files":["2026-06-17.csv",...]}}).
+    async function selectMonth(monthStr: string) {
+        setSelectedMonth(monthStr);
+        setBrowseView('files');
+        setLoading(true);
+        setListError(null);
+        setFiles([]);
+        const [yearStr, monthNum] = monthStr.split('-');
+        try {
+            const res = await apiFetch('/api/mqtt/protocol/command', {
+                id_logger: deviceIdentifier,
+                module: 'USB',
+                payload: { USB: { cmd: 'LISTDAY', y: parseInt(yearStr), m: parseInt(monthNum) } },
+            });
+            const data = await res.json();
+            if (!data.success) {
+                setListError(data.message || 'Perangkat tidak merespons (LISTDAY).');
+                return;
+            }
+            const raw = data?.data?.USB?.files;
+            const list: string[] = Array.isArray(raw) ? raw.filter((f: unknown): f is string => typeof f === 'string') : [];
+            list.sort((a, b) => a.localeCompare(b));
+            setFiles(list);
+        } catch {
+            setListError('Network error — tidak dapat terhubung ke server.');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    function backToMonths() {
+        setBrowseView('months');
+        setSelectedMonth(null);
+        setFiles([]);
+        setListError(null);
+    }
+
+    function openBrowser() {
+        setOpen(true);
+        setCopying(false);
+        setCopyTarget(null);
+        setPercent(0);
+        setCopied([]);
+        setCopyError(null);
+        setDoneMsg(null);
+        closeStream();
+        loadMonths();
+    }
+
+    // COPY (single date-file via `src`) or COPY_ALL (src omitted) — follow the live progress stream.
+    function startCopy(src: string | null, label: string) {
+        if (copying) return;
+        setCopying(true);
+        setCopyTarget(label);
+        setPercent(0);
+        setCopied([]);
+        setCopyError(null);
+        setDoneMsg(null);
+        closeStream();
+
+        const params = new URLSearchParams({ id_logger: deviceIdentifier });
+        if (src) params.set('src', src);
+        const es = new EventSource(`/api/mqtt/usb/stream?${params.toString()}`);
+        esRef.current = es;
+        let finished = false;
+
+        es.addEventListener('progress', (e) => {
+            try { setPercent(JSON.parse((e as MessageEvent).data).percent ?? 0); } catch { /* ignore */ }
+        });
+        es.addEventListener('file_ok', (e) => {
+            try {
+                const d = JSON.parse((e as MessageEvent).data);
+                if (d.file) setCopied((prev) => [...prev, { file: d.file, size: d.size }]);
+            } catch { /* ignore */ }
+        });
+        es.addEventListener('done', (e) => {
+            finished = true;
+            try {
+                const d = JSON.parse((e as MessageEvent).data);
+                setDoneMsg(d.file ? `Selesai menyalin ${d.file} ke USB.` : 'Semua file selesai disalin ke USB.');
+            } catch { setDoneMsg('Copy selesai.'); }
+            setPercent(100);
+            setCopying(false);
+            closeStream();
+        });
+        es.addEventListener('failed', (e) => {
+            finished = true;
+            let msg = 'Copy gagal';
+            try { msg = JSON.parse((e as MessageEvent).data).message || msg; } catch { /* ignore */ }
+            setCopyError(msg);
+            setCopying(false);
+            closeStream();
+        });
+        es.onerror = () => {
+            if (finished) return; // normal close after a terminal event
+            finished = true;
+            setCopyError('Koneksi ke server terputus saat copy.');
+            setCopying(false);
+            closeStream();
+        };
+    }
+
+    // Abort any in-flight copy stream on unmount.
+    useEffect(() => () => closeStream(), []);
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle className="flex items-center gap-2"><HardDrive className="size-5" /> SD Card → USB</CardTitle>
+                <CardDescription className="mt-1">Salin data harian dari SD card ke USB flashdisk</CardDescription>
+            </CardHeader>
+            <CardContent>
+                <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-4">
+                    <div className="mb-3 flex items-center gap-2">
+                        <Copy className="size-4 text-violet-500" />
+                        <span className="text-sm font-medium">Copy ke USB Flashdisk</span>
+                    </div>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5"
+                        onClick={openBrowser}
+                        disabled={disabled}
+                        title={disabled ? 'Device offline — tidak bisa mengirim' : ''}
+                    >
+                        <HardDrive className="size-4" /> Pilih & Copy File
+                    </Button>
+                </div>
+            </CardContent>
+
+            {/* ══════ SD → USB copy dialog (month → day, mirrors the FTP browser) ══════ */}
+            <Dialog open={open} onOpenChange={(o) => { if (!o) closeStream(); setOpen(o); }}>
+                <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2"><HardDrive className="size-5" /> SD Card → USB</DialogTitle>
+                        <DialogDescription>
+                            {browseView === 'months'
+                                ? 'Pilih bulan, atau salin semua data ke USB flashdisk'
+                                : `File CSV — ${selectedMonth ? formatMonth(selectedMonth) : ''}`}
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="py-2">
+                        {loading ? (
+                            <div className="flex flex-col items-center gap-3 py-8">
+                                <Loader2 className="size-8 animate-spin text-muted-foreground" />
+                                <p className="text-sm text-muted-foreground">
+                                    {browseView === 'months' ? 'Memuat daftar bulan (LISTMONTH)...' : 'Memuat daftar file (LISTDAY)...'}
+                                </p>
+                            </div>
+                        ) : listError ? (
+                            <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
+                                <AlertCircle className="mx-auto size-8 text-red-500/60" />
+                                <p className="mt-2 text-sm text-red-600 dark:text-red-400">{listError}</p>
+                            </div>
+                        ) : browseView === 'months' ? (
+                            /* ─── Months View (with Copy semua) ─── */
+                            <div className="space-y-1">
+                                <button
+                                    onClick={() => startCopy(null, 'all')}
+                                    disabled={copying}
+                                    className="flex w-full items-center justify-between rounded-md border border-violet-500/30 bg-violet-500/5 px-3 py-2.5 text-sm transition-colors hover:bg-violet-500/10 disabled:opacity-50 text-left"
+                                >
+                                    <div className="flex items-center gap-2.5">
+                                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/10">
+                                            <Copy className="size-4 text-violet-500" />
+                                        </div>
+                                        <span className="font-medium">Copy semua ke USB</span>
+                                    </div>
+                                    {copying && copyTarget === 'all'
+                                        ? <Loader2 className="size-4 animate-spin text-violet-500" />
+                                        : <span className="text-xs text-muted-foreground">semua bulan</span>}
+                                </button>
+
+                                {months.length === 0 ? (
+                                    <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+                                        <HardDrive className="mx-auto size-8 text-muted-foreground/40" />
+                                        <p className="mt-2 text-sm text-muted-foreground">Tidak ada data ditemukan</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">{months.length} bulan tersedia</div>
+                                        <div className="max-h-[45vh] space-y-0.5 overflow-y-auto">
+                                            {months.map((month) => (
+                                                <button
+                                                    key={month}
+                                                    onClick={() => selectMonth(month)}
+                                                    disabled={copying}
+                                                    className="flex w-full items-center justify-between rounded-md border px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/50 disabled:opacity-50"
+                                                >
+                                                    <div className="flex items-center gap-2.5">
+                                                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
+                                                            <Clock className="size-4 text-blue-500" />
+                                                        </div>
+                                                        <span className="font-medium">{formatMonth(month)}</span>
+                                                    </div>
+                                                    <ChevronRight className="size-4 text-muted-foreground" />
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        ) : (
+                            /* ─── Files View (per-date copy) ─── */
+                            <>
+                                <button
+                                    onClick={backToMonths}
+                                    disabled={copying}
+                                    className="mb-2 flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                                >
+                                    <ArrowLeft className="size-4" />
+                                    <span>Kembali ke daftar bulan</span>
+                                </button>
+                                {files.length === 0 ? (
+                                    <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+                                        <FileText className="mx-auto size-8 text-muted-foreground/40" />
+                                        <p className="mt-2 text-sm text-muted-foreground">Tidak ada file ditemukan</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-1">
+                                        <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">{files.length} file ditemukan</div>
+                                        <div className="max-h-[45vh] space-y-0.5 overflow-y-auto">
+                                            {files.map((file) => {
+                                                const done = copied.some((c) => c.file === file);
+                                                const busy = copying && copyTarget === file;
+                                                return (
+                                                    <div key={file} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted/50">
+                                                        <div className="flex min-w-0 items-center gap-2">
+                                                            <Database className="size-4 shrink-0 text-violet-500" />
+                                                            <span className="truncate font-mono text-xs">{file.replace(/\.csv$/i, '')}</span>
+                                                            {done && <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />}
+                                                        </div>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="size-7 shrink-0"
+                                                            disabled={copying}
+                                                            onClick={() => startCopy(file, file)}
+                                                            title={`Copy ${file} ke USB`}
+                                                        >
+                                                            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Copy className="size-3.5" />}
+                                                        </Button>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                            </>
+                        )}
+
+                        {(copying || doneMsg || copyError) && (
+                            <div className="mt-3 space-y-2 rounded-md border p-3">
+                                <div className="flex items-center justify-between text-xs">
+                                    <span className="text-muted-foreground">
+                                        {copying
+                                            ? `Menyalin ${copyTarget === 'all' ? 'semua file' : (copyTarget ?? '')}…`
+                                            : copyError ? 'Gagal' : 'Selesai'}
+                                    </span>
+                                    <span className="font-mono">{percent}%</span>
+                                </div>
+                                <Progress value={percent} className="h-2 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-200" />
+                                {copyTarget === 'all' && copied.length > 0 && (
+                                    <p className="text-xs text-muted-foreground">{copied.length} file tersalin</p>
+                                )}
+                                {doneMsg && <p className="text-xs text-emerald-600">{doneMsg}</p>}
+                                {copyError && <p className="text-xs text-red-600">{copyError}</p>}
+                            </div>
+                        )}
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => { closeStream(); setOpen(false); }}>Tutup</Button>
+                        {!loading && (
+                            <Button
+                                variant="outline"
+                                disabled={copying}
+                                onClick={browseView === 'months' ? loadMonths : () => selectedMonth && selectMonth(selectedMonth)}
+                                className="gap-1.5"
+                            >
+                                <RefreshCw className="size-4" /> Refresh
+                            </Button>
+                        )}
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </Card>
+    );
+}
+
 function SystemLogsCard({ deviceIdentifier, disabled, ftpConfigured }: {
     deviceIdentifier: string;
     disabled: boolean;
@@ -5777,8 +6135,9 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         </Card>
 
                         {/* Power Rails — live INA219 readings per output rail (5V/12V/24V), captured
-                            during the INFO sync (POWER READ). Only rails the device reports are shown. */}
-                        {logger.power && (logger.power.out5 || logger.power.out12 || logger.power.out24) && (
+                            during the INFO sync (POWER READ). Only rails the device reports are shown.
+                            BL11 (cellular) has no INA219 rails, so the card is hidden entirely. */}
+                        {inferBoardVariant(logger) !== 'BL11' && logger.power && (logger.power.out5 || logger.power.out12 || logger.power.out24) && (
                             <Card>
                                 <CardHeader>
                                     <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Power Rails</CardTitle>
@@ -5924,6 +6283,13 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
                     {/* ==================== LOGS ==================== */}
                     <TabsContent value="logs" className="mt-6 space-y-4">
+                        {/* SD Card → USB copy — sits above System Logs; popup file picker + live progress. */}
+                        {logger.deviceIdentifier && (
+                            <UsbCopyCard
+                                deviceIdentifier={logger.deviceIdentifier}
+                                disabled={logger.status === 'offline'}
+                            />
+                        )}
                         {/* FTP System Logs (READLOGS / GETLOG black-box recorder) — styled like the
                             Konfigurasi FTP card, with an in-app browser + colored log viewer. */}
                         {logger.deviceIdentifier && (

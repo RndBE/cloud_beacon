@@ -1937,6 +1937,13 @@ class MqttService
             return true;
         }
 
+        // SIM SET is acknowledged with a concatenated key {"SIMSET":{"status":"PROSESS",…}}
+        // (no space/underscore), followed later by {"STATUS":1}. Treat SIMSET as a SIM reply so
+        // the SET doesn't time out waiting for a "SIM" key that never comes.
+        if ($module === 'SIM' && $key === 'SIMSET') {
+            return true;
+        }
+
         // SENSORS commands are echoed by interface type, not the module name:
         //   {"DIGITAL SET":"OK"}  {"DIGITAL CTRL":"OK",...}  {"DIGITAL DEL":"OK"} (spec §3.2).
         // The GET reply still uses {"SENSORS":{...}}, which matched above.
@@ -2267,6 +2274,112 @@ class MqttService
             Log::info("[MQTT] [GCM STREAM] Client disconnected — stopped listening pub_{$idLogger}");
         } catch (\Throwable $e) {
             Log::error("[MQTT] ❌ [GCM STREAM] Error: {$e->getMessage()}");
+        }
+    }
+
+    /**
+     * SD→USB copy over a single SSE connection: publish the COPY / COPY_ALL command, then relay the
+     * device's streaming reply until a terminal frame. Kept out of sendProtocolCommand because that
+     * generic handler interrupts on the very first {"USB":{"status":"OK"}} frame, killing progress.
+     *
+     * The firmware stream (spec: USB module) looks like:
+     *   {"USB":{"status":"OK","msg":"started"}}                        → start ack
+     *   {"USB":{"progress":25}}                                        → periodic percentage
+     *   {"USB":{"status":"FILE_OK","file":"...","size":"..."}}         → one file done (COPY_ALL)
+     *   {"USB":{"status":"DONE","cmd":"COPY","file":"...","size":"..."}} → terminal success
+     *   {"USB":{"status":"ERR","msg":"..."}}                           → terminal failure
+     *
+     * Emitted SSE events: `started`, `progress`, `file_ok`, `done`, `failed`.
+     */
+    public function streamUsbCopy(string $idLogger, array $payload, callable $emit): void
+    {
+        $pubTopic = "pub_{$idLogger}";
+        $subTopic = "sub_{$idLogger}";
+        $clientId = $this->clientPrefix . uniqid();
+        $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
+
+        if ($jsonPayload === false) {
+            $emit('failed', ['message' => 'Payload tidak bisa di-encode ke JSON']);
+            return;
+        }
+
+        Log::info("[MQTT] [USB COPY] Starting for {$idLogger}: {$jsonPayload}");
+
+        try {
+            set_time_limit(0);
+            $mqtt = new MqttClient($this->host, $this->port, $clientId);
+            $connectionSettings = (new ConnectionSettings())
+                ->setUsername($this->username)
+                ->setPassword($this->password)
+                ->setConnectTimeout($this->timeout)
+                ->setKeepAliveInterval(10);
+
+            $mqtt->connect($connectionSettings, true);
+
+            $done = false;
+            $mqtt->subscribe($pubTopic, function (string $topic, string $message) use ($emit, &$done, $mqtt) {
+                $data = json_decode(trim($message), true);
+                if (!is_array($data) || !isset($data['USB']) || !is_array($data['USB'])) {
+                    return;
+                }
+                $usb = $data['USB'];
+                $status = strtoupper((string) ($usb['status'] ?? ''));
+
+                if ($status === 'ERR' || $status === 'ERROR') {
+                    $emit('failed', ['message' => (string) ($usb['msg'] ?? 'USB copy gagal')]);
+                    $done = true;
+                    $mqtt->interrupt();
+                    return;
+                }
+                if ($status === 'DONE') {
+                    $emit('done', [
+                        'cmd'  => (string) ($usb['cmd'] ?? ''),
+                        'file' => $usb['file'] ?? null,
+                        'size' => $usb['size'] ?? null,
+                    ]);
+                    $done = true;
+                    $mqtt->interrupt();
+                    return;
+                }
+                if ($status === 'FILE_OK') {
+                    $emit('file_ok', ['file' => $usb['file'] ?? null, 'size' => $usb['size'] ?? null]);
+                    return;
+                }
+                if ($status === 'OK') {
+                    $emit('started', ['message' => (string) ($usb['msg'] ?? 'started')]);
+                    return;
+                }
+                if (array_key_exists('progress', $usb)) {
+                    $emit('progress', ['percent' => (int) $usb['progress']]);
+                }
+            }, 0);
+
+            Log::info("[MQTT] 📤 [USB COPY] Publishing: {$jsonPayload}");
+            $mqtt->publish($subTopic, $jsonPayload, 0);
+
+            // Emit a heartbeat so a closed browser tab is detected quickly (frees the worker), and
+            // cap the whole copy so a stalled device can't hold a worker forever.
+            $start = microtime(true);
+            $lastPing = $start;
+            while (!$done && !connection_aborted()) {
+                $mqtt->loopOnce(microtime(true), true);
+                usleep(100_000);
+                $now = microtime(true);
+                if ($now - $lastPing >= 1) {
+                    $emit('ping', []);
+                    $lastPing = $now;
+                }
+                if ($now - $start >= 600) {
+                    $emit('failed', ['message' => 'Timeout — copy tidak selesai dalam 10 menit']);
+                    break; // 10-min safety cap
+                }
+            }
+
+            $mqtt->disconnect();
+            Log::info("[MQTT] [USB COPY] Client disconnected for {$idLogger}");
+        } catch (\Throwable $e) {
+            Log::error("[MQTT] ❌ [USB COPY] Error: {$e->getMessage()}");
+            $emit('failed', ['message' => 'Koneksi MQTT gagal: ' . $e->getMessage()]);
         }
     }
 }

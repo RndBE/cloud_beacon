@@ -23,6 +23,7 @@ import {
     Terminal,
     Trash2,
     UploadCloud,
+    Wand2,
     Wifi,
     X,
     Zap,
@@ -57,6 +58,7 @@ type IoSnapshot = {
     out24: string; out12: string; doorClose: string; alert: string;
     modbusTcp: { enable: string; port: string };
     net: { dhcp: string; ip: string; subnet: string; gateway: string; dns: string };
+    sim: { apn: string; netmode: string };
     rtc: { date: string; time: string; timezone: string };
 };
 type ModuleSnapshot = {
@@ -523,7 +525,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         gateway: '192.168.1.1',
         dns: '8.8.8.8',
     });
-    const [simApn, setSimApn] = useState('internet');
+    const [simApn, setSimApn] = useState(ioSnapshot?.sim?.apn ?? 'internet');
+    // BL11 cellular radio-access preference: AUTO lets the modem pick; 2G/3G/4G force a generation.
+    const [simNetmode, setSimNetmode] = useState(ioSnapshot?.sim?.netmode ?? 'AUTO');
+    // Live SIM status from the last GET ({"SIM":{status,csq,net,netmode,rat}}) — read-only readout.
+    const [simInfo, setSimInfo] = useState<{ status?: string; csq?: number; net?: number; rat?: string } | null>(null);
     const [pumpState, setPumpState] = useState('1');
     const [out24State, setOut24State] = useState(ioSnapshot?.out24 ?? '1');
     const [out12State, setOut12State] = useState(ioSnapshot?.out12 ?? '1');
@@ -968,6 +974,26 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             });
         }
 
+        if (isCellularBoard) {
+            steps.push({
+                // SIM GET → {"SIM":{"status":"ON","csq":18,"net":1,"apn":"internet","netmode":"AUTO","rat":"LTE"}}.
+                label: 'SIM',
+                description: 'Membaca APN, koneksi & sinyal seluler…',
+                icon: Wifi,
+                run: async () => {
+                    const r = await gcmGet('SIM', { SIM: { cmd: 'GET' } });
+                    const inner = (r.data as { SIM?: { status?: string; csq?: number; net?: number; apn?: string; netmode?: string; rat?: string } } | undefined)?.SIM;
+                    if (r.success && inner) {
+                        if (typeof inner.apn === 'string' && inner.apn) setSimApn(inner.apn);
+                        if (typeof inner.netmode === 'string' && inner.netmode) setSimNetmode(inner.netmode.toUpperCase());
+                        setSimInfo({ status: inner.status, csq: inner.csq, net: inner.net, rat: inner.rat });
+                    } else if (!r.success) {
+                        throw new Error(r.message ?? 'SIM read failed.');
+                    }
+                },
+            });
+        }
+
         steps.push({
             // RTC GET → {"date":"YYYY-MM-DD","time":"HH:MM:SS","timezone":"7"} (with/without RTC wrapper).
             label: 'RTC',
@@ -1130,9 +1156,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         if (!ioRow || !deviceId) return;
         setCachedPanelState(deviceId, 'io', {
             out24: out24State, out12: out12State, doorClose: doorCloseState,
-            alert: alertState, modbusTcp, net, rtc,
+            alert: alertState, modbusTcp, net, sim: { apn: simApn, netmode: simNetmode }, rtc,
         } satisfies IoSnapshot);
-    }, [ioRow, deviceId, out24State, out12State, doorCloseState, alertState, modbusTcp, net, rtc]);
+    }, [ioRow, deviceId, out24State, out12State, doorCloseState, alertState, modbusTcp, net, simApn, simNetmode, rtc]);
 
     // Same persistence for the Module (EWS + GCM) panel.
     useEffect(() => {
@@ -1405,6 +1431,66 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         }
     }
 
+    // Ask the device to auto-generate the slot mapping ({"MAP_DATA":{"cmd":"AUTO"}}), then re-read it
+    // so the freshly assigned slots land in the editor. Firmware replies {"MAP_DATA":{"status":"OK"}}.
+    async function autoMap() {
+        if (!logger.deviceIdentifier) {
+            localError('MAP_DATA', 'Logger belum punya device identifier.');
+            return;
+        }
+        setLoading('MAP_DATA');
+        setMapStatus(null);
+        try {
+            const resp = await postJson('/api/mqtt/protocol/command', {
+                id_logger: logger.deviceIdentifier,
+                module: 'MAP_DATA',
+                payload: { MAP_DATA: { cmd: 'AUTO' } },
+            });
+            const data = (await resp.json()) as CommandResult;
+            if (data.success) {
+                await loadMap(); // pull the device's new auto mapping into the editor (clears status)
+                setMapStatus({ ok: true, msg: 'Auto mapping berhasil dari perangkat.' });
+            } else {
+                setMapStatus({ ok: false, msg: data.message || 'Auto mapping gagal.' });
+            }
+        } catch (error) {
+            setMapStatus({ ok: false, msg: error instanceof Error ? error.message : 'Request gagal.' });
+        } finally {
+            setLoading(null);
+        }
+    }
+
+    // Wipe the device's mapping ({"MAP_DATA":{"cmd":"CLEAR"}}) and reset the local editor to empty.
+    async function clearMap() {
+        if (!logger.deviceIdentifier) {
+            localError('MAP_DATA', 'Logger belum punya device identifier.');
+            return;
+        }
+        const deviceId = logger.deviceIdentifier;
+        setLoading('MAP_DATA');
+        setMapStatus(null);
+        try {
+            const resp = await postJson('/api/mqtt/protocol/command', {
+                id_logger: deviceId,
+                module: 'MAP_DATA',
+                payload: { MAP_DATA: { cmd: 'CLEAR' } },
+            });
+            const data = (await resp.json()) as CommandResult;
+            if (data.success) {
+                setMapSlots([]);
+                setMapBaseline([]);
+                setCachedMapSlots(deviceId, []); // keep re-mounts of this panel in sync
+                setMapStatus({ ok: true, msg: 'Mapping di perangkat dihapus.' });
+            } else {
+                setMapStatus({ ok: false, msg: data.message || 'Gagal menghapus mapping.' });
+            }
+        } catch (error) {
+            setMapStatus({ ok: false, msg: error instanceof Error ? error.message : 'Request gagal.' });
+        } finally {
+            setLoading(null);
+        }
+    }
+
     // True when the current mapping differs from the baseline (enables the Set button).
     const mapDirty = (() => {
         const base = new Map(mapBaseline.map((e) => [e.slot, effSlotName(e.name)]));
@@ -1614,16 +1700,50 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             )}
 
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="gap-1"
-                    disabled={!canSend || mapSlots.length >= MAP_SLOT_MAX}
-                    onClick={addMapping}
-                >
-                    <Plus className="size-3.5" /> Tambah mapping
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="gap-1"
+                        disabled={!canSend || mapSlots.length >= MAP_SLOT_MAX}
+                        onClick={addMapping}
+                    >
+                        <Plus className="size-3.5" /> Tambah mapping
+                    </Button>
+                    {/* AUTO: device auto-generates the slot mapping, then we re-read it. Overwrites the current map. */}
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        disabled={!canSend || loading === 'MAP_DATA'}
+                        onClick={() =>
+                            setConfirmDialog({
+                                message: 'Auto-map ulang? Mapping di perangkat akan ditimpa oleh hasil auto mapping.',
+                                onConfirm: autoMap,
+                            })
+                        }
+                    >
+                        <Wand2 className="size-3.5" /> Auto
+                    </Button>
+                    {/* CLEAR: wipe the device's mapping entirely. */}
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 text-red-600 hover:text-red-600"
+                        disabled={!canSend || loading === 'MAP_DATA'}
+                        onClick={() =>
+                            setConfirmDialog({
+                                message: 'Hapus semua mapping di perangkat? Tindakan ini tidak bisa dibatalkan.',
+                                onConfirm: clearMap,
+                            })
+                        }
+                    >
+                        <Trash2 className="size-3.5" /> Clear
+                    </Button>
+                </div>
                 <Button
                     type="button"
                     size="sm"
@@ -1715,6 +1835,25 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             { NET: { cmd: 'SET', d: netIsDhcp ? [1] : [0, net.ip, net.subnet, net.gateway, net.dns] } },
             'NET',
         );
+    // SIM SET pushes APN + connection mode. The device replies {"SIMSET":{"status":"PROSESS",…}} and
+    // keeps trying — it only reports {STATUS:1} once online, and auto-reverts to the previous mode
+    // after ~2 min offline (e.g. forced 2G with no coverage falls back to 4G). Toast that expectation.
+    const sendSim = () =>
+        void send('SIM', { SIM: { cmd: 'SET', apn: simApn, netmode: simNetmode } }, 'SIM').then((result) => {
+            if (result?.success) {
+                pushToast({
+                    title: `SIM diproses (${simNetmode})`,
+                    description: 'Logger sedang menerapkan koneksi. Bila tak kunjung online, otomatis kembali ke mode sebelumnya setelah ±2 menit.',
+                    variant: 'success',
+                });
+            } else if (result) {
+                pushToast({
+                    title: 'SIM SET gagal',
+                    description: result.message,
+                    variant: 'error',
+                });
+            }
+        });
     const netDhcpField = (
         <Field label="DHCP">
             <select className={`${selectClass} w-full`} value={net.dhcp} onChange={(event) => setNet({ ...net, dhcp: event.target.value })}>
@@ -1792,17 +1931,57 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 </CommandCard>
             )}
 
-            {/* BL11 (cellular) has no NET; the SIM/APN card takes its place. */}
+            {/* BL11 (cellular) has no NET; the SIM/APN card takes its place. The raw response box is
+                intentionally omitted — SIM SET replies {"SIMSET":{"status":"PROSESS"}} then {STATUS:1},
+                which we surface as a toast rather than a JSON dump. */}
             {isCellularBoard && (
-                <CommandCard title="SIM" icon={Wifi} result={responses.SIM}>
-                    <div className="flex items-end gap-2">
-                        <div className="flex-1">
-                            <Field label="APN">
-                                <Input className={inputClass} value={simApn} onChange={(event) => setSimApn(event.target.value)} />
-                            </Field>
+                <CommandCard title="SIM" icon={Wifi}>
+                    {/* APN | Koneksi on top; SET sits mepet to the right of Koneksi. */}
+                    <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label="APN">
+                            <Input className={inputClass} value={simApn} onChange={(event) => setSimApn(event.target.value)} />
+                        </Field>
+                        <div className="flex items-end gap-2">
+                            <div className="flex-1">
+                                <Field label="Koneksi">
+                                    <select
+                                        className={`${selectClass} w-full`}
+                                        value={simNetmode}
+                                        onChange={(event) => setSimNetmode(event.target.value)}
+                                    >
+                                        <option value="AUTO">AUTO</option>
+                                        <option value="4G">4G</option>
+                                        <option value="3G">3G</option>
+                                        <option value="2G">2G</option>
+                                    </select>
+                                </Field>
+                            </div>
+                            {actionButton('SET', 'SIM', sendSim)}
                         </div>
-                        {actionButton('SET', 'SIM', () => send('SIM', { SIM: { cmd: 'SET', apn: simApn } }, 'SIM'))}
                     </div>
+                    {/* Live status readout from the last SIM GET: registration, signal (CSQ 0–31), radio tech. */}
+                    {simInfo && (
+                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                            {simInfo.status && (
+                                <span>
+                                    Status:{' '}
+                                    <span className={simInfo.status.toUpperCase() === 'ON' ? 'font-medium text-emerald-600 dark:text-emerald-400' : 'font-medium text-muted-foreground'}>
+                                        {simInfo.status}
+                                    </span>
+                                </span>
+                            )}
+                            {simInfo.csq !== undefined && (
+                                <span>
+                                    Sinyal: <span className="font-medium text-foreground">{simInfo.csq === 99 ? '—' : `${simInfo.csq}/31`}</span>
+                                </span>
+                            )}
+                            {simInfo.rat && (
+                                <span>
+                                    Jaringan: <span className="font-medium text-foreground">{simInfo.rat}</span>
+                                </span>
+                            )}
+                        </div>
+                    )}
                 </CommandCard>
             )}
 
