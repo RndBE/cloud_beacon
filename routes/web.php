@@ -26,6 +26,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', [DashboardController::class, 'index'])
         ->middleware('permission:dashboard.view')
         ->name('dashboard');
+    Route::get('api/dashboard/trends', [DashboardController::class, 'trends'])
+        ->middleware('permission:dashboard.view')
+        ->name('dashboard.trends');
 
     Route::get('topology', [TopologyController::class, 'index'])
         ->middleware('permission:topology.view')
