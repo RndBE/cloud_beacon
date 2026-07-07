@@ -1,4 +1,4 @@
-import { Link } from '@inertiajs/react';
+import { Link, usePage } from '@inertiajs/react';
 import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
@@ -20,64 +20,82 @@ import {
 import { dashboard } from '@/routes';
 import type { NavItem } from '@/types';
 
+type PermissionNavItem = NavItem & {
+    permission?: string;
+};
+
 export function AppSidebar() {
     const { t } = useTranslation();
+    const { auth } = usePage<{ auth: { permissions?: string[] } }>().props;
+    const permissions = auth.permissions ?? [];
+    const canView = (permission?: string) => !permission || permissions.includes(permission);
+    const visibleItems = (items: PermissionNavItem[]): NavItem[] => items.filter((item) => canView(item.permission));
 
-    const mainNavItems: NavItem[] = [
+    const mainNavItems = visibleItems([
         {
             title: t('nav.dashboard'),
             href: dashboard(),
             icon: LayoutGrid,
+            permission: 'dashboard.view',
         },
         {
             title: t('nav.topology'),
             href: '/topology',
             icon: Network,
+            permission: 'topology.view',
         },
         {
             title: t('nav.loggers'),
             href: '/loggers',
             icon: Radio,
+            permission: 'loggers.view',
         },
         {
             title: 'Projects',
             href: '/projects',
             icon: FolderKanban,
+            permission: 'loggers.view',
         },
         {
             title: t('nav.production'),
             href: '/production',
             icon: Factory,
+            permission: 'production.view',
         },
         {
             title: t('nav.models'),
             href: '/production/models',
             icon: Box,
+            permission: 'production.view',
         },
         {
             title: 'Forwarding Logs',
             href: '/forwarding-logs',
             icon: ArrowUpDown,
+            permission: 'loggers.view',
         },
         {
             title: 'Data Audit',
             href: '/data-audit',
             icon: ClipboardCheck,
+            permission: 'loggers.view',
         },
-    ];
+    ]);
 
-    const managementNavItems: NavItem[] = [
+    const managementNavItems = visibleItems([
         {
             title: t('nav.roles'),
             href: '/roles',
             icon: Shield,
+            permission: 'roles.view',
         },
         {
             title: t('nav.users'),
             href: '/users',
             icon: Users,
+            permission: 'users.view',
         },
-    ];
+    ]);
 
     const footerNavItems: NavItem[] = [
         {
