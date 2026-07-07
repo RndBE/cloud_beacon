@@ -1,5 +1,5 @@
 import { Link, usePage } from '@inertiajs/react';
-import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Users } from 'lucide-react';
+import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Users, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -79,6 +79,12 @@ export function AppSidebar() {
             href: '/data-audit',
             icon: ClipboardCheck,
             permission: 'loggers.view',
+        },
+        {
+            title: 'Maintenance',
+            href: '/maintenance',
+            icon: Wrench,
+            permission: 'maintenance.view',
         },
     ]);
 

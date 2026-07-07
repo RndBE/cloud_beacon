@@ -752,7 +752,17 @@ interface SyncSummary {
     total_db: number;
 }
 
-function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from Device' }: { deviceIdentifier: string; loggerId: string; label?: string }) {
+function SyncFromDeviceDialog({
+    deviceIdentifier,
+    loggerId,
+    label = 'Sync from Device',
+    canApplySensorChanges = true,
+}: {
+    deviceIdentifier: string;
+    loggerId: string;
+    label?: string;
+    canApplySensorChanges?: boolean;
+}) {
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const [phase, setPhase] = useState<SyncPhase>('idle');
@@ -904,10 +914,11 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
             setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
         }, 100);
         try {
-            await Promise.all([
-                fetchSensorNames(deviceIdentifier, true),
-                fetchMapSlots(deviceIdentifier, true),
-            ]);
+            const cacheReads: Promise<unknown>[] = [fetchSensorNames(deviceIdentifier, true)];
+            if (canApplySensorChanges) {
+                cacheReads.push(fetchMapSlots(deviceIdentifier, true));
+            }
+            await Promise.all(cacheReads);
         } catch { /* non-critical — Data Mapping just falls back to DB sensors */ }
         mapDone = true;
         clearInterval(mapProgressInterval);
@@ -926,9 +937,10 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
         // Show review phase
         setPhase('review');
 
-    }, [deviceIdentifier, loggerId]);
+    }, [canApplySensorChanges, deviceIdentifier, loggerId]);
 
     const handleConfirmSync = useCallback(async () => {
+        if (!canApplySensorChanges) return;
         if (!diff) return;
         setPhase('applying');
 
@@ -947,7 +959,7 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
             setErrorMessage('Network error while applying changes');
             setPhase('error');
         }
-    }, [diff, loggerId]);
+    }, [canApplySensorChanges, diff, loggerId]);
 
     function handleOpen() {
         reset();
@@ -1157,12 +1169,20 @@ function SyncFromDeviceDialog({ deviceIdentifier, loggerId, label = 'Sync from D
                                         </div>
                                     </div>
                                 )}
+
+                                {!canApplySensorChanges && hasChanges && (
+                                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
+                                        Akses kamu hanya view. Data terbaru sudah dibaca dari device, tapi perubahan konfigurasi sensor harus diterapkan oleh user dengan akses manage.
+                                    </div>
+                                )}
                             </div>
                             <DialogFooter className="gap-2 sm:gap-0">
-                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
-                                <Button onClick={handleConfirmSync} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
-                                    <Check className="size-4" /> Apply Changes
-                                </Button>
+                                <Button variant="outline" onClick={handleClose}>{canApplySensorChanges ? t('common.cancel') : 'Close'}</Button>
+                                {canApplySensorChanges && (
+                                    <Button onClick={handleConfirmSync} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                        <Check className="size-4" /> Apply Changes
+                                    </Button>
+                                )}
                             </DialogFooter>
                         </>
                     )}
@@ -5970,9 +5990,24 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     </div>
                     <div className="flex flex-wrap gap-2">
                         {readOnly ? (
-                            <Badge variant="outline" className="h-9 px-3">
-                                Read-only
-                            </Badge>
+                            <>
+                                {logger.deviceIdentifier ? (
+                                    <SyncFromDeviceDialog
+                                        deviceIdentifier={logger.deviceIdentifier}
+                                        loggerId={logger.id}
+                                        label={t('loggerDetail.sync')}
+                                        canApplySensorChanges={false}
+                                    />
+                                ) : (
+                                    <Button variant="outline" size="sm" className="gap-1.5" disabled>
+                                        <RefreshCw className="size-4" />
+                                        {t('loggerDetail.sync')}
+                                    </Button>
+                                )}
+                                <Badge variant="outline" className="h-9 px-3">
+                                    Read-only
+                                </Badge>
+                            </>
                         ) : (
                             <>
                                 {logger.deviceIdentifier && (

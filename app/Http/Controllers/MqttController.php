@@ -23,6 +23,14 @@ class MqttController extends Controller
             ->first();
     }
 
+    private function resolveVisibleLogger(string $idLogger): ?Logger
+    {
+        return Logger::query()
+            ->visibleTo(auth()->user())
+            ->where('device_identifier', $idLogger)
+            ->first();
+    }
+
     /**
      * Is this a BL11 (cellular) board? Mirrors the frontend `inferBoardVariant`:
      * BL1100/BL110 take precedence, so a plain "BL11" model or a cellular connection type
@@ -45,6 +53,12 @@ class MqttController extends Controller
         $request->validate(['id_logger' => 'required|string']);
 
         $idLogger = $request->input('id_logger');
+        $logger = $this->resolveVisibleLogger($idLogger);
+
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
         $mqtt = new MqttService();
         $info = $mqtt->requestInfo($idLogger);
 
@@ -56,8 +70,6 @@ class MqttController extends Controller
         }
 
         $parsed = MqttService::parseInfoResponse($info);
-
-        $logger = $this->resolveLogger($idLogger);
 
         // Read the INA219 power rails in the same sync pass (best-effort: a timeout or a board
         // without power sensors must not fail the INFO sync). Persisted so the System tab cards
@@ -185,7 +197,8 @@ class MqttController extends Controller
         $idLogger = $request->input('id_logger');
         $loggerId = IdHasher::decode($request->input('logger_id'));
         abort_unless($loggerId, 400, 'Invalid logger ID');
-        Logger::query()->manageableBy(auth()->user())->findOrFail($loggerId);
+        $logger = Logger::query()->visibleTo(auth()->user())->findOrFail($loggerId);
+        abort_unless($logger->device_identifier === $idLogger, 404, 'Logger not found');
 
         $mqtt = new MqttService();
         $config = $mqtt->requestSensorsGet($idLogger);
@@ -826,6 +839,8 @@ class MqttController extends Controller
         ]);
 
         $idLogger = $request->input('id_logger');
+        abort_unless($this->resolveVisibleLogger($idLogger), 404, 'Logger not found');
+
         $mqtt = new MqttService();
         $list = $mqtt->requestSensorsGetName($idLogger);
 
