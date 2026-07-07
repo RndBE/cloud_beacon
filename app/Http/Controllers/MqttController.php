@@ -27,6 +27,20 @@ class MqttController extends Controller
     }
 
     /**
+     * Is this a BL11 (cellular) board? Mirrors the frontend `inferBoardVariant`:
+     * BL1100/BL110 take precedence, so a plain "BL11" model or a cellular connection type
+     * is the cellular board. BL11 has no INA219 power rails.
+     */
+    private function isCellularBoard(Logger $logger): bool
+    {
+        $model = strtoupper($logger->model ?? '');
+        if (str_contains($model, 'BL1100') || str_contains($model, 'BL110')) {
+            return false;
+        }
+        return str_contains($model, 'BL11') || $logger->connection_type === 'cellular';
+    }
+
+    /**
      * Request INFO from a single logger via MQTT.
      */
     public function requestInfo(Request $request): JsonResponse
@@ -46,18 +60,22 @@ class MqttController extends Controller
 
         $parsed = MqttService::parseInfoResponse($info);
 
+        $logger = $this->resolveLogger($idLogger);
+
         // Read the INA219 power rails in the same sync pass (best-effort: a timeout or a board
         // without power sensors must not fail the INFO sync). Persisted so the System tab cards
         // survive the page's periodic reload — they refresh on the next sync, not every tick.
+        // BL11 (cellular) has no INA219 power rails, so skip the POWER READ entirely on that board.
         $powerRails = null;
-        try {
-            $powerRails = $mqtt->requestPower($idLogger);
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning("[MQTT] POWER read failed during info sync for {$idLogger}: {$e->getMessage()}");
+        if ($logger && ! $this->isCellularBoard($logger)) {
+            try {
+                $powerRails = $mqtt->requestPower($idLogger);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("[MQTT] POWER read failed during info sync for {$idLogger}: {$e->getMessage()}");
+            }
         }
 
         // Save parsed data to database
-        $logger = $this->resolveLogger($idLogger);
         if ($logger) {
             $logger->update(array_merge(
                 array_filter($parsed, fn($v) => $v !== null),
@@ -854,10 +872,11 @@ class MqttController extends Controller
         ]);
 
         $module = strtoupper($request->input('module'));
-        // MQTT only rejects PRODUCTION & FAC for security (spec §1). CONTROL/BT/USB are
-        // physically-local hardware ops kept blocked by policy. SDCARD command was removed
-        // from the active protocol, so it is simply absent from the allowlist.
-        $blockedModules = ['PRODUCTION', 'FAC', 'AUTH', 'CONTROL', 'BT', 'USB'];
+        // MQTT only rejects PRODUCTION & FAC for security (spec §1). CONTROL/BT stay blocked as
+        // physically-local hardware ops. USB is now allowed for the SD→USB copy feature: GET/LIST
+        // run request/response here; COPY/COPY_ALL stream progress via streamUsbCopy (their first
+        // {"status":"OK"} frame would otherwise make the generic handler interrupt early).
+        $blockedModules = ['PRODUCTION', 'FAC', 'AUTH', 'CONTROL', 'BT'];
         $allowedModules = [
             'RTC',
             'NET',
@@ -884,6 +903,7 @@ class MqttController extends Controller
             'EWS',
             'SENSORS',      // §3.2 — channel-based sensor SET/CTRL (Logic Output mode-3 relay config + control)
             'OTA',          // §3.26 — firmware update (firmware returns INVALID on non-modem boards)
+            'USB',          // SD→USB copy — GET (drive status) + LIST (files). COPY/COPY_ALL stream via streamUsbCopy.
         ];
 
         if (in_array($module, $blockedModules, true)) {
@@ -1437,6 +1457,73 @@ class MqttController extends Controller
 
             $emit('ready', ['ok' => true]);
             (new MqttService())->streamGcmStatus($idLogger, $emit);
+        };
+
+        return response()->stream($callback, 200, [
+            'Content-Type'      => 'text/event-stream',
+            'Cache-Control'     => 'no-cache',
+            'Connection'        => 'keep-alive',
+            'X-Accel-Buffering' => 'no', // disable nginx proxy buffering
+        ]);
+    }
+
+    /**
+     * SD→USB copy over SSE. Publishes COPY (single file, `src`) or COPY_ALL, then streams the
+     * device's live progress until DONE/ERR. Combining send + stream in one connection avoids a
+     * second request blocking behind the stream on a single-worker server (mirrors OTA stream).
+     */
+    public function streamUsbCopy(Request $request): StreamedResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'src'       => 'nullable|string|max:255',
+        ]);
+        $idLogger = $request->input('id_logger');
+        $src = $request->input('src');
+
+        // No `src` → copy every file on the SD card; a `src` → copy just that one file.
+        $payload = $src !== null && $src !== ''
+            ? ['USB' => ['cmd' => 'COPY', 'src' => $src]]
+            : ['USB' => ['cmd' => 'COPY_ALL']];
+
+        $callback = function () use ($idLogger, $payload) {
+            @set_time_limit(0);
+            $shouldFlushOutput = PHP_SAPI !== 'cli';
+
+            if ($shouldFlushOutput) {
+                while (ob_get_level() > 1) {
+                    @ob_end_flush();
+                }
+            }
+
+            $emit = function (string $event, array $data) use ($shouldFlushOutput) {
+                echo "event: {$event}\n";
+                echo 'data: ' . json_encode($data) . "\n\n";
+                if ($shouldFlushOutput) {
+                    if (ob_get_level() > 0) {
+                        @ob_flush();
+                    }
+                    flush();
+                }
+            };
+
+            $logger = $this->resolveLogger($idLogger);
+            if (!$logger) {
+                $emit('failed', ['message' => 'Logger not found']);
+                return;
+            }
+
+            \App\Models\ActivityLog::create([
+                'logger_id' => $logger->id,
+                'action' => 'protocol_command',
+                'status' => 'success',
+                'level' => 'info',
+                'message' => 'USB command: ' . json_encode($payload),
+                'created_at' => now(),
+            ]);
+
+            $emit('ready', ['ok' => true]);
+            app(MqttService::class)->streamUsbCopy($idLogger, $payload, $emit);
         };
 
         return response()->stream($callback, 200, [

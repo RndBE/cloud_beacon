@@ -128,6 +128,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // SSE: listen-only live GCM status stream for the topology (EventSource → GET).
     Route::get('api/mqtt/modules/stream', [MqttController::class, 'streamModules'])
         ->name('api.mqtt.modules.stream');
+    // SSE: SD→USB copy — publishes COPY/COPY_ALL then streams live progress via EventSource.
+    Route::get('api/mqtt/usb/stream', [MqttController::class, 'streamUsbCopy'])
+        ->name('api.mqtt.usb.stream');
 
     // Firmware OTA (spec §3.26)
     Route::post('api/mqtt/ota/check', [OtaController::class, 'check'])
