@@ -27,10 +27,7 @@ class OtaController extends Controller
 {
     private function resolveLogger(string $idLogger): ?Logger
     {
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         return $query->where('device_identifier', $idLogger)->first();
     }
 

@@ -23,10 +23,7 @@ class LoggerController extends Controller
 {
     public function index(): Response
     {
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->visibleTo(auth()->user());
         // Pre-build lookup: model name → image URL
         $modelImages = DeviceModel::whereNotNull('image')
             ->pluck('image', 'name')
@@ -88,10 +85,7 @@ class LoggerController extends Controller
             'externalSensors',
             'integrations',
             'activityLogs' => fn($q) => $q->latest('created_at')->limit(20),
-        ]);
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        ])->visibleTo(auth()->user());
         $logger = $query->findOrFail($id);
         $deviceModel = $logger->model
             ? DeviceModel::where('name', $logger->model)->first()
@@ -100,6 +94,7 @@ class LoggerController extends Controller
 
         $loggerData = [
             'id' => IdHasher::encode($logger->id),
+            'canManage' => $logger->isManageableBy(auth()->user()),
             'name' => $logger->name,
             'serialNumber' => $logger->serial_number,
             'location' => $logger->location,
@@ -246,10 +241,7 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::with('externalSensors');
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::with('externalSensors')->visibleTo(auth()->user());
 
         $logger = $query->findOrFail($id);
         $deviceModel = $logger->model
@@ -288,10 +280,7 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         $logger = $query->findOrFail($id);
 
         $validated = $request->validate([
@@ -310,10 +299,7 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         $logger = $query->findOrFail($id);
 
         $validated = $request->validate([
@@ -586,10 +572,7 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         $logger = $query->findOrFail($id);
 
         // Unmark production device so it can be re-used
@@ -647,10 +630,7 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         $logger = $query->findOrFail($id);
 
         $request->validate([
@@ -672,10 +652,7 @@ class LoggerController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         $logger = $query->findOrFail($id);
 
         $validated = $request->validate([
@@ -705,12 +682,8 @@ class LoggerController extends Controller
 
         $user = auth()->user();
         $query = Logger::with('externalSensors')
-            ->whereIn('id', $request->input('logger_ids'));
-
-        // Non-superadmin can only export their own loggers
-        if (!$user->isSuperAdmin()) {
-            $query->where('user_id', $user->id);
-        }
+            ->whereIn('id', $request->input('logger_ids'))
+            ->visibleTo($user);
 
         $loggers = $query->get();
 

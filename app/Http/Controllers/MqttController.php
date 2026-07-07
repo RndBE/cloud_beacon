@@ -18,10 +18,7 @@ class MqttController extends Controller
      */
     private function resolveLogger(string $idLogger): ?Logger
     {
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         return $query->where('device_identifier', $idLogger)
             ->first();
     }
@@ -115,7 +112,8 @@ class MqttController extends Controller
      */
     public function pollAll(): JsonResponse
     {
-        $loggers = Logger::where('user_id', auth()->id())
+        $loggers = Logger::query()
+            ->manageableBy(auth()->user())
             ->whereNotNull('serial_number')
             ->whereNotNull('device_identifier')
             ->get();
@@ -187,6 +185,7 @@ class MqttController extends Controller
         $idLogger = $request->input('id_logger');
         $loggerId = IdHasher::decode($request->input('logger_id'));
         abort_unless($loggerId, 400, 'Invalid logger ID');
+        Logger::query()->manageableBy(auth()->user())->findOrFail($loggerId);
 
         $mqtt = new MqttService();
         $config = $mqtt->requestSensorsGet($idLogger);
@@ -336,6 +335,7 @@ class MqttController extends Controller
 
         $loggerId = IdHasher::decode($request->input('logger_id'));
         abort_unless($loggerId, 400, 'Invalid logger ID');
+        Logger::query()->manageableBy(auth()->user())->findOrFail($loggerId);
         $diff = $request->input('diff');
         $synced = [];
         $logs = [];

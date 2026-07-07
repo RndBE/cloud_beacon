@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Role;
+use App\Models\Logger;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -15,7 +16,7 @@ class UserManagementController extends Controller
 {
     public function index(): Response
     {
-        $users = User::with('roles:id,name,display_name')
+        $users = User::with(['roles:id,name,display_name', 'assignedLoggers:id,name,serial_number'])
             ->orderBy('name')
             ->get()
             ->map(fn(User $user) => [
@@ -29,6 +30,12 @@ class UserManagementController extends Controller
                     'name' => $r->name,
                     'displayName' => $r->display_name,
                 ]),
+                'assignedLoggers' => $user->assignedLoggers->map(fn(Logger $logger) => [
+                    'id' => $logger->id,
+                    'name' => $logger->name,
+                    'serialNumber' => $logger->serial_number,
+                    'accessLevel' => $logger->pivot->access_level,
+                ]),
             ]);
 
         $roles = Role::orderBy('name')->get()->map(fn(Role $r) => [
@@ -37,9 +44,16 @@ class UserManagementController extends Controller
             'displayName' => $r->display_name,
         ]);
 
+        $loggers = Logger::orderBy('name')->get()->map(fn(Logger $logger) => [
+            'id' => $logger->id,
+            'name' => $logger->name,
+            'serialNumber' => $logger->serial_number,
+        ]);
+
         return Inertia::render('users/index', [
             'users' => $users,
             'allRoles' => $roles,
+            'allLoggers' => $loggers,
         ]);
     }
 
@@ -52,6 +66,8 @@ class UserManagementController extends Controller
             'password' => ['required', 'confirmed', Password::defaults()],
             'roles' => 'array',
             'roles.*' => 'exists:roles,id',
+            'logger_access' => 'array',
+            'logger_access.*' => 'in:'.Logger::ACCESS_VIEW.','.Logger::ACCESS_MANAGE,
         ]);
 
         $user = User::create([
@@ -64,6 +80,8 @@ class UserManagementController extends Controller
         if (!empty($validated['roles'])) {
             $user->roles()->sync($validated['roles']);
         }
+
+        $this->syncLoggerAccess($user, $validated['logger_access'] ?? []);
 
         return redirect()->route('users.index')->with('success', 'User created successfully.');
     }
@@ -79,6 +97,8 @@ class UserManagementController extends Controller
             'password' => ['nullable', 'confirmed', Password::defaults()],
             'roles' => 'array',
             'roles.*' => 'exists:roles,id',
+            'logger_access' => 'array',
+            'logger_access.*' => 'in:'.Logger::ACCESS_VIEW.','.Logger::ACCESS_MANAGE,
         ]);
 
         $user->update([
@@ -94,8 +114,30 @@ class UserManagementController extends Controller
         }
 
         $user->roles()->sync($validated['roles'] ?? []);
+        $this->syncLoggerAccess($user, $validated['logger_access'] ?? []);
 
         return redirect()->route('users.index')->with('success', 'User updated successfully.');
+    }
+
+    private function syncLoggerAccess(User $user, array $loggerAccess): void
+    {
+        $loggerIds = collect(array_keys($loggerAccess))
+            ->filter(fn($id) => is_numeric($id))
+            ->map(fn($id) => (int) $id)
+            ->values();
+
+        if ($loggerIds->isEmpty()) {
+            $user->assignedLoggers()->sync([]);
+
+            return;
+        }
+
+        $existingIds = Logger::whereIn('id', $loggerIds)->pluck('id');
+        $syncPayload = $existingIds->mapWithKeys(fn(int $id) => [
+            $id => ['access_level' => $loggerAccess[$id] ?? Logger::ACCESS_VIEW],
+        ])->all();
+
+        $user->assignedLoggers()->sync($syncPayload);
     }
 
     public function destroy(Request $request, int $id): RedirectResponse

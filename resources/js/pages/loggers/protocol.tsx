@@ -99,6 +99,7 @@ export const MODULE_PROTOCOL_TABS: ProtocolTabKey[] = ['ews', 'gcm', 'logicout']
 interface ProtocolPageProps {
     logger: ProtocolLogger;
     tabs?: ProtocolTabKey[];
+    readOnly?: boolean;
     // When true, render ONLY the I/O controls (Power Output, SENS_DOOR, ALERT) as a
     // 3-across grid with no tab bar — used standalone in the logger's "Mode" tab.
     ioRow?: boolean;
@@ -497,7 +498,7 @@ function SyncProgressOverlay({ data, overallProgress, stepProgress, onCancel }: 
     );
 }
 
-export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(function ProtocolPanel({ logger, tabs, ioRow = false, mapOnly = false, ftpOnly = false, powerOnly = false, manualSync = false }, ref) {
+export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(function ProtocolPanel({ logger, tabs, readOnly = false, ioRow = false, mapOnly = false, ftpOnly = false, powerOnly = false, manualSync = false }, ref) {
     const shownTabs = tabs ?? ALL_PROTOCOL_TABS;
     const now = useMemo(() => new Date(), []);
 
@@ -639,7 +640,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     // RS232 channel the EWS module is wired to (1 or 2). Sent together with enable on SET.
     const [ewsCh, setEwsCh] = useState(moduleSnapshot?.ewsCh ?? '1');
 
-    const canSend = Boolean(logger.deviceIdentifier);
+    const canSend = Boolean(logger.deviceIdentifier) && !readOnly;
     const variant = inferBoardVariant(logger);
     const isCellularBoard = variant === 'BL11';
     const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
@@ -738,6 +739,14 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     const sensorNamePool = deviceSensors ? deviceSensors.map((sensor) => sensor.nama) : mappableSensors.map((sensor) => sensor.name);
 
     async function send(module: string, payload: Payload, key = module): Promise<CommandResult | null> {
+        if (readOnly) {
+            setResponses((current) => ({
+                ...current,
+                [key]: { success: false, message: 'Akses logger ini read-only.' },
+            }));
+            return null;
+        }
+
         if (!logger.deviceIdentifier) {
             setResponses((current) => ({
                 ...current,
@@ -805,6 +814,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     }
 
     async function gcmGet(module: string, payload: Payload): Promise<CommandResult> {
+        if (!canSend) {
+            throw new Error(readOnly ? 'Akses logger ini read-only.' : 'Logger belum punya device identifier.');
+        }
         const resp = await postJson('/api/mqtt/protocol/command', { id_logger: logger.deviceIdentifier, module, payload });
         return (await resp.json()) as CommandResult;
     }
@@ -889,7 +901,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     // sync progress in the overlay. Each step reflects the reply into its dropdown. On Ethernet
     // boards the Modbus TCP server state is read as a 4th step.
     async function loadIo() {
-        if (!logger.deviceIdentifier) return;
+        if (!canSend) return;
         const steps: { label: string; description?: string; icon?: SyncStepIcon; run: () => Promise<void> }[] = [
             {
                 // Power outputs: P_OUT GET → {"12":1,"24":1} (1 = on, 0 = off).
@@ -1086,7 +1098,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
 
     // GCM-only sync — sequential GET of the GCM family with the progress overlay.
     async function loadGcmAll() {
-        if (!logger.deviceIdentifier) return;
+        if (!canSend) return;
         setLoading('GCM');
         setGcmError(null);
         const bound: { n: number; slave: number; mode: number }[] = [];
@@ -1102,7 +1114,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     // Logic Output is intentionally NOT read here — its config/status comes from the global
     // "Sync from Device" (synced DB sensors), so the Module sync never touches SENSORS.
     async function loadModule() {
-        if (!logger.deviceIdentifier) return;
+        if (!canSend) return;
         setLoading('GCM');
         setGcmError(null);
         const bound: { n: number; slave: number; mode: number }[] = [];
@@ -1143,7 +1155,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
     // state; the tabs panel (Module card) pulls EWS + GCM.
     useImperativeHandle(ref, () => ({
         sync: () => {
-            if (!logger.deviceIdentifier || loading === 'GCM' || loading === 'MAP_DATA') return;
+            if (!canSend || loading === 'GCM' || loading === 'MAP_DATA') return;
             if (ioRow) void loadIo();
             else void loadModule();
         },

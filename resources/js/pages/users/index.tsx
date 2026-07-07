@@ -56,6 +56,18 @@ interface RoleItem {
     displayName: string;
 }
 
+type LoggerAccessLevel = 'view' | 'manage';
+
+interface LoggerItem {
+    id: number;
+    name: string;
+    serialNumber: string | null;
+}
+
+interface AssignedLoggerItem extends LoggerItem {
+    accessLevel: LoggerAccessLevel;
+}
+
 interface UserItem {
     id: number;
     name: string;
@@ -63,11 +75,13 @@ interface UserItem {
     instansi: string | null;
     createdAt: string | null;
     roles: RoleItem[];
+    assignedLoggers: AssignedLoggerItem[];
 }
 
 interface UsersPageProps {
     users: UserItem[];
     allRoles: RoleItem[];
+    allLoggers: LoggerItem[];
     flash?: {
         success?: string;
         error?: string;
@@ -79,7 +93,92 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Users', href: '/users' },
 ];
 
-export default function UsersIndex({ users, allRoles }: UsersPageProps) {
+function RolePicker({
+    roles,
+    selected,
+    onChange,
+}: {
+    roles: RoleItem[];
+    selected: number[];
+    onChange: (roleId: number) => void;
+}) {
+    return (
+        <div className="grid max-h-[200px] gap-2 overflow-y-auto pr-1">
+            {roles.map((role) => (
+                <label
+                    key={role.id}
+                    className="flex cursor-pointer items-center gap-3 rounded-md border px-4 py-3 transition-colors hover:bg-accent"
+                >
+                    <Checkbox
+                        checked={selected.includes(role.id)}
+                        onCheckedChange={() => onChange(role.id)}
+                    />
+                    <div>
+                        <span className="text-sm font-medium">
+                            {role.displayName}
+                        </span>
+                        <span className="ml-2 text-xs text-muted-foreground">
+                            ({role.name})
+                        </span>
+                    </div>
+                </label>
+            ))}
+        </div>
+    );
+}
+
+function LoggerAccessPicker({
+    loggers,
+    selected,
+    onToggle,
+    onLevelChange,
+}: {
+    loggers: LoggerItem[];
+    selected: Record<string, LoggerAccessLevel>;
+    onToggle: (loggerId: number) => void;
+    onLevelChange: (loggerId: number, accessLevel: LoggerAccessLevel) => void;
+}) {
+    if (loggers.length === 0) {
+        return (
+            <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
+                No loggers available.
+            </div>
+        );
+    }
+
+    return (
+        <div className="grid max-h-[220px] gap-2 overflow-y-auto pr-1">
+            {loggers.map((logger) => {
+                const key = logger.id.toString();
+                const isSelected = Boolean(selected[key]);
+
+                return (
+                    <label
+                        key={logger.id}
+                        className="flex cursor-pointer items-center gap-3 rounded-md border px-4 py-3 transition-colors hover:bg-accent"
+                    >
+                        <Checkbox checked={isSelected} onCheckedChange={() => onToggle(logger.id)} />
+                        <div className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium">{logger.name}</span>
+                            <span className="text-xs text-muted-foreground">{logger.serialNumber || '-'}</span>
+                        </div>
+                        <select
+                            value={selected[key] ?? 'view'}
+                            disabled={!isSelected}
+                            onChange={(event) => onLevelChange(logger.id, event.target.value as LoggerAccessLevel)}
+                            className="h-9 rounded-md border bg-background px-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <option value="view">View</option>
+                            <option value="manage">Manage</option>
+                        </select>
+                    </label>
+                );
+            })}
+        </div>
+    );
+}
+
+export default function UsersIndex({ users, allRoles, allLoggers }: UsersPageProps) {
     const { t } = useTranslation();
     const { flash } = usePage<{ flash: { success?: string; error?: string } }>().props;
     const [search, setSearch] = useState('');
@@ -89,14 +188,20 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
     const [flashMsg, setFlashMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
     useEffect(() => {
-        if (flash?.success) {
-            setFlashMsg({ type: 'success', text: flash.success });
-        } else if (flash?.error) {
-            setFlashMsg({ type: 'error', text: flash.error });
-        }
-        if (flash?.success || flash?.error) {
-            const timer = setTimeout(() => setFlashMsg(null), 5000);
-            return () => clearTimeout(timer);
+        const nextFlash = flash?.success
+            ? { type: 'success' as const, text: flash.success }
+            : flash?.error
+                ? { type: 'error' as const, text: flash.error }
+                : null;
+
+        if (nextFlash) {
+            const showTimer = window.setTimeout(() => setFlashMsg(nextFlash), 0);
+            const hideTimer = window.setTimeout(() => setFlashMsg(null), 5000);
+
+            return () => {
+                window.clearTimeout(showTimer);
+                window.clearTimeout(hideTimer);
+            };
         }
     }, [flash]);
 
@@ -107,6 +212,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
         password: '',
         password_confirmation: '',
         roles: [] as number[],
+        logger_access: {} as Record<string, LoggerAccessLevel>,
     });
 
     const editForm = useForm({
@@ -116,6 +222,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
         password: '',
         password_confirmation: '',
         roles: [] as number[],
+        logger_access: {} as Record<string, LoggerAccessLevel>,
     });
 
     const filtered = useMemo(() => {
@@ -150,6 +257,7 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
             password: '',
             password_confirmation: '',
             roles: user.roles.map((r) => r.id),
+            logger_access: Object.fromEntries(user.assignedLoggers.map((logger) => [logger.id.toString(), logger.accessLevel])),
         });
         editForm.clearErrors();
         setEditTarget(user);
@@ -188,39 +296,36 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
         }
     }
 
-    // ─── Role Picker ─────────────────────────────────────
-    function RolePicker({
-        selected,
-        onChange,
-    }: {
-        selected: number[];
-        onChange: (roleId: number) => void;
-    }) {
-        return (
-            <div className="grid gap-2 max-h-[200px] overflow-y-auto pr-1">
-                {allRoles.map((role) => (
-                    <label
-                        key={role.id}
-                        className="flex cursor-pointer items-center gap-3 rounded-md border px-4 py-3 transition-colors hover:bg-accent"
-                    >
-                        <Checkbox
-                            checked={selected.includes(role.id)}
-                            onCheckedChange={() => onChange(role.id)}
-                        />
-                        <div>
-                            <span className="text-sm font-medium">
-                                {role.displayName}
-                            </span>
-                            <span className="ml-2 text-xs text-muted-foreground">
-                                ({role.name})
-                            </span>
-                        </div>
-                    </label>
-                ))}
-            </div>
-        );
+    function toggleLoggerAccess(
+        current: Record<string, LoggerAccessLevel>,
+        setData: (key: 'logger_access', value: Record<string, LoggerAccessLevel>) => void,
+        loggerId: number,
+    ) {
+        const key = loggerId.toString();
+        const next = { ...current };
+
+        if (next[key]) {
+            delete next[key];
+        } else {
+            next[key] = 'view';
+        }
+
+        setData('logger_access', next);
     }
 
+    function setLoggerAccessLevel(
+        current: Record<string, LoggerAccessLevel>,
+        setData: (key: 'logger_access', value: Record<string, LoggerAccessLevel>) => void,
+        loggerId: number,
+        accessLevel: LoggerAccessLevel,
+    ) {
+        setData('logger_access', {
+            ...current,
+            [loggerId.toString()]: accessLevel,
+        });
+    }
+
+    // ─── Role Picker ─────────────────────────────────────
     // ─── Stats ───────────────────────────────────────────
     const totalUsers = users.length;
     const usersWithRoles = users.filter((u) => u.roles.length > 0).length;
@@ -391,9 +496,24 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                                             <div className="grid gap-2">
                                                 <Label>{t('users.assign_roles')}</Label>
                                                 <RolePicker
+                                                    roles={allRoles}
                                                     selected={createForm.data.roles}
                                                     onChange={(id) => toggleRole(createForm.data, createForm.setData, id)}
                                                 />
+                                            </div>
+                                            <div className="grid gap-2">
+                                                <Label>Logger Access</Label>
+                                                <LoggerAccessPicker
+                                                    loggers={allLoggers}
+                                                    selected={createForm.data.logger_access}
+                                                    onToggle={(id) => toggleLoggerAccess(createForm.data.logger_access, createForm.setData, id)}
+                                                    onLevelChange={(id, level) =>
+                                                        setLoggerAccessLevel(createForm.data.logger_access, createForm.setData, id, level)
+                                                    }
+                                                />
+                                                {createForm.errors.logger_access && (
+                                                    <p className="text-xs text-red-500">{createForm.errors.logger_access}</p>
+                                                )}
                                             </div>
                                             <DialogFooter>
                                                 <Button
@@ -589,9 +709,24 @@ export default function UsersIndex({ users, allRoles }: UsersPageProps) {
                             <div className="grid gap-2">
                                 <Label>{t('users.assign_roles')}</Label>
                                 <RolePicker
+                                    roles={allRoles}
                                     selected={editForm.data.roles}
                                     onChange={(id) => toggleRole(editForm.data, editForm.setData, id)}
                                 />
+                            </div>
+                            <div className="grid gap-2">
+                                <Label>Logger Access</Label>
+                                <LoggerAccessPicker
+                                    loggers={allLoggers}
+                                    selected={editForm.data.logger_access}
+                                    onToggle={(id) => toggleLoggerAccess(editForm.data.logger_access, editForm.setData, id)}
+                                    onLevelChange={(id, level) =>
+                                        setLoggerAccessLevel(editForm.data.logger_access, editForm.setData, id, level)
+                                    }
+                                />
+                                {editForm.errors.logger_access && (
+                                    <p className="text-xs text-red-500">{editForm.errors.logger_access}</p>
+                                )}
                             </div>
                             <DialogFooter>
                                 <Button

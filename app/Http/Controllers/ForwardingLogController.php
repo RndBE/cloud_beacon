@@ -15,9 +15,9 @@ class ForwardingLogController extends Controller
         $query = ForwardingLog::query()
             ->with(['logger:id,name,serial_number,device_identifier']);
 
-        // Superadmin melihat semua, user biasa hanya logger miliknya
+        // Superadmin sees all; other users see owned or assigned loggers.
         if (!auth()->user()->isSuperAdmin()) {
-            $loggerIds = Logger::where('user_id', auth()->id())->pluck('id');
+            $loggerIds = Logger::query()->visibleTo(auth()->user())->pluck('id');
             $query->whereIn('logger_id', $loggerIds);
         }
 
@@ -65,7 +65,7 @@ class ForwardingLogController extends Controller
         // Stats for summary cards
         $baseQuery = ForwardingLog::query();
         if (!auth()->user()->isSuperAdmin()) {
-            $loggerIds = Logger::where('user_id', auth()->id())->pluck('id');
+            $loggerIds = Logger::query()->visibleTo(auth()->user())->pluck('id');
             $baseQuery->whereIn('logger_id', $loggerIds);
         }
 
@@ -80,7 +80,7 @@ class ForwardingLogController extends Controller
         // Logger list for filter dropdown
         $loggerQuery = Logger::query()->select('id', 'name', 'device_identifier');
         if (!auth()->user()->isSuperAdmin()) {
-            $loggerQuery->where('user_id', auth()->id());
+            $loggerQuery->visibleTo(auth()->user());
         }
         $loggers = $loggerQuery->orderBy('name')->get()->map(fn($l) => [
             'id'       => $l->id,

@@ -5,6 +5,7 @@ namespace App\Models;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Fortify\TwoFactorAuthenticatable;
@@ -68,6 +69,23 @@ class User extends Authenticatable
         return $this->belongsToMany(Role::class, 'role_user');
     }
 
+    public function assignedLoggers(): BelongsToMany
+    {
+        return $this->belongsToMany(Logger::class, 'logger_user')
+            ->withPivot('access_level')
+            ->withTimestamps();
+    }
+
+    public function reportedMaintenanceTickets(): HasMany
+    {
+        return $this->hasMany(MaintenanceTicket::class, 'reported_by');
+    }
+
+    public function assignedMaintenanceTickets(): HasMany
+    {
+        return $this->hasMany(MaintenanceTicket::class, 'assigned_to');
+    }
+
     public function getAvatarAttribute(): ?string
     {
         return $this->profile_photo_path ? asset('storage/'.$this->profile_photo_path) : null;
@@ -111,19 +129,14 @@ class User extends Authenticatable
 
     public function getAllPermissions(): array
     {
-        // Cache in-memory per request to avoid repeated DB queries
-        static $cache = [];
-        $key = 'user_'.$this->id;
-        if (isset($cache[$key])) {
-            return $cache[$key];
-        }
-
         if ($this->isSuperAdmin()) {
-            $cache[$key] = Permission::pluck('name')->toArray();
-        } else {
-            $cache[$key] = $this->roles->flatMap->permissions->pluck('name')->unique()->values()->toArray();
+            return Permission::pluck('name')->toArray();
         }
 
-        return $cache[$key];
+        if (! $this->relationLoaded('roles')) {
+            $this->load('roles.permissions');
+        }
+
+        return $this->roles->flatMap->permissions->pluck('name')->unique()->values()->toArray();
     }
 }

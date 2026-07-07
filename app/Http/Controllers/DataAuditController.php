@@ -16,20 +16,14 @@ class DataAuditController extends Controller
 
     private function resolveLogger(int $id): Logger
     {
-        $query = Logger::query();
-        if (! auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->visibleTo(auth()->user());
 
         return $query->findOrFail($id);
     }
 
     public function index(Request $request, ForwardingAuditService $forwarding)
     {
-        $scope = Logger::query()->with('project:id,name,color');
-        if (! auth()->user()->isSuperAdmin()) {
-            $scope->where('user_id', auth()->id());
-        }
+        $scope = Logger::query()->with('project:id,name,color')->visibleTo(auth()->user());
         // ministesy_* columns are needed by the forwarding aggregate below.
         $loggers = $scope->get([
             'id', 'name', 'device_identifier', 'project_id',

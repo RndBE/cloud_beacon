@@ -33,6 +33,13 @@ class RolePermissionSeeder extends Seeder
             ['name' => 'mqtt.request-info', 'display_name' => 'Request MQTT Info', 'group' => 'MQTT'],
             ['name' => 'mqtt.poll', 'display_name' => 'Poll MQTT Devices', 'group' => 'MQTT'],
 
+            // Maintenance
+            ['name' => 'maintenance.view', 'display_name' => 'View Maintenance Tickets', 'group' => 'Maintenance'],
+            ['name' => 'maintenance.create', 'display_name' => 'Create Maintenance Tickets', 'group' => 'Maintenance'],
+            ['name' => 'maintenance.update', 'display_name' => 'Update Maintenance Tickets', 'group' => 'Maintenance'],
+            ['name' => 'maintenance.close', 'display_name' => 'Close Maintenance Tickets', 'group' => 'Maintenance'],
+            ['name' => 'maintenance.delete', 'display_name' => 'Delete Maintenance Tickets', 'group' => 'Maintenance'],
+
             // RBAC Management
             ['name' => 'roles.view', 'display_name' => 'View Roles', 'group' => 'RBAC'],
             ['name' => 'roles.create', 'display_name' => 'Create Roles', 'group' => 'RBAC'],
@@ -81,6 +88,23 @@ class RolePermissionSeeder extends Seeder
                 'mqtt.request-info',
                 'mqtt.poll',
                 'production.check-serial',
+                'maintenance.view',
+                'maintenance.create',
+                'maintenance.delete',
+            ])->pluck('id')
+        );
+
+        // Technician — maintenance workflow + read-only logger context
+        $technician = Role::firstOrCreate(
+            ['name' => 'technician'],
+            ['display_name' => 'Technician', 'description' => 'Maintenance and repair access']
+        );
+        $technician->permissions()->sync(
+            $allPermissions->whereIn('name', [
+                'dashboard.view',
+                'loggers.view',
+                'maintenance.view',
+                'maintenance.update',
             ])->pluck('id')
         );
 

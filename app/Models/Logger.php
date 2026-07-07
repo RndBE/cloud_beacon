@@ -3,13 +3,18 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Logger extends Model
 {
     use HasFactory;
+
+    public const ACCESS_VIEW = 'view';
+    public const ACCESS_MANAGE = 'manage';
 
     /**
      * Sensor types that are built-in to the logger hardware (not external).
@@ -124,6 +129,51 @@ class Logger extends Model
         return $this->belongsTo(\App\Models\User::class);
     }
 
+    public function assignedUsers(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'logger_user')
+            ->withPivot('access_level')
+            ->withTimestamps();
+    }
+
+    public function scopeVisibleTo(Builder $query, User $user): Builder
+    {
+        if ($user->isSuperAdmin()) {
+            return $query;
+        }
+
+        return $query->where(function (Builder $query) use ($user) {
+            $query->where('user_id', $user->id)
+                ->orWhereHas('assignedUsers', fn (Builder $assignment) => $assignment->where('users.id', $user->id));
+        });
+    }
+
+    public function scopeManageableBy(Builder $query, User $user): Builder
+    {
+        if ($user->isSuperAdmin()) {
+            return $query;
+        }
+
+        return $query->where(function (Builder $query) use ($user) {
+            $query->where('user_id', $user->id)
+                ->orWhereHas('assignedUsers', fn (Builder $assignment) => $assignment
+                    ->where('users.id', $user->id)
+                    ->where('logger_user.access_level', self::ACCESS_MANAGE));
+        });
+    }
+
+    public function isManageableBy(User $user): bool
+    {
+        if ($user->isSuperAdmin() || $this->user_id === $user->id) {
+            return true;
+        }
+
+        return $this->assignedUsers()
+            ->where('users.id', $user->id)
+            ->wherePivot('access_level', self::ACCESS_MANAGE)
+            ->exists();
+    }
+
     /**
      * The mode configuration for this logger.
      */
@@ -150,6 +200,11 @@ class Logger extends Model
     public function activityLogs(): HasMany
     {
         return $this->hasMany(ActivityLog::class);
+    }
+
+    public function maintenanceTickets(): HasMany
+    {
+        return $this->hasMany(MaintenanceTicket::class);
     }
 
     public function sensorLogs(): HasMany

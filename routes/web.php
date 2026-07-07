@@ -6,6 +6,7 @@ use App\Http\Controllers\ForwardingLogController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\LoggerModeController;
+use App\Http\Controllers\MaintenanceTicketController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
@@ -34,6 +35,22 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('forwarding-logs', [ForwardingLogController::class, 'index'])
         ->middleware('permission:loggers.view')
         ->name('forwarding-logs.index');
+
+    Route::get('maintenance', [MaintenanceTicketController::class, 'index'])
+        ->middleware('permission:maintenance.view')
+        ->name('maintenance.index');
+    Route::post('maintenance', [MaintenanceTicketController::class, 'store'])
+        ->middleware('permission:maintenance.create')
+        ->name('maintenance.store');
+    Route::get('maintenance/{maintenance}', [MaintenanceTicketController::class, 'show'])
+        ->middleware('permission:maintenance.view')
+        ->name('maintenance.show');
+    Route::put('maintenance/{maintenance}', [MaintenanceTicketController::class, 'update'])
+        ->middleware('permission:maintenance.update')
+        ->name('maintenance.update');
+    Route::delete('maintenance/{maintenance}', [MaintenanceTicketController::class, 'destroy'])
+        ->middleware('permission:maintenance.delete')
+        ->name('maintenance.destroy');
 
     Route::get('loggers', [LoggerController::class, 'index'])
         ->middleware('permission:loggers.view')

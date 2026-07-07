@@ -19,10 +19,7 @@ class SensorController extends Controller
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $query->where('user_id', auth()->id());
-        }
+        $query = Logger::query()->manageableBy(auth()->user());
         return $query->findOrFail($id);
     }
 

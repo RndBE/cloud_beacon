@@ -200,6 +200,7 @@ type PowerRails = Partial<Record<'bat' | 'out5' | 'out12' | 'out24', PowerRailRe
 
 interface LoggerDetail {
     id: string;
+    canManage: boolean;
     name: string;
     serialNumber: string;
     location: string;
@@ -1553,12 +1554,14 @@ function SensorCrudPanel({
     deviceIdentifier,
     analogChannelMax,
     digitalChannelMax,
+    readOnly = false,
 }: {
     loggerId: string;
     sensors: SensorItem[];
     deviceIdentifier?: string | null;
     analogChannelMax: number;
     digitalChannelMax: number;
+    readOnly?: boolean;
 }) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -1588,6 +1591,7 @@ function SensorCrudPanel({
     const { t } = useTranslation();
 
     const openCreate = () => {
+        if (readOnly) return;
         setEditingSensor(null);
         setEditingDeviceSlave(null);
         setForm(EMPTY_FORM);
@@ -1619,6 +1623,7 @@ function SensorCrudPanel({
 
     // Open the unified RS485 device form pre-loaded with the device cfg + ALL its parameters.
     const openEditDevice = (group: SensorGroup) => {
+        if (readOnly) return;
         const head = group.members[0];
         setEditingSensor(null);
         setEditingDeviceSlave(head.modbusSlaveId ?? 1);
@@ -1644,6 +1649,7 @@ function SensorCrudPanel({
     };
 
     const submitRs485 = () => {
+        if (readOnly) return;
         setProcessing(true);
         setErrors({});
         const body = {
@@ -1679,6 +1685,7 @@ function SensorCrudPanel({
     };
 
     const openEdit = (sensor: SensorItem) => {
+        if (readOnly) return;
         setEditingSensor(sensor);
         setForm({
             name: sensor.name,
@@ -1718,6 +1725,7 @@ function SensorCrudPanel({
     };
 
     const openDelete = (sensor: SensorItem) => {
+        if (readOnly) return;
         setDeletingSensor(sensor);
         setDeleteDialogOpen(true);
     };
@@ -1732,6 +1740,7 @@ function SensorCrudPanel({
     };
 
     const handleSubmit = () => {
+        if (readOnly) return;
         // RS485 uses the unified device + parameters endpoint.
         if (form.connection_type === 'rs485') {
             submitRs485();
@@ -1765,6 +1774,7 @@ function SensorCrudPanel({
     };
 
     const handleDelete = () => {
+        if (readOnly) return;
         if (!deletingSensor) return;
         setProcessing(true);
         router.delete(`/loggers/${loggerId}/sensors/${deletingSensor.id}`, {
@@ -1779,6 +1789,7 @@ function SensorCrudPanel({
 
     // Delete an entire RS485 slave / RS232 port (the whole device + all its params).
     const deleteDevice = (group: SensorGroup) => {
+        if (readOnly) return;
         const head = group.members[0];
         const connType = head.connectionType;
         const groupId = connType === 'rs485' ? head.modbusSlaveId : head.port;
@@ -1795,6 +1806,7 @@ function SensorCrudPanel({
     const [ctrlResult, setCtrlResult] = useState<string | null>(null);
 
     const sendDigitalCtrl = async (state: 0 | 1) => {
+        if (readOnly) return;
         if (!editingSensor) return;
         if (!deviceIdentifier) {
             setCtrlResult('Logger belum punya device identifier.');
@@ -1843,7 +1855,7 @@ function SensorCrudPanel({
             </div>
             <div className="hidden truncate text-xs text-muted-foreground md:block">{sensor.lastReading || '—'}</div>
             <div className="flex items-center justify-end gap-1">
-                {showActions && (
+                {showActions && !readOnly && (
                     <>
                         <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
                             <Pencil className="size-3.5" />
@@ -1868,10 +1880,12 @@ function SensorCrudPanel({
                         </div>
                         <div className="flex items-center gap-2">
                             {/* Sync from Device lives in the page header — no duplicate here. */}
-                            <Button size="sm" className="gap-1.5" onClick={openCreate}>
-                                <Plus className="size-4" />
-                                {t('loggerDetail.add_sensor')}
-                            </Button>
+                            {!readOnly && (
+                                <Button size="sm" className="gap-1.5" onClick={openCreate}>
+                                    <Plus className="size-4" />
+                                    {t('loggerDetail.add_sensor')}
+                                </Button>
+                            )}
                         </div>
                     </div>
                 </CardHeader>
@@ -1912,12 +1926,16 @@ function SensorCrudPanel({
                                             </div>
                                             <div className="hidden truncate text-xs text-muted-foreground md:block">{head.lastReading || '—'}</div>
                                             <div className="flex items-center justify-end gap-1">
-                                                <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(head)}>
-                                                    <Pencil className="size-3.5" />
-                                                </Button>
-                                                <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(head)}>
-                                                    <Trash2 className="size-3.5" />
-                                                </Button>
+                                                {!readOnly && (
+                                                    <>
+                                                        <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(head)}>
+                                                            <Pencil className="size-3.5" />
+                                                        </Button>
+                                                        <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(head)}>
+                                                            <Trash2 className="size-3.5" />
+                                                        </Button>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
                                         <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
@@ -1925,7 +1943,7 @@ function SensorCrudPanel({
                                                 channel={head.channel ?? 1}
                                                 mode={head.analogMode ?? 1}
                                                 deviceIdentifier={deviceIdentifier ?? null}
-                                                disabled={!deviceIdentifier}
+                                                disabled={readOnly || !deviceIdentifier}
                                             />
                                         </CollapsibleContent>
                                     </Collapsible>
@@ -1959,7 +1977,8 @@ function SensorCrudPanel({
                                                 <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
                                             )}
                                         </CollapsibleTrigger>
-                                        <div className="flex items-center gap-1">
+                                        {!readOnly && (
+                                            <div className="flex items-center gap-1">
                                             <Button
                                                 variant="ghost"
                                                 size="icon"
@@ -1978,7 +1997,8 @@ function SensorCrudPanel({
                                             >
                                                 <Trash2 className="size-3.5" />
                                             </Button>
-                                        </div>
+                                            </div>
+                                        )}
                                     </div>
                                     <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
                                         <div className="divide-y border-t">
@@ -2319,10 +2339,10 @@ function SensorCrudPanel({
                                     <div className="grid gap-2 rounded-md border border-dashed p-3">
                                         <Label className="text-xs">Kontrol Output (live)</Label>
                                         <div className="flex items-center gap-2">
-                                            <Button type="button" size="sm" variant="outline" disabled={ctrlBusy !== null} onClick={() => sendDigitalCtrl(1)}>
+                                            <Button type="button" size="sm" variant="outline" disabled={readOnly || ctrlBusy !== null} onClick={() => sendDigitalCtrl(1)}>
                                                 {ctrlBusy === 1 ? <Loader2 className="size-3.5 animate-spin" /> : null} ON
                                             </Button>
-                                            <Button type="button" size="sm" variant="outline" disabled={ctrlBusy !== null} onClick={() => sendDigitalCtrl(0)}>
+                                            <Button type="button" size="sm" variant="outline" disabled={readOnly || ctrlBusy !== null} onClick={() => sendDigitalCtrl(0)}>
                                                 {ctrlBusy === 0 ? <Loader2 className="size-3.5 animate-spin" /> : null} OFF
                                             </Button>
                                         </div>
@@ -2336,7 +2356,7 @@ function SensorCrudPanel({
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
-                        <Button onClick={handleSubmit} disabled={processing}>
+                        <Button onClick={handleSubmit} disabled={readOnly || processing}>
                             {processing ? t('loggerDetail.saving_dots') : (editingSensor || editingDeviceSlave != null) ? t('loggerDetail.save_changes') : t('loggerDetail.create_sensor')}
                         </Button>
                     </DialogFooter>
@@ -2354,7 +2374,7 @@ function SensorCrudPanel({
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                        <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={handleDelete} disabled={processing}>
+                        <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={handleDelete} disabled={readOnly || processing}>
                             {processing ? t('loggerDetail.deleting') : t('loggerDetail.delete_sensor')}
                         </AlertDialogAction>
                     </AlertDialogFooter>
@@ -2458,7 +2478,13 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
         setChecking(false);
     }, [deviceIdentifier]);
 
-    useEffect(() => { checkFirmware(); }, [checkFirmware]);
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            void checkFirmware();
+        }, 0);
+
+        return () => window.clearTimeout(timer);
+    }, [checkFirmware]);
 
     // Reset the whole OTA flow when the logger changes (and on unmount): abort the in-flight
     // stream and clear the popup. Because this hook is mounted at the page level, switching
@@ -4833,7 +4859,7 @@ function SystemLogsCard({ deviceIdentifier, disabled, ftpConfigured }: {
 // =============================================================================
 type SetModePhase = 'idle' | 'sending' | 'success' | 'error';
 
-function SetModeCard({ logger }: { logger: LoggerDetail }) {
+function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disabled?: boolean }) {
     const allowedModes = configuratorModes(logger.availableModes);
     const initialMode = allowedModes.some((mode) => mode.slug === logger.loggerMode) ? logger.loggerMode || '' : '';
     const [selectedMode, setSelectedMode] = useState<string>(initialMode);
@@ -4853,6 +4879,7 @@ function SetModeCard({ logger }: { logger: LoggerDetail }) {
     }
 
     async function handleSetMode() {
+        if (disabled) return;
         setConfirmOpen(false);
         setPhase('sending');
         setMessage('');
@@ -4913,7 +4940,7 @@ function SetModeCard({ logger }: { logger: LoggerDetail }) {
                                     {modes.map(m => (
                                         <label
                                             key={m.slug}
-                                            className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition-all ${
+                                            className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-all ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${
                                                 selectedMode === m.slug
                                                     ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
                                                     : 'border-transparent hover:bg-muted/50'
@@ -4925,6 +4952,7 @@ function SetModeCard({ logger }: { logger: LoggerDetail }) {
                                                 value={m.slug}
                                                 checked={selectedMode === m.slug}
                                                 onChange={() => setSelectedMode(m.slug)}
+                                                disabled={disabled}
                                                 className="sr-only"
                                             />
                                             <div className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
@@ -4971,7 +4999,7 @@ function SetModeCard({ logger }: { logger: LoggerDetail }) {
                     ) : (
                         <Button
                             className="gap-2"
-                            disabled={!isChanged || !logger.deviceIdentifier || logger.status === 'offline'}
+                            disabled={disabled || !isChanged || !logger.deviceIdentifier || logger.status === 'offline'}
                             onClick={() => setConfirmOpen(true)}
                         >
                             <Radio className="size-4" />
@@ -4993,7 +5021,7 @@ function SetModeCard({ logger }: { logger: LoggerDetail }) {
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>Batal</AlertDialogCancel>
-                        <AlertDialogAction onClick={handleSetMode}>Ya, Set Mode</AlertDialogAction>
+                        <AlertDialogAction onClick={handleSetMode} disabled={disabled}>Ya, Set Mode</AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -5006,7 +5034,7 @@ function SetModeCard({ logger }: { logger: LoggerDetail }) {
 // =============================================================================
 type CalibPhase = 'idle' | 'sending' | 'success' | 'error';
 
-function CalibrationCard({ logger }: { logger: LoggerDetail }) {
+function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; disabled?: boolean }) {
     const activeMode = logger.availableModes.find(m => m.slug === logger.loggerMode);
     const fields = activeMode?.hasCalibration ? activeMode.calibrationFields ?? [] : [];
     // ARR's "calibration" is really just source + sensor-type selection, so it uses setting-style
@@ -5057,6 +5085,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     }, [logger.deviceIdentifier]);
 
     async function loadSourceNames() {
+        if (disabled) return;
         if (!logger.deviceIdentifier || sourceLoading) return;
         setSourceLoading(true);
         try {
@@ -5084,6 +5113,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     const [calibLoading, setCalibLoading] = useState(false);
 
     async function loadDeviceCalib() {
+        if (disabled) return;
         if (!logger.deviceIdentifier || logger.status === 'offline' || calibLoading) return;
         setCalibLoading(true);
         try {
@@ -5118,6 +5148,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
     }
 
     async function handleCalibrate() {
+        if (disabled) return;
         setPhase('sending');
         setMessage('');
         setResponseData(null);
@@ -5167,7 +5198,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                         size="sm"
                         variant="outline"
                         className="gap-1.5"
-                        disabled={!logger.deviceIdentifier || logger.status === 'offline' || calibLoading || phase === 'sending'}
+                        disabled={disabled || !logger.deviceIdentifier || logger.status === 'offline' || calibLoading || phase === 'sending'}
                         onClick={loadDeviceCalib}
                     >
                         <RefreshCw className={`size-4 ${calibLoading ? 'animate-spin' : ''}`} /> Sync
@@ -5218,7 +5249,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                                         <Select
                                             value={formValues[f.key]}
                                             onValueChange={(v) => updateField(f.key, v)}
-                                            disabled={phase === 'sending'}
+                                            disabled={disabled || phase === 'sending'}
                                         >
                                             <SelectTrigger id={`calib_${f.key}`} className="flex-1">
                                                 <SelectValue placeholder={sourceLoading ? 'Memuat sensor…' : 'Pilih sumber sensor'} />
@@ -5240,7 +5271,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                                             size="icon"
                                             className="shrink-0"
                                             title="Ambil nama sensor dari perangkat"
-                                            disabled={sourceLoading || !logger.deviceIdentifier || logger.status === 'offline' || phase === 'sending'}
+                                            disabled={disabled || sourceLoading || !logger.deviceIdentifier || logger.status === 'offline' || phase === 'sending'}
                                             onClick={loadSourceNames}
                                         >
                                             <RefreshCw className={`size-4 ${sourceLoading ? 'animate-spin' : ''}`} />
@@ -5250,7 +5281,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                                     <Select
                                         value={formValues[f.key]}
                                         onValueChange={(v) => updateField(f.key, v)}
-                                        disabled={phase === 'sending'}
+                                        disabled={disabled || phase === 'sending'}
                                     >
                                         <SelectTrigger id={`calib_${f.key}`}>
                                             <SelectValue placeholder={`Pilih ${f.label.toLowerCase()}`} />
@@ -5273,7 +5304,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                                         value={formValues[f.key]}
                                         onChange={(e) => updateField(f.key, e.target.value)}
                                         placeholder={`Masukkan ${f.label.toLowerCase()}`}
-                                        disabled={phase === 'sending'}
+                                        disabled={disabled || phase === 'sending'}
                                     />
                                 )}
                             </div>
@@ -5321,7 +5352,7 @@ function CalibrationCard({ logger }: { logger: LoggerDetail }) {
                     ) : (
                         <Button
                             className="gap-2"
-                            disabled={!allFilled || !logger.deviceIdentifier || logger.status === 'offline'}
+                            disabled={disabled || !allFilled || !logger.deviceIdentifier || logger.status === 'offline'}
                             onClick={handleCalibrate}
                         >
                             <SlidersHorizontal className="size-4" /> {isArr ? 'Apply Setting' : isGnss ? 'Set Channel' : 'Kirim Kalibrasi'}
@@ -5761,6 +5792,7 @@ function HealthDiagnosticsCard({ diagnostics }: { diagnostics: DiagnosticsResult
 export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const { t } = useTranslation();
+    const readOnly = !logger.canManage;
 
     // Sync buttons on the Mode tab's Module / I/O cards read the device on demand (no auto-GET).
     const modulePanelRef = useRef<ProtocolPanelHandle>(null);
@@ -5769,7 +5801,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     // Firmware OTA lives at the page level (not inside the System tab) so the live download/install
     // progress popup keeps running when the user switches tabs within this logger. It resets only
     // when deviceIdentifier changes — i.e. when navigating to a different logger.
-    const firmwareOta = useFirmwareOta(logger.deviceIdentifier);
+    const firmwareOta = useFirmwareOta(readOnly ? null : logger.deviceIdentifier);
 
     // Surface the logger's spontaneous EWS/GCM pushes as top-right toasts (formatted, never raw MQTT).
     // Only an online logger can push events, so we skip the SSE entirely when offline — that avoids
@@ -5777,7 +5809,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     useModuleEventToasts(logger.status !== 'offline' ? logger.deviceIdentifier : null);
 
     // Quick Setup Wizard state
-    const needsSetup = !logger.loggerMode;
+    const needsSetup = !logger.loggerMode && !readOnly;
     const [wizardOpen, setWizardOpen] = useState(() => {
         if (!needsSetup || typeof window === 'undefined') return false;
         return !sessionStorage.getItem(`skip_setup_${logger.id}`);
@@ -5937,33 +5969,41 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                        {logger.deviceIdentifier && (
-                            <SyncFromDeviceDialog deviceIdentifier={logger.deviceIdentifier} loggerId={logger.id} label={t('loggerDetail.sync')} />
-                        )}
-                        {!logger.deviceIdentifier && (
-                            <Button variant="outline" size="sm" className="gap-1.5" disabled>
-                                <RefreshCw className="size-4" />
-                                {t('loggerDetail.sync')}
-                            </Button>
-                        )}
-                        <ProjectAssignDropdown logger={logger} />
-                        {logger.deviceIdentifier ? (
-                            <RebootDialog deviceIdentifier={logger.deviceIdentifier} disabled={logger.status === 'offline'} />
+                        {readOnly ? (
+                            <Badge variant="outline" className="h-9 px-3">
+                                Read-only
+                            </Badge>
                         ) : (
-                            <Button variant="destructive" size="sm" className="gap-1.5" disabled>
-                                <Power className="size-4" />
-                                {t('loggerDetail.reboot')}
-                            </Button>
+                            <>
+                                {logger.deviceIdentifier && (
+                                    <SyncFromDeviceDialog deviceIdentifier={logger.deviceIdentifier} loggerId={logger.id} label={t('loggerDetail.sync')} />
+                                )}
+                                {!logger.deviceIdentifier && (
+                                    <Button variant="outline" size="sm" className="gap-1.5" disabled>
+                                        <RefreshCw className="size-4" />
+                                        {t('loggerDetail.sync')}
+                                    </Button>
+                                )}
+                                <ProjectAssignDropdown logger={logger} />
+                                {logger.deviceIdentifier ? (
+                                    <RebootDialog deviceIdentifier={logger.deviceIdentifier} disabled={logger.status === 'offline'} />
+                                ) : (
+                                    <Button variant="destructive" size="sm" className="gap-1.5" disabled>
+                                        <Power className="size-4" />
+                                        {t('loggerDetail.reboot')}
+                                    </Button>
+                                )}
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="gap-1.5 border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                                    onClick={() => setShowDeleteDialog(true)}
+                                >
+                                    <Trash2 className="size-4" />
+                                    {t('common.delete')}
+                                </Button>
+                            </>
                         )}
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-600"
-                            onClick={() => setShowDeleteDialog(true)}
-                        >
-                            <Trash2 className="size-4" />
-                            {t('common.delete')}
-                        </Button>
                     </div>
                 </div>
 
@@ -6062,6 +6102,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             deviceIdentifier={logger.deviceIdentifier}
                             analogChannelMax={maxAnalogChannel(logger)}
                             digitalChannelMax={maxDigitalChannel(logger)}
+                            readOnly={readOnly}
                         />
 
                         {/* Data Mapping — sensor order for telemetry/LCD/SD (MAP_DATA), minimal. */}
@@ -6070,7 +6111,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 <CardTitle className="flex items-center gap-2"><ListOrdered className="size-5" /> Data Mapping</CardTitle>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel logger={protocolLogger} mapOnly />
+                                <ProtocolPanel logger={protocolLogger} mapOnly readOnly={readOnly} />
                             </CardContent>
                         </Card>
                     </TabsContent>
@@ -6198,7 +6239,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         <FirmwareCard
                             ota={firmwareOta}
                             currentVersion={logger.firmwareVersion}
-                            disabled={logger.status === 'offline'}
+                            disabled={readOnly || logger.status === 'offline'}
                         />
                         <DeviceConfigCard
                             intervalRead={logger.intervalRead}
@@ -6211,13 +6252,13 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             ministesyKey={logger.ministesyKey}
                             ministesyInterval={logger.ministesyInterval}
                             ministesyRawForward={logger.ministesyRawForward}
-                            disabled={logger.status === 'offline'}
+                            disabled={readOnly || logger.status === 'offline'}
                             integrations={logger.integrations ?? []}
                         />
                         {logger.deviceIdentifier && (
                             <FtpConfigCard
                                 deviceIdentifier={logger.deviceIdentifier}
-                                disabled={logger.status === 'offline'}
+                                disabled={readOnly || logger.status === 'offline'}
                                 initialHost={logger.ftpHost}
                                 initialPort={logger.ftpPort}
                                 initialUser={logger.ftpUser}
@@ -6228,8 +6269,8 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     {/* ==================== MODE (operating profile + mode-specific calibration + modules) ==================== */}
                     <TabsContent value="mode" className="mt-6 space-y-4">
                         <div className="grid gap-4 lg:grid-cols-2">
-                            <SetModeCard logger={logger} />
-                            <CalibrationCard key={logger.loggerMode || 'no-mode'} logger={logger} />
+                            <SetModeCard logger={logger} disabled={readOnly} />
+                            <CalibrationCard key={logger.loggerMode || 'no-mode'} logger={logger} disabled={readOnly} />
                         </div>
                         <Card>
                             <CardHeader>
@@ -6242,7 +6283,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                         size="sm"
                                         variant="outline"
                                         className="gap-1.5"
-                                        disabled={!logger.deviceIdentifier || logger.status === 'offline'}
+                                        disabled={readOnly || !logger.deviceIdentifier || logger.status === 'offline'}
                                         onClick={() => modulePanelRef.current?.sync()}
                                     >
                                         <RefreshCw className="size-4" /> Sync
@@ -6250,7 +6291,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 </div>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel ref={modulePanelRef} logger={protocolLogger} tabs={MODULE_PROTOCOL_TABS} manualSync />
+                                <ProtocolPanel ref={modulePanelRef} logger={protocolLogger} tabs={MODULE_PROTOCOL_TABS} manualSync readOnly={readOnly} />
                             </CardContent>
                         </Card>
 
@@ -6266,7 +6307,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                         size="sm"
                                         variant="outline"
                                         className="gap-1.5"
-                                        disabled={!logger.deviceIdentifier || logger.status === 'offline'}
+                                        disabled={readOnly || !logger.deviceIdentifier || logger.status === 'offline'}
                                         onClick={() => ioPanelRef.current?.sync()}
                                     >
                                         <RefreshCw className="size-4" /> Sync
@@ -6274,7 +6315,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 </div>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel ref={ioPanelRef} logger={protocolLogger} ioRow manualSync />
+                                <ProtocolPanel ref={ioPanelRef} logger={protocolLogger} ioRow manualSync readOnly={readOnly} />
                             </CardContent>
                         </Card>
                     </TabsContent>
@@ -6287,7 +6328,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         {logger.deviceIdentifier && (
                             <UsbCopyCard
                                 deviceIdentifier={logger.deviceIdentifier}
-                                disabled={logger.status === 'offline'}
+                                disabled={readOnly || logger.status === 'offline'}
                             />
                         )}
                         {/* FTP System Logs (READLOGS / GETLOG black-box recorder) — styled like the
@@ -6362,6 +6403,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             <AlertDialogAction
                                 className="bg-red-600 hover:bg-red-700"
                                 onClick={() => router.delete(`/loggers/${logger.id}`)}
+                                disabled={readOnly}
                             >
                                 {t('loggerDetail.delete_logger')}
                             </AlertDialogAction>

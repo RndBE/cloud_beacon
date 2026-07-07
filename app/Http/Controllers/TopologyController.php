@@ -14,10 +14,7 @@ class TopologyController extends Controller
     public function index(): Response
     {
         $user = auth()->user();
-        $query = Logger::query();
-        if (!$user->isSuperAdmin()) {
-            $query->where('user_id', $user->id);
-        }
+        $query = Logger::query()->visibleTo($user);
         // Build a model name → image URL map
         $modelImages = DeviceModel::whereNotNull('image')
             ->pluck('image', 'name')

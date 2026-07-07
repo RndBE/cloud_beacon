@@ -13,10 +13,7 @@ class DashboardController extends Controller
     public function index(): Response
     {
         $user = auth()->user();
-        $query = Logger::query();
-        if (!$user->isSuperAdmin()) {
-            $query->where('user_id', $user->id);
-        }
+        $query = Logger::query()->visibleTo($user);
         $loggers = $query->with('project')->withCount('externalSensors')->get();
         $loggerIds = $loggers->pluck('id');
 
