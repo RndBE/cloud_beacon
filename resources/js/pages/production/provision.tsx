@@ -1,19 +1,24 @@
 import { Head } from '@inertiajs/react';
 import {
     AlertTriangle,
+    Bluetooth,
+    BluetoothConnected,
+    Check,
     CheckCircle2,
-    Circle,
     Copy,
+    FlagTriangleRight,
     Loader2,
     Lock,
     LockOpen,
+    Play,
     RefreshCw,
+    Tag,
     Unplug,
     Usb,
     XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { ComponentType, FormEvent } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -33,6 +38,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
 import { useClipboard } from '@/hooks/use-clipboard';
 import { isWebSerialSupported, useLoggerSerial } from '@/hooks/use-logger-serial';
 import type { JsonRecord } from '@/hooks/use-logger-serial';
@@ -48,13 +54,21 @@ const breadcrumbs: BreadcrumbItem[] = [
 const AUTO_RECONNECT_KEY = 'provision:serial-auto-reconnect';
 
 // Firmware streams intermediate status messages while provisioning; these are
-// the 5 stages we surface to the operator (in order).
-const PROVISION_STEPS = [
-    'Config start',
-    'Setting baudrate module Bluetooth',
-    'Config module Bluetooth OK',
-    'Config ID alat OK',
-    'Config selesai',
+// the 5 stages we surface to the operator (in order). Unlike the sync dialog —
+// which fakes per-step progress with a timer — these stages advance on the real
+// messages the firmware emits over USB (tracked via `provisionDone`).
+type ProvisionStep = {
+    label: string;
+    description: string;
+    icon: ComponentType<{ className?: string }>;
+};
+
+const PROVISION_STEPS: ProvisionStep[] = [
+    { label: 'Config start', description: 'Memulai konfigurasi perangkat…', icon: Play },
+    { label: 'Setting baudrate module Bluetooth', description: 'Menyetel baudrate modul Bluetooth…', icon: Bluetooth },
+    { label: 'Config module Bluetooth OK', description: 'Modul Bluetooth terkonfigurasi…', icon: BluetoothConnected },
+    { label: 'Config ID alat OK', description: 'Menulis Serial Number & Device ID…', icon: Tag },
+    { label: 'Config selesai', description: 'Menyelesaikan provisioning…', icon: FlagTriangleRight },
 ];
 
 type OutcomeState = { ok: boolean; message?: string } | null;
@@ -301,6 +315,12 @@ export default function ProductionProvision() {
 
     const snMismatch = verifyResult && sn.trim() !== '' && verifyResult.sn !== sn.trim();
     const idMismatch = verifyResult && deviceId.trim() !== '' && verifyResult.id !== deviceId.trim();
+
+    // Overall progress mirrors the sync dialog's percentage bar, but the value is
+    // real: it's driven by how many firmware stages have actually completed.
+    const overallProgress = provisionResult?.ok
+        ? 100
+        : Math.round((Math.min(provisionDone, PROVISION_STEPS.length) / PROVISION_STEPS.length) * 100);
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
@@ -553,9 +573,11 @@ export default function ProductionProvision() {
                             }}
                         >
                             <DialogContent
-                                style={{
-                                    width: 'min(560px, calc(100vw - 3rem))',
-                                    maxWidth: 'min(560px, calc(100vw - 3rem))',
+                                className="sm:max-w-lg max-h-[85vh] overflow-y-auto"
+                                onInteractOutside={(e) => {
+                                    // Sama seperti dialog sync: jangan biarkan klik luar menutup
+                                    // dialog selagi proses tulis berjalan.
+                                    if (provisionBusy) e.preventDefault();
                                 }}
                             >
                                 <DialogHeader>
@@ -566,41 +588,96 @@ export default function ProductionProvision() {
                                     </DialogDescription>
                                 </DialogHeader>
 
-                                <ol className="space-y-3 py-2">
-                                    {PROVISION_STEPS.map((label, index) => {
-                                        const isDone = index < provisionDone;
-                                        const isError = provisionErrored && index === provisionDone;
-                                        const isActive = provisionBusy && !provisionErrored && index === provisionDone;
+                                <div className="py-4">
+                                    <div className="mb-6 space-y-2">
+                                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                            <span>Overall Progress</span>
+                                            <span className="font-mono">{overallProgress}%</span>
+                                        </div>
+                                        <Progress
+                                            value={overallProgress}
+                                            className={`h-2 [&>div]:transition-all [&>div]:duration-200 ${
+                                                provisionErrored ? '[&>div]:bg-red-500' : '[&>div]:bg-emerald-500'
+                                            }`}
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        {PROVISION_STEPS.map((step, index) => {
+                                            const isDone = index < provisionDone || (provisionResult?.ok ?? false);
+                                            const isError = provisionErrored && index === provisionDone;
+                                            const isActive = provisionBusy && !provisionErrored && index === provisionDone;
+                                            const StepIcon = step.icon;
 
-                                        return (
-                                            <li
-                                                key={label}
-                                                className={`flex items-center gap-3 text-base ${
-                                                    isDone
-                                                        ? 'text-emerald-600 dark:text-emerald-400'
-                                                        : isError
-                                                          ? 'text-red-500'
-                                                          : isActive
-                                                            ? 'text-amber-500'
-                                                            : 'text-muted-foreground'
-                                                }`}
-                                            >
-                                                {isDone ? (
-                                                    <CheckCircle2 className="size-5 shrink-0" />
-                                                ) : isError ? (
-                                                    <XCircle className="size-5 shrink-0" />
-                                                ) : isActive ? (
-                                                    <Loader2 className="size-5 shrink-0 animate-spin" />
-                                                ) : (
-                                                    <Circle className="size-5 shrink-0" />
-                                                )}
-                                                <span>
-                                                    {index + 1}. {label}
-                                                </span>
-                                            </li>
-                                        );
-                                    })}
-                                </ol>
+                                            return (
+                                                <div
+                                                    key={step.label}
+                                                    className={`flex items-center gap-4 rounded-lg border px-4 py-3 transition-all duration-300 ${
+                                                        isError
+                                                            ? 'border-red-500/40 bg-red-500/5 shadow-sm'
+                                                            : isActive
+                                                              ? 'border-emerald-500/40 bg-emerald-500/5 shadow-sm'
+                                                              : isDone
+                                                                ? 'border-emerald-500/20 bg-emerald-500/5'
+                                                                : 'border-transparent'
+                                                    }`}
+                                                >
+                                                    <div
+                                                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-all duration-300 ${
+                                                            isError
+                                                                ? 'bg-red-500/10 text-red-500'
+                                                                : isDone
+                                                                  ? 'bg-emerald-500/20 text-emerald-500'
+                                                                  : isActive
+                                                                    ? 'bg-emerald-500/10 text-emerald-500'
+                                                                    : 'bg-muted text-muted-foreground'
+                                                        }`}
+                                                    >
+                                                        {isError ? (
+                                                            <XCircle className="size-5" />
+                                                        ) : isDone ? (
+                                                            <Check className="size-5 animate-in fade-in zoom-in duration-300" />
+                                                        ) : isActive ? (
+                                                            <Loader2 className="size-5 animate-spin" />
+                                                        ) : (
+                                                            <StepIcon className="size-5" />
+                                                        )}
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <p
+                                                            className={`text-sm font-medium transition-colors duration-200 ${
+                                                                isError
+                                                                    ? 'text-red-600 dark:text-red-400'
+                                                                    : isDone
+                                                                      ? 'text-emerald-600 dark:text-emerald-400'
+                                                                      : isActive
+                                                                        ? 'text-foreground'
+                                                                        : 'text-muted-foreground'
+                                                            }`}
+                                                        >
+                                                            {step.label}
+                                                        </p>
+                                                        {isActive && (
+                                                            <>
+                                                                <p className="mt-0.5 text-xs text-muted-foreground animate-in fade-in slide-in-from-left-2 duration-200">
+                                                                    {step.description}
+                                                                </p>
+                                                                <div className="mt-2">
+                                                                    <Progress
+                                                                        value={100}
+                                                                        className="h-1 [&>div]:animate-pulse [&>div]:bg-emerald-500"
+                                                                    />
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                    {isDone && (
+                                                        <CheckCircle2 className="size-4 shrink-0 text-emerald-500 animate-in fade-in zoom-in duration-300" />
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
 
                                 {provisionResult && (
                                     <div
