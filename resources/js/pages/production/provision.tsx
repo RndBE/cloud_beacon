@@ -39,6 +39,14 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import { useClipboard } from '@/hooks/use-clipboard';
 import { isWebSerialSupported, useLoggerSerial } from '@/hooks/use-logger-serial';
 import type { JsonRecord } from '@/hooks/use-logger-serial';
@@ -82,7 +90,7 @@ type RegisterState =
     | { status: 'error'; message: string }
     | null;
 
-export default function ProductionProvision() {
+export default function ProductionProvision({ deviceModels = [] }: { deviceModels?: string[] }) {
     const [serialSupported, setSerialSupported] = useState<boolean | null>(null);
     const [copiedValue, copy] = useClipboard();
     const { connected, portInfo, connect, tryReconnect, disconnect, sendCommand, sendCommandUntil, subscribe } =
@@ -100,6 +108,13 @@ export default function ProductionProvision() {
     const [sn, setSn] = useState('');
     const [deviceId, setDeviceId] = useState('');
     const [btName, setBtName] = useState('');
+    // Optional production-registry metadata, mirroring the "Add Production" modal.
+    const [model, setModel] = useState('');
+    const [hardwareVersion, setHardwareVersion] = useState('');
+    const [productionDate, setProductionDate] = useState('');
+    const [testedBy, setTestedBy] = useState('');
+    const [qcStatus, setQcStatus] = useState('pending');
+    const [notes, setNotes] = useState('');
     const [provisionBusy, setProvisionBusy] = useState(false);
     const [provisionResult, setProvisionResult] = useState<OutcomeState>(null);
     const [provisionDone, setProvisionDone] = useState(0);
@@ -207,6 +222,12 @@ export default function ProductionProvision() {
                     serial_number: sn.trim(),
                     device_id: deviceId.trim(),
                     bt_name: btName.trim() !== '' ? btName.trim() : null,
+                    model: model.trim() !== '' ? model.trim() : null,
+                    hardware_version: hardwareVersion.trim() !== '' ? hardwareVersion.trim() : null,
+                    production_date: productionDate.trim() !== '' ? productionDate.trim() : null,
+                    tested_by: testedBy.trim() !== '' ? testedBy.trim() : null,
+                    qc_status: qcStatus,
+                    notes: notes.trim() !== '' ? notes.trim() : null,
                 }),
             });
             const data = await res.json().catch(() => null);
@@ -545,6 +566,82 @@ export default function ProductionProvision() {
                                             Kosongkan untuk fallback otomatis ke <code>Logger_&#123;id&#125;</code>.
                                         </p>
                                     </div>
+
+                                    <div className="sm:col-span-3">
+                                        <p className="text-sm font-medium">Data Produksi (opsional)</p>
+                                        <p className="text-xs text-muted-foreground">
+                                            Ikut tersimpan ke daftar Production saat penulisan berhasil.
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label>Model</Label>
+                                        <Select value={model} onValueChange={setModel} disabled={!unlocked}>
+                                            <SelectTrigger className="w-full">
+                                                <SelectValue placeholder="Select model" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {deviceModels.map((m) => (
+                                                    <SelectItem key={m} value={m}>
+                                                        {m}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>QC Status</Label>
+                                        <Select value={qcStatus} onValueChange={setQcStatus} disabled={!unlocked}>
+                                            <SelectTrigger className="w-full">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="pending">Pending</SelectItem>
+                                                <SelectItem value="passed">Passed</SelectItem>
+                                                <SelectItem value="failed">Failed</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Hardware Version</Label>
+                                        <Input
+                                            value={hardwareVersion}
+                                            onChange={(e) => setHardwareVersion(e.target.value)}
+                                            disabled={!unlocked}
+                                            maxLength={50}
+                                            placeholder="mis. v4.0"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Production Date</Label>
+                                        <Input
+                                            type="date"
+                                            value={productionDate}
+                                            onChange={(e) => setProductionDate(e.target.value)}
+                                            disabled={!unlocked}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Tested By</Label>
+                                        <Input
+                                            value={testedBy}
+                                            onChange={(e) => setTestedBy(e.target.value)}
+                                            disabled={!unlocked}
+                                            maxLength={255}
+                                            placeholder="mis. QC Team A"
+                                        />
+                                    </div>
+                                    <div className="space-y-2 sm:col-span-3">
+                                        <Label>Notes</Label>
+                                        <Textarea
+                                            value={notes}
+                                            onChange={(e) => setNotes(e.target.value)}
+                                            disabled={!unlocked}
+                                            rows={2}
+                                            placeholder="Catatan opsional tentang unit ini…"
+                                        />
+                                    </div>
+
                                     <div className="sm:col-span-3">
                                         <Button
                                             type="submit"

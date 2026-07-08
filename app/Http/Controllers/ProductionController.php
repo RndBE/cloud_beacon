@@ -60,7 +60,9 @@ class ProductionController extends Controller
 
     public function provision(): Response
     {
-        return Inertia::render('production/provision');
+        return Inertia::render('production/provision', [
+            'deviceModels' => DeviceModel::orderBy('name')->pluck('name'),
+        ]);
     }
 
     public function store(Request $request): RedirectResponse
@@ -93,25 +95,39 @@ class ProductionController extends Controller
             'serial_number' => 'required|string|max:255',
             'device_id' => 'required|string|max:255',
             'bt_name' => 'nullable|string|max:255',
+            'model' => 'nullable|string|max:255',
+            'hardware_version' => 'nullable|string|max:50',
+            'production_date' => 'nullable|date',
+            'tested_by' => 'nullable|string|max:255',
+            'qc_status' => 'nullable|string|in:passed,failed,pending',
+            'notes' => 'nullable|string|max:1000',
         ]);
+
+        // Only the fields the operator actually filled in — so re-provisioning a
+        // unit never wipes existing registry data with blanks. Fields left empty
+        // fall back to sensible defaults on create (see below).
+        $optional = collect($validated)
+            ->only(['model', 'hardware_version', 'production_date', 'tested_by', 'qc_status', 'notes'])
+            ->filter(fn($value) => $value !== null && $value !== '')
+            ->all();
 
         $device = ProductionDevice::where('serial_number', $validated['serial_number'])->first();
 
         if ($device) {
-            $device->update(['device_id' => $validated['device_id']]);
+            $device->update(array_merge($optional, ['device_id' => $validated['device_id']]));
 
             return response()->json(['success' => true, 'status' => 'updated']);
         }
 
-        ProductionDevice::create([
+        ProductionDevice::create(array_merge([
             'serial_number' => $validated['serial_number'],
             'device_id' => $validated['device_id'],
             'production_date' => now()->toDateString(),
             'qc_status' => 'pending',
-            'notes' => $validated['bt_name']
+            'notes' => $validated['bt_name'] ?? null
                 ? "Provisioned via USB (BT: {$validated['bt_name']})"
                 : 'Provisioned via USB',
-        ]);
+        ], $optional));
 
         return response()->json(['success' => true, 'status' => 'created']);
     }
