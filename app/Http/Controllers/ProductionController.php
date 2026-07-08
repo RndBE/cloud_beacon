@@ -58,6 +58,11 @@ class ProductionController extends Controller
         ]);
     }
 
+    public function provision(): Response
+    {
+        return Inertia::render('production/provision');
+    }
+
     public function store(Request $request): RedirectResponse
     {
         $validated = $request->validate([

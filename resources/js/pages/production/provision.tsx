@@ -2,7 +2,9 @@ import { Head } from '@inertiajs/react';
 import {
     AlertTriangle,
     CheckCircle2,
+    Circle,
     Copy,
+    Loader2,
     Lock,
     LockOpen,
     RefreshCw,
@@ -21,11 +23,18 @@ import {
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
 import { useClipboard } from '@/hooks/use-clipboard';
-import { isWebSerialSupported, useLoggerSerial } from '@/hooks/use-logger-serial';
+import { isWebSerialSupported, JsonRecord, useLoggerSerial } from '@/hooks/use-logger-serial';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
@@ -35,6 +44,18 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Setup Logger (USB)', href: '/production/provision' },
 ];
 
+const AUTO_RECONNECT_KEY = 'provision:serial-auto-reconnect';
+
+// Firmware streams intermediate status messages while provisioning; these are
+// the 5 stages we surface to the operator (in order).
+const PROVISION_STEPS = [
+    'Config start',
+    'Setting baudrate module Bluetooth',
+    'Config module Bluetooth OK',
+    'Config ID alat OK',
+    'Config selesai',
+];
+
 type OutcomeState = { ok: boolean; message?: string } | null;
 
 type VerifyState = { sn: string; id: string; topic: string } | null;
@@ -42,9 +63,11 @@ type VerifyState = { sn: string; id: string; topic: string } | null;
 export default function ProductionProvision() {
     const [serialSupported, setSerialSupported] = useState<boolean | null>(null);
     const [copiedValue, copy] = useClipboard();
-    const { connected, portInfo, log, connect, disconnect, sendCommand } = useLoggerSerial();
+    const { connected, portInfo, log, connect, tryReconnect, disconnect, sendCommand, sendCommandUntil, subscribe } =
+        useLoggerSerial();
 
     const [connecting, setConnecting] = useState(false);
+    const [reconnecting, setReconnecting] = useState(false);
     const [connectError, setConnectError] = useState<string | null>(null);
 
     const [pin, setPin] = useState('');
@@ -57,13 +80,39 @@ export default function ProductionProvision() {
     const [btName, setBtName] = useState('');
     const [provisionBusy, setProvisionBusy] = useState(false);
     const [provisionResult, setProvisionResult] = useState<OutcomeState>(null);
+    const [provisionDone, setProvisionDone] = useState(0);
+    const [provisionErrored, setProvisionErrored] = useState(false);
+    const [provisionModalOpen, setProvisionModalOpen] = useState(false);
 
     const [verifyBusy, setVerifyBusy] = useState(false);
     const [verifyResult, setVerifyResult] = useState<VerifyState>(null);
     const [verifyError, setVerifyError] = useState<string | null>(null);
 
     useEffect(() => {
-        setSerialSupported(isWebSerialSupported());
+        const supported = isWebSerialSupported();
+        setSerialSupported(supported);
+        if (!supported) return;
+
+        // Only auto-reconnect after a reload if the last state was "connected".
+        // If the operator explicitly clicked "Putuskan Koneksi", we remember that
+        // intent (via sessionStorage) and stay disconnected across refreshes.
+        if (sessionStorage.getItem(AUTO_RECONNECT_KEY) !== '1') return;
+
+        // After a page reload the raw serial connection is gone, but the browser
+        // remembers the granted port — reopen it automatically so the operator
+        // only needs to re-enter the PIN.
+        let cancelled = false;
+        setReconnecting(true);
+        tryReconnect()
+            .catch(() => false)
+            .finally(() => {
+                if (!cancelled) setReconnecting(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const currentOrigin = useMemo(() => (typeof window !== 'undefined' ? window.location.origin : ''), []);
@@ -73,6 +122,7 @@ export default function ProductionProvision() {
         setConnecting(true);
         try {
             await connect();
+            sessionStorage.setItem(AUTO_RECONNECT_KEY, '1');
         } catch (error) {
             setConnectError(error instanceof Error ? error.message : 'Gagal terhubung ke logger.');
         } finally {
@@ -81,6 +131,8 @@ export default function ProductionProvision() {
     }
 
     async function handleDisconnect() {
+        // Remember the explicit disconnect so a refresh does not auto-reconnect.
+        sessionStorage.removeItem(AUTO_RECONNECT_KEY);
         await disconnect();
         setUnlocked(false);
         setAuthResult(null);
@@ -118,20 +170,53 @@ export default function ProductionProvision() {
         e.preventDefault();
         setProvisionBusy(true);
         setProvisionResult(null);
+        setProvisionDone(0);
+        setProvisionErrored(false);
+        setProvisionModalOpen(true);
+
+        // Track the firmware's streamed progress messages and advance the 5 stages.
+        const unsubscribe = subscribe((msg) => {
+            const bt = msg.BLUETOOTH;
+            if (bt && typeof bt === 'object') {
+                const b = bt as JsonRecord;
+                if (b.auto_baud === 'START') setProvisionDone((d) => Math.max(d, 1));
+                if (b.ping === 'OK') setProvisionDone((d) => Math.max(d, 2));
+            }
+            if (msg.BLUETOOTH === 'OK') setProvisionDone((d) => Math.max(d, 3));
+
+            const prod = msg.PRODUCTION;
+            if (prod && typeof prod === 'object') {
+                const status = (prod as JsonRecord).status;
+                if (status === 'CONFIGURED_ALL') setProvisionDone((d) => Math.max(d, 4));
+                if (status === 'OK') setProvisionDone(5);
+                if (status === 'ERR') setProvisionErrored(true);
+            }
+        });
+
         try {
             const payload: Record<string, unknown> = { cmd: 'SET', sn, id: deviceId };
             if (btName.trim() !== '') payload.bt_name = btName.trim();
 
-            const response = await sendCommand({ PRODUCTION: payload }, 'PRODUCTION');
+            // PRODUCTION streams CONFIGURED_ALL before the terminal OK/ERR — wait
+            // for the final status, not the first PRODUCTION message.
+            const response = await sendCommandUntil(
+                { PRODUCTION: payload },
+                (msg) => {
+                    const body = msg.PRODUCTION;
+                    const status = body && typeof body === 'object' ? (body as JsonRecord).status : body;
+                    return status === 'OK' || status === 'ERR';
+                },
+                30000,
+            );
             const body = response.PRODUCTION;
-            const status = body && typeof body === 'object' ? (body as Record<string, unknown>).status : body;
+            const status = body && typeof body === 'object' ? (body as JsonRecord).status : body;
 
             if (status === 'OK') {
                 setProvisionResult({ ok: true });
             } else {
                 const message =
-                    body && typeof body === 'object' && typeof (body as Record<string, unknown>).msg === 'string'
-                        ? String((body as Record<string, unknown>).msg)
+                    body && typeof body === 'object' && typeof (body as JsonRecord).msg === 'string'
+                        ? String((body as JsonRecord).msg)
                         : 'Logger menolak perintah provisioning.';
                 setProvisionResult({ ok: false, message });
             }
@@ -141,6 +226,7 @@ export default function ProductionProvision() {
                 message: error instanceof Error ? error.message : 'Gagal mengirim perintah PRODUCTION.',
             });
         } finally {
+            unsubscribe();
             setProvisionBusy(false);
         }
     }
@@ -263,9 +349,16 @@ export default function ProductionProvision() {
                                     </p>
                                 )}
 
+                                {reconnecting && !connected && (
+                                    <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                        <RefreshCw className="size-4 animate-spin" />
+                                        Menyambungkan ulang ke port sebelumnya…
+                                    </p>
+                                )}
+
                                 <div className="flex gap-2">
                                     {!connected ? (
-                                        <Button onClick={handleConnect} disabled={connecting} className="gap-1.5">
+                                        <Button onClick={handleConnect} disabled={connecting || reconnecting} className="gap-1.5">
                                             {connecting ? (
                                                 <>
                                                     <RefreshCw className="size-4 animate-spin" />
@@ -288,7 +381,9 @@ export default function ProductionProvision() {
                             </CardContent>
                         </Card>
 
-                        <Card className={!connected ? 'opacity-60' : undefined}>
+                        {connected && (
+                        <>
+                        <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
                                     {unlocked ? <LockOpen className="size-5" /> : <Lock className="size-5" />}
@@ -392,8 +487,8 @@ export default function ProductionProvision() {
                                         >
                                             {provisionBusy ? (
                                                 <>
-                                                    <RefreshCw className="size-4 animate-spin" />
-                                                    Menulis
+                                                    <Loader2 className="size-4 animate-spin" />
+                                                    Menulis…
                                                 </>
                                             ) : (
                                                 'Tulis ke Logger'
@@ -401,18 +496,98 @@ export default function ProductionProvision() {
                                         </Button>
                                     </div>
                                 </form>
+                            </CardContent>
+                        </Card>
+
+                        <Dialog
+                            open={provisionModalOpen}
+                            onOpenChange={(open) => {
+                                // Jangan tutup selagi proses berjalan.
+                                if (!provisionBusy) setProvisionModalOpen(open);
+                            }}
+                        >
+                            <DialogContent
+                                style={{
+                                    width: 'min(560px, calc(100vw - 3rem))',
+                                    maxWidth: 'min(560px, calc(100vw - 3rem))',
+                                }}
+                            >
+                                <DialogHeader>
+                                    <DialogTitle>Menulis ke Logger</DialogTitle>
+                                    <DialogDescription>
+                                        SN {sn || '-'} · ID {deviceId || '-'}
+                                        {btName.trim() !== '' ? ` · ${btName.trim()}` : ''}
+                                    </DialogDescription>
+                                </DialogHeader>
+
+                                <ol className="space-y-3 py-2">
+                                    {PROVISION_STEPS.map((label, index) => {
+                                        const isDone = index < provisionDone;
+                                        const isError = provisionErrored && index === provisionDone;
+                                        const isActive = provisionBusy && !provisionErrored && index === provisionDone;
+
+                                        return (
+                                            <li
+                                                key={label}
+                                                className={`flex items-center gap-3 text-base ${
+                                                    isDone
+                                                        ? 'text-emerald-600 dark:text-emerald-400'
+                                                        : isError
+                                                          ? 'text-red-500'
+                                                          : isActive
+                                                            ? 'text-amber-500'
+                                                            : 'text-muted-foreground'
+                                                }`}
+                                            >
+                                                {isDone ? (
+                                                    <CheckCircle2 className="size-5 shrink-0" />
+                                                ) : isError ? (
+                                                    <XCircle className="size-5 shrink-0" />
+                                                ) : isActive ? (
+                                                    <Loader2 className="size-5 shrink-0 animate-spin" />
+                                                ) : (
+                                                    <Circle className="size-5 shrink-0" />
+                                                )}
+                                                <span>
+                                                    {index + 1}. {label}
+                                                </span>
+                                            </li>
+                                        );
+                                    })}
+                                </ol>
+
                                 {provisionResult && (
-                                    <p
-                                        className={`mt-3 flex items-center gap-1.5 text-sm ${
-                                            provisionResult.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+                                    <div
+                                        className={`flex items-center gap-2 rounded-md border p-3 text-sm ${
+                                            provisionResult.ok
+                                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                                : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
                                         }`}
                                     >
                                         {provisionResult.ok ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
                                         {provisionResult.ok ? 'Berhasil ditulis ke logger.' : provisionResult.message}
-                                    </p>
+                                    </div>
                                 )}
-                            </CardContent>
-                        </Card>
+
+                                <DialogFooter>
+                                    <Button
+                                        type="button"
+                                        variant={provisionResult && !provisionResult.ok ? 'outline' : 'default'}
+                                        disabled={provisionBusy}
+                                        onClick={() => setProvisionModalOpen(false)}
+                                    >
+                                        {provisionBusy ? (
+                                            <>
+                                                <Loader2 className="mr-2 size-4 animate-spin" />
+                                                Memproses…
+                                            </>
+                                        ) : (
+                                            'Tutup'
+                                        )}
+                                    </Button>
+                                </DialogFooter>
+                            </DialogContent>
+                        </Dialog>
 
                         <Card className={!connected ? 'opacity-60' : undefined}>
                             <CardHeader>
@@ -494,7 +669,8 @@ export default function ProductionProvision() {
                                 </div>
                             </CardContent>
                         </Card>
-                        <Separator className="hidden" />
+                        </>
+                        )}
                     </>
                 )}
             </div>

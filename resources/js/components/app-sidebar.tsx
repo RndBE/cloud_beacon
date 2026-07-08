@@ -1,5 +1,5 @@
 import { Link, usePage } from '@inertiajs/react';
-import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Users, Wrench } from 'lucide-react';
+import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, Usb, Users, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -67,6 +67,12 @@ export function AppSidebar() {
             href: '/production/models',
             icon: Box,
             permission: 'production.view',
+        },
+        {
+            title: 'Setup Logger (USB)',
+            href: '/production/provision',
+            icon: Usb,
+            permission: 'production.create',
         },
         {
             title: 'Forwarding Logs',
