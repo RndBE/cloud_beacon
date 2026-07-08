@@ -72,7 +72,7 @@ export function AppSidebar() {
             title: 'Setup Logger (USB)',
             href: '/production/provision',
             icon: Usb,
-            permission: 'production.create',
+            permission: 'production.provision',
         },
         {
             title: 'Forwarding Logs',

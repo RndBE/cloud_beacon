@@ -22,6 +22,7 @@ class RolePermissionSeeder extends Seeder
             // Production
             ['name' => 'production.view', 'display_name' => 'View Production', 'group' => 'Production'],
             ['name' => 'production.create', 'display_name' => 'Create Production Device', 'group' => 'Production'],
+            ['name' => 'production.provision', 'display_name' => 'Provision Logger via USB', 'group' => 'Production'],
             ['name' => 'production.import', 'display_name' => 'Import Production Devices', 'group' => 'Production'],
             ['name' => 'production.delete', 'display_name' => 'Delete Production Device', 'group' => 'Production'],
             ['name' => 'production.check-serial', 'display_name' => 'Check Serial Number', 'group' => 'Production'],

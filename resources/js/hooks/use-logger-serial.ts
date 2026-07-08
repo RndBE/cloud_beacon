@@ -11,12 +11,6 @@ const SERIAL_OPTIONS: SerialOptions = {
     parity: 'none',
 };
 
-export type SerialLogEntry = {
-    id: number;
-    direction: 'tx' | 'rx' | 'info' | 'error';
-    text: string;
-};
-
 export type JsonRecord = Record<string, unknown>;
 
 export type SerialListener = (message: JsonRecord) => void;
@@ -34,9 +28,7 @@ export function isWebSerialSupported(): boolean {
 export function useLoggerSerial() {
     const [connected, setConnected] = useState(false);
     const [portInfo, setPortInfo] = useState<SerialPortInfo | null>(null);
-    const [log, setLog] = useState<SerialLogEntry[]>([]);
 
-    const logIdRef = useRef(0);
     const portRef = useRef<SerialPort | null>(null);
     const readerRef = useRef<ReadableStreamDefaultReader<string> | null>(null);
     const writerRef = useRef<WritableStreamDefaultWriter<string> | null>(null);
@@ -47,17 +39,10 @@ export function useLoggerSerial() {
     const listenersRef = useRef<Set<SerialListener>>(new Set());
     const closingRef = useRef(false);
 
-    const appendLog = useCallback((direction: SerialLogEntry['direction'], text: string) => {
-        logIdRef.current += 1;
-        const id = logIdRef.current;
-        setLog((prev) => [...prev.slice(-199), { id, direction, text }]);
-    }, []);
-
     const handleLine = useCallback(
         (line: string) => {
             const trimmed = line.replace(/\r$/, '').trim();
             if (!trimmed) return;
-            appendLog('rx', trimmed);
 
             let parsed: JsonRecord | null = null;
             try {
@@ -81,7 +66,7 @@ export function useLoggerSerial() {
                 }
             }
         },
-        [appendLog],
+        [],
     );
 
     const pump = useCallback(
@@ -96,15 +81,12 @@ export function useLoggerSerial() {
                     bufferRef.current = lines.pop() ?? '';
                     for (const line of lines) handleLine(line);
                 }
-            } catch (error) {
+            } catch {
                 // A pending read() rejecting during an intentional disconnect
                 // (e.g. "Releasing Default reader") is expected — don't surface it.
-                if (!closingRef.current) {
-                    appendLog('error', error instanceof Error ? error.message : 'Gagal membaca dari port serial.');
-                }
             }
         },
-        [appendLog, handleLine],
+        [handleLine],
     );
 
     const disconnect = useCallback(async () => {
@@ -166,7 +148,7 @@ export function useLoggerSerial() {
     }, []);
 
     const openPort = useCallback(
-        async (port: SerialPort, silent: boolean) => {
+        async (port: SerialPort) => {
             if (portRef.current) return; // already connected — avoid double-open
             await port.open(SERIAL_OPTIONS);
 
@@ -182,7 +164,7 @@ export function useLoggerSerial() {
 
             const textEncoder = new TextEncoderStream();
             writableClosedRef.current = (textEncoder.readable as unknown as ReadableStream<Uint8Array>)
-                .pipeTo(port.writable)
+                .pipeTo(port.writable as unknown as WritableStream<Uint8Array>)
                 .catch(() => undefined);
             const writer = textEncoder.writable.getWriter();
 
@@ -193,11 +175,10 @@ export function useLoggerSerial() {
 
             setConnected(true);
             setPortInfo(port.getInfo());
-            appendLog('info', silent ? 'Tersambung ulang ke logger via USB.' : 'Terhubung ke logger via USB.');
 
             void pump(reader);
         },
-        [appendLog, pump],
+        [pump],
     );
 
     const connect = useCallback(async () => {
@@ -206,7 +187,7 @@ export function useLoggerSerial() {
         }
 
         const port = await navigator.serial.requestPort();
-        await openPort(port, false);
+        await openPort(port);
     }, [openPort]);
 
     // Reopen a previously-authorized port after a page reload, without the
@@ -219,7 +200,7 @@ export function useLoggerSerial() {
             const ports = await navigator.serial.getPorts();
             const port = ports[0];
             if (!port) return false;
-            await openPort(port, true);
+            await openPort(port);
             return true;
         } catch {
             return false;
@@ -232,10 +213,9 @@ export function useLoggerSerial() {
                 throw new Error('Belum terhubung ke logger.');
             }
             const text = JSON.stringify(payload);
-            appendLog('tx', text);
             await writerRef.current.write(text + COMMAND_TERMINATOR);
         },
-        [appendLog],
+        [],
     );
 
     // Resolve on the first incoming message that satisfies `match`. Some commands
@@ -299,5 +279,5 @@ export function useLoggerSerial() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    return { connected, portInfo, log, connect, tryReconnect, disconnect, sendCommand, sendCommandUntil, subscribe };
+    return { connected, portInfo, connect, tryReconnect, disconnect, sendCommand, sendCommandUntil, subscribe };
 }

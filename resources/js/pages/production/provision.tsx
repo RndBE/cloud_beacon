@@ -8,12 +8,12 @@ import {
     Lock,
     LockOpen,
     RefreshCw,
-    Terminal,
     Unplug,
     Usb,
     XCircle,
 } from 'lucide-react';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { FormEvent } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -34,7 +34,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useClipboard } from '@/hooks/use-clipboard';
-import { isWebSerialSupported, JsonRecord, useLoggerSerial } from '@/hooks/use-logger-serial';
+import { isWebSerialSupported, useLoggerSerial } from '@/hooks/use-logger-serial';
+import type { JsonRecord } from '@/hooks/use-logger-serial';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
 
@@ -63,7 +64,7 @@ type VerifyState = { sn: string; id: string; topic: string } | null;
 export default function ProductionProvision() {
     const [serialSupported, setSerialSupported] = useState<boolean | null>(null);
     const [copiedValue, copy] = useClipboard();
-    const { connected, portInfo, log, connect, tryReconnect, disconnect, sendCommand, sendCommandUntil, subscribe } =
+    const { connected, portInfo, connect, tryReconnect, disconnect, sendCommand, sendCommandUntil, subscribe } =
         useLoggerSerial();
 
     const [connecting, setConnecting] = useState(false);
@@ -633,40 +634,6 @@ export default function ProductionProvision() {
                                         </div>
                                     </div>
                                 )}
-                            </CardContent>
-                        </Card>
-
-                        <Card>
-                            <CardHeader>
-                                <CardTitle className="flex items-center gap-2">
-                                    <Terminal className="size-5" />
-                                    Log Serial
-                                </CardTitle>
-                                <CardDescription>Riwayat perintah terkirim (TX) dan balasan logger (RX).</CardDescription>
-                            </CardHeader>
-                            <CardContent>
-                                <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border bg-muted/30 p-3 font-mono text-xs">
-                                    {log.length === 0 ? (
-                                        <p className="text-muted-foreground">Belum ada aktivitas.</p>
-                                    ) : (
-                                        log.map((entry) => (
-                                            <div
-                                                key={entry.id}
-                                                className={
-                                                    entry.direction === 'tx'
-                                                        ? 'text-blue-600 dark:text-blue-400'
-                                                        : entry.direction === 'rx'
-                                                          ? 'text-emerald-600 dark:text-emerald-400'
-                                                          : entry.direction === 'error'
-                                                            ? 'text-red-600 dark:text-red-400'
-                                                            : 'text-muted-foreground'
-                                                }
-                                            >
-                                                <span className="uppercase">[{entry.direction}]</span> {entry.text}
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
                             </CardContent>
                         </Card>
                         </>

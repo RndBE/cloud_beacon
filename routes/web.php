@@ -72,7 +72,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware('permission:production.view')
         ->name('production.index');
     Route::get('production/provision', [ProductionController::class, 'provision'])
-        ->middleware('permission:production.create')
+        ->middleware('permission:production.provision')
         ->name('production.provision');
     Route::post('production', [ProductionController::class, 'store'])
         ->middleware('permission:production.create')
