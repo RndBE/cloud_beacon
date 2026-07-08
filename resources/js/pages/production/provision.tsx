@@ -118,6 +118,7 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
     const [provisionBusy, setProvisionBusy] = useState(false);
     const [provisionResult, setProvisionResult] = useState<OutcomeState>(null);
     const [provisionDone, setProvisionDone] = useState(0);
+    const [stepProgress, setStepProgress] = useState(0);
     const [provisionErrored, setProvisionErrored] = useState(false);
     const [provisionModalOpen, setProvisionModalOpen] = useState(false);
     const [registerState, setRegisterState] = useState<RegisterState>(null);
@@ -152,6 +153,20 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // Animate the active step's mini progress bar so it visibly fills like the
+    // sync dialog. Unlike sync — which fills over a fixed timer — provisioning is
+    // event-driven, so we climb asymptotically toward (but never reach) 100%: the
+    // bar keeps moving while we wait for the firmware, and only the real message
+    // advancing `provisionDone` marks a step complete. Re-runs on each step change.
+    useEffect(() => {
+        if (!provisionBusy || provisionErrored) return;
+        setStepProgress(8);
+        const id = setInterval(() => {
+            setStepProgress((p) => (p >= 96 ? p : p + (100 - p) * 0.06));
+        }, 120);
+        return () => clearInterval(id);
+    }, [provisionDone, provisionBusy, provisionErrored]);
 
     const currentOrigin = useMemo(() => (typeof window !== 'undefined' ? window.location.origin : ''), []);
 
@@ -760,8 +775,8 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                                                 </p>
                                                                 <div className="mt-2">
                                                                     <Progress
-                                                                        value={100}
-                                                                        className="h-1 [&>div]:animate-pulse [&>div]:bg-emerald-500"
+                                                                        value={stepProgress}
+                                                                        className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100"
                                                                     />
                                                                 </div>
                                                             </>
