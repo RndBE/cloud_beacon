@@ -74,6 +74,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('production/provision', [ProductionController::class, 'provision'])
         ->middleware('permission:production.provision')
         ->name('production.provision');
+    Route::post('production/provision/register', [ProductionController::class, 'storeProvisioned'])
+        ->middleware('permission:production.provision')
+        ->name('production.provision.register');
     Route::post('production', [ProductionController::class, 'store'])
         ->middleware('permission:production.create')
         ->name('production.store');

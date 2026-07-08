@@ -61,6 +61,13 @@ type OutcomeState = { ok: boolean; message?: string } | null;
 
 type VerifyState = { sn: string; id: string; topic: string } | null;
 
+type RegisterState =
+    | { status: 'saving' }
+    | { status: 'created' }
+    | { status: 'updated' }
+    | { status: 'error'; message: string }
+    | null;
+
 export default function ProductionProvision() {
     const [serialSupported, setSerialSupported] = useState<boolean | null>(null);
     const [copiedValue, copy] = useClipboard();
@@ -84,6 +91,7 @@ export default function ProductionProvision() {
     const [provisionDone, setProvisionDone] = useState(0);
     const [provisionErrored, setProvisionErrored] = useState(false);
     const [provisionModalOpen, setProvisionModalOpen] = useState(false);
+    const [registerState, setRegisterState] = useState<RegisterState>(null);
 
     const [verifyBusy, setVerifyBusy] = useState(false);
     const [verifyResult, setVerifyResult] = useState<VerifyState>(null);
@@ -138,6 +146,7 @@ export default function ProductionProvision() {
         setUnlocked(false);
         setAuthResult(null);
         setProvisionResult(null);
+        setRegisterState(null);
         setVerifyResult(null);
         setVerifyError(null);
     }
@@ -167,12 +176,47 @@ export default function ProductionProvision() {
         }
     }
 
+    // Setelah logger mengonfirmasi tulis berhasil, catat unit ini ke daftar
+    // Production di server (upsert by serial number) supaya tidak perlu input manual.
+    async function registerToProduction() {
+        setRegisterState({ status: 'saving' });
+        try {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
+            const res = await fetch('/production/provision/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                },
+                body: JSON.stringify({
+                    serial_number: sn.trim(),
+                    device_id: deviceId.trim(),
+                    bt_name: btName.trim() !== '' ? btName.trim() : null,
+                }),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok || !data?.success) {
+                throw new Error(
+                    typeof data?.message === 'string' ? data.message : `Server merespons ${res.status}.`,
+                );
+            }
+            setRegisterState({ status: data.status === 'updated' ? 'updated' : 'created' });
+        } catch (error) {
+            setRegisterState({
+                status: 'error',
+                message: error instanceof Error ? error.message : 'Gagal menyimpan ke daftar Production.',
+            });
+        }
+    }
+
     async function handleProvision(e: FormEvent) {
         e.preventDefault();
         setProvisionBusy(true);
         setProvisionResult(null);
         setProvisionDone(0);
         setProvisionErrored(false);
+        setRegisterState(null);
         setProvisionModalOpen(true);
 
         // Track the firmware's streamed progress messages and advance the 5 stages.
@@ -214,6 +258,7 @@ export default function ProductionProvision() {
 
             if (status === 'OK') {
                 setProvisionResult({ ok: true });
+                await registerToProduction();
             } else {
                 const message =
                     body && typeof body === 'object' && typeof (body as JsonRecord).msg === 'string'
@@ -567,6 +612,33 @@ export default function ProductionProvision() {
                                     >
                                         {provisionResult.ok ? <CheckCircle2 className="size-4" /> : <XCircle className="size-4" />}
                                         {provisionResult.ok ? 'Berhasil ditulis ke logger.' : provisionResult.message}
+                                    </div>
+                                )}
+
+                                {registerState && (
+                                    <div
+                                        className={`flex items-center gap-2 rounded-md border p-3 text-sm ${
+                                            registerState.status === 'error'
+                                                ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                                : registerState.status === 'saving'
+                                                  ? 'border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300'
+                                                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                        }`}
+                                    >
+                                        {registerState.status === 'saving' ? (
+                                            <Loader2 className="size-4 shrink-0 animate-spin" />
+                                        ) : registerState.status === 'error' ? (
+                                            <AlertTriangle className="size-4 shrink-0" />
+                                        ) : (
+                                            <CheckCircle2 className="size-4 shrink-0" />
+                                        )}
+                                        {registerState.status === 'saving'
+                                            ? 'Menyimpan ke daftar Production…'
+                                            : registerState.status === 'created'
+                                              ? 'Otomatis tercatat di daftar Production (QC: pending).'
+                                              : registerState.status === 'updated'
+                                                ? 'Data di daftar Production diperbarui (SN sudah terdaftar).'
+                                                : `Logger sudah ditulis, tapi gagal dicatat ke daftar Production: ${registerState.message} Tambahkan manual di halaman Production.`}
                                     </div>
                                 )}
 

@@ -82,6 +82,40 @@ class ProductionController extends Controller
         return redirect()->route('production.index')->with('success', 'Device registered successfully.');
     }
 
+    /**
+     * JSON API: record a device that was just provisioned via USB into the
+     * production registry. Upserts by serial number so re-provisioning a unit
+     * updates its device_id instead of failing on the unique constraint.
+     */
+    public function storeProvisioned(Request $request)
+    {
+        $validated = $request->validate([
+            'serial_number' => 'required|string|max:255',
+            'device_id' => 'required|string|max:255',
+            'bt_name' => 'nullable|string|max:255',
+        ]);
+
+        $device = ProductionDevice::where('serial_number', $validated['serial_number'])->first();
+
+        if ($device) {
+            $device->update(['device_id' => $validated['device_id']]);
+
+            return response()->json(['success' => true, 'status' => 'updated']);
+        }
+
+        ProductionDevice::create([
+            'serial_number' => $validated['serial_number'],
+            'device_id' => $validated['device_id'],
+            'production_date' => now()->toDateString(),
+            'qc_status' => 'pending',
+            'notes' => $validated['bt_name']
+                ? "Provisioned via USB (BT: {$validated['bt_name']})"
+                : 'Provisioned via USB',
+        ]);
+
+        return response()->json(['success' => true, 'status' => 'created']);
+    }
+
     public function import(Request $request): RedirectResponse
     {
         $request->validate([
