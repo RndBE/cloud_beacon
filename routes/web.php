@@ -36,6 +36,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware('permission:loggers.view')
         ->name('forwarding-logs.index');
 
+    Route::get('forwarding-logs/{id}/payload', [ForwardingLogController::class, 'payload'])
+        ->middleware('permission:loggers.view')
+        ->name('forwarding-logs.payload');
+
     Route::get('maintenance', [MaintenanceTicketController::class, 'index'])
         ->middleware('permission:maintenance.view')
         ->name('maintenance.index');

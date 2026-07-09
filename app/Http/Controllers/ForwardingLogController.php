@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\ForwardingLog;
 use App\Models\Logger;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -14,12 +16,7 @@ class ForwardingLogController extends Controller
     {
         $query = ForwardingLog::query()
             ->with(['logger:id,name,serial_number,device_identifier']);
-
-        // Superadmin sees all; other users see owned or assigned loggers.
-        if (!auth()->user()->isSuperAdmin()) {
-            $loggerIds = Logger::query()->visibleTo(auth()->user())->pluck('id');
-            $query->whereIn('logger_id', $loggerIds);
-        }
+        $this->scopeToVisibleLoggers($query);
 
         // Filter: status
         if ($request->filled('status') && $request->status !== 'all') {
@@ -44,6 +41,9 @@ class ForwardingLogController extends Controller
             $query->where('created_at', '<=', $request->to . ' 23:59:59');
         }
 
+        // raw_payload intentionally omitted: it is only shown in the detail
+        // dialog and is fetched lazily via payload() — shipping 50 raw payloads
+        // bloated every Inertia visit (and the history state) by megabytes.
         $logs = $query->orderByDesc('created_at')
             ->paginate(50)
             ->through(fn(ForwardingLog $log) => [
@@ -58,23 +58,25 @@ class ForwardingLogController extends Controller
                 'errorMessage'   => $log->error_message,
                 'responseTimeMs' => $log->response_time_ms,
                 'payloadSummary' => $log->payload_summary,
-                'rawPayload'     => $log->raw_payload,
                 'createdAt'      => $log->created_at?->format('Y-m-d H:i:s'),
             ]);
 
-        // Stats for summary cards
-        $baseQuery = ForwardingLog::query();
-        if (!auth()->user()->isSuperAdmin()) {
-            $loggerIds = Logger::query()->visibleTo(auth()->user())->pluck('id');
-            $baseQuery->whereIn('logger_id', $loggerIds);
-        }
+        // Stats for summary cards — one conditional-aggregate query.
+        $statsQuery = ForwardingLog::query()
+            ->where('created_at', '>=', now()->startOfDay());
+        $this->scopeToVisibleLoggers($statsQuery);
+        $row = $statsQuery->selectRaw("
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
+            SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+        ")->first();
 
-        $todayStart = now()->startOfDay();
         $stats = [
-            'totalToday'   => (clone $baseQuery)->where('created_at', '>=', $todayStart)->count(),
-            'successToday' => (clone $baseQuery)->where('created_at', '>=', $todayStart)->where('status', 'success')->count(),
-            'errorToday'   => (clone $baseQuery)->where('created_at', '>=', $todayStart)->where('status', 'error')->count(),
-            'skippedToday' => (clone $baseQuery)->where('created_at', '>=', $todayStart)->where('status', 'skipped')->count(),
+            'totalToday'   => (int) $row->total,
+            'successToday' => (int) $row->success,
+            'errorToday'   => (int) $row->error,
+            'skippedToday' => (int) $row->skipped,
         ];
 
         // Logger list for filter dropdown
@@ -100,5 +102,24 @@ class ForwardingLogController extends Controller
                 'to'        => $request->to ?? '',
             ],
         ]);
+    }
+
+    /** Raw payload for the detail dialog, fetched on demand. */
+    public function payload(int $id): JsonResponse
+    {
+        $query = ForwardingLog::query()->whereKey($id);
+        $this->scopeToVisibleLoggers($query);
+
+        return response()->json([
+            'rawPayload' => $query->firstOrFail()->raw_payload,
+        ]);
+    }
+
+    /** Superadmin sees all; other users see owned or assigned loggers (as a subquery, no id materialization). */
+    private function scopeToVisibleLoggers(Builder $query): void
+    {
+        if (!auth()->user()->isSuperAdmin()) {
+            $query->whereIn('logger_id', Logger::query()->visibleTo(auth()->user())->select('id'));
+        }
     }
 }

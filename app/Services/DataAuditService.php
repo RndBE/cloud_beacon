@@ -57,19 +57,23 @@ class DataAuditService
     {
         $day = Carbon::parse($date)->startOfDay();
 
+        // DISTINCT minute key in SQL (same substr trick as presentCountsForLoggers):
+        // one row per minute instead of one per sensor-minute — a 10-sensor
+        // logger otherwise hydrates ~14k rows for a full day.
         return SensorLog::query()
             ->where('logger_id', $logger->id)
             ->whereBetween('recorded_at', [$day, (clone $day)->endOfDay()])
-            ->orderBy('recorded_at')
-            ->pluck('recorded_at')                       // Carbon instances (model casts recorded_at => datetime)
-            ->map(fn ($t) => Carbon::parse($t)->format('Y-m-d H:i:00'))
-            ->unique()
+            ->selectRaw('DISTINCT substr(recorded_at, 1, 16) as minute')
+            ->orderBy('minute')
+            ->pluck('minute')
+            ->map(fn ($m) => $m.':00')
             ->values();
     }
 
-    public function missingMinutes(Logger $logger, CarbonInterface $date): Collection
+    /** @param  Collection|null  $present  precomputed presentMinutes() result, to avoid re-querying */
+    public function missingMinutes(Logger $logger, CarbonInterface $date, ?Collection $present = null): Collection
     {
-        $present = $this->presentMinutes($logger, $date)->flip();
+        $present = ($present ?? $this->presentMinutes($logger, $date))->flip();
         $day = Carbon::parse($date)->startOfDay();
         $expected = $this->expectedFor($date);
 

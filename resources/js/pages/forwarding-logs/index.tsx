@@ -68,7 +68,6 @@ interface LogEntry {
         sensor_count: number;
         sensors: string[];
     } | null;
-    rawPayload: Record<string, unknown> | null;
     createdAt: string;
 }
 
@@ -158,6 +157,33 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
     const [detailLog, setDetailLog] = useState<LogEntry | null>(null);
     const [isFiltering, setIsFiltering] = useState(false);
     const [showRawPayload, setShowRawPayload] = useState(false);
+    // Raw payload is fetched on demand when the detail dialog opens — it is
+    // deliberately excluded from the Inertia list props to keep visits light.
+    const [rawPayload, setRawPayload] = useState<Record<string, unknown> | null>(null);
+    const [rawPayloadLoading, setRawPayloadLoading] = useState(false);
+
+    useEffect(() => {
+        if (!detailLog) {
+            setRawPayload(null);
+            return;
+        }
+        let cancelled = false;
+        setRawPayloadLoading(true);
+        fetch(`/forwarding-logs/${detailLog.id}/payload`, { headers: { Accept: 'application/json' } })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+                if (!cancelled) setRawPayload((data?.rawPayload as Record<string, unknown> | null) ?? null);
+            })
+            .catch(() => {
+                if (!cancelled) setRawPayload(null);
+            })
+            .finally(() => {
+                if (!cancelled) setRawPayloadLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [detailLog]);
 
     // Sync local filter state whenever server-returned filters prop changes
     useEffect(() => {
@@ -587,7 +613,7 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                 )}
 
                                 {/* Raw JSON Payload */}
-                                {detailLog.rawPayload && (
+                                {(rawPayloadLoading || rawPayload) && (
                                     <div className="rounded-lg border bg-muted/30">
                                         <button
                                             type="button"
@@ -603,7 +629,7 @@ export default function ForwardingLogsIndex({ logs, stats, loggers, filters }: P
                                         {showRawPayload && (
                                             <div className="border-t px-3 pb-3">
                                                 <pre className="mt-2 max-h-[300px] overflow-auto rounded-md bg-zinc-950 p-3 text-[11px] leading-relaxed text-emerald-400 font-mono">
-                                                    {JSON.stringify(detailLog.rawPayload, null, 2)}
+                                                    {rawPayload ? JSON.stringify(rawPayload, null, 2) : 'Memuat…'}
                                                 </pre>
                                             </div>
                                         )}

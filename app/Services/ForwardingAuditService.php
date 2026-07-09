@@ -8,6 +8,7 @@ use App\Jobs\ResendForwarding;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
 use App\Models\LoggerIntegration;
+use App\Models\SensorLog;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
@@ -62,42 +63,153 @@ class ForwardingAuditService
      * sums due / forwarded_ok across every enabled integration (+ Mini STESY)
      * of each logger. Returns [logger_id => ['due','ok','failed','targets']] or
      * [logger_id => null] when the logger has no enabled forwarding target (the
-     * UI shows "—"). Reuses integrationAudit() so the numbers match the detail
-     * page exactly.
+     * UI shows "—").
+     *
+     * Runs a constant four grouped queries regardless of fleet size; the
+     * arithmetic mirrors buildBucket() so the numbers match the detail page
+     * (equality pinned by ForwardingCompletenessAggregateTest).
      *
      * @param  Collection<int,Logger>  $loggers
      */
     public function completenessForLoggers(Collection $loggers, CarbonInterface $date): Collection
     {
-        return $loggers->mapWithKeys(function (Logger $logger) use ($date) {
-            $buckets = $this->integrationAudit($logger, $date);
+        if ($loggers->isEmpty()) {
+            return collect();
+        }
+
+        $day = Carbon::parse($date);
+        $dayStart = $day->copy()->startOfDay();
+        $dayEnd = $day->copy()->endOfDay();
+        $loggerIds = $loggers->pluck('id');
+
+        // Distinct present minutes per logger. substr(recorded_at, 1, 16) is the
+        // same minute key presentCountsForLoggers uses (works on MySQL + SQLite).
+        $minutesByLogger = SensorLog::query()
+            ->whereIn('logger_id', $loggerIds)
+            ->whereBetween('recorded_at', [$dayStart, $dayEnd])
+            ->selectRaw('DISTINCT logger_id, substr(recorded_at, 1, 16) as minute')
+            ->orderBy('minute')
+            ->get()
+            ->groupBy('logger_id')
+            ->map(fn ($rows) => $rows->map(fn ($r) => Carbon::parse($r->minute))->values());
+
+        $integrationsByLogger = LoggerIntegration::query()
+            ->whereIn('logger_id', $loggerIds)
+            ->where('is_enabled', true)
+            ->get()
+            ->groupBy('logger_id');
+
+        // First-attempt rows counted per bucket+status. Bucket key is the
+        // integration id, or 'ministesy' for the integration-less Mini STESY rows.
+        $statusCounts = [];
+        $statusRows = ForwardingLog::query()
+            ->whereIn('logger_id', $loggerIds)
+            ->whereNull('resend_of')
+            ->whereBetween('created_at', [$dayStart, $dayEnd])
+            ->selectRaw('logger_id, integration_id, target_name, status, COUNT(*) as c')
+            ->groupBy('logger_id', 'integration_id', 'target_name', 'status')
+            ->get();
+        foreach ($statusRows as $row) {
+            $bucket = $this->bucketKeyForRow($row->integration_id, $row->target_name);
+            if ($bucket === null) {
+                continue;
+            }
+            $statusCounts[$row->logger_id][$bucket][$row->status] =
+                ($statusCounts[$row->logger_id][$bucket][$row->status] ?? 0) + (int) $row->c;
+        }
+
+        // Errors resolved by a later successful resend (child not day-filtered —
+        // a resend may run after midnight relative to the audited day).
+        $resolvedCounts = [];
+        $resolvedRows = ForwardingLog::query()
+            ->from('forwarding_logs as parent')
+            ->join('forwarding_logs as child', 'child.resend_of', '=', 'parent.id')
+            ->where('child.status', 'success')
+            ->whereIn('parent.logger_id', $loggerIds)
+            ->whereNull('parent.resend_of')
+            ->where('parent.status', 'error')
+            ->whereBetween('parent.created_at', [$dayStart, $dayEnd])
+            ->selectRaw('parent.logger_id as logger_id, parent.integration_id as integration_id, parent.target_name as target_name, COUNT(DISTINCT parent.id) as c')
+            ->groupBy('parent.logger_id', 'parent.integration_id', 'parent.target_name')
+            ->get();
+        foreach ($resolvedRows as $row) {
+            $bucket = $this->bucketKeyForRow($row->integration_id, $row->target_name);
+            if ($bucket === null) {
+                continue;
+            }
+            $resolvedCounts[$row->logger_id][$bucket] =
+                ($resolvedCounts[$row->logger_id][$bucket] ?? 0) + (int) $row->c;
+        }
+
+        return $loggers->mapWithKeys(function (Logger $logger) use ($minutesByLogger, $integrationsByLogger, $statusCounts, $resolvedCounts) {
+            $buckets = [];
+            foreach ($integrationsByLogger->get($logger->id, collect()) as $integration) {
+                $buckets[] = [
+                    'key' => (string) $integration->id,
+                    'interval' => (int) $integration->interval_minutes,
+                    'raw' => (bool) $integration->raw_forward,
+                ];
+            }
+            if ($logger->ministesy_enabled) {
+                $buckets[] = [
+                    'key' => 'ministesy',
+                    'interval' => (int) ($logger->ministesy_interval ?? 10),
+                    'raw' => (bool) $logger->ministesy_raw_forward,
+                ];
+            }
 
             if (empty($buckets)) {
                 return [$logger->id => null];
             }
 
+            $present = $minutesByLogger->get($logger->id, collect());
+            $due = $ok = $failed = 0;
+
+            foreach ($buckets as $bucket) {
+                $counts = $statusCounts[$logger->id][$bucket['key']] ?? [];
+                $resolved = $resolvedCounts[$logger->id][$bucket['key']] ?? 0;
+
+                $due += $this->dueMinutesList($present, $bucket['interval'], $bucket['raw'])->count();
+                $ok += ($counts['success'] ?? 0) + $resolved;
+                $failed += ($counts['error'] ?? 0) - $resolved;
+            }
+
             return [$logger->id => [
-                'due' => array_sum(array_column($buckets, 'due')),
-                'ok' => array_sum(array_column($buckets, 'forwarded_ok')),
-                'failed' => array_sum(array_column($buckets, 'failed')),
+                'due' => $due,
+                'ok' => $ok,
+                'failed' => $failed,
                 'targets' => count($buckets),
             ]];
         });
     }
 
-    public function integrationAudit(Logger $logger, CarbonInterface $date): array
+    /** Bucket key for a forwarding row: integration id, 'ministesy', or null (untracked). */
+    private function bucketKeyForRow(?int $integrationId, ?string $targetName): ?string
+    {
+        if ($integrationId !== null) {
+            return (string) $integrationId;
+        }
+
+        return $targetName === 'Mini STESY' ? 'ministesy' : null;
+    }
+
+    /**
+     * @param  Collection|null  $presentMinutes  precomputed DataAuditService::presentMinutes() result
+     * @param  Collection|null  $integrations  precomputed enabled LoggerIntegration list
+     */
+    public function integrationAudit(Logger $logger, CarbonInterface $date, ?Collection $presentMinutes = null, ?Collection $integrations = null): array
     {
         $day = Carbon::parse($date);
         $dayStart = $day->copy()->startOfDay();
         $dayEnd = $day->copy()->endOfDay();
         $dateStr = $day->toDateString();
-        $fromLogger = $this->audits->presentMinutes($logger, $date);
+        $fromLogger = $presentMinutes ?? $this->audits->presentMinutes($logger, $date);
         $present = $fromLogger->map(fn ($m) => Carbon::parse($m))->values();
         $fromCount = $fromLogger->count();
 
         $result = [];
 
-        $integrations = LoggerIntegration::where('logger_id', $logger->id)
+        $integrations = $integrations ?? LoggerIntegration::where('logger_id', $logger->id)
             ->where('is_enabled', true)
             ->get();
 
@@ -175,7 +287,8 @@ class ForwardingAuditService
         return $count;
     }
 
-    public function resendProgress(Logger $logger, CarbonInterface $date): array
+    /** @param  Collection|null  $integrations  precomputed enabled LoggerIntegration list */
+    public function resendProgress(Logger $logger, CarbonInterface $date, ?Collection $integrations = null): array
     {
         $day = Carbon::parse($date);
         $dayStart = $day->copy()->startOfDay();
@@ -183,9 +296,13 @@ class ForwardingAuditService
         $etaUnit = (int) config('resend.interval', 2);
         $staleAfter = (int) config('resend.stale_after', 300);
 
+        $integrations = $integrations ?? LoggerIntegration::where('logger_id', $logger->id)
+            ->where('is_enabled', true)
+            ->get();
+
         // Build the same bucket set as integrationAudit/resendFailed.
         $buckets = [];
-        foreach (LoggerIntegration::where('logger_id', $logger->id)->where('is_enabled', true)->get() as $integration) {
+        foreach ($integrations as $integration) {
             $buckets[] = ['key' => (string) $integration->id, 'name' => $integration->name, 'apply' => function ($q) use ($integration) {
                 $q->where('integration_id', $integration->id);
             }];
