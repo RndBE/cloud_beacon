@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Jobs\RunLoggerBackfill;
 use App\Models\Logger;
+use App\Models\LoggerIntegration;
 use App\Services\DataAuditService;
 use App\Services\ForwardingAuditService;
 use Carbon\Carbon;
@@ -80,15 +81,32 @@ class DataAuditController extends Controller
         $logger = $this->resolveLogger($id);
         $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
 
+        // Computed once and passed down — presentMinutes and the integration
+        // list used to be re-queried by every consumer below.
+        $present = $this->audits->presentMinutes($logger, $date);
+        $integrations = LoggerIntegration::query()
+            ->where('logger_id', $logger->id)
+            ->where('is_enabled', true)
+            ->get();
+
+        // Visible loggers for the station switcher in the hero.
+        $loggers = Logger::query()
+            ->visibleTo(auth()->user())
+            ->orderBy('name')
+            ->get(['id', 'name', 'device_identifier'])
+            ->map->only('id', 'name', 'device_identifier')
+            ->values();
+
         return Inertia::render('data-audit/show', [
             'logger' => $logger->only('id', 'name', 'device_identifier'),
+            'loggers' => $loggers,
             'date' => $date->toDateString(),
             'expected' => $this->audits->expectedFor($date),
-            'present' => $this->audits->presentMinutes($logger, $date)->count(),
-            'missing' => $this->audits->missingMinutes($logger, $date)->map->format('H:i')->values(),
+            'present' => $present->count(),
+            'missing' => $this->audits->missingMinutes($logger, $date, $present)->map->format('H:i')->values(),
             'progress' => $this->audits->backfillProgress($logger, $date),
-            'integrations' => $forwarding->integrationAudit($logger, $date),
-            'resendProgress' => $forwarding->resendProgress($logger, $date),
+            'integrations' => $forwarding->integrationAudit($logger, $date, $present, $integrations),
+            'resendProgress' => $forwarding->resendProgress($logger, $date, $integrations),
         ]);
     }
 

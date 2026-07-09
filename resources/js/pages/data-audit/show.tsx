@@ -1,12 +1,15 @@
 import { Head, router, useForm } from '@inertiajs/react';
 import {
     CalendarDays,
+    Check,
     ChevronLeft,
     ChevronRight,
+    ChevronsUpDown,
     RadioTower,
     Repeat,
+    Search,
 } from 'lucide-react';
-import { useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BackfillProgress } from '@/components/data-audit/backfill-progress';
 import {
@@ -25,6 +28,12 @@ import {
     CardTitle,
 } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import {
+    Tabs,
+    TabsContent,
+    TabsList,
+    TabsTrigger,
+} from '@/components/ui/tabs';
 import { useBackfillStatus } from '@/hooks/use-backfill-status';
 import type { BackfillProgress as Progress } from '@/hooks/use-backfill-status';
 import { useResendStatus } from '@/hooks/use-resend-status';
@@ -61,8 +70,12 @@ type IntegrationAudit = {
     coverage: Coverage;
 };
 
+type LoggerOption = { id: number; name: string; device_identifier: string };
+
 type Props = {
-    logger: { id: number; name: string; device_identifier: string };
+    logger: LoggerOption;
+    /** All loggers visible to the user — feeds the station switcher. */
+    loggers: LoggerOption[];
     date: string;
     expected: number;
     present: number;
@@ -119,12 +132,39 @@ function integrationCells(coverage: Coverage): HeatCell[] {
     });
 }
 
+type Tone = 'ok' | 'warn' | 'bad';
+
+const toneText: Record<Tone, string> = {
+    ok: 'text-emerald-600 dark:text-emerald-400',
+    warn: 'text-amber-600 dark:text-amber-400',
+    bad: 'text-red-600 dark:text-red-400',
+};
+
+const toneBar: Record<Tone, string> = {
+    ok: 'bg-emerald-500',
+    warn: 'bg-amber-500',
+    bad: 'bg-red-500',
+};
+
+const toneDot: Record<Tone, string> = {
+    ok: 'bg-emerald-500',
+    warn: 'bg-amber-500',
+    bad: 'bg-red-500',
+};
+
+function integrationTone(it: IntegrationAudit): Tone {
+    if (it.failed > 0) return 'bad';
+    if (it.never_attempted > 0) return 'warn';
+    return 'ok';
+}
+
 // -----------------------------------------------------------------------
 // Page component
 // -----------------------------------------------------------------------
 
 export default function DataAuditShow({
     logger,
+    loggers,
     date,
     expected,
     present,
@@ -176,30 +216,44 @@ export default function DataAuditShow({
         }));
     }, [missing, progress.updates]);
 
+    const backfillRunning = progress.total > 0 && progress.done < progress.total;
+
     const loggerLegend: LegendItem[] = [
         { cls: 'bg-muted', label: t('data_audit.legend_present', 'Ada') },
         {
             cls: 'bg-destructive/70',
             label: t('data_audit.legend_missing', 'Hilang'),
         },
-        {
-            cls: 'bg-emerald-500',
-            label: t('data_audit.legend_filled', 'Terisi (backfill)'),
-        },
-        {
-            cls: 'bg-amber-500',
-            label: t('data_audit.legend_requested', 'Sedang diminta'),
-        },
-        { cls: 'bg-red-700', label: t('data_audit.legend_failed', 'Gagal') },
-        {
-            cls: 'bg-slate-400',
-            label: t('data_audit.legend_unavailable', 'Tidak tersedia'),
-        },
+        // Backfill states only matter while a backfill has run/is running.
+        ...(progress.total > 0
+            ? [
+                  {
+                      cls: 'bg-emerald-500',
+                      label: t('data_audit.legend_filled', 'Terisi (backfill)'),
+                  },
+                  {
+                      cls: 'bg-amber-500',
+                      label: t('data_audit.legend_requested', 'Sedang diminta'),
+                  },
+                  {
+                      cls: 'bg-red-700',
+                      label: t('data_audit.legend_failed', 'Gagal'),
+                  },
+                  {
+                      cls: 'bg-slate-400',
+                      label: t(
+                          'data_audit.legend_unavailable',
+                          'Tidak tersedia',
+                      ),
+                  },
+              ]
+            : []),
     ];
 
     const completePct =
         expected === 0 ? 100 : Math.min(100, (present / expected) * 100);
     const hasGaps = missing.length > 0;
+    const tone: Tone = !hasGaps ? 'ok' : completePct >= 90 ? 'warn' : 'bad';
     const estSeconds = missing.length * 10;
     const estLabel = `${Math.floor(estSeconds / 3600)}h ${Math.round((estSeconds % 3600) / 60)}m`;
 
@@ -214,103 +268,147 @@ export default function DataAuditShow({
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={`Data Audit — ${logger.name}`} />
 
-            <div className="flex flex-col gap-6 p-4 md:p-6">
-                {/* ── Header card ─────────────────────────────────────── */}
-                <Card>
-                    <CardHeader>
-                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="min-w-0">
-                                <CardTitle className="truncate">
-                                    {logger.name}
-                                </CardTitle>
-                                <CardDescription className="mt-1 font-mono text-xs">
-                                    {logger.device_identifier}
-                                </CardDescription>
-                            </div>
-                            <div className="flex flex-col gap-2 sm:items-end">
-                                {/* Date navigation — pick any day to audit / backfill */}
-                                <div className="flex items-center gap-1.5">
-                                    <Button
-                                        variant="outline"
-                                        size="icon"
-                                        className="size-10 rounded-lg border-border/60"
+            <div className="flex flex-col gap-4 p-4 md:gap-5 md:p-6">
+                {/* ── Hero: identity, date, completeness ──────────────── */}
+                {/* overflow-visible: Card defaults to overflow-hidden, which clips the switcher dropdown */}
+                <Card className="overflow-visible">
+                    {/* px only — Card already carries py-4; adding p-* here doubled the vertical padding */}
+                    <CardContent className="flex flex-col gap-4 px-4 md:px-6">
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                            <LoggerSwitcher
+                                current={logger}
+                                loggers={loggers}
+                                date={date}
+                            />
+                            {/* Date navigation — pick any day to audit / backfill */}
+                            <div className="flex items-center gap-1.5">
+                                <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="size-10 rounded-lg border-border/60"
+                                    aria-label={t(
+                                        'data_audit.prev_day',
+                                        'Previous day',
+                                    )}
+                                    onClick={() => shiftDate(-1)}
+                                >
+                                    <ChevronLeft className="size-4" />
+                                </Button>
+                                <label className="flex h-10 items-center gap-2 rounded-lg border border-border/60 bg-muted/40 px-3 shadow-sm transition-colors focus-within:bg-background focus-within:ring-2 focus-within:ring-primary/20">
+                                    <CalendarDays className="size-4 shrink-0 text-muted-foreground" />
+                                    <input
+                                        type="date"
                                         aria-label={t(
-                                            'data_audit.prev_day',
-                                            'Previous day',
+                                            'data_audit.pick_date',
+                                            'Pick date',
                                         )}
-                                        onClick={() => shiftDate(-1)}
-                                    >
-                                        <ChevronLeft className="size-4" />
-                                    </Button>
-                                    <label className="flex h-10 items-center gap-2 rounded-lg border border-border/60 bg-muted/40 px-3 shadow-sm transition-colors focus-within:bg-background focus-within:ring-2 focus-within:ring-primary/20">
-                                        <CalendarDays className="size-4 shrink-0 text-muted-foreground" />
-                                        <input
-                                            type="date"
-                                            aria-label={t(
-                                                'data_audit.pick_date',
-                                                'Pick date',
-                                            )}
-                                            max={today}
-                                            value={date}
-                                            onChange={(e) =>
-                                                goToDate(e.target.value)
-                                            }
-                                            className="w-[120px] bg-transparent text-sm font-medium text-foreground [color-scheme:light] outline-none dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
-                                        />
-                                    </label>
-                                    <Button
-                                        variant="outline"
-                                        size="icon"
-                                        className="size-10 rounded-lg border-border/60"
-                                        aria-label={t(
-                                            'data_audit.next_day',
-                                            'Next day',
-                                        )}
-                                        disabled={date >= today}
-                                        onClick={() => shiftDate(1)}
-                                    >
-                                        <ChevronRight className="size-4" />
-                                    </Button>
-                                </div>
+                                        max={today}
+                                        value={date}
+                                        onChange={(e) =>
+                                            goToDate(e.target.value)
+                                        }
+                                        className="w-[120px] bg-transparent text-sm font-medium text-foreground [color-scheme:light] outline-none dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
+                                    />
+                                </label>
+                                <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="size-10 rounded-lg border-border/60"
+                                    aria-label={t(
+                                        'data_audit.next_day',
+                                        'Next day',
+                                    )}
+                                    disabled={date >= today}
+                                    onClick={() => shiftDate(1)}
+                                >
+                                    <ChevronRight className="size-4" />
+                                </Button>
                             </div>
                         </div>
-                    </CardHeader>
-                    <Separator />
-                    <CardContent className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
-                        <SummaryStat
-                            label={t('data_audit.completeness', 'Completeness')}
-                            value={`${completePct.toFixed(2)}%`}
-                            tone={
-                                hasGaps
-                                    ? completePct >= 90
-                                        ? 'warn'
-                                        : 'bad'
-                                    : 'ok'
-                            }
-                        />
-                        <SummaryStat
-                            label={t(
-                                'data_audit.minutes_present',
-                                'minutes present',
+
+                        {/* Completeness — the page's headline number */}
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                            <div className="flex items-end gap-5">
+                                <div>
+                                    <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                                        {t(
+                                            'data_audit.completeness',
+                                            'Completeness',
+                                        )}
+                                    </p>
+                                    <p
+                                        className={cn(
+                                            'text-4xl font-bold tracking-tight tabular-nums sm:text-5xl',
+                                            toneText[tone],
+                                        )}
+                                    >
+                                        {completePct.toFixed(2)}%
+                                    </p>
+                                </div>
+                                <div className="pb-1 text-sm leading-6 text-muted-foreground">
+                                    <p>
+                                        <span className="font-semibold text-foreground tabular-nums">
+                                            {present}
+                                        </span>
+                                        <span className="tabular-nums">
+                                            {' '}
+                                            / {expected}
+                                        </span>{' '}
+                                        {t('data_audit.min', 'min')}
+                                    </p>
+                                    <p
+                                        className={cn(
+                                            hasGaps && 'font-medium',
+                                            hasGaps && toneText[tone],
+                                        )}
+                                    >
+                                        <span className="tabular-nums">
+                                            {missing.length}
+                                        </span>{' '}
+                                        {t('data_audit.missing_lc', 'hilang')}
+                                    </p>
+                                </div>
+                            </div>
+                            {hasGaps && (
+                                <Button
+                                    disabled={processing}
+                                    onClick={() =>
+                                        post(
+                                            `/data-audit/${logger.id}/backfill`,
+                                        )
+                                    }
+                                >
+                                    <RadioTower className="size-4" />
+                                    {t(
+                                        'data_audit.backfill_btn',
+                                        'Backfill all gaps',
+                                    )}{' '}
+                                    ({missing.length}{' '}
+                                    {t('data_audit.min', 'min')} · ~{estLabel})
+                                </Button>
                             )}
-                            value={`${present} / ${expected}`}
-                        />
-                        <SummaryStat
-                            label={t('data_audit.missing_lc', 'missing')}
-                            value={missing.length}
-                            tone={hasGaps ? 'bad' : 'ok'}
-                        />
-                        <SummaryStat
-                            label={t(
-                                'forwarding_audit.title_short',
-                                'Integrasi',
-                            )}
-                            value={integrations.length}
-                        />
+                        </div>
+
+                        {/* Day bar — same visual language as the heatmaps below */}
+                        <div
+                            className="h-2 w-full overflow-hidden rounded-full bg-destructive/30"
+                            role="progressbar"
+                            aria-valuenow={Math.round(completePct)}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                        >
+                            <div
+                                className={cn(
+                                    'h-full rounded-full transition-[width]',
+                                    toneBar[tone],
+                                )}
+                                style={{ width: `${completePct}%` }}
+                            />
+                        </div>
                     </CardContent>
                 </Card>
 
-                {/* ── Minute coverage + backfill ──────────────────────── */}
+                {/* ── Minute coverage + backfill progress ─────────────── */}
                 <Card>
                     <CardHeader>
                         <CardTitle className="text-base">
@@ -324,71 +422,29 @@ export default function DataAuditShow({
                         </CardDescription>
                     </CardHeader>
                     <Separator />
-                    <CardContent className="flex flex-col gap-4 p-4">
+                    <CardContent className="flex flex-col gap-4 px-4">
                         <CoverageGrid cells={loggerCells} />
                         <CoverageLegend items={loggerLegend} />
 
-                        <Separator />
-
-                        {/* Backfill action — ALWAYS available while gaps remain, even if a
-                            backfill has already run (re-request the leftover minutes). */}
-                        {!hasGaps && progress.total === 0 ? (
-                            <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                                {t(
-                                    'data_audit.all_present',
-                                    'All minutes are present. No backfill needed.',
-                                )}
-                            </p>
-                        ) : (
-                            <div className="flex flex-col gap-4">
-                                {hasGaps && (
-                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                        <p className="text-sm text-muted-foreground">
-                                            <span className="font-semibold text-foreground">
-                                                {missing.length}
-                                            </span>{' '}
-                                            {t(
-                                                'data_audit.gaps_remaining',
-                                                'menit masih kosong',
-                                            )}
-                                        </p>
-                                        <Button
-                                            disabled={processing}
-                                            onClick={() =>
-                                                post(
-                                                    `/data-audit/${logger.id}/backfill`,
-                                                )
-                                            }
-                                        >
-                                            <RadioTower className="size-4" />
-                                            {t(
-                                                'data_audit.backfill_btn',
-                                                'Backfill all gaps',
-                                            )}{' '}
-                                            ({missing.length}{' '}
-                                            {t('data_audit.min', 'min')} · ~
-                                            {estLabel})
-                                        </Button>
-                                    </div>
-                                )}
-                                {progress.total > 0 && (
-                                    <BackfillProgress
-                                        embedded
-                                        progress={progress}
-                                        retrying={retry.processing}
-                                        onRetryFailed={() =>
-                                            retry.post(
-                                                `/data-audit/${logger.id}/retry-failed`,
-                                            )
-                                        }
-                                    />
-                                )}
-                            </div>
+                        {progress.total > 0 && (
+                            <>
+                                <Separator />
+                                <BackfillProgress
+                                    embedded
+                                    progress={progress}
+                                    retrying={retry.processing}
+                                    onRetryFailed={() =>
+                                        retry.post(
+                                            `/data-audit/${logger.id}/retry-failed`,
+                                        )
+                                    }
+                                />
+                            </>
                         )}
                     </CardContent>
                 </Card>
 
-                {/* ── Integrasi & Forwarding ──────────────────────────── */}
+                {/* ── Integrasi & Forwarding (tabbed) ─────────────────── */}
                 <Card>
                     <CardHeader>
                         <CardTitle className="text-base">
@@ -405,7 +461,7 @@ export default function DataAuditShow({
                         </CardDescription>
                     </CardHeader>
                     <Separator />
-                    <CardContent className="flex flex-col gap-4 p-4">
+                    <CardContent className="px-4">
                         {integrations.length === 0 ? (
                             <p className="text-sm text-muted-foreground">
                                 {t(
@@ -414,15 +470,55 @@ export default function DataAuditShow({
                                 )}
                             </p>
                         ) : (
-                            integrations.map((it) => (
-                                <IntegrationCard
-                                    key={it.key}
-                                    audit={it}
-                                    live={resendProg[it.key]}
-                                    resending={resend.processing}
-                                    onResend={() => resendFailed(it.key)}
-                                />
-                            ))
+                            <Tabs defaultValue={integrations[0].key}>
+                                {/* overflow-y-hidden: overflow-x:auto alone forces
+                                    overflow-y to auto, and the tab underline pseudo
+                                    (bottom -5px) would otherwise spawn a vertical
+                                    scrollbar even when everything fits. */}
+                                <div className="overflow-x-auto overflow-y-hidden">
+                                    <TabsList className="h-9 w-full min-w-fit justify-start">
+                                        {integrations.map((it) => {
+                                            const itTone = integrationTone(it);
+                                            return (
+                                                <TabsTrigger
+                                                    key={it.key}
+                                                    value={it.key}
+                                                    className="flex-none gap-1.5 px-3"
+                                                >
+                                                    <span
+                                                        className={cn(
+                                                            'size-2 shrink-0 rounded-full',
+                                                            toneDot[itTone],
+                                                        )}
+                                                    />
+                                                    {it.name}
+                                                    {it.failed > 0 && (
+                                                        <span className="rounded-full bg-red-500/15 px-1.5 py-px text-[10px] font-semibold text-red-600 tabular-nums dark:text-red-400">
+                                                            {it.failed}
+                                                        </span>
+                                                    )}
+                                                </TabsTrigger>
+                                            );
+                                        })}
+                                    </TabsList>
+                                </div>
+                                {integrations.map((it) => (
+                                    <TabsContent
+                                        key={it.key}
+                                        value={it.key}
+                                        className="mt-4"
+                                    >
+                                        <IntegrationPanel
+                                            audit={it}
+                                            live={resendProg[it.key]}
+                                            resending={resend.processing}
+                                            onResend={() =>
+                                                resendFailed(it.key)
+                                            }
+                                        />
+                                    </TabsContent>
+                                ))}
+                            </Tabs>
                         )}
                     </CardContent>
                 </Card>
@@ -435,7 +531,139 @@ export default function DataAuditShow({
 // Sub-components
 // -----------------------------------------------------------------------
 
-function IntegrationCard({
+/** Station (pos) switcher — searchable dropdown over the user's visible loggers. */
+function LoggerSwitcher({
+    current,
+    loggers,
+    date,
+}: {
+    current: LoggerOption;
+    loggers: LoggerOption[];
+    date: string;
+}) {
+    const { t } = useTranslation();
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState('');
+    const rootRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!open) return;
+        function onPointerDown(e: MouseEvent) {
+            if (
+                rootRef.current &&
+                !rootRef.current.contains(e.target as Node)
+            ) {
+                setOpen(false);
+            }
+        }
+        function onKeyDown(e: KeyboardEvent) {
+            if (e.key === 'Escape') setOpen(false);
+        }
+        document.addEventListener('mousedown', onPointerDown);
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+            document.removeEventListener('mousedown', onPointerDown);
+            document.removeEventListener('keydown', onKeyDown);
+        };
+    }, [open]);
+
+    const q = query.trim().toLowerCase();
+    const filtered = q
+        ? loggers.filter(
+              (l) =>
+                  l.name.toLowerCase().includes(q) ||
+                  (l.device_identifier ?? '').toLowerCase().includes(q),
+          )
+        : loggers;
+
+    function select(id: number) {
+        setOpen(false);
+        setQuery('');
+        if (id !== current.id) {
+            router.get(`/data-audit/${id}`, { date }, { preserveState: false });
+        }
+    }
+
+    return (
+        <div ref={rootRef} className="relative min-w-0">
+            <button
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                onClick={() => setOpen((v) => !v)}
+                className="group -mx-2 flex min-w-0 items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:outline-none"
+            >
+                <span className="min-w-0">
+                    <span className="block truncate text-lg font-semibold tracking-tight">
+                        {current.name}
+                    </span>
+                    <span className="mt-0.5 block truncate font-mono text-xs text-muted-foreground">
+                        {current.device_identifier}
+                    </span>
+                </span>
+                <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+            </button>
+
+            {open && (
+                <div className="absolute top-full left-0 z-50 mt-1.5 w-72 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-md">
+                    <div className="flex items-center gap-2 border-b px-3">
+                        <Search className="size-4 shrink-0 text-muted-foreground" />
+                        <input
+                            autoFocus
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder={t(
+                                'data_audit.search_pos',
+                                'Cari pos…',
+                            )}
+                            className="h-9 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                        />
+                    </div>
+                    <ul role="listbox" className="max-h-64 overflow-y-auto p-1">
+                        {filtered.length === 0 && (
+                            <li className="px-2 py-6 text-center text-sm text-muted-foreground">
+                                {t(
+                                    'data_audit.no_pos',
+                                    'Pos tidak ditemukan',
+                                )}
+                            </li>
+                        )}
+                        {filtered.map((l) => (
+                            <li
+                                key={l.id}
+                                role="option"
+                                aria-selected={l.id === current.id}
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => select(l.id)}
+                                    className={cn(
+                                        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted',
+                                        l.id === current.id && 'bg-muted/60',
+                                    )}
+                                >
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block truncate font-medium">
+                                            {l.name}
+                                        </span>
+                                        <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                                            {l.device_identifier}
+                                        </span>
+                                    </span>
+                                    {l.id === current.id && (
+                                        <Check className="size-4 shrink-0 text-primary" />
+                                    )}
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function IntegrationPanel({
     audit,
     live,
     resending,
@@ -480,30 +708,28 @@ function IntegrationCard({
     const showResend = audit.failed > 0 && !running;
 
     return (
-        <div className="rounded-lg border border-border/60 p-4">
-            {/* Header row */}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                    <p className="truncate font-semibold">{audit.name}</p>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                        <Badge>
-                            {t('forwarding_audit.interval', 'Interval')}:{' '}
-                            {audit.interval} {t('data_audit.min', 'min')}
-                        </Badge>
-                        {audit.raw && (
-                            <Badge tone="info">
-                                {t(
-                                    'forwarding_audit.raw_mode',
-                                    'Raw — semua record',
-                                )}
-                            </Badge>
-                        )}
-                    </div>
+        <div className="flex flex-col gap-4">
+            {/* Meta + action */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-1.5">
+                    <MetaBadge>
+                        {t('forwarding_audit.interval', 'Interval')}:{' '}
+                        {audit.interval} {t('data_audit.min', 'min')}
+                    </MetaBadge>
+                    {audit.raw && (
+                        <MetaBadge tone="info">
+                            {t(
+                                'forwarding_audit.raw_mode',
+                                'Raw — semua record',
+                            )}
+                        </MetaBadge>
+                    )}
                 </div>
                 <div className="shrink-0">
                     {showResend ? (
                         <Button
                             variant="destructive"
+                            size="sm"
                             disabled={resending}
                             onClick={onResend}
                         >
@@ -539,34 +765,34 @@ function IntegrationCard({
                 </div>
             </div>
 
-            {/* Stats */}
-            <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
-                <Stat
+            {/* Stat chips */}
+            <div className="flex flex-wrap gap-1.5">
+                <StatChip
                     label={t('forwarding_audit.from_logger', 'Dari logger')}
                     value={audit.from_logger}
                 />
-                <Stat
+                <StatChip
                     label={t('forwarding_audit.due', 'Harus diteruskan')}
                     value={audit.due}
                 />
-                <Stat
+                <StatChip
                     label={t('forwarding_audit.forwarded_ok', 'Terkirim OK')}
                     value={audit.forwarded_ok}
-                    tone="ok"
+                    tone={audit.forwarded_ok > 0 ? 'ok' : undefined}
                 />
-                <Stat
+                <StatChip
                     label={t('forwarding_audit.failed', 'Gagal')}
                     value={audit.failed}
                     tone={audit.failed > 0 ? 'bad' : undefined}
                 />
-                <Stat
+                <StatChip
                     label={t('forwarding_audit.skipped', 'Di-skip (interval)')}
                     value={audit.skipped}
                 />
             </div>
 
             {/* Coverage heatmap */}
-            <div className="mt-4 flex flex-col gap-2.5">
+            <div className="flex flex-col gap-2.5">
                 <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                     {t(
                         'forwarding_audit.coverage_title',
@@ -578,7 +804,7 @@ function IntegrationCard({
             </div>
 
             {audit.never_attempted > 0 && (
-                <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
+                <p className="text-xs text-amber-600 dark:text-amber-400">
                     {audit.never_attempted}{' '}
                     {t(
                         'forwarding_audit.never_attempted_hint',
@@ -590,7 +816,7 @@ function IntegrationCard({
             {/* Live resend progress */}
             {live && (
                 <>
-                    <Separator className="my-4" />
+                    <Separator />
                     <ResendProgress embedded progress={live} />
                 </>
             )}
@@ -598,39 +824,7 @@ function IntegrationCard({
     );
 }
 
-function SummaryStat({
-    label,
-    value,
-    tone,
-}: {
-    label: string;
-    value: string | number;
-    tone?: 'ok' | 'warn' | 'bad';
-}) {
-    const color =
-        tone === 'ok'
-            ? 'text-emerald-600 dark:text-emerald-400'
-            : tone === 'warn'
-              ? 'text-amber-600 dark:text-amber-400'
-              : tone === 'bad'
-                ? 'text-red-600 dark:text-red-400'
-                : 'text-foreground';
-    return (
-        <div className="rounded-lg bg-muted/40 px-3 py-2.5">
-            <p className="text-xs text-muted-foreground">{label}</p>
-            <p
-                className={cn(
-                    'mt-0.5 text-xl font-bold tracking-tight tabular-nums',
-                    color,
-                )}
-            >
-                {value}
-            </p>
-        </div>
-    );
-}
-
-function Stat({
+function StatChip({
     label,
     value,
     tone,
@@ -646,16 +840,22 @@ function Stat({
               ? 'text-red-600 dark:text-red-400'
               : 'text-foreground';
     return (
-        <div className="rounded-md bg-muted/40 p-2">
-            <p className="text-xs text-muted-foreground">{label}</p>
-            <p className={cn('text-lg font-semibold tabular-nums', color)}>
+        <span className="inline-flex items-baseline gap-1.5 rounded-md bg-muted/50 px-2 py-1 text-xs">
+            <span className="text-muted-foreground">{label}</span>
+            <span className={cn('font-semibold tabular-nums', color)}>
                 {value}
-            </p>
-        </div>
+            </span>
+        </span>
     );
 }
 
-function Badge({ children, tone }: { children: ReactNode; tone?: 'info' }) {
+function MetaBadge({
+    children,
+    tone,
+}: {
+    children: ReactNode;
+    tone?: 'info';
+}) {
     return (
         <span
             className={cn(

@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { cn } from '@/lib/utils';
 
 export type HeatCell = { key: string; cls: string };
@@ -7,8 +8,11 @@ export type LegendItem = { cls: string; label: string };
  * A 1 440-cell minute heatmap — 60 columns (one row per hour). Each cell carries
  * its own background class so callers can map their own status → colour scheme
  * (logger backfill states, integration forwarding states, …).
+ *
+ * Memoized: 1,440 nodes per grid — parents re-render on every poll tick, so
+ * skipping unchanged grids matters.
  */
-export function CoverageGrid({ cells }: { cells: HeatCell[] }) {
+export const CoverageGrid = memo(function CoverageGrid({ cells }: { cells: HeatCell[] }) {
     return (
         <div className="grid grid-cols-[repeat(60,minmax(0,1fr))] gap-px overflow-hidden rounded-md">
             {cells.map((cell) => (
@@ -20,7 +24,7 @@ export function CoverageGrid({ cells }: { cells: HeatCell[] }) {
             ))}
         </div>
     );
-}
+});
 
 /** Small inline legend describing the colours used in a CoverageGrid. */
 export function CoverageLegend({ items }: { items: LegendItem[] }) {

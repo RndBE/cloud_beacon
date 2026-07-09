@@ -69,3 +69,18 @@ it('forbids backfilling a logger the user does not own', function () {
         ->post("/data-audit/{$logger->id}/backfill", ['date' => '2026-06-20'])
         ->assertNotFound();
 });
+
+it('ships the visible logger list for the station switcher on show', function () {
+    $user = User::factory()->create();
+    $mine = Logger::factory()->create(['user_id' => $user->id, 'name' => 'Pos A']);
+    Logger::factory()->create(['name' => 'Pos Orang Lain']); // not visible
+
+    $this->actingAs($user)
+        ->get("/data-audit/{$mine->id}?date=2026-06-20")
+        ->assertInertia(fn (Inertia\Testing\AssertableInertia $page) => $page
+            ->component('data-audit/show')
+            ->has('loggers', 1)
+            ->where('loggers.0.id', $mine->id)
+            ->where('loggers.0.name', 'Pos A')
+        );
+});
