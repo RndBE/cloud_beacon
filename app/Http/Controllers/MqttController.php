@@ -53,11 +53,13 @@ class MqttController extends Controller
         $request->validate(['id_logger' => 'required|string']);
 
         $idLogger = $request->input('id_logger');
+        // Resolve the DB row if it exists, but DON'T hard-fail when it doesn't.
+        // The "Add Logger" wizard pings a device via this endpoint BEFORE the
+        // `loggers` row is created (the row is only inserted on the final submit),
+        // so an early 404 here breaks provisioning of a brand-new device whose SN
+        // is already in the production registry. All the DB writes below are
+        // already guarded by `if ($logger)`, so a null logger just skips them.
         $logger = $this->resolveVisibleLogger($idLogger);
-
-        if (!$logger) {
-            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
-        }
 
         $mqtt = new MqttService();
         $info = $mqtt->requestInfo($idLogger);
