@@ -9,6 +9,10 @@ use App\Http\Controllers\Api\Mobile\MqttCredentialController;
 use App\Http\Controllers\Api\Mobile\TopologyController;
 use Illuminate\Support\Facades\Route;
 
+// Internal: ssh-bridge redeems one-time terminal session tokens (shared-secret header).
+Route::post('internal/cloud-ssh/validate', [\App\Http\Controllers\Api\CloudSshBridgeController::class, 'validateToken'])
+    ->name('internal.cloud-ssh.validate');
+
 Route::prefix('mobile/v1')->group(function () {
     Route::post('login', [AuthController::class, 'login'])->name('mobile.login');
 

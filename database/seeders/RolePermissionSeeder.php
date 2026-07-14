@@ -41,6 +41,11 @@ class RolePermissionSeeder extends Seeder
             ['name' => 'maintenance.close', 'display_name' => 'Close Maintenance Tickets', 'group' => 'Maintenance'],
             ['name' => 'maintenance.delete', 'display_name' => 'Delete Maintenance Tickets', 'group' => 'Maintenance'],
 
+            // Cloud SSH
+            ['name' => 'cloudssh.view', 'display_name' => 'View Remote Devices', 'group' => 'Cloud SSH'],
+            ['name' => 'cloudssh.connect', 'display_name' => 'Open SSH Terminal', 'group' => 'Cloud SSH'],
+            ['name' => 'cloudssh.manage', 'display_name' => 'Manage Remote Devices', 'group' => 'Cloud SSH'],
+
             // RBAC Management
             ['name' => 'roles.view', 'display_name' => 'View Roles', 'group' => 'RBAC'],
             ['name' => 'roles.create', 'display_name' => 'Create Roles', 'group' => 'RBAC'],
@@ -92,6 +97,7 @@ class RolePermissionSeeder extends Seeder
                 'maintenance.view',
                 'maintenance.create',
                 'maintenance.delete',
+                'cloudssh.view',
             ])->pluck('id')
         );
 
@@ -106,6 +112,7 @@ class RolePermissionSeeder extends Seeder
                 'loggers.view',
                 'maintenance.view',
                 'maintenance.update',
+                'cloudssh.view',
             ])->pluck('id')
         );
 

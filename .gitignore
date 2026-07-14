@@ -2,6 +2,7 @@
 /bootstrap/ssr
 /mobile_cloud/*
 /node_modules
+/ssh-bridge/node_modules
 /public/build
 /public/hot
 /public/storage

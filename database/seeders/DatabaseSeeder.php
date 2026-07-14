@@ -34,6 +34,7 @@ class DatabaseSeeder extends Seeder
             LoggerModeSeeder::class,
             LoggerSeeder::class,
             ProductionDeviceSeeder::class,
+            RemoteDeviceSeeder::class,
         ]);
     }
 }

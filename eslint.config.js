@@ -79,6 +79,7 @@ export default [
             'resources/js/actions/**',
             'resources/js/components/ui/*',
             'resources/js/routes/**',
+            'ssh-bridge/**',
         ],
     },
     prettier, // Turn off all rules that might conflict with Prettier

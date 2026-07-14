@@ -278,6 +278,26 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('loggers/{loggerId}/sensor-devices/{connType}/{groupId}', [\App\Http\Controllers\SensorController::class, 'destroyGroup'])
         ->name('sensors.destroyGroup');
 
+    // Cloud SSH — web terminal to remote devices over WireGuard
+    Route::get('cloud-ssh', [\App\Http\Controllers\RemoteDeviceController::class, 'index'])
+        ->middleware('permission:cloudssh.view')
+        ->name('cloud-ssh.index');
+    Route::post('cloud-ssh', [\App\Http\Controllers\RemoteDeviceController::class, 'store'])
+        ->middleware('permission:cloudssh.manage')
+        ->name('cloud-ssh.store');
+    Route::put('cloud-ssh/{device}', [\App\Http\Controllers\RemoteDeviceController::class, 'update'])
+        ->middleware('permission:cloudssh.manage')
+        ->name('cloud-ssh.update');
+    Route::delete('cloud-ssh/{device}', [\App\Http\Controllers\RemoteDeviceController::class, 'destroy'])
+        ->middleware('permission:cloudssh.manage')
+        ->name('cloud-ssh.destroy');
+    Route::get('cloud-ssh/{device}/terminal', [\App\Http\Controllers\CloudSshSessionController::class, 'terminal'])
+        ->middleware('permission:cloudssh.connect')
+        ->name('cloud-ssh.terminal');
+    Route::post('cloud-ssh/{device}/session', [\App\Http\Controllers\CloudSshSessionController::class, 'store'])
+        ->middleware('permission:cloudssh.connect')
+        ->name('cloud-ssh.session');
+
     // Platform Integration CRUD (nested under logger)
     Route::post('loggers/{id}/integrations', [IntegrationController::class, 'store'])
         ->name('integrations.store');

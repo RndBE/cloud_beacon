@@ -1,0 +1,15 @@
+{
+    "name": "cloud-beacon-ssh-bridge",
+    "private": true,
+    "version": "1.0.0",
+    "description": "WebSocket ⇄ SSH bridge for the Cloud SSH web terminal",
+    "type": "module",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "ssh2": "^1.16.0",
+        "ws": "^8.18.0"
+    }
+}
