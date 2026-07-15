@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\IpUtils;
 
 final class CloudWebTargetPolicy
@@ -18,19 +17,38 @@ final class CloudWebTargetPolicy
         }
 
         foreach ((array) config('cloud-web.allowed_cidrs', []) as $cidr) {
-            if (! is_string($cidr) || trim($cidr) === '') {
+            if (! is_string($cidr)) {
                 continue;
             }
 
-            try {
-                if (IpUtils::checkIp($host, $cidr)) {
-                    return true;
-                }
-            } catch (InvalidArgumentException) {
-                // Fail closed when an allowed CIDR is malformed.
+            $cidr = trim($cidr);
+
+            if (! $this->validIpv4Cidr($cidr)) {
+                continue;
+            }
+
+            if (IpUtils::checkIp($host, $cidr)) {
+                return true;
             }
         }
 
         return false;
+    }
+
+    private function validIpv4Cidr(string $cidr): bool
+    {
+        [$address, $prefix] = array_pad(explode('/', $cidr, 2), 2, null);
+
+        if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+            return false;
+        }
+
+        if ($prefix === null) {
+            return true;
+        }
+
+        return $prefix !== ''
+            && ctype_digit($prefix)
+            && (int) $prefix <= 32;
     }
 }

@@ -238,6 +238,33 @@ it('rejects unsafe cloud web targets', function (string $host, int $port) {
     'port above maximum' => ['10.8.0.2', 65536],
 ]);
 
+it('fails closed for malformed allowed IPv4 CIDRs', function (string $cidr) {
+    config(['cloud-web.allowed_cidrs' => [$cidr]]);
+
+    $result = null;
+    $exception = null;
+
+    try {
+        $result = app(CloudWebTargetPolicy::class)->allows('10.8.0.2', 80);
+    } catch (Throwable $caught) {
+        $exception = $caught;
+    }
+
+    expect($exception)->toBeNull()
+        ->and($result)->toBeFalse();
+})->with([
+    'mixed alphanumeric prefix' => ['10.8.0.0/1foo'],
+    'decimal prefix' => ['10.8.0.0/1.5'],
+    'signed prefix' => ['10.8.0.0/+24'],
+    'scientific prefix' => ['10.8.0.0/1e1'],
+    'empty prefix' => ['10.8.0.0/'],
+    'negative prefix' => ['10.8.0.0/-1'],
+    'prefix above IPv4 maximum' => ['10.8.0.0/33'],
+    'multiple separators' => ['10.8.0.0/24/1'],
+    'malformed address' => ['10.8.0.999/24'],
+    'IPv6 range' => ['fd00::/64'],
+]);
+
 it('allows SSH hostnames while effective web access is disabled', function () {
     $user = cloudWebUserWithPermissions(['cloudssh.manage']);
 
