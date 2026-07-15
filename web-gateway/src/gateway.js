@@ -18,6 +18,22 @@ import { SessionStore } from './session-store.js';
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 const LOCAL_HOST_PATTERN =
     /^(?:localhost|127\.0\.0\.1|\[::1\])(?::[1-9][0-9]{0,4})?$/i;
+const HOP_BY_HOP_HEADERS = Object.freeze([
+    'connection',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'proxy-connection',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade',
+]);
+const PROXY_IDENTITY_HEADERS = Object.freeze([
+    'cf-connecting-ip',
+    'forwarded',
+    'x-real-ip',
+]);
 const STATUS_TEXT = Object.freeze({
     401: 'Unauthorized',
     404: 'Not Found',
@@ -111,6 +127,44 @@ function rejectUpgrade(socket, status, cloudBeaconUrl) {
     );
 }
 
+function connectionNominatedHeaders(headers) {
+    const rawConnection = headers.connection;
+    const values = Array.isArray(rawConnection)
+        ? rawConnection
+        : [rawConnection];
+
+    return values.flatMap((value) =>
+        typeof value === 'string'
+            ? value
+                  .split(',')
+                  .map((name) => name.trim().toLowerCase())
+                  .filter((name) => name.length > 0)
+            : [],
+    );
+}
+
+function stripUntrustedProxyHeaders(headers, { webSocket = false } = {}) {
+    const nominated = connectionNominatedHeaders(headers);
+
+    for (const name of [...nominated, ...HOP_BY_HOP_HEADERS]) {
+        delete headers[name];
+    }
+
+    for (const name of Object.keys(headers)) {
+        if (
+            name.toLowerCase().startsWith('x-forwarded-') ||
+            PROXY_IDENTITY_HEADERS.includes(name.toLowerCase())
+        ) {
+            delete headers[name];
+        }
+    }
+
+    if (webSocket) {
+        headers.connection = 'Upgrade';
+        headers.upgrade = 'websocket';
+    }
+}
+
 function setForwardingHeaders(proxyReq, context) {
     if (proxyReq.headersSent) {
         return;
@@ -131,6 +185,20 @@ function setForwardingHeaders(proxyReq, context) {
 }
 
 function prepareForwardingHeaders(context) {
+    stripUntrustedProxyHeaders(context.req.headers, {
+        webSocket: context.webSocket,
+    });
+
+    // Node has already validated and decoded incoming chunk framing. Recreate
+    // only the canonical framing needed to stream an unknown-length body.
+    if (
+        context.requestHadBodyFraming &&
+        !context.webSocket &&
+        context.req.headers['content-length'] === undefined
+    ) {
+        context.req.headers['transfer-encoding'] = 'chunked';
+    }
+
     context.req.headers.host = context.hostname;
     context.req.headers['x-forwarded-host'] = context.hostname;
     context.req.headers['x-forwarded-proto'] = 'https';
@@ -149,7 +217,8 @@ function targetUrl(session) {
     return `http://${session.host}:${session.port}`;
 }
 
-function sanitizeUpstreamCookieHeaders(message) {
+function sanitizeUpstreamHeaders(message, { webSocket = false } = {}) {
+    stripUntrustedProxyHeaders(message.headers, { webSocket });
     const sanitized = sanitizeSetCookies(message.headers['set-cookie']);
 
     if (sanitized.length === 0) {
@@ -291,7 +360,7 @@ export function createGateway({
         }
 
         context.proxyRes = proxyRes;
-        sanitizeUpstreamCookieHeaders(proxyRes);
+        sanitizeUpstreamHeaders(proxyRes);
 
         proxyRes.on('data', () => {
             touchHttp(context);
@@ -324,15 +393,20 @@ export function createGateway({
         const context = {
             clientIp: clientIp(req),
             closed: false,
+            downstreamConnection: req.shouldKeepAlive ? 'keep-alive' : 'close',
             hostname: host.hostname,
             proxyReq: null,
             proxyRes: null,
             req,
+            requestHadBodyFraming:
+                req.headers['content-length'] !== undefined ||
+                req.headers['transfer-encoding'] !== undefined,
             res,
             sessionId,
             sessionTimer: null,
             slug: host.slug,
             upstreamTimer: null,
+            webSocket: false,
         };
         httpContexts.set(req, context);
         prepareForwardingHeaders(context);
@@ -354,6 +428,9 @@ export function createGateway({
         proxy.web(req, res, {
             target: targetUrl(session),
         });
+        // http-proxy needs the downstream connection preference when it writes
+        // the module response, but this canonical value was not copied upstream.
+        req.headers.connection = context.downstreamConnection;
     }
 
     async function connect(req, res, host, url) {
@@ -515,6 +592,7 @@ export function createGateway({
         }
 
         context.closed = true;
+        clearTimeout(context.handshakeTimer);
         clearTimeout(context.sessionTimer);
         clearTimeout(context.upstreamTimer);
         webSocketContexts.delete(context);
@@ -525,8 +603,21 @@ export function createGateway({
             context.socket.destroy();
         }
 
+        context.proxyReq?.destroy();
         context.proxySocket?.destroy();
-        context.wsProxy.removeAllListeners();
+    }
+
+    function armWebSocketHandshake(context) {
+        if (context.closed || context.opened) {
+            return;
+        }
+
+        clearTimeout(context.handshakeTimer);
+        context.handshakeTimer = setTimeout(
+            () => destroyWebSocket(context, { replyStatus: 502 }),
+            config.connectTimeoutMs,
+        );
+        context.handshakeTimer.unref();
     }
 
     function armWebSocketSession(context, session) {
@@ -611,8 +702,10 @@ export function createGateway({
         const context = {
             clientIp: clientIp(req),
             closed: false,
+            handshakeTimer: null,
             hostname: host.hostname,
             opened: false,
+            proxyReq: null,
             proxySocket: null,
             req,
             sessionId,
@@ -620,23 +713,40 @@ export function createGateway({
             slug: host.slug,
             socket,
             upstreamTimer: null,
+            webSocket: true,
             wsProxy,
         };
         webSocketContexts.add(context);
         prepareForwardingHeaders(context);
         armWebSocketSession(context, session);
-        armWebSocketUpstreamIdle(context);
+        armWebSocketHandshake(context);
         socket.on('data', () => {
             touchWebSocket(context);
-            armWebSocketUpstreamIdle(context);
+
+            if (context.opened) {
+                armWebSocketUpstreamIdle(context);
+            }
         });
+        socket.once('end', () => destroyWebSocket(context));
+        socket.once('error', () => destroyWebSocket(context));
         socket.once('close', () => destroyWebSocket(context));
         wsProxy.once('proxyReqWs', (proxyReq) => {
+            context.proxyReq = proxyReq;
             setForwardingHeaders(proxyReq, context);
-            proxyReq.once('response', sanitizeUpstreamCookieHeaders);
-            proxyReq.once('upgrade', sanitizeUpstreamCookieHeaders);
+            proxyReq.once('response', (proxyRes) => {
+                clearTimeout(context.handshakeTimer);
+                sanitizeUpstreamHeaders(proxyRes);
+                proxyRes.headers.connection = 'close';
+                armWebSocketUpstreamIdle(context);
+                proxyRes.on('data', () => armWebSocketUpstreamIdle(context));
+            });
+            proxyReq.once('upgrade', (proxyRes) => {
+                clearTimeout(context.handshakeTimer);
+                sanitizeUpstreamHeaders(proxyRes, { webSocket: true });
+            });
         });
         wsProxy.once('open', (proxySocket) => {
+            clearTimeout(context.handshakeTimer);
             context.opened = true;
             context.proxySocket = proxySocket;
             touchWebSocket(context);
@@ -647,7 +757,11 @@ export function createGateway({
             });
             proxySocket.once('close', () => destroyWebSocket(context));
         });
-        wsProxy.once('error', () => {
+        wsProxy.on('error', () => {
+            if (context.closed) {
+                return;
+            }
+
             log.warn('Cloud Web websocket upstream failed.', {
                 event: 'cloud_web.websocket',
                 slug: context.slug,

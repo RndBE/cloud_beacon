@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import test from 'node:test';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
 import { GATEWAY_COOKIE_NAME } from '../src/cookies.js';
 import { createGateway } from '../src/gateway.js';
+import { redeemToken, RedeemRejectedError } from '../src/redeem.js';
 
 const PUBLIC_HOST = 'device-001.be-stesy.cloud';
 const BRIDGE_SECRET = 'integration-bridge-secret';
@@ -33,6 +35,61 @@ function closeServer(server) {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections?.();
     });
+}
+
+function withTimeout(promise, milliseconds, message) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(
+            () => reject(new Error(message)),
+            milliseconds,
+        );
+
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            (error) => {
+                clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
+}
+
+async function createStalledServer() {
+    const sockets = new Set();
+    let acceptUpstream;
+    const accepted = new Promise((resolve) => {
+        acceptUpstream = resolve;
+    });
+    let closeUpstream;
+    const closed = new Promise((resolve) => {
+        closeUpstream = resolve;
+    });
+    const server = net.createServer((socket) => {
+        sockets.add(socket);
+        acceptUpstream();
+        socket.on('data', () => {});
+        socket.once('close', () => {
+            sockets.delete(socket);
+            closeUpstream();
+        });
+    });
+    const port = await listen(server);
+
+    return {
+        accepted,
+        closed,
+        port,
+        async close() {
+            for (const socket of sockets) {
+                socket.destroy();
+            }
+
+            await closeServer(server);
+        },
+    };
 }
 
 function request(
@@ -140,6 +197,11 @@ async function createHarness({
 
     wss.on('headers', (headers) => {
         headers.push(
+            'Connection: Upgrade, X-Upstream-WS-Hop',
+            'X-Upstream-WS-Hop: must-not-leak',
+            'Keep-Alive: timeout=60',
+            'Proxy-Authenticate: must-not-leak',
+            'Forwarded: for=10.8.0.2',
             'Set-Cookie: socket_session=yes; Domain=.be-stesy.cloud; Path=/',
             `Set-Cookie: ${GATEWAY_COOKIE_NAME}=attacker; Domain=be-stesy.cloud; Path=/`,
         );
@@ -181,6 +243,22 @@ async function createHarness({
             res.write('first');
             setTimeout(() => res.write('-second'), 25);
             setTimeout(() => res.end('-third'), 55);
+
+            return;
+        }
+
+        if (req.url === '/response-headers') {
+            res.setHeader('Connection', 'keep-alive, X-Upstream-Hop');
+            res.setHeader('X-Upstream-Hop', 'must-not-leak');
+            res.setHeader('Keep-Alive', 'timeout=60');
+            res.setHeader('Proxy-Authenticate', 'Basic realm="upstream"');
+            res.setHeader('Proxy-Authorization', 'must-not-leak');
+            res.setHeader('Proxy-Connection', 'keep-alive');
+            res.setHeader('Upgrade', 'h2c');
+            res.setHeader('Forwarded', 'for=10.8.0.2');
+            res.setHeader('X-Real-IP', '10.8.0.2');
+            res.setHeader('X-Forwarded-For', '10.8.0.2');
+            res.end('sanitized-response');
 
             return;
         }
@@ -346,6 +424,33 @@ function assertSafeError(response, forbiddenValues = []) {
     }
 }
 
+test('cancels a rejected Laravel response body before returning a safe error', async () => {
+    let cancelled = false;
+    const config = {
+        laravelInternalUrl:
+            'https://be-stesy.cloud/api/internal/cloud-web/validate',
+        bridgeSecret: BRIDGE_SECRET,
+    };
+
+    await assert.rejects(
+        redeemToken({
+            config,
+            token: token('a'),
+            fetchImpl: async () => ({
+                ok: false,
+                status: 404,
+                body: {
+                    async cancel() {
+                        cancelled = true;
+                    },
+                },
+            }),
+        }),
+        RedeemRejectedError,
+    );
+    assert.equal(cancelled, true);
+});
+
 test('redeems a token through the fixed Laravel endpoint and creates a host-only session', async (t) => {
     const harness = await createHarness();
     t.after(() => harness.close());
@@ -505,7 +610,19 @@ test('preserves HTTP path, query, method, body, public forwarding headers, and m
         headers: {
             Cookie: `module_session=keep; ${cookie}; theme=dark`,
             'CF-Connecting-IP': '203.0.113.20',
+            Connection: 'keep-alive, X-Client-Hop',
+            'X-Client-Hop': 'must-not-leak',
+            'Keep-Alive': 'timeout=60',
+            'Proxy-Authenticate': 'must-not-leak',
+            'Proxy-Authorization': 'must-not-leak',
+            'Proxy-Connection': 'keep-alive',
+            TE: 'trailers',
+            Upgrade: 'h2c',
+            Forwarded: 'for=198.51.100.99',
+            'X-Real-IP': '198.51.100.99',
             'X-Forwarded-For': 'spoofed',
+            'X-Forwarded-Port': '1234',
+            'X-Forwarded-Server': 'spoofed',
             'X-Forwarded-Proto': 'http',
         },
     });
@@ -521,6 +638,22 @@ test('preserves HTTP path, query, method, body, public forwarding headers, and m
         'module_session=keep; theme=dark',
     );
     assert.doesNotMatch(loginPayload.headers.cookie, /cloud_web_session/);
+    for (const header of [
+        'x-client-hop',
+        'keep-alive',
+        'proxy-authenticate',
+        'proxy-authorization',
+        'proxy-connection',
+        'te',
+        'upgrade',
+        'forwarded',
+        'x-real-ip',
+        'x-forwarded-port',
+        'x-forwarded-server',
+        'cf-connecting-ip',
+    ]) {
+        assert.equal(loginPayload.headers[header], undefined, header);
+    }
 
     const summary = await request(harness.gatewayPort, {
         path: '/api/summary?range=1h',
@@ -537,6 +670,7 @@ test('preserves HTTP path, query, method, body, public forwarding headers, and m
         },
         body: 'raw-body=preserved',
     });
+    assert.equal(posted.status, 200, JSON.stringify(posted));
     const postedPayload = JSON.parse(posted.body);
     assert.equal(postedPayload.method, 'POST');
     assert.equal(postedPayload.url, '/api/submit?mode=exact');
@@ -550,6 +684,25 @@ test('preserves HTTP path, query, method, body, public forwarding headers, and m
         'module_session=abc; Path=/; HttpOnly',
         'theme=dark; SameSite=Lax',
     ]);
+
+    const sanitizedResponse = await request(harness.gatewayPort, {
+        path: '/response-headers',
+        headers: { Cookie: cookie },
+    });
+    assert.equal(sanitizedResponse.body, 'sanitized-response');
+    for (const header of [
+        'x-upstream-hop',
+        'keep-alive',
+        'proxy-authenticate',
+        'proxy-authorization',
+        'proxy-connection',
+        'upgrade',
+        'forwarded',
+        'x-real-ip',
+        'x-forwarded-for',
+    ]) {
+        assert.equal(sanitizedResponse.headers[header], undefined, header);
+    }
 });
 
 test('touches sessions during streamed module traffic and denies missing sessions', async (t) => {
@@ -660,8 +813,53 @@ function openWebSocket(port, { host = PUBLIC_HOST, cookie } = {}) {
             Host: host,
             ...(cookie === undefined ? {} : { Cookie: cookie }),
             'CF-Connecting-IP': '203.0.113.30',
+            'Keep-Alive': 'timeout=60',
+            'Proxy-Authorization': 'must-not-leak',
+            'Proxy-Connection': 'keep-alive',
+            TE: 'trailers',
+            Forwarded: 'for=198.51.100.99',
+            'X-Real-IP': '198.51.100.99',
             'X-Forwarded-For': 'spoofed',
+            'X-Forwarded-Port': '1234',
         },
+    });
+}
+
+function rawWebSocketHandshake(port, cookie) {
+    return new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+            socket.write(
+                'GET /raw-socket HTTP/1.1\r\n' +
+                    `Host: ${PUBLIC_HOST}\r\n` +
+                    'Connection: Upgrade, X-Client-WS-Hop\r\n' +
+                    'Upgrade: websocket\r\n' +
+                    'Sec-WebSocket-Version: 13\r\n' +
+                    `Sec-WebSocket-Key: ${Buffer.alloc(16, 7).toString('base64')}\r\n` +
+                    `Cookie: ${cookie}\r\n` +
+                    'X-Client-WS-Hop: must-not-leak\r\n' +
+                    'Keep-Alive: timeout=60\r\n' +
+                    'Proxy-Authorization: must-not-leak\r\n' +
+                    'Proxy-Connection: keep-alive\r\n' +
+                    'TE: trailers\r\n' +
+                    'Forwarded: for=198.51.100.99\r\n' +
+                    'X-Real-IP: 198.51.100.99\r\n' +
+                    'X-Forwarded-For: spoofed\r\n' +
+                    'X-Forwarded-Port: 1234\r\n' +
+                    'CF-Connecting-IP: 203.0.113.31\r\n' +
+                    '\r\n',
+            );
+        });
+        let response = '';
+
+        socket.setEncoding('utf8');
+        socket.once('error', reject);
+        socket.on('data', (chunk) => {
+            response += chunk;
+
+            if (response.includes('\r\n\r\n')) {
+                resolve({ response, socket });
+            }
+        });
     });
 }
 
@@ -715,9 +913,19 @@ test('proxies authenticated WebSockets bidirectionally with sanitized headers an
     });
 
     await waitForOpen(ws);
-    assert.deepEqual((await upgradeHeaders)['set-cookie'], [
+    const sanitizedUpgradeHeaders = await upgradeHeaders;
+    assert.deepEqual(sanitizedUpgradeHeaders['set-cookie'], [
         'socket_session=yes; Path=/',
     ]);
+    assert.equal(sanitizedUpgradeHeaders.connection.toLowerCase(), 'upgrade');
+    for (const header of [
+        'x-upstream-ws-hop',
+        'keep-alive',
+        'proxy-authenticate',
+        'forwarded',
+    ]) {
+        assert.equal(sanitizedUpgradeHeaders[header], undefined, header);
+    }
     ws.send('hello-module');
     assert.equal(await waitForMessage(ws), 'hello-module');
     assert.equal(harness.websocketRequests.length, 1);
@@ -729,8 +937,57 @@ test('proxies authenticated WebSockets bidirectionally with sanitized headers an
     assert.equal(upstream.headers['x-forwarded-for'], '203.0.113.30');
     assert.equal(upstream.headers.cookie, 'module_socket=yes');
     assert.doesNotMatch(upstream.headers.cookie, /cloud_web_session/);
+    assert.equal(upstream.headers.connection.toLowerCase(), 'upgrade');
+    assert.equal(upstream.headers.upgrade.toLowerCase(), 'websocket');
+    for (const header of [
+        'keep-alive',
+        'proxy-authorization',
+        'proxy-connection',
+        'te',
+        'forwarded',
+        'x-real-ip',
+        'x-forwarded-port',
+        'cf-connecting-ip',
+    ]) {
+        assert.equal(upstream.headers[header], undefined, header);
+    }
 
     ws.close();
+});
+
+test('strips nominated and proxy identity headers from raw WebSocket upgrades', async (t) => {
+    const harness = await createHarness();
+    t.after(() => harness.close());
+    const value = token('a');
+    harness.seedToken(value);
+    const connected = await harness.connect(value);
+    const { response, socket } = await rawWebSocketHandshake(
+        harness.gatewayPort,
+        gatewayCookie(connected),
+    );
+    t.after(() => socket.destroy());
+
+    assert.match(response, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
+    assert.equal(harness.websocketRequests.length, 1);
+    const upstream = harness.websocketRequests[0];
+    assert.equal(upstream.headers.connection.toLowerCase(), 'upgrade');
+    assert.equal(upstream.headers.upgrade.toLowerCase(), 'websocket');
+    assert.equal(upstream.headers['x-forwarded-host'], PUBLIC_HOST);
+    assert.equal(upstream.headers['x-forwarded-proto'], 'https');
+    assert.equal(upstream.headers['x-forwarded-for'], '203.0.113.31');
+    for (const header of [
+        'x-client-ws-hop',
+        'keep-alive',
+        'proxy-authorization',
+        'proxy-connection',
+        'te',
+        'forwarded',
+        'x-real-ip',
+        'x-forwarded-port',
+        'cf-connecting-ip',
+    ]) {
+        assert.equal(upstream.headers[header], undefined, header);
+    }
 });
 
 test('touches bidirectional WebSocket traffic but enforces absolute expiry', async (t) => {
@@ -769,6 +1026,102 @@ test('touches bidirectional WebSocket traffic but enforces absolute expiry', asy
         });
     });
     assert.equal(closeCode, 1006);
+});
+
+test('times out and tears down a stalled upstream WebSocket handshake', async (t) => {
+    const stalled = await createStalledServer();
+    t.after(() => stalled.close());
+    const harness = await createHarness({
+        config: {
+            connectTimeoutMs: 60,
+            sessionIdleMs: 500,
+            sessionAbsoluteMs: 1_000,
+            upstreamIdleTimeoutMs: 500,
+        },
+    });
+    t.after(() => harness.close());
+    const value = token('a');
+    harness.seedToken(value, { port: stalled.port });
+    const connected = await harness.connect(value);
+    const ws = openWebSocket(harness.gatewayPort, {
+        cookie: gatewayCookie(connected),
+    });
+    ws.once('error', () => {});
+    const rejected = new Promise((resolve) => {
+        ws.once('unexpected-response', (_request, response) => {
+            response.resume();
+            response.once('end', () => resolve(response.statusCode));
+        });
+    });
+
+    await withTimeout(
+        stalled.accepted,
+        200,
+        'upstream handshake was not opened',
+    );
+    assert.equal(
+        await withTimeout(
+            rejected,
+            300,
+            'gateway did not return handshake timeout',
+        ),
+        502,
+    );
+    await withTimeout(
+        stalled.closed,
+        200,
+        'gateway left stalled upstream handshake open',
+    );
+});
+
+test('tears down stalled handshakes on client, session, and shutdown boundaries', async (t) => {
+    for (const mode of ['client close', 'gateway shutdown', 'session expiry']) {
+        await t.test(mode, async () => {
+            const stalled = await createStalledServer();
+            const sessionDeadline = mode === 'session expiry' ? 80 : 500;
+            const harness = await createHarness({
+                config: {
+                    connectTimeoutMs: 500,
+                    sessionIdleMs: sessionDeadline,
+                    sessionAbsoluteMs:
+                        mode === 'session expiry' ? sessionDeadline : 1_000,
+                    upstreamIdleTimeoutMs: 500,
+                },
+            });
+            let ws;
+
+            try {
+                const value = token('a');
+                harness.seedToken(value, { port: stalled.port });
+                const connected = await harness.connect(value);
+                ws = openWebSocket(harness.gatewayPort, {
+                    cookie: gatewayCookie(connected),
+                });
+                ws.once('error', () => {});
+                await withTimeout(
+                    stalled.accepted,
+                    200,
+                    `${mode} upstream handshake was not opened`,
+                );
+
+                if (mode === 'client close') {
+                    ws.terminate();
+                } else if (mode === 'gateway shutdown') {
+                    await harness.gateway.close();
+                }
+
+                await withTimeout(
+                    stalled.closed,
+                    200,
+                    `${mode} left stalled upstream handshake open`,
+                );
+            } finally {
+                ws?.terminate();
+                await harness.close();
+                await stalled.close();
+            }
+        });
+    }
 });
 
 test('rejects WebSocket upgrades without a matching host-bound session', async (t) => {

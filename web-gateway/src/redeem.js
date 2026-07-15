@@ -49,6 +49,17 @@ function validPayload(value) {
     );
 }
 
+async function cancelResponseBody(response) {
+    try {
+        if (typeof response.body?.cancel === 'function') {
+            await response.body.cancel();
+        }
+    } catch {
+        // The original upstream status remains the only externally visible
+        // outcome; cancellation failures must not expose internal details.
+    }
+}
+
 export async function redeemToken({
     config,
     token,
@@ -77,6 +88,8 @@ export async function redeemToken({
     }
 
     if (!response.ok) {
+        await cancelResponseBody(response);
+
         if (response.status >= 400 && response.status < 500) {
             throw new RedeemRejectedError();
         }
