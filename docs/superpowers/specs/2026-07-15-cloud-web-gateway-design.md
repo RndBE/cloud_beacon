@@ -2,7 +2,7 @@
 
 **Tanggal:** 2026-07-15
 
-**Status:** desain disetujui; menunggu review spesifikasi tertulis
+**Status:** disetujui untuk implementasi
 **Hostname:** `device-<nomor>.be-stesy.cloud`
 
 ## Tujuan
