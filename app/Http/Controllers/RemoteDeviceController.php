@@ -3,14 +3,23 @@
 namespace App\Http\Controllers;
 
 use App\Models\RemoteDevice;
+use App\Services\CloudWebTargetPolicy;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator as ValidatorFacade;
+use Illuminate\Validation\Validator;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class RemoteDeviceController extends Controller
 {
+    private const DEFAULT_WEB_ENABLED = false;
+
+    private const DEFAULT_WEB_PORT = 80;
+
+    public function __construct(private readonly CloudWebTargetPolicy $cloudWebTargetPolicy) {}
+
     public function index(): Response
     {
         $devices = RemoteDevice::orderBy('name')
@@ -74,7 +83,7 @@ class RemoteDeviceController extends Controller
      */
     private function validateDevice(Request $request, ?RemoteDevice $device = null): array
     {
-        return $request->validate([
+        $validator = ValidatorFacade::make($request->all(), [
             'name' => 'required|string|max:255',
             'host' => 'required|string|max:255',
             'port' => 'required|integer|min:1|max:65535',
@@ -83,5 +92,32 @@ class RemoteDeviceController extends Controller
             'web_enabled' => ['sometimes', 'boolean'],
             'web_port' => ['sometimes', 'integer', 'min:1', 'max:65535'],
         ]);
+
+        $effectiveWebEnabled = $request->exists('web_enabled')
+            ? $request->boolean('web_enabled')
+            : ($device?->web_enabled ?? self::DEFAULT_WEB_ENABLED);
+        $requestedHost = $request->input('host', $device?->host ?? '');
+        $effectiveHost = is_string($requestedHost) ? $requestedHost : '';
+        $requestedWebPort = $request->input('web_port', $device?->web_port ?? self::DEFAULT_WEB_PORT);
+        $effectiveWebPort = is_scalar($requestedWebPort) ? (int) $requestedWebPort : 0;
+
+        $validator->after(function (Validator $validator) use (
+            $effectiveWebEnabled,
+            $effectiveHost,
+            $effectiveWebPort,
+        ): void {
+            if (! $effectiveWebEnabled
+                || $validator->errors()->has('web_enabled')
+                || $validator->errors()->has('host')
+                || $validator->errors()->has('web_port')) {
+                return;
+            }
+
+            if (! $this->cloudWebTargetPolicy->allows($effectiveHost, $effectiveWebPort)) {
+                $validator->errors()->add('host', 'The web target must be an allowed IPv4 address and port.');
+            }
+        });
+
+        return $validator->validate();
     }
 }

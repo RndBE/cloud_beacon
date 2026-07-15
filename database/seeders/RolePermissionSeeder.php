@@ -46,6 +46,9 @@ class RolePermissionSeeder extends Seeder
             ['name' => 'cloudssh.connect', 'display_name' => 'Open SSH Terminal', 'group' => 'Cloud SSH'],
             ['name' => 'cloudssh.manage', 'display_name' => 'Manage Remote Devices', 'group' => 'Cloud SSH'],
 
+            // Cloud Web
+            ['name' => 'cloudweb.connect', 'display_name' => 'Open Device Web', 'group' => 'Cloud Web'],
+
             // RBAC Management
             ['name' => 'roles.view', 'display_name' => 'View Roles', 'group' => 'RBAC'],
             ['name' => 'roles.create', 'display_name' => 'Create Roles', 'group' => 'RBAC'],
