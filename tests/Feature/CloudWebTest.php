@@ -12,6 +12,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Inertia\Testing\AssertableInertia as Assert;
 
 beforeEach(function () {
     config([
@@ -98,6 +99,27 @@ it('defaults new devices to disabled web access on port 80', function () {
     expect($device->web_enabled)->toBeFalse()
         ->and($device->web_slug)->toBeNull()
         ->and($device->web_port)->toBe(80);
+});
+
+it('shares server-managed web access fields with the device registry', function () {
+    config(['cloud-web.base_domain' => 'devices.example.test']);
+
+    $user = cloudWebUserWithPermissions(['cloudssh.view']);
+    cloudWebDevice([
+        'web_enabled' => true,
+        'web_slug' => 'device-001',
+        'web_port' => 8080,
+    ]);
+
+    $this->actingAs($user)
+        ->get(route('cloud-ssh.index'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('cloud-ssh/index')
+            ->where('devices.0.webEnabled', true)
+            ->where('devices.0.webSlug', 'device-001')
+            ->where('devices.0.webPort', 8080)
+            ->where('devices.0.webUrl', 'https://device-001.devices.example.test'));
 });
 
 it('creates a device with server-managed web fields', function () {

@@ -31,6 +31,12 @@ class RemoteDeviceController extends Controller
                 'port' => $d->port,
                 'username' => $d->username,
                 'description' => $d->description,
+                'webEnabled' => $d->web_enabled,
+                'webSlug' => $d->web_slug,
+                'webPort' => $d->web_port,
+                'webUrl' => $d->web_slug
+                    ? 'https://'.$d->web_slug.'.'.config('cloud-web.base_domain')
+                    : null,
                 'createdAt' => $d->created_at?->format('Y-m-d H:i'),
             ]);
 
