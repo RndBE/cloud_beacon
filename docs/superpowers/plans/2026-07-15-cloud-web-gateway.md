@@ -935,7 +935,7 @@ Canary: device-001.be-stesy.cloud
 
 - [ ] Lakukan permission preflight read + write scope. OAuth saat ini dapat GET tunnel/DNS tetapi pernah memberi `9109` pada zone settings. Rollout membutuhkan Tunnel Write, DNS Edit, Zone Read; tidak membutuhkan zone settings. Jika mutation mendapat `403/9109`, stop dan autentikasi ulang—jangan gunakan workaround SSL/Plesk.
 
-- [ ] GET tunnel by name. Bila kosong, buat remotely managed tunnel:
+- [ ] Jalankan lifecycle tunnel canonical **Runbook §7 — Buat tunnel dan connector**. GET tunnel by name lalu catat ownership sebelum mutation: tunnel baru memakai `TUNNEL_CREATED_BY_ROLLOUT=true`, sedangkan tunnel existing memakai `false`. Bila existing, reuse hanya jika tidak deleted dan `config_src=cloudflare`; GET konfigurasi pre-rollout, simpan snapshot sanitasi beserta lokasi/checksum change record, dan jangan lanjut bila snapshot tidak dapat dipulihkan. Bila kosong, buat remotely managed tunnel:
 
 ```http
 POST /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel
@@ -948,7 +948,7 @@ POST /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel
 }
 ```
 
-Simpan `result.id` sebagai `TUNNEL_ID`. Bila sudah ada, reuse hanya jika tidak deleted, `config_src=cloudflare`, dan config cocok; selain itu abort.
+Simpan `result.id` sebagai `TUNNEL_ID`. State `TUNNEL_ID`, `TUNNEL_CREATED_BY_ROLLOUT`, dan—untuk reuse—lokasi/checksum snapshot konfigurasi wajib tercatat sebelum PUT ingress.
 
 - [ ] Set ingress dan verify GET config. Matcher ingress `*.be-stesy.cloud` hanya memilih service berdasarkan HTTP Host di dalam tunnel; matcher ini tidak membuat DNS dan tidak mengaktifkan wildcard publik. Selama exact canary, hanya exact CNAME `device-001.be-stesy.cloud` yang merutekan traffic publik. Wildcard publik baru aktif ketika record DNS `*.be-stesy.cloud` dibuat di Task 9.
 
@@ -971,7 +971,7 @@ PUT /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel/{TUNNEL_ID}/configurat
 }
 ```
 
-Jika tunnel baru berhasil dibuat tetapi PUT config gagal, delete tunnel baru berdasarkan `TUNNEL_ID` sebelum berhenti. Jangan meninggalkan tunnel kosong tanpa connector sebagai side effect percobaan.
+Jika PUT config gagal: delete `TUNNEL_ID` hanya ketika `TUNNEL_CREATED_BY_ROLLOUT=true`; ketika `false`, PUT kembali snapshot konfigurasi pre-rollout, GET ulang untuk membuktikan restore, dan jangan menghapus tunnel existing. Jangan meninggalkan tunnel kosong atau konfigurasi reused yang berubah sebagai side effect percobaan.
 
 - [ ] Ambil connector token melalui `GET /accounts/{account_id}/cfd_tunnel/{TUNNEL_ID}/token` tanpa menampilkannya. Install official `cloudflared` RPM di Server 3 bila belum ada.
 
