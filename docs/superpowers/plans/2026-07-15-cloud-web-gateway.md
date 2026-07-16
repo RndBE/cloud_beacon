@@ -39,7 +39,7 @@ RemoteDevice::ensureWebSlug(): void
 // only fills a missing slug while web_enabled=true
 ```
 
-- [ ] Tulis test gagal untuk default kolom, create/update web fields, slug otomatis, slug tetap saat disable/re-enable, port invalid, dan unique slug. Gunakan helper bernama unik karena function Pest bersifat global.
+- [x] Tulis test gagal untuk default kolom, create/update web fields, slug otomatis, slug tetap saat disable/re-enable, port invalid, dan unique slug. Gunakan helper bernama unik karena function Pest bersifat global.
 
 ```php
 function cloudWebDevice(array $overrides = []): RemoteDevice
@@ -80,7 +80,7 @@ it('generates and preserves a server-managed web slug', function () {
 });
 ```
 
-- [ ] Jalankan test terarah dan pastikan gagal karena kolom belum ada.
+- [x] Jalankan test terarah dan pastikan gagal karena kolom belum ada.
 
 ```bash
 php artisan test tests/Feature/CloudWebTest.php
@@ -88,7 +88,7 @@ php artisan test tests/Feature/CloudWebTest.php
 
 Expected: failure `no column named web_enabled` atau assertion field web belum tersedia; bukan kegagalan boot aplikasi.
 
-- [ ] Buat migration additive. `down()` harus membuang unique index sebelum kolom.
+- [x] Buat migration additive. `down()` harus membuang unique index sebelum kolom.
 
 ```php
 Schema::table('remote_devices', function (Blueprint $table) {
@@ -105,7 +105,7 @@ Schema::table('remote_devices', function (Blueprint $table) {
 });
 ```
 
-- [ ] Tambahkan fillable/casts dan generator slug pada model.
+- [x] Tambahkan fillable/casts dan generator slug pada model.
 
 ```php
 protected $fillable = [
@@ -135,7 +135,7 @@ public function ensureWebSlug(): void
 `web_slug` sengaja tidak masuk `$fillable`; satu-satunya penulisan memakai
 `forceFill()` di method model/seeder yang terkontrol.
 
-- [ ] Perluas CRUD tanpa menerima `web_slug` dari request. Field web bersifat backward-compatible (`sometimes`) agar test/pemanggil Cloud SSH lama tidak rusak. Bungkus create/update + `ensureWebSlug()` dalam transaction agar row enabled tidak pernah committed tanpa slug.
+- [x] Perluas CRUD tanpa menerima `web_slug` dari request. Field web bersifat backward-compatible (`sometimes`) agar test/pemanggil Cloud SSH lama tidak rusak. Bungkus create/update + `ensureWebSlug()` dalam transaction agar row enabled tidak pernah committed tanpa slug.
 
 ```php
 'web_enabled' => ['sometimes', 'boolean'],
@@ -151,7 +151,7 @@ $device = DB::transaction(function () use ($validated): RemoteDevice {
 });
 ```
 
-- [ ] Ubah seeder agar row existing benar-benar diperbarui; `firstOrCreate` sendiri tidak mengisi kolom baru. Jangan memaksa `device-001` sebelum memastikan ID/slug tidak bentrok.
+- [x] Ubah seeder agar row existing benar-benar diperbarui; `firstOrCreate` sendiri tidak mengisi kolom baru. Jangan memaksa `device-001` sebelum memastikan ID/slug tidak bentrok.
 
 ```php
 $device = RemoteDevice::firstOrCreate(
@@ -163,7 +163,7 @@ $device->forceFill(['web_enabled' => true, 'web_port' => 80])->save();
 $device->ensureWebSlug();
 ```
 
-- [ ] Jalankan test registry dan regression Cloud SSH.
+- [x] Jalankan test registry dan regression Cloud SSH.
 
 ```bash
 php artisan test tests/Feature/CloudWebTest.php tests/Feature/CloudSshTest.php
@@ -171,7 +171,7 @@ php artisan test tests/Feature/CloudWebTest.php tests/Feature/CloudSshTest.php
 
 Expected: seluruh test hijau; perangkat baru default web disabled, perangkat enabled mendapat slug dari ID.
 
-- [ ] Commit hanya file task ini.
+- [x] Commit hanya file task ini.
 
 ```bash
 git add database/migrations/2026_07_15_000001_add_web_access_to_remote_devices_table.php app/Models/RemoteDevice.php app/Http/Controllers/RemoteDeviceController.php database/seeders/RemoteDeviceSeeder.php tests/Feature/CloudWebTest.php
@@ -209,7 +209,7 @@ body: {"token":"<64-lowercase-hex>"}
 200 {"device_id":1,"user_id":7,"host":"10.8.0.2","port":80,"web_slug":"device-001"}
 ```
 
-- [ ] Tambahkan test gagal untuk permission, disabled device, token format/TTL/single-use, secret salah/kosong, current DB state, target di luar CIDR, URL hostname, structured audit log, dan throttle.
+- [x] Tambahkan test gagal untuk permission, disabled device, token format/TTL/single-use, secret salah/kosong, current DB state, target di luar CIDR, URL hostname, structured audit log, dan throttle.
 
 ```php
 it('issues a 30 second one-time cloud web URL', function () {
@@ -245,7 +245,7 @@ it('issues a 30 second one-time cloud web URL', function () {
 });
 ```
 
-- [ ] Buat config eksplisit dan tambahkan key tanpa nilai rahasia ke `.env.example`.
+- [x] Buat config eksplisit dan tambahkan key tanpa nilai rahasia ke `.env.example`.
 
 ```php
 return [
@@ -266,11 +266,11 @@ CLOUD_WEB_TOKEN_TTL=30
 CLOUD_WEB_ALLOWED_CIDR=10.8.0.0/24
 ```
 
-- [ ] Implementasikan `CloudWebTargetPolicy::allows(string $host, int $port): bool` dengan `FILTER_VALIDATE_IP`, flag IPv4, dan `Symfony\Component\HttpFoundation\IpUtils::checkIp`. Tolak hostname, IPv6, malformed IP, dan port di luar range.
+- [x] Implementasikan `CloudWebTargetPolicy::allows(string $host, int $port): bool` dengan `FILTER_VALIDATE_IP`, flag IPv4, dan `Symfony\Component\HttpFoundation\IpUtils::checkIp`. Tolak hostname, IPv6, malformed IP, dan port di luar range.
 
-- [ ] Gunakan policy sebagai validation-after hook saat effective web state enabled, tanpa memblokir hostname SSH pada perangkat yang web-nya disabled. Effective state dihitung dari request value, lalu existing model value, lalu DB default; update `host` pada device yang sudah enabled wajib divalidasi walau request tidak mengirim `web_enabled`.
+- [x] Gunakan policy sebagai validation-after hook saat effective web state enabled, tanpa memblokir hostname SSH pada perangkat yang web-nya disabled. Effective state dihitung dari request value, lalu existing model value, lalu DB default; update `host` pada device yang sudah enabled wajib divalidasi walau request tidak mengirim `web_enabled`.
 
-- [ ] Implementasikan penerbit token dengan `bin2hex(random_bytes(32))`, cache key `cloud-web:token:<token>`, TTL config, serta payload `{device_id,user_id,host,web_port,web_slug}`. Tolak bila disabled, slug tidak cocok `^device-[a-z0-9-]+$`, atau policy target gagal. Response JSON yang mengandung connect URL wajib `Cache-Control: no-store`.
+- [x] Implementasikan penerbit token dengan `bin2hex(random_bytes(32))`, cache key `cloud-web:token:<token>`, TTL config, serta payload `{device_id,user_id,host,web_port,web_slug}`. Tolak bila disabled, slug tidak cocok `^device-[a-z0-9-]+$`, atau policy target gagal. Response JSON yang mengandung connect URL wajib `Cache-Control: no-store`.
 
 ```php
 $token = bin2hex(random_bytes(32));
@@ -283,11 +283,11 @@ Cache::put('cloud-web:token:'.$token, [
 ], now()->addSeconds((int) config('cloud-web.token_ttl')));
 ```
 
-- [ ] Implementasikan redeem dengan urutan aman: validasi shared secret menggunakan `hash_equals`; validasi token regex; claim atomik memakai `Cache::add('cloud-web:claim:<token>', true, TTL)`; `Cache::pull`; fetch ulang `RemoteDevice`; recheck enabled/slug/host/port/CIDR; baru kembalikan contract. Token tetap terbakar bila perangkat berubah/disabled setelah issuance.
+- [x] Implementasikan redeem dengan urutan aman: validasi shared secret menggunakan `hash_equals`; validasi token regex; claim atomik memakai `Cache::add('cloud-web:claim:<token>', true, TTL)`; `Cache::pull`; fetch ulang `RemoteDevice`; recheck enabled/slug/host/port/CIDR; baru kembalikan contract. Token tetap terbakar bila perangkat berubah/disabled setelah issuance.
 
-- [ ] Log issue/redeem melalui structured Laravel log saja. `activity_logs` tidak cocok karena mewajibkan `logger_id`. Context hanya `event`, `user_id`, `device_id`, `slug`, `status`, `duration_ms`; jangan sertakan token, URL connect, secret, host target, cookie, atau body modul.
+- [x] Log issue/redeem melalui structured Laravel log saja. `activity_logs` tidak cocok karena mewajibkan `logger_id`. Context hanya `event`, `user_id`, `device_id`, `slug`, `status`, `duration_ms`; jangan sertakan token, URL connect, secret, host target, cookie, atau body modul.
 
-- [ ] Tambahkan permission `cloudweb.connect` pada group `Cloud Web` di `RolePermissionSeeder` untuk fresh install. Buat `CloudWebPermissionSeeder` additive untuk rollout produksi: `firstOrCreate` permission dan `syncWithoutDetaching([$permission->id])` hanya ke role `superadmin` dan `admin`; jangan jalankan full `RolePermissionSeeder` di produksi karena `sync()` dapat menimpa kustomisasi role.
+- [x] Tambahkan permission `cloudweb.connect` pada group `Cloud Web` di `RolePermissionSeeder` untuk fresh install. Buat `CloudWebPermissionSeeder` additive untuk rollout produksi: `firstOrCreate` permission dan `syncWithoutDetaching([$permission->id])` hanya ke role `superadmin` dan `admin`; jangan jalankan full `RolePermissionSeeder` di produksi karena `sync()` dapat menimpa kustomisasi role.
 
 ```php
 final class CloudWebPermissionSeeder extends Seeder
@@ -307,7 +307,7 @@ final class CloudWebPermissionSeeder extends Seeder
 
 Test seeder dua kali (idempotent), pastikan permission custom admin yang sudah ada tetap attached, dan pastikan operator/technician tidak mendapat permission baru.
 
-- [ ] Daftarkan route user dan internal.
+- [x] Daftarkan route user dan internal.
 
 ```php
 Route::post('cloud-web/{device}/session', [CloudWebSessionController::class, 'store'])
@@ -319,7 +319,7 @@ Route::post('internal/cloud-web/validate', [CloudWebBridgeController::class, 'va
     ->name('internal.cloud-web.validate');
 ```
 
-- [ ] Verifikasi TTL dengan time travel, DB recheck dengan mengubah target setelah token dibuat, dan claim reuse. Verifikasi response/error log tidak memuat token/secret.
+- [x] Verifikasi TTL dengan time travel, DB recheck dengan mengubah target setelah token dibuat, dan claim reuse. Verifikasi response/error log tidak memuat token/secret.
 
 ```bash
 php artisan test tests/Feature/CloudWebTest.php
@@ -328,7 +328,7 @@ php artisan test tests/Feature/CloudSshTest.php
 
 Expected: Cloud Web tests hijau; Cloud SSH tetap hijau; request ke-11 per menit mendapat 429.
 
-- [ ] Format dan commit.
+- [x] Format dan commit.
 
 ```bash
 vendor/bin/pint app/Http/Controllers/CloudWebSessionController.php app/Http/Controllers/Api/CloudWebBridgeController.php app/Http/Controllers/RemoteDeviceController.php app/Services/CloudWebTargetPolicy.php config/cloud-web.php routes/web.php routes/api.php database/seeders/RolePermissionSeeder.php database/seeders/CloudWebPermissionSeeder.php tests/Feature/CloudWebTest.php
@@ -345,9 +345,9 @@ git commit -m "feat(cloud-web): issue one-time access tokens"
 - Modify: `resources/js/pages/cloud-ssh/index.tsx`
 - Modify: `tests/Feature/CloudWebTest.php`
 
-- [ ] Tambahkan assertion Inertia bahwa device props membawa `webEnabled`, `webSlug`, `webPort`, dan `webUrl`, lalu jalankan test untuk memastikan assertion awal gagal.
+- [x] Tambahkan assertion Inertia bahwa device props membawa `webEnabled`, `webSlug`, `webPort`, dan `webUrl`, lalu jalankan test untuk memastikan assertion awal gagal.
 
-- [ ] Perluas mapping `RemoteDeviceController::index()` setelah test gagal; `webUrl` hanya dibentuk dari server-managed slug dan config domain.
+- [x] Perluas mapping `RemoteDeviceController::index()` setelah test gagal; `webUrl` hanya dibentuk dari server-managed slug dan config domain.
 
 ```php
 'webEnabled' => $d->web_enabled,
@@ -358,7 +358,7 @@ git commit -m "feat(cloud-web): issue one-time access tokens"
     : null,
 ```
 
-- [ ] Perluas type frontend dan form data.
+- [x] Perluas type frontend dan form data.
 
 ```ts
 interface RemoteDeviceItem {
@@ -386,11 +386,11 @@ interface DeviceFormData {
 }
 ```
 
-- [ ] Tambahkan checkbox/toggle **Aktifkan akses web**, input `web_port`, dan preview read-only URL. Form tidak memiliki input `web_slug`.
+- [x] Tambahkan checkbox/toggle **Aktifkan akses web**, input `web_port`, dan preview read-only URL. Form tidak memiliki input `web_slug`.
 
-- [ ] Pisahkan permission `cloudssh.connect` dan `cloudweb.connect`. Tampilkan tombol **Buka Web** hanya bila permission ada dan device enabled/slug tersedia.
+- [x] Pisahkan permission `cloudssh.connect` dan `cloudweb.connect`. Tampilkan tombol **Buka Web** hanya bila permission ada dan device enabled/slug tersedia.
 
-- [ ] Implementasikan click handler yang POST JSON dengan CSRF, tidak menyimpan atau menulis URL bertoken ke log, lalu langsung `window.location.assign(data.url)`.
+- [x] Implementasikan click handler yang POST JSON dengan CSRF, tidak menyimpan atau menulis URL bertoken ke log, lalu langsung `window.location.assign(data.url)`.
 
 ```ts
 async function openWeb(device: RemoteDeviceItem) {
@@ -412,9 +412,9 @@ async function openWeb(device: RemoteDeviceItem) {
 }
 ```
 
-- [ ] Ubah copy halaman menjadi registry akses remote yang mencakup SSH dan Web, tetapi pertahankan URL route `/cloud-ssh` agar tidak membuat migrasi navigasi yang tidak perlu.
+- [x] Ubah copy halaman menjadi registry akses remote yang mencakup SSH dan Web, tetapi pertahankan URL route `/cloud-ssh` agar tidak membuat migrasi navigasi yang tidak perlu.
 
-- [ ] Jalankan pemeriksaan frontend dan backend prop.
+- [x] Jalankan pemeriksaan frontend dan backend prop.
 
 ```bash
 npx eslint resources/js/pages/cloud-ssh/index.tsx
@@ -425,7 +425,7 @@ php artisan test tests/Feature/CloudWebTest.php
 
 Expected: tidak ada error ESLint/Prettier/TypeScript; Inertia props dan RBAC button data valid.
 
-- [ ] Commit.
+- [x] Commit.
 
 ```bash
 git add resources/js/pages/cloud-ssh/index.tsx tests/Feature/CloudWebTest.php
@@ -467,7 +467,7 @@ store.get(sessionId, slug, { touch: true }) // -> session or null
 new FixedWindowRateLimiter({ limit, windowMs, maxEntries, now })
 ```
 
-- [ ] Buat package terisolasi.
+- [x] Buat package terisolasi.
 
 ```json
 {
@@ -489,9 +489,9 @@ new FixedWindowRateLimiter({ limit, windowMs, maxEntries, now })
 }
 ```
 
-- [ ] Jalankan `npm install` dalam `web-gateway/` untuk menghasilkan lockfile; tambahkan `/web-gateway/node_modules` ke `.gitignore`.
+- [x] Jalankan `npm install` dalam `web-gateway/` untuk menghasilkan lockfile; tambahkan `/web-gateway/node_modules` ke `.gitignore`.
 
-- [ ] Tambahkan ESLint override untuk `web-gateway/**/*.js` dan `web-gateway/**/*.cjs` memakai `globals.node`; set `sourceType:'commonjs'` khusus `ecosystem.config.cjs`. Jangan meng-ignore gateway seluruhnya—root lint harus ikut memeriksa source/test gateway.
+- [x] Tambahkan ESLint override untuk `web-gateway/**/*.js` dan `web-gateway/**/*.cjs` memakai `globals.node`; set `sourceType:'commonjs'` khusus `ecosystem.config.cjs`. Jangan meng-ignore gateway seluruhnya—root lint harus ikut memeriksa source/test gateway.
 
 ```js
 {
@@ -504,11 +504,11 @@ new FixedWindowRateLimiter({ limit, windowMs, maxEntries, now })
 },
 ```
 
-- [ ] Tulis test hostname normalization: lowercase, optional port, trailing dot; tolak suffix trick (`device-001.be-stesy.cloud.evil`), multiple labels, non-device, whitespace/control character, dan slug invalid.
+- [x] Tulis test hostname normalization: lowercase, optional port, trailing dot; tolak suffix trick (`device-001.be-stesy.cloud.evil`), multiple labels, non-device, whitespace/control character, dan slug invalid.
 
-- [ ] Implementasikan parser CIDR IPv4 tanpa DNS lookup. Test boundary `10.8.0.0`, `10.8.0.1`, `10.8.0.255`, serta tolak `10.8.1.1`, loopback, metadata, public IP, hostname, IPv6, dan port invalid.
+- [x] Implementasikan parser CIDR IPv4 tanpa DNS lookup. Test boundary `10.8.0.0`, `10.8.0.1`, `10.8.0.255`, serta tolak `10.8.1.1`, loopback, metadata, public IP, hostname, IPv6, dan port invalid.
 
-- [ ] Implementasikan parser cookie dan sanitizer `Set-Cookie`. Cookie gateway harus persis:
+- [x] Implementasikan parser cookie dan sanitizer `Set-Cookie`. Cookie gateway harus persis:
 
 ```text
 __Host-cloud_web_session=<opaque>; Secure; HttpOnly; SameSite=Lax; Path=/
@@ -516,13 +516,13 @@ __Host-cloud_web_session=<opaque>; Secure; HttpOnly; SameSite=Lax; Path=/
 
 Sanitizer menghapus semua atribut `Domain` dari cookie backend dan membuang cookie backend bernama `__Host-cloud_web_session` agar modul tidak dapat menimpa autentikasi gateway.
 
-- [ ] Implementasikan session in-memory terikat slug. Default idle 30 menit, absolute 8 jam, cleanup bounded, dan instance baru tidak mengenali cookie lama. Test wrong-host, idle expiry, absolute expiry, touch, delete, sweep, serta restart via `new SessionStore()`.
+- [x] Implementasikan session in-memory terikat slug. Default idle 30 menit, absolute 8 jam, cleanup bounded, dan instance baru tidak mengenali cookie lama. Test wrong-host, idle expiry, absolute expiry, touch, delete, sweep, serta restart via `new SessionStore()`.
 
-- [ ] Implementasikan rate limiter connect fixed-window dengan batas entry maksimum dan pruning. Key berasal dari client IP + slug; test limit dan cleanup agar Map tidak tumbuh tanpa batas.
+- [x] Implementasikan rate limiter connect fixed-window dengan batas entry maksimum dan pruning. Key berasal dari client IP + slug; test limit dan cleanup agar Map tidak tumbuh tanpa batas.
 
-- [ ] Test `loadConfig()` fail-closed: secret kosong, base domain invalid, allowed CIDR kosong, timeout nonpositif, serta bind host selain `127.0.0.1` harus membuat startup gagal. Jangan silently fallback ke bind publik.
+- [x] Test `loadConfig()` fail-closed: secret kosong, base domain invalid, allowed CIDR kosong, timeout nonpositif, serta bind host selain `127.0.0.1` harus membuat startup gagal. Jangan silently fallback ke bind publik.
 
-- [ ] Jalankan test.
+- [x] Jalankan test.
 
 ```bash
 npm --prefix web-gateway test
@@ -530,7 +530,7 @@ npm --prefix web-gateway test
 
 Expected: seluruh unit test hijau, tidak ada network listener yang tersisa setelah test.
 
-- [ ] Commit.
+- [x] Commit.
 
 ```bash
 git add .gitignore eslint.config.js web-gateway/package.json web-gateway/package-lock.json web-gateway/src/config.js web-gateway/src/policy.js web-gateway/src/cookies.js web-gateway/src/rate-limiter.js web-gateway/src/session-store.js web-gateway/test/config.test.js web-gateway/test/policy.test.js web-gateway/test/cookies.test.js web-gateway/test/rate-limiter.test.js web-gateway/test/session-store.test.js
@@ -559,15 +559,15 @@ createGateway({ config, fetchImpl = globalThis.fetch, now = Date.now, randomByte
 // -> { server, sessions, close(): Promise<void> }
 ```
 
-- [ ] Tulis integration harness dengan tiga ephemeral listener: fake Laravel redeem, fake module HTTP/WebSocket, dan gateway. Gunakan Node `http.request` agar test bisa mengirim public `Host` secara eksplisit.
+- [x] Tulis integration harness dengan tiga ephemeral listener: fake Laravel redeem, fake module HTTP/WebSocket, dan gateway. Gunakan Node `http.request` agar test bisa mengirim public `Host` secara eksplisit.
 
-- [ ] Tulis test connect sukses: GET `/_cloud-web/connect?token=...`, host cocok, Laravel dipanggil dengan header secret, response `303 Location: /`, token hilang dari redirect, header `Cache-Control: no-store` dan `Referrer-Policy: no-referrer`, cookie aman tanpa Domain.
+- [x] Tulis test connect sukses: GET `/_cloud-web/connect?token=...`, host cocok, Laravel dipanggil dengan header secret, response `303 Location: /`, token hilang dari redirect, header `Cache-Control: no-store` dan `Referrer-Policy: no-referrer`, cookie aman tanpa Domain.
 
-- [ ] Tulis test connect gagal: token missing/malformed/expired/reused, Laravel error, slug mismatch, target CIDR invalid, dan rate limit. Semua error aman dan tidak memuat token/secret/target IP.
+- [x] Tulis test connect gagal: token missing/malformed/expired/reused, Laravel error, slug mismatch, target CIDR invalid, dan rate limit. Semua error aman dan tidak memuat token/secret/target IP.
 
-- [ ] Implementasikan `redeemToken()` dengan POST JSON, `AbortSignal.timeout(10_000)`, header `X-Cloud-Web-Bridge-Secret`, schema validation ketat, serta Laravel URL fixed dari config. Jangan pernah meneruskan URL/host/body dari request browser sebagai internal target.
+- [x] Implementasikan `redeemToken()` dengan POST JSON, `AbortSignal.timeout(10_000)`, header `X-Cloud-Web-Bridge-Secret`, schema validation ketat, serta Laravel URL fixed dari config. Jangan pernah meneruskan URL/host/body dari request browser sebagai internal target.
 
-- [ ] Implementasikan routing HTTP dengan urutan berikut:
+- [x] Implementasikan routing HTTP dengan urutan berikut:
 
 1. `/healthz` hanya untuk local Host (`localhost`, `127.0.0.1`, `[::1]`); response `200 ok`.
 2. Host non-`device-*` mendapat `404` sebelum lookup session.
@@ -575,7 +575,7 @@ createGateway({ config, fetchImpl = globalThis.fetch, now = Date.now, randomByte
 4. Request lain wajib cookie valid yang terikat slug; tanpa session mendapat `401` dan link aman ke Cloud Beacon.
 5. Target proxy hanya dibentuk dari session hasil redeem yang sudah lolos policy.
 
-- [ ] Buat `ConnectTimeoutAgent` terpisah untuk TCP connect timeout 10 detik. Jangan menyamakan `http-proxy` `proxyTimeout` dengan connect timeout; `proxyTimeout=300000` dipakai untuk upstream idle 5 menit.
+- [x] Buat `ConnectTimeoutAgent` terpisah untuk TCP connect timeout 10 detik. Jangan menyamakan `http-proxy` `proxyTimeout` dengan connect timeout; `proxyTimeout=300000` dipakai untuk upstream idle 5 menit.
 
 ```js
 export class ConnectTimeoutAgent extends http.Agent {
@@ -604,9 +604,9 @@ export class ConnectTimeoutAgent extends http.Agent {
 
 Unit-test timer helper dengan timeout pendek dan fake socket; integration test cukup memastikan error connect apa pun menjadi 502 generik.
 
-- [ ] Konfigurasi `http-proxy` agar `changeOrigin:false`, URI/query/method/body/stream tetap asli, `cookieDomainRewrite:''`, dan error handler selalu mengembalikan 502 generik tanpa IP/error internal. Hapus gateway cookie dari request upstream.
+- [x] Konfigurasi `http-proxy` agar `changeOrigin:false`, URI/query/method/body/stream tetap asli, `cookieDomainRewrite:''`, dan error handler selalu mengembalikan 502 generik tanpa IP/error internal. Hapus gateway cookie dari request upstream.
 
-- [ ] Pada `proxyReq`, set eksplisit:
+- [x] Pada `proxyReq`, set eksplisit:
 
 ```text
 Host: <public device hostname>          # dipertahankan
@@ -617,15 +617,15 @@ X-Forwarded-For: <sanitized CF-Connecting-IP atau peer IP>
 
 Biarkan `http-proxy` mengelola hop-by-hop/Upgrade; jangan menghapus header Upgrade pada jalur WebSocket.
 
-- [ ] Pada `proxyRes`, sanitize setiap `Set-Cookie`, touch sesi pada data streaming, dan jangan log response body. Pada incoming request body, touch sesi saat data mengalir. Pasang absolute-expiry timer per HTTP request dan destroy kedua sisi bila stream mencoba melewati umur absolut; upstream idle timeout 5 menit menutup stream tanpa traffic.
+- [x] Pada `proxyRes`, sanitize setiap `Set-Cookie`, touch sesi pada data streaming, dan jangan log response body. Pada incoming request body, touch sesi saat data mengalir. Pasang absolute-expiry timer per HTTP request dan destroy kedua sisi bila stream mencoba melewati umur absolut; upstream idle timeout 5 menit menutup stream tanpa traffic.
 
-- [ ] Semua response gateway yang bukan payload modul (`303`, `401`, `404`, `405`, `429`, `502`) memakai `Cache-Control: no-store`; response connect/error juga memakai `Referrer-Policy: no-referrer`.
+- [x] Semua response gateway yang bukan payload modul (`303`, `401`, `404`, `405`, `429`, `502`) memakai `Cache-Control: no-store`; response connect/error juga memakai `Referrer-Policy: no-referrer`.
 
-- [ ] Implementasikan `server.on('upgrade')`: normalisasi host, validasi cookie+slug ulang, tolak tanpa sesi, lalu proxy WebSocket ke target sesi. Pada `proxyReqWs`, pertahankan public Host, set XFH/XFP/XFF sama seperti HTTP, dan hapus gateway cookie sebelum handshake upstream. Gunakan proxy instance per upgrade atau mapping eksplisit agar socket upstream dapat diasosiasikan dengan sesi. Touch pada traffic dua arah, pasang timer idle dan absolute, lalu close kedua socket saat sesi expiry.
+- [x] Implementasikan `server.on('upgrade')`: normalisasi host, validasi cookie+slug ulang, tolak tanpa sesi, lalu proxy WebSocket ke target sesi. Pada `proxyReqWs`, pertahankan public Host, set XFH/XFP/XFF sama seperti HTTP, dan hapus gateway cookie sebelum handshake upstream. Gunakan proxy instance per upgrade atau mapping eksplisit agar socket upstream dapat diasosiasikan dengan sesi. Touch pada traffic dua arah, pasang timer idle dan absolute, lalu close kedua socket saat sesi expiry.
 
-- [ ] Tambahkan integration test untuk exact path `/login`, `/api/summary?range=1h`, POST body, public Host/XFF/XFP, backend cookie Domain removal, reserved cookie drop, streaming chunks, 401 tanpa cookie, 404 non-device, safe 502 offline, WebSocket echo authenticated dengan Host/XFH/XFP/XFF dan gateway-cookie stripping, serta WebSocket rejection tanpa/wrong-host cookie.
+- [x] Tambahkan integration test untuk exact path `/login`, `/api/summary?range=1h`, POST body, public Host/XFF/XFP, backend cookie Domain removal, reserved cookie drop, streaming chunks, 401 tanpa cookie, 404 non-device, safe 502 offline, WebSocket echo authenticated dengan Host/XFH/XFP/XFF dan gateway-cookie stripping, serta WebSocket rejection tanpa/wrong-host cookie.
 
-- [ ] Buat runtime env example.
+- [x] Buat runtime env example.
 
 ```dotenv
 BIND_HOST=127.0.0.1
@@ -643,9 +643,9 @@ CONNECT_RATE_WINDOW_MS=60000
 CLOUD_BEACON_URL=https://be-stesy.cloud/cloud-ssh
 ```
 
-- [ ] Buat PM2 config mengikuti runtime Node Plesk, membaca `.env` tanpa mencetak nilainya, restart delay 5 detik, dan nama process `cloud-beacon-web-gateway`.
+- [x] Buat PM2 config mengikuti runtime Node Plesk, membaca `.env` tanpa mencetak nilainya, restart delay 5 detik, dan nama process `cloud-beacon-web-gateway`.
 
-- [ ] Jalankan seluruh test gateway berulang untuk menangkap handle leak/race dasar.
+- [x] Jalankan seluruh test gateway berulang untuk menangkap handle leak/race dasar.
 
 ```bash
 npm --prefix web-gateway test
@@ -654,7 +654,7 @@ npm --prefix web-gateway test
 
 Expected: dua run hijau; process selesai sendiri; error response tidak mengandung target IP.
 
-- [ ] Commit.
+- [x] Commit.
 
 ```bash
 git add web-gateway/src/redeem.js web-gateway/src/connect-timeout-agent.js web-gateway/src/gateway.js web-gateway/src/server.js web-gateway/test/connect-timeout-agent.test.js web-gateway/test/gateway.test.js web-gateway/.env.example web-gateway/ecosystem.config.cjs
@@ -671,13 +671,13 @@ git commit -m "feat(cloud-web): proxy device HTTP and websocket"
 - Modify: `docs/superpowers/specs/2026-07-15-cloud-web-gateway-design.md`
 - Modify: `docs/superpowers/plans/2026-07-15-cloud-web-gateway.md` (checkbox progress only)
 
-- [ ] Tulis runbook yang mencakup preflight, backup DB, app deploy, secret provisioning, PM2, tunnel API IDs, canary, wildcard, regression DNS, serta rollback berdasarkan resource ID.
+- [x] Tulis runbook yang mencakup preflight, backup DB, app deploy, secret provisioning, PM2, tunnel API IDs, canary, wildcard, regression DNS, serta rollback berdasarkan resource ID.
 
-- [ ] Catat mitigasi inheren query-token: URL connect bisa muncul sementara di browser history/Cloudflare edge metadata; TTL 30 detik, single-use claim, no-store, no-referrer, dan redirect 303 membatasi risiko.
+- [x] Catat mitigasi inheren query-token: URL connect bisa muncul sementara di browser history/Cloudflare edge metadata; TTL 30 detik, single-use claim, no-store, no-referrer, dan redirect 303 membatasi risiko.
 
 - [x] Ubah status design spec menjadi `disetujui untuk implementasi`.
 
-- [ ] Jalankan seluruh verifikasi lokal. Jangan menjalankan migration terhadap `.env` lokal.
+- [x] Jalankan seluruh verifikasi lokal. Jangan menjalankan migration terhadap `.env` lokal.
 
 ```bash
 php artisan test
@@ -693,9 +693,9 @@ git diff --check
 
 Expected: semua command exit 0. `php artisan test` melaporkan seluruh suite hijau menggunakan SQLite `:memory:`.
 
-- [ ] Self-review security invariants dengan test sebagai bukti: tidak ada open proxy, semua sesi host-bound, reserved cookie dilindungi, token single-use, target CIDR ganda, bind loopback, 401/404/502 aman.
+- [x] Self-review security invariants dengan test sebagai bukti: tidak ada open proxy, semua sesi host-bound, reserved cookie dilindungi, token single-use, target CIDR ganda, bind loopback, 401/404/502 aman.
 
-- [ ] Commit dokumentasi dan perubahan format/lockfile yang sah saja.
+- [x] Commit dokumentasi dan perubahan format/lockfile yang sah saja.
 
 ```bash
 git add docs/deploy/cloud-web-gateway.md docs/superpowers/specs/2026-07-15-cloud-web-gateway-design.md docs/superpowers/plans/2026-07-15-cloud-web-gateway.md
