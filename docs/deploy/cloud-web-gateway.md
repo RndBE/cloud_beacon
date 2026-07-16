@@ -29,36 +29,27 @@ resource yang dikembalikan API; jangan update/delete berdasarkan nama saja.
 
 ## 1. Preflight dan stop gate
 
-Pada workstation, pastikan release hanya berisi file tracked. Jalankan seluruh
-release gate berikut dari root worktree yang akan di-archive. `set -euo
-pipefail` membuat gate berhenti pada command pertama yang exit nonzero; bila itu
-terjadi, hentikan rollout sebelum command `ssh`, Cloudflare API, atau mutation
-produksi apa pun.
+Pada workstation, pastikan release hanya berisi file tracked. Empat command
+repo-wide berikut wajib dijalankan sebagai pembanding baseline, tetapi jangan
+gabungkan dalam `set -e` karena baseline yang disetujui memang nonzero:
 
 ```bash
-set -euo pipefail
-git status --short --branch
-git log --oneline -10
 php artisan test
 vendor/bin/pint --test
 npm run lint:check
 npm run format:check
-npm run types:check
-npm run build
-npm --prefix web-gateway ci
-npm --prefix web-gateway test
-git diff --check
 ```
 
-Jangan menyimpulkan gate global hijau hanya karena gate focused lulus. Hasil
-non-produksi terakhir yang terdokumentasi mempunyai failure global pre-existing:
-3 test Laravel, 114 issue Pint, 38 error + 2 warning ESLint, dan 41 file gagal
-Prettier. `types:check`, build, install lockfile gateway, 112 test gateway, dan
-`git diff --check` lulus. Angka ini hanya baseline terdokumentasi, bukan izin
-untuk mengabaikan exit nonzero baru atau menyatakan full gate hijau.
+Failure yang boleh tetap ada hanya baseline Task 6 berikut: Laravel 238 passed,
+3 failed, 1068 assertions dengan failure set persis `DashboardTest` permission
+403 vs 200, `ExampleTest` home 302 vs 200, dan date-sensitive `MobileApiTest`
+`errorToday` 0 vs 1; Pint 114 issue di 236 file; ESLint 38 error + 2 warning;
+Prettier 41 file resource. Nama failure/file, pesan, dan count harus sama dengan
+bukti Task 6, dan tidak boleh ada failure Cloud Web/Cloud SSH baru. Perbedaan apa
+pun menghentikan rollout.
 
-Gate focused Cloud Web berikut juga wajib lulus dan tidak menggantikan full
-release gate di atas. Script ini pun berhenti pada exit nonzero pertama:
+Gate focused Cloud Web/Cloud SSH berikut wajib seluruhnya exit 0. Ini, bersama
+exact baseline comparison di atas, adalah acceptance gate release:
 
 ```bash
 set -euo pipefail
@@ -99,8 +90,10 @@ ss -lntp | grep -E ":(8391|8392)\\b" || true
 curl -sSI --max-time 5 http://10.8.0.2:80/ | head
 php -v
 node --version
+npm --version
+composer --version
 pm2 --version
-rsync --version | head -n 1
+plesk ext git --info -domain be-stesy.cloud -name cloud_beacon.git
 '
 ```
 
@@ -153,29 +146,58 @@ SERVER3
 
 Catat path dan checksum backup di change record, bukan isi credential.
 
-## 3. Stage dan deploy aplikasi
+## 3. Publikasikan dan deploy melalui Plesk Git
 
-Stage hanya archive dari tracked `HEAD`, sehingga `.env`, storage, node_modules,
-dan file kerja lokal tidak ikut terkirim.
+Source dipublikasikan dari worktree lokal ke GitHub lebih dulu. Push branch
+Cloud Web, selesaikan review, lalu merge dengan merge commit ke `main` tanpa
+force-push. Catat commit feature dan exact commit `origin/main` yang akan ditarik
+Plesk; squash/rebase tidak dipakai agar ancestry feature dapat dibuktikan.
 
 ```bash
-release="/root/cloud-web-release-$(date -u +%Y%m%dT%H%M%SZ)"
-ssh server3 "install -d -m 700 '$release'"
-git archive --format=tar HEAD | ssh server3 "tar -xf - -C '$release'"
+set -euo pipefail
+test -z "$(git status --porcelain --untracked-files=no)"
+test "$(git remote get-url origin)" = https://github.com/RndBE/cloud_beacon.git
+FEATURE_SHA=$(git rev-parse HEAD)
+branch=$(git branch --show-current)
+git push -u origin "$branch"
+# Buat/review PR branch ini ke main, lalu merge dengan merge commit.
+git fetch origin main
+git merge-base --is-ancestor "$FEATURE_SHA" origin/main
+RELEASE_SHA=$(git rev-parse origin/main)
+printf 'FEATURE_SHA=%s\nRELEASE_SHA=%s\n' "$FEATURE_SHA" "$RELEASE_SHA"
 ```
 
-Ganti nilai `stage` di shell berikut dengan path release yang baru dibuat.
-Maintenance mode selalu dipulihkan oleh trap. Sync sengaja tanpa `--delete`.
-Migration dijalankan dengan exact path dan permission memakai seeder additive;
-jangan menjalankan full `RolePermissionSeeder` karena dapat menimpa kustomisasi
-role produksi.
+Jangan lanjut bila repository Plesk berbeda dari fakta berikut: domain
+`be-stesy.cloud`, nama `cloud_beacon.git`, remote
+`https://github.com/RndBE/cloud_beacon.git`, active branch `main`, deployment
+mode `manual`, deployment path `/httpdocs`, dan post-deploy actions disabled.
+Jangan mengubah setting repository untuk rollout ini.
+
+Fetch repository Plesk dan buktikan exact commit yang akan dideploy sama dengan
+`RELEASE_SHA`. Jalankan dari shell workstation yang masih menyimpan variable
+tersebut.
+
+```bash
+set -euo pipefail
+test -n "${RELEASE_SHA:-}"
+ssh server3 'plesk ext git --fetch -domain be-stesy.cloud -name cloud_beacon.git'
+PLESK_SHA=$(ssh server3 \
+    'plesk ext git --get-last-commit -domain be-stesy.cloud -name cloud_beacon.git' \
+    | sed -n 's/^commit //p' | head -n 1)
+test "$PLESK_SHA" = "$RELEASE_SHA"
+```
+
+Manual deploy Plesk dijalankan di dalam maintenance shell. `.env` dan inode
+direktori `storage` diverifikasi tidak berubah. Maintenance mode selalu
+dipulihkan oleh trap. Migration memakai exact path dan permission memakai
+seeder additive; jangan menjalankan full `RolePermissionSeeder` karena dapat
+menimpa kustomisasi role produksi.
 
 ```bash
 ssh server3 'bash -se' <<'SERVER3'
 set -euo pipefail
 export PATH=/opt/plesk/php/8.3/bin:/opt/plesk/node/24/bin:$PATH
 app=/var/www/vhosts/be-stesy.cloud/httpdocs
-stage=/root/cloud-web-release-REPLACE_ME
 
 bring_up() {
     cd "$app"
@@ -184,8 +206,14 @@ bring_up() {
 trap bring_up EXIT
 
 cd "$app"
+test -f .env
+test -d storage
+env_before=$(sha256sum .env | awk '{print $1}')
+storage_before=$(stat -c '%d:%i' storage)
 sudo -u be-stesy env PATH="$PATH" php artisan down --retry=60
-rsync -rlt --chown=be-stesy:psacln "$stage"/ "$app"/
+plesk ext git --deploy -domain be-stesy.cloud -name cloud_beacon.git
+test "$(sha256sum .env | awk '{print $1}')" = "$env_before"
+test "$(stat -c '%d:%i' storage)" = "$storage_before"
 sudo -u be-stesy env PATH="$PATH" composer install --no-dev --prefer-dist \
     --no-interaction --optimize-autoloader
 sudo -u be-stesy env PATH="$PATH" php artisan migrate \
@@ -455,7 +483,12 @@ POST /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel
 {"name":"cloud-beacon-device-web","config_src":"cloudflare"}
 ```
 
-Simpan `result.id` sebagai `TUNNEL_ID`, lalu set dan GET ulang konfigurasi:
+Simpan `result.id` sebagai `TUNNEL_ID`, lalu set dan GET ulang konfigurasi.
+Matcher ingress `*.be-stesy.cloud` hanya memilih service berdasarkan HTTP Host
+di dalam tunnel; matcher ini tidak membuat record DNS dan tidak mengaktifkan
+wildcard publik. Saat canary, hanya exact CNAME `device-001.be-stesy.cloud` yang
+merutekan traffic. Wildcard publik baru aktif ketika record DNS
+`*.be-stesy.cloud` dibuat pada langkah 9.
 
 ```http
 PUT /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel/{TUNNEL_ID}/configurations

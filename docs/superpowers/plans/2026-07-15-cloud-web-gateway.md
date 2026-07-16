@@ -669,7 +669,7 @@ git commit -m "feat(cloud-web): proxy device HTTP and websocket"
 
 - Create: `docs/deploy/cloud-web-gateway.md`
 - Modify: `docs/superpowers/specs/2026-07-15-cloud-web-gateway-design.md`
-- Modify: `docs/superpowers/plans/2026-07-15-cloud-web-gateway.md` (checkbox progress only)
+- Modify: `docs/superpowers/plans/2026-07-15-cloud-web-gateway.md` (checkbox progress dan acceptance gate baseline-aware)
 
 - [x] Tulis runbook yang mencakup preflight, backup DB, app deploy, secret provisioning, PM2, tunnel API IDs, canary, wildcard, regression DNS, serta rollback berdasarkan resource ID.
 
@@ -677,13 +677,43 @@ git commit -m "feat(cloud-web): proxy device HTTP and websocket"
 
 - [x] Ubah status design spec menjadi `disetujui untuk implementasi`.
 
-- [x] Jalankan seluruh verifikasi lokal. Jangan menjalankan migration terhadap `.env` lokal.
+- [x] Jalankan verifikasi lokal baseline-aware. Jangan menjalankan migration terhadap `.env` lokal. Empat command repo-wide berikut tetap wajib dijalankan dan dibandingkan dengan baseline Task 6, tetapi tidak wajib exit 0 bila failure-nya persis baseline yang didokumentasikan:
 
 ```bash
 php artisan test
 vendor/bin/pint --test
 npm run lint:check
 npm run format:check
+```
+
+Baseline yang diizinkan hanya:
+
+- `php artisan test`: 238 passed, 3 failed, 1068 assertions; failure set persis `DashboardTest` permission 403 vs 200, `ExampleTest` home 302 vs 200, dan date-sensitive `MobileApiTest` `errorToday` 0 vs 1.
+- `vendor/bin/pint --test`: 114 issue existing di 236 file; seluruh 13 file PHP Cloud Web pada focused gate lulus.
+- `npm run lint:check`: 38 error + 2 warning existing; `resources/js/pages/cloud-ssh/index.tsx` dan `web-gateway` lulus scoped ESLint.
+- `npm run format:check`: 41 file resource existing gagal; `resources/js/pages/cloud-ssh/index.tsx` lulus scoped Prettier.
+
+Nama failure/file, pesan, dan jumlah harus sama dengan bukti Task 6. Failure baru, failure Cloud Web/Cloud SSH, perubahan set/count baseline, atau command focused berikut yang nonzero menghentikan release:
+
+```bash
+set -euo pipefail
+php artisan test tests/Feature/CloudWebTest.php tests/Feature/CloudSshTest.php
+vendor/bin/pint --test \
+    app/Models/RemoteDevice.php \
+    app/Http/Controllers/RemoteDeviceController.php \
+    app/Http/Controllers/CloudWebSessionController.php \
+    app/Http/Controllers/Api/CloudWebBridgeController.php \
+    app/Services/CloudWebTargetPolicy.php \
+    config/cloud-web.php \
+    routes/web.php \
+    routes/api.php \
+    database/seeders/RolePermissionSeeder.php \
+    database/seeders/CloudWebPermissionSeeder.php \
+    database/seeders/RemoteDeviceSeeder.php \
+    database/migrations/2026_07_15_000001_add_web_access_to_remote_devices_table.php \
+    tests/Feature/CloudWebTest.php
+npx prettier --check resources/js/pages/cloud-ssh/index.tsx
+npx eslint resources/js/pages/cloud-ssh/index.tsx web-gateway
 npm run types:check
 npm run build
 npm --prefix web-gateway ci
@@ -691,7 +721,7 @@ npm --prefix web-gateway test
 git diff --check
 ```
 
-Expected: semua command exit 0. `php artisan test` melaporkan seluruh suite hijau menggunakan SQLite `:memory:`.
+Expected: seluruh focused/scoped gate, types, build, gateway install/test, dan diff check exit 0. Empat command repo-wide boleh tetap nonzero hanya untuk baseline persis di atas, tanpa regresi feature.
 
 - [x] Self-review security invariants dengan test sebagai bukti: tidak ada open proxy, semua sesi host-bound, reserved cookie dilindungi, token single-use, target CIDR ganda, bind loopback, 401/404/502 aman.
 
@@ -712,6 +742,9 @@ git commit -m "docs(cloud-web): add production rollout runbook"
 SSH alias: server3
 App root: /var/www/vhosts/be-stesy.cloud/httpdocs
 App owner: be-stesy:psacln
+Plesk domain/repository: be-stesy.cloud / cloud_beacon.git
+Plesk repository: pull dari https://github.com/RndBE/cloud_beacon.git, branch main
+Plesk deployment: manual ke /httpdocs, post-deploy actions disabled
 Node: /opt/plesk/node/24/bin/node (v24.18.0 saat preflight)
 Gateway: /var/www/vhosts/be-stesy.cloud/httpdocs/web-gateway
 PM2 process: cloud-beacon-web-gateway
@@ -719,17 +752,36 @@ Gateway listener: 127.0.0.1:8392
 Module pertama: 10.8.0.2:80
 ```
 
-- [ ] Pastikan local worktree bersih untuk file tracked dan HEAD berisi semua commit Cloud Web. File untracked pengguna boleh tetap ada tetapi tidak boleh masuk archive.
+- [ ] Pastikan local worktree bersih untuk file tracked dan HEAD berisi semua commit Cloud Web. Catat exact object sebagai `FEATURE_SHA`; file untracked pengguna boleh tetap ada tetapi tidak ikut source yang dipublikasikan.
 
 ```bash
 git status --short --branch
 git log --oneline -8
+test -z "$(git status --porcelain --untracked-files=no)"
+test "$(git remote get-url origin)" = https://github.com/RndBE/cloud_beacon.git
+FEATURE_SHA=$(git rev-parse HEAD)
+test "${#FEATURE_SHA}" -eq 40
+printf 'FEATURE_SHA=%s\n' "$FEATURE_SHA"
 ```
 
-- [ ] Preflight Server 3: app online, disk cukup, WireGuard active, modul menjawab redirect `/login`, port 8392 kosong, PHP/Node/PM2/rsync tersedia.
+- [ ] Push branch Cloud Web, review melalui PR, lalu merge ke `main` dengan merge commit tanpa force-push. Fetch ulang, buktikan `FEATURE_SHA` menjadi ancestor `origin/main`, lalu catat exact `origin/main` sebagai `RELEASE_SHA`. Jangan squash/rebase karena rollout harus dapat membuktikan ancestry commit yang direview.
+
+```bash
+branch=$(git branch --show-current)
+git push -u origin "$branch"
+# Buat/review PR branch ini ke main, lalu merge dengan merge commit.
+git fetch origin main
+git merge-base --is-ancestor "$FEATURE_SHA" origin/main
+RELEASE_SHA=$(git rev-parse origin/main)
+test "${#RELEASE_SHA}" -eq 40
+printf 'RELEASE_SHA=%s\n' "$RELEASE_SHA"
+```
+
+- [ ] Preflight Server 3: app online, disk cukup, WireGuard active, modul menjawab redirect `/login`, port 8392 kosong, dan PHP/Composer/Node/npm/PM2/Plesk Git tersedia. Inspect repository Plesk read-only dan stop kecuali faktanya persis: domain `be-stesy.cloud`, nama `cloud_beacon.git`, type `pull`, remote `https://github.com/RndBE/cloud_beacon.git`, active branch `main`, deployment mode `manual`, deployment path `/httpdocs`, post-deploy actions disabled. Jangan menjalankan `--update`, mengubah setting repository, atau mengaktifkan post-deploy actions.
 
 ```bash
 ssh server3 'systemctl is-active wg-quick@wg0; ss -lntp | grep -E ":(8391|8392)\\b" || true; curl -sSI --max-time 5 http://10.8.0.2:80/ | head'
+ssh server3 'plesk ext git --info -domain be-stesy.cloud -name cloud_beacon.git'
 ```
 
 Expected: WireGuard `active`; 8391 tetap listen; 8392 belum listen; module `302 Location: /login`.
@@ -766,14 +818,18 @@ ssh server3 'plesk db -Ne "SELECT id, name, host, port, username FROM cloud_conf
 
 Expected: row pertama diawali `1`, host `10.8.0.2`, dan total row `1`.
 
-- [ ] Stage hanya tracked HEAD di direktori root-only; archive tidak membawa `.env`, `storage`, node_modules, atau file untracked.
+- [ ] Fetch repository pull Plesk, lalu verifikasi last commit-nya memuat exact `RELEASE_SHA`. Fetch tidak boleh diikuti deploy sampai backup, registry gate, dan migration-status gate lulus. Jangan memakai archive/rsync dan jangan mengubah setting repository Plesk.
 
 ```bash
-ssh server3 'test ! -e /root/cloud-web-release-20260715 && install -d -m 700 /root/cloud-web-release-20260715'
-git archive --format=tar HEAD | ssh server3 'tar -xf - -C /root/cloud-web-release-20260715'
+test -n "${RELEASE_SHA:-}"
+ssh server3 'plesk ext git --fetch -domain be-stesy.cloud -name cloud_beacon.git'
+PLESK_SHA=$(ssh server3 \
+    'plesk ext git --get-last-commit -domain be-stesy.cloud -name cloud_beacon.git' \
+    | sed -n 's/^commit //p' | head -n 1)
+test "$PLESK_SHA" = "$RELEASE_SHA"
 ```
 
-- [ ] Masuk maintenance mode hanya di dalam deployment shell yang memasang EXIT trap. Sync staging tanpa `--delete`, install dependency, migrate, seed, build, dan cache. Jalankan app commands sebagai user Plesk; trap wajib menjalankan `artisan up` pada sukses maupun gagal.
+- [ ] Masuk maintenance mode hanya di dalam deployment shell yang memasang EXIT trap. Jalankan manual `plesk ext git --deploy` terlebih dahulu, pastikan `.env` dan direktori `storage` existing tetap identik, lalu install dependency, exact migration, additive seed, dan build. Jalankan app commands sebagai user Plesk; trap wajib menjalankan `artisan up` pada sukses maupun gagal.
 
 Sebelum maintenance, jalankan command berikut dan stop bila ada migration pending selain `2026_07_15_000001_add_web_access_to_remote_devices_table`. Rollout ini tidak berwenang menjalankan migration unrelated.
 
@@ -786,7 +842,6 @@ ssh server3 'bash -se' <<'SERVER3'
 set -euo pipefail
 export PATH=/opt/plesk/php/8.3/bin:/opt/plesk/node/24/bin:$PATH
 app=/var/www/vhosts/be-stesy.cloud/httpdocs
-stage=/root/cloud-web-release-20260715
 
 bring_up() {
     cd "$app"
@@ -795,8 +850,14 @@ bring_up() {
 trap bring_up EXIT
 
 cd "$app"
+test -f .env
+test -d storage
+env_before=$(sha256sum .env | awk '{print $1}')
+storage_before=$(stat -c '%d:%i' storage)
 sudo -u be-stesy env PATH="$PATH" php artisan down --retry=60
-rsync -rlt --chown=be-stesy:psacln "$stage"/ "$app"/
+plesk ext git --deploy -domain be-stesy.cloud -name cloud_beacon.git
+test "$(sha256sum .env | awk '{print $1}')" = "$env_before"
+test "$(stat -c '%d:%i' storage)" = "$storage_before"
 sudo -u be-stesy env PATH="$PATH" composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
 sudo -u be-stesy env PATH="$PATH" php artisan migrate --path=database/migrations/2026_07_15_000001_add_web_access_to_remote_devices_table.php --force
 sudo -u be-stesy env PATH="$PATH" php artisan db:seed --class=CloudWebPermissionSeeder --force
@@ -954,7 +1015,7 @@ POST /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel
 
 Simpan `result.id` sebagai `TUNNEL_ID`. Bila sudah ada, reuse hanya jika tidak deleted, `config_src=cloudflare`, dan config cocok; selain itu abort.
 
-- [ ] Set ingress dan verify GET config:
+- [ ] Set ingress dan verify GET config. Matcher ingress `*.be-stesy.cloud` hanya memilih service berdasarkan HTTP Host di dalam tunnel; matcher ini tidak membuat DNS dan tidak mengaktifkan wildcard publik. Selama exact canary, hanya exact CNAME `device-001.be-stesy.cloud` yang merutekan traffic publik. Wildcard publik baru aktif ketika record DNS `*.be-stesy.cloud` dibuat di Task 9.
 
 ```http
 PUT /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel/{TUNNEL_ID}/configurations
