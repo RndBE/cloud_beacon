@@ -157,16 +157,28 @@ export default function CloudSshIndex({
         setWebError(null);
 
         try {
-            const csrfToken =
-                document
-                    .querySelector('meta[name="csrf-token"]')
-                    ?.getAttribute('content') ?? '';
+            const xsrfCookie = document.cookie
+                .split(';')
+                .map((cookie) => cookie.trim())
+                .find((cookie) => cookie.startsWith('XSRF-TOKEN='));
+            const headers: Record<string, string> = {
+                Accept: 'application/json',
+            };
+
+            if (xsrfCookie) {
+                headers['X-XSRF-TOKEN'] = decodeURIComponent(
+                    xsrfCookie.slice('XSRF-TOKEN='.length),
+                );
+            } else {
+                headers['X-CSRF-TOKEN'] =
+                    document
+                        .querySelector('meta[name="csrf-token"]')
+                        ?.getAttribute('content') ?? '';
+            }
+
             const response = await fetch(`/cloud-web/${device.id}/session`, {
                 method: 'POST',
-                headers: {
-                    Accept: 'application/json',
-                    'X-CSRF-TOKEN': csrfToken,
-                },
+                headers,
             });
 
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
