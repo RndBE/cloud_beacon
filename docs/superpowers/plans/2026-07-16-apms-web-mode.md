@@ -389,7 +389,7 @@ $result = $mqtt->sendCalibrationSet($idLogger, $logger->logger_mode, $params);
 
 The Laravel container constructs the same service in production and supplies the test mock during the feature test.
 
-- [ ] **Step 4: Add APMS to the React configurator allowlist**
+- [ ] **Step 4: Add APMS to the React configurator and default its fixed sensor**
 
 In `resources/js/pages/loggers/show.tsx`, update the existing constant:
 
@@ -397,7 +397,18 @@ In `resources/js/pages/loggers/show.tsx`, update the existing constant:
 const CONFIGURATOR_MODES = new Set(['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS']);
 ```
 
-The generic form will render the three `sensor-source` controls, two number inputs, and the single-option `arr_sensor` select from the database metadata.
+Then update the generic form initializer so any one-option select defaults to its only legal value while preserving saved calibration data:
+
+```tsx
+const initial: Record<string, string> = {};
+for (const f of fields) {
+    const savedValue = logger.calibrationData?.[f.key]?.toString();
+    initial[f.key] = savedValue || (f.type === 'select' && f.options?.length === 1 ? f.options[0].value : '');
+}
+return initial;
+```
+
+The form will render the three `sensor-source` controls, two number inputs, and the `arr_sensor` select from the database metadata. APMS starts with `RK400-04` selected, but existing saved values still take precedence.
 
 - [ ] **Step 5: Run focused backend and frontend verification**
 
