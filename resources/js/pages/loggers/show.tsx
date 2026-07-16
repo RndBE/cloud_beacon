@@ -58,6 +58,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LoggerToaster } from '@/components/logger-toaster';
+import { ModeProfileWizard } from '@/components/loggers/mode-profile-wizard';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -4921,6 +4922,24 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
             setPhase('error');
             setMessage('Network error');
         }
+    }
+
+    const guidedModes = new Set(['ARR', 'AWLR_TD', 'AWLR_US', 'APMS']);
+    const supportsGuidedProfiles = allowedModes.some((mode) => guidedModes.has(mode.slug));
+
+    if (supportsGuidedProfiles) {
+        return (
+            <ModeProfileWizard
+                logger={{
+                    deviceIdentifier: logger.deviceIdentifier,
+                    loggerMode: logger.loggerMode,
+                    status: logger.status,
+                    availableModes: allowedModes,
+                }}
+                disabled={disabled}
+                onComplete={() => router.reload()}
+            />
+        );
     }
 
     return (
