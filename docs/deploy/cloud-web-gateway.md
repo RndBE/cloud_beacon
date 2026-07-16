@@ -63,12 +63,15 @@ rollout bila ada pending migration selain migration Cloud Web berikut:
 ssh server3 'cd /var/www/vhosts/be-stesy.cloud/httpdocs && /opt/plesk/php/8.3/bin/php artisan migrate:status'
 ```
 
-Konfirmasi registry produksi sebelum seeder. Hasil yang diharapkan saat rollout
-pertama adalah satu row, ID 1, host `10.8.0.2`; bila berbeda, jangan memaksa slug
-`device-001` atau melanjutkan canary sebelum mapping diperbarui.
+Konfirmasi registry produksi sebelum seeder. Seeder mencari tuple persis
+`host=10.8.0.2`, `port=22`, `username=orangepi`; perbedaan pada salah satu field
+akan membuat `firstOrCreate` menambah row baru. Hasil yang diharapkan saat rollout
+pertama adalah tepat satu row total dan query tuple mengembalikan row ID 1. Stop
+jika tuple/total berbeda; jangan menjalankan seeder, memaksa slug `device-001`,
+atau melanjutkan canary sebelum mapping diperbarui.
 
 ```bash
-ssh server3 'plesk db -Ne "SELECT id,name,host,port,username FROM cloud_config.remote_devices WHERE host = '\''10.8.0.2'\''; SELECT COUNT(*) FROM cloud_config.remote_devices;"'
+ssh server3 'plesk db -Ne "SELECT id,name,host,port,username FROM cloud_config.remote_devices WHERE host = '\''10.8.0.2'\'' AND port = 22 AND username = '\''orangepi'\''; SELECT COUNT(*) FROM cloud_config.remote_devices;"'
 ```
 
 ## 2. Backup database yang scoped
@@ -163,6 +166,13 @@ app=/var/www/vhosts/be-stesy.cloud/httpdocs
 secret_file=/root/cloud-web-bridge-secret
 gateway_env=$app/web-gateway/.env
 
+cleanup_secret_file() {
+    if test -e "$secret_file"; then
+        shred -u "$secret_file" 2>/dev/null || rm -f "$secret_file"
+    fi
+}
+trap cleanup_secret_file EXIT
+
 set_env() {
     file=$1 key=$2 value=$3
     if grep -q "^${key}=" "$file"; then
@@ -197,6 +207,7 @@ set_env "$gateway_env" CLOUD_BEACON_URL https://be-stesy.cloud/cloud-ssh
 
 unset secret
 shred -u "$secret_file"
+trap - EXIT
 chown be-stesy:psacln "$app/.env"
 chmod 640 "$app/.env"
 chown root:root "$gateway_env"
@@ -257,7 +268,17 @@ workaround pada SSL/Plesk. Snapshot atau change record tidak boleh memuat token.
 
 Cari tunnel bernama `cloud-beacon-device-web` pada account ID di atas. Reuse
 hanya tunnel remotely managed (`config_src=cloudflare`) yang tidak deleted dan
-config-nya cocok. Jika tidak ada, buat dengan:
+config-nya cocok. Catat kepemilikan sebelum mutation:
+
+```text
+Tunnel baru dibuat oleh rollout: TUNNEL_CREATED_BY_ROLLOUT=true
+Tunnel existing dipakai ulang:   TUNNEL_CREATED_BY_ROLLOUT=false
+```
+
+Jika reuse, GET dan simpan snapshot konfigurasi tunnel sebelum PUT, beserta
+checksum/lokasi change record. Snapshot ini tidak berisi connector token dan
+wajib dipakai untuk rollback; rollout tidak memiliki wewenang menghapus tunnel
+existing. Jika tunnel tidak ada, buat dengan:
 
 ```http
 POST /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel
@@ -285,7 +306,9 @@ PUT /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel/{TUNNEL_ID}/configurat
 }
 ```
 
-Jika tunnel baru dibuat tetapi config gagal, delete hanya `TUNNEL_ID` tersebut.
+Jika config gagal: delete hanya `TUNNEL_ID` ketika
+`TUNNEL_CREATED_BY_ROLLOUT=true`; ketika `false`, PUT kembali snapshot config
+sebelum rollout dan jangan menghapus tunnel.
 Ambil connector token dari endpoint berikut tanpa mencetak response-nya:
 
 ```http
@@ -311,13 +334,21 @@ Expected `root:root 600`; jangan `cat` file tersebut. Token disimpan pada
 `root:root`, mode `0600`; jangan memasukkan token ke argv, log, clipboard, atau
 file lokal.
 
-Install paket official `cloudflared`, lalu buat unit berikut:
+Install paket official `cloudflared`:
 
 ```bash
 ssh server3 'dnf install -y https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm && cloudflared --version'
 ```
 
-```ini
+Tulis unit dan jalankan service dengan heredoc yang dikirim ke `server3`.
+Delimiter dikutip agar tidak ada expansion lokal atau interpolasi secret:
+
+```bash
+ssh server3 'bash -se' <<'SERVER3'
+set -euo pipefail
+unit=/etc/systemd/system/cloudflared-cloud-beacon-device-web.service
+install -o root -g root -m 0644 /dev/null "$unit"
+cat > "$unit" <<'UNIT'
 [Unit]
 Description=Cloudflare Tunnel - Cloud Beacon Device Web
 After=network-online.target
@@ -332,12 +363,12 @@ RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
-```
-
-```bash
+UNIT
 systemctl daemon-reload
 systemctl enable --now cloudflared-cloud-beacon-device-web
 systemctl is-active cloudflared-cloud-beacon-device-web
+systemctl status cloudflared-cloud-beacon-device-web --no-pager
+SERVER3
 ```
 
 Lanjut hanya bila service aktif, API melaporkan tunnel `healthy`, connection
@@ -425,6 +456,8 @@ shared secret, cookie, atau URL connect.
 Release commit:
 DB backup path + SHA-256:
 TUNNEL_ID:
+TUNNEL_CREATED_BY_ROLLOUT (true/false):
+Reused tunnel config snapshot path + SHA-256 (or n/a):
 CANARY_DNS_ID (deleted after wildcard proof: yes/no):
 WILDCARD_DNS_ID:
 Tunnel status/connectors:
@@ -440,13 +473,16 @@ Operator:
 1. Delete `WILDCARD_DNS_ID` lebih dahulu. Jangan mencari lalu menghapus record
    berdasarkan nama.
 2. Untuk rollback penuh, delete `CANARY_DNS_ID` jika masih ada.
-3. Jalankan `systemctl disable --now cloudflared-cloud-beacon-device-web`.
-4. Stop gateway dengan
-   `pm2 stop cloud-beacon-web-gateway && pm2 save` memakai Node/PATH Plesk.
+3. Jalankan
+   `ssh server3 'systemctl disable --now cloudflared-cloud-beacon-device-web'`.
+4. Stop gateway di Server 3 dengan
+   `ssh server3 'export PATH=/opt/plesk/node/24/bin:$PATH; pm2 stop cloud-beacon-web-gateway && pm2 save'`.
 5. Set `web_enabled=false` untuk perangkat terdampak. Migration/kolom boleh
    tetap terpasang.
-6. Hapus tunnel hanya setelah connections kosong dan hanya menggunakan
-   `TUNNEL_ID` yang tercatat.
+6. Jika `TUNNEL_CREATED_BY_ROLLOUT=true`, hapus tunnel hanya setelah connections
+   kosong dan hanya menggunakan `TUNNEL_ID` yang tercatat. Jika nilainya
+   `false`, jangan hapus tunnel; PUT kembali snapshot konfigurasi sebelum
+   rollout dan verifikasi config hasil GET sama dengan snapshot.
 7. Bila rollback database benar-benar diperlukan, jadwalkan maintenance dan
    restore dari backup scoped yang checksum-nya sudah diverifikasi; rollback
    normal tidak perlu drop kolom.
