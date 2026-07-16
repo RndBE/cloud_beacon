@@ -303,6 +303,21 @@ class MqttService
         };
     }
 
+    public static function normalizeCalibrationData(string $modeSlug, array $data): array
+    {
+        $sensorKey = match (strtoupper(trim($modeSlug))) {
+            'APMS' => 'arr_sensor',
+            'ARR' => 'sensor',
+            default => null,
+        };
+
+        if ($sensorKey !== null && ($data[$sensorKey] ?? null) === 'RK400-04') {
+            $data[$sensorKey] = 'TB-400-04';
+        }
+
+        return $data;
+    }
+
     /**
      * Detect a firmware error acknowledgement per spec §6.
      *
@@ -1564,6 +1579,7 @@ class MqttService
                             // Extract all response fields (sumur, muka_air, sensor_rekam, etc.)
                             $responseData = $data[$modeSlug];
                             unset($responseData['status']);
+                            $responseData = self::normalizeCalibrationData($modeSlug, $responseData);
                             $result = [
                                 'success' => true,
                                 'data' => $responseData,

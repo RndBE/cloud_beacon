@@ -200,7 +200,9 @@ class LoggerController extends Controller
                 'lastError' => $i->last_error,
             ]),
             'loggerMode' => $logger->logger_mode,
-            'calibrationData' => $logger->calibration_data,
+            'calibrationData' => $logger->calibration_data === null
+                ? null
+                : MqttService::normalizeCalibrationData($logger->logger_mode ?? '', $logger->calibration_data),
             'calibratedAt' => $logger->calibrated_at?->format('Y-m-d H:i:s'),
             'availableModes' => \App\Models\LoggerMode::whereIn('slug', $allowedConfiguratorModes)
                 ->orderBy('group')

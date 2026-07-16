@@ -339,6 +339,26 @@ it('normalizes the APMS system mode', function () {
     expect(MqttService::parseInfoResponse($apms)['logger_mode'])->toBe('APMS');
 });
 
+it('normalizes legacy rainfall sensor names for APMS and ARR', function () {
+    expect(MqttService::normalizeCalibrationData('APMS', [
+        'arr_sensor' => 'RK400-04',
+        'soil_source' => 'soil.moist',
+    ]))->toBe([
+        'arr_sensor' => 'TB-400-04',
+        'soil_source' => 'soil.moist',
+    ])->and(MqttService::normalizeCalibrationData('ARR', [
+        'source' => 'rainfall.day',
+        'sensor' => 'RK400-04',
+    ]))->toBe([
+        'source' => 'rainfall.day',
+        'sensor' => 'TB-400-04',
+    ])->and(MqttService::normalizeCalibrationData('ARR', [
+        'sensor' => 'SEM400',
+    ]))->toBe([
+        'sensor' => 'SEM400',
+    ]);
+});
+
 // =====================================================================
 // Error parsing — spec §6 flat "MODULE CMD":"ERR"
 // =====================================================================
