@@ -561,7 +561,7 @@ Wants=network-online.target
 [Service]
 Type=notify
 EnvironmentFile=/etc/cloudflared/cloud-beacon-device-web.env
-ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run
 Restart=on-failure
 RestartSec=5s
 
@@ -657,19 +657,20 @@ Isi record operasional berikut setelah rollout. Jangan tempel token connector,
 shared secret, cookie, atau URL connect.
 
 ```text
-Release commit:
-DB backup path + SHA-256:
-TUNNEL_ID:
-TUNNEL_CREATED_BY_ROLLOUT (true/false):
-Reused tunnel config snapshot path + SHA-256 (or n/a):
-CANARY_DNS_ID (deleted after wildcard proof: yes/no):
-WILDCARD_DNS_ID:
-Tunnel status/connectors:
-Gateway PM2 status/listener:
-Canary E2E result/time:
-Existing DNS regression result/time:
-Cloud SSH regression result/time:
-Operator:
+Release commit: d3fe50171383c2b6b1849c26034bdec5e61e2acd
+DB backup path + SHA-256: /var/backups/cloud-web/cloud_config-before-cloud-web-20260716T045026Z.sql.gz / 573b4ebc45a1b60d0e4073d7eda941278315e7e7f30f7d047018703a731ddadd
+TUNNEL_ID: 2b019d60-f86f-4d74-93a3-eb499baccec9
+TUNNEL_CREATED_BY_ROLLOUT (true/false): true
+Reused tunnel config snapshot path + SHA-256 (or n/a): n/a
+CANARY_DNS_ID (deleted after wildcard proof: yes/no): ca9f79cfbf87060b9353418ce5f61651 / yes
+WILDCARD_DNS_ID: de4caecafdd990001196a2811a44c92b
+Tunnel status/connectors: healthy / 4 connections / 0 pending reconnect
+Gateway PM2 status/listener: online / 127.0.0.1:8392
+Canary E2E result/time: gateway/session passed after CSRF hotfix; module login form/API/refresh verified / 2026-07-16 12:28 CST
+Module credential submission: not run; credential was not supplied to this rollout
+Existing DNS regression result/time: passed; 13 exact records unchanged / 2026-07-16 12:28 CST
+Cloud SSH regression result/time: passed; one-time token redeemed, bridge connected, shell marker returned / 2026-07-16 12:38 CST
+Operator: Codex via local worktree, GitHub PR, and Plesk Git
 ```
 
 ## 12. Rollback berdasarkan resource ID
