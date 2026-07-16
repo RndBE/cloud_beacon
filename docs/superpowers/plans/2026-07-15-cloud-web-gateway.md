@@ -989,6 +989,11 @@ ssh server3 'stat -c "%U:%G %a %n" /etc/cloudflared/cloud-beacon-device-web.env'
 
 Expected: `root:root 600`; jangan pernah `cat` file tersebut.
 
+Rollout 2026-07-16 mencatat deviasi aman: percobaan non-TTY pertama berhenti
+karena stdin SSH sudah tertutup dan tidak membuat file parsial. Handoff final
+memakai PTY dengan echo dimatikan, token tetap hanya mengalir melalui stdin ke
+file atomic root-owned mode 0600, tidak dicetak, dan tidak disimpan lokal.
+
 ```bash
 ssh server3 'dnf install -y https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm && cloudflared --version'
 ```
@@ -1042,7 +1047,7 @@ POST /zones/b6b7919b667bf6e2a938282ce6d378dd/dns_records
 
 - [x] Canary smoke test unauthenticated: DNS resolves via 1.1.1.1, TLS certificate valid untuk hostname, `/` memberi gateway 401, non-device Host tidak mencapai Plesk. Jangan lanjut bila Cloudflare 502/1033 atau certificate mismatch.
 
-- [x] Canary E2E melalui browser yang sudah login Cloud Beacon: buka registry, klik **Buka Web**, pastikan connect redirect menghapus token dari address bar, halaman akhir `/login`, `/style.css` dan `/api/*` root-relative berfungsi, login modul berhasil, refresh tetap valid, dan browser lain/tanpa token ditolak.
+- [ ] PARTIAL — Canary E2E melalui browser yang sudah login Cloud Beacon: registry, **Buka Web**, penghapusan query-token, halaman akhir `/login`, asset inline, `/api/login` root-relative, refresh, dan penolakan tanpa sesi sudah diverifikasi. Submit kredensial/login modul belum dijalankan karena kredensial modul tidak diberikan ke rollout.
 
 - [x] Regression check sebelum wildcard: exact DNS snapshot masih byte-for-byte sama, subdomain existing tetap resolve/status seperti baseline, `http://be-stesy.cloud` behavior tidak berubah, serta terminal Cloud SSH masih bisa connect.
 

@@ -666,10 +666,10 @@ CANARY_DNS_ID (deleted after wildcard proof: yes/no): ca9f79cfbf87060b9353418ce5
 WILDCARD_DNS_ID: de4caecafdd990001196a2811a44c92b
 Tunnel status/connectors: healthy / 4 connections / 0 pending reconnect
 Gateway PM2 status/listener: online / 127.0.0.1:8392
-Canary E2E result/time: passed after CSRF hotfix / 2026-07-16 12:28 CST
+Canary E2E result/time: gateway/session passed after CSRF hotfix; module login form/API/refresh verified / 2026-07-16 12:28 CST
 Module credential submission: not run; credential was not supplied to this rollout
 Existing DNS regression result/time: passed; 13 exact records unchanged / 2026-07-16 12:28 CST
-Cloud SSH regression result/time: passed; PM2 online, 127.0.0.1:8391, device TCP 22 reachable / 2026-07-16 12:28 CST
+Cloud SSH regression result/time: passed; one-time token redeemed, bridge connected, shell marker returned / 2026-07-16 12:38 CST
 Operator: Codex via local worktree, GitHub PR, and Plesk Git
 ```
 
