@@ -331,6 +331,14 @@ it('normalizes new system modes ARR and GNSS', function () {
     expect(MqttService::parseInfoResponse($gnss)['logger_mode'])->toBe('GNSS');
 });
 
+it('normalizes the APMS system mode', function () {
+    $apms = array_fill(0, 29, 0);
+    $apms[25] = 1;
+    $apms[27] = 'APMS';
+
+    expect(MqttService::parseInfoResponse($apms)['logger_mode'])->toBe('APMS');
+});
+
 // =====================================================================
 // Error parsing — spec §6 flat "MODULE CMD":"ERR"
 // =====================================================================

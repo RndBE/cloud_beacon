@@ -90,7 +90,7 @@ class LoggerController extends Controller
         $deviceModel = $logger->model
             ? DeviceModel::where('name', $logger->model)->first()
             : null;
-        $allowedConfiguratorModes = ['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS'];
+        $allowedConfiguratorModes = ['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS'];
 
         $loggerData = [
             'id' => IdHasher::encode($logger->id),
