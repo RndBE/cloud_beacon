@@ -19,6 +19,23 @@ class LoggerModeSeeder extends Seeder
                 'description'        => 'Mode konfigurasi umum tanpa profil khusus.',
             ],
             [
+                'slug'               => 'APMS',
+                'label'              => 'APMS (Automatic Peatland Monitoring System)',
+                'group'              => 'APMS',
+                'has_calibration'    => true,
+                'calibration_fields' => [
+                    ['key' => 'awlr_source', 'label' => 'Sumber Data AWLR', 'unit' => '', 'type' => 'sensor-source'],
+                    ['key' => 'sumur', 'label' => 'Kedalaman Sumur', 'unit' => 'm', 'type' => 'number', 'min' => 0, 'step' => 0.01],
+                    ['key' => 'muka_air', 'label' => 'Muka Air', 'unit' => 'm', 'type' => 'number', 'min' => 0, 'step' => 0.01],
+                    ['key' => 'arr_source', 'label' => 'Sumber Data Curah Hujan', 'unit' => '', 'type' => 'sensor-source'],
+                    ['key' => 'arr_sensor', 'label' => 'Jenis Sensor Curah Hujan', 'unit' => '', 'type' => 'select', 'options' => [
+                        ['value' => 'RK400-04', 'label' => 'RK400-04'],
+                    ]],
+                    ['key' => 'soil_source', 'label' => 'Sumber Data Kelembapan Tanah', 'unit' => '', 'type' => 'sensor-source'],
+                ],
+                'description'        => 'Automatic peatland monitoring menggunakan sumber data muka air, curah hujan, dan kelembapan tanah.',
+            ],
+            [
                 'slug'               => 'ARR',
                 'label'              => 'ARR (Rainfall Recorder)',
                 'group'              => 'ARR',
