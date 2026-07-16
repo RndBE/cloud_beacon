@@ -44,9 +44,10 @@ Failure yang boleh tetap ada hanya baseline Task 6 berikut: Laravel 238 passed,
 3 failed, 1068 assertions dengan failure set persis `DashboardTest` permission
 403 vs 200, `ExampleTest` home 302 vs 200, dan date-sensitive `MobileApiTest`
 `errorToday` 0 vs 1; Pint 114 issue di 236 file; ESLint 38 error + 2 warning;
-Prettier 41 file resource. Nama failure/file, pesan, dan count harus sama dengan
-bukti Task 6, dan tidak boleh ada failure Cloud Web/Cloud SSH baru. Perbedaan apa
-pun menghentikan rollout.
+Prettier 41 file resource. Identitas tiga failure Laravel dan count setiap
+command harus sama dengan angka di atas; seluruh focused gate berikut memastikan
+file Cloud Web/Cloud SSH tidak menambah regresi. Perbedaan apa pun menghentikan
+rollout.
 
 Gate focused Cloud Web/Cloud SSH berikut wajib seluruhnya exit 0. Ini, bersama
 exact baseline comparison di atas, adalah acceptance gate release:

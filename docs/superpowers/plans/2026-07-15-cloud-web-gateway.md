@@ -693,7 +693,7 @@ Baseline yang diizinkan hanya:
 - `npm run lint:check`: 38 error + 2 warning existing; `resources/js/pages/cloud-ssh/index.tsx` dan `web-gateway` lulus scoped ESLint.
 - `npm run format:check`: 41 file resource existing gagal; `resources/js/pages/cloud-ssh/index.tsx` lulus scoped Prettier.
 
-Nama failure/file, pesan, dan jumlah harus sama dengan bukti Task 6. Failure baru, failure Cloud Web/Cloud SSH, perubahan set/count baseline, atau command focused berikut yang nonzero menghentikan release:
+Identitas tiga failure Laravel dan count setiap command repo-wide harus sama dengan baseline di atas. Failure baru, failure Cloud Web/Cloud SSH, perubahan count baseline, atau command focused berikut yang nonzero menghentikan release:
 
 ```bash
 set -euo pipefail
@@ -810,10 +810,10 @@ sha256sum "$backup_file"
 '
 ```
 
-- [ ] Query production DB read-only sebelum seed. Preflight 2026-07-15 menemukan tepat satu row dan ID `1`; konfirmasi ulang hasil tetap sama serta belum ada slug conflict. Jika hasil berubah, stop dan perbarui canary—jangan memaksa `device-001`.
+- [ ] Query production DB read-only sebelum seed. Preflight 2026-07-15 menemukan tepat satu row dan ID `1`; konfirmasi ulang tuple seeder persis `10.8.0.2:22` + `orangepi`, hasil tetap satu row total, serta belum ada slug conflict. Jika hasil berubah, stop dan perbarui canary—jangan memaksa `device-001`.
 
 ```bash
-ssh server3 'plesk db -Ne "SELECT id, name, host, port, username FROM cloud_config.remote_devices WHERE host = '\''10.8.0.2'\''; SELECT COUNT(*) FROM cloud_config.remote_devices;"'
+ssh server3 'plesk db -Ne "SELECT id, name, host, port, username FROM cloud_config.remote_devices WHERE host = '\''10.8.0.2'\'' AND port = 22 AND username = '\''orangepi'\''; SELECT COUNT(*) FROM cloud_config.remote_devices;"'
 ```
 
 Expected: row pertama diawali `1`, host `10.8.0.2`, dan total row `1`.
@@ -867,7 +867,7 @@ sudo -u be-stesy env PATH="$PATH" npm run build
 SERVER3
 ```
 
-- [ ] Generate satu Laravel↔gateway secret baru langsung di Server 3 tanpa mencetaknya. Simpan sebagai `CLOUD_WEB_BRIDGE_SECRET` di app `.env` dan `BRIDGE_SECRET` di `web-gateway/.env`; set app `.env` `0640` dan gateway `.env` `0600`. Jangan memakai secret Cloud SSH atau tunnel token. Isi env lain persis dari config Task 2/5, lalu rebuild config cache setelah env selesai.
+- [ ] Jalankan prosedur canonical **Runbook §4 — Provision shared secret tanpa output** secara utuh. Prosedur itu wajib membuat satu secret Laravel↔gateway langsung di Server 3, mempertahankan key env yang tidak terkait, men-stage kedua file dengan permission final, memvalidasi secret yang sama, memasang keduanya secara atomic, dan mengembalikan backup melalui EXIT trap bila salah satu install gagal. Jangan memakai secret Cloud SSH/tunnel, jangan menaruh secret pada argv/log, dan jangan memakai blok env lain yang lebih pendek dari transaksi runbook. Setelah transaksi berhasil, rebuild cache persis seperti Runbook §4.
 
 ```text
 Laravel .env:
@@ -892,83 +892,18 @@ CONNECT_RATE_WINDOW_MS=60000
 CLOUD_BEACON_URL=https://be-stesy.cloud/cloud-ssh
 ```
 
-Tulis kedua env dengan satu secret in-memory dan tanpa mencetak nilainya:
-
-```bash
-ssh server3 'bash -se' <<'SERVER3'
-set -euo pipefail
-umask 077
-app=/var/www/vhosts/be-stesy.cloud/httpdocs
-secret_file=/root/cloud-web-bridge-secret
-gateway_env=$app/web-gateway/.env
-
-set_env() {
-    file=$1
-    key=$2
-    value=$3
-    if grep -q "^${key}=" "$file"; then
-        sed -i "s|^${key}=.*|${key}=${value}|" "$file"
-    else
-        printf '%s=%s\n' "$key" "$value" >> "$file"
-    fi
-}
-
-openssl rand -hex 32 > "$secret_file"
-IFS= read -r secret < "$secret_file"
-install -m 600 /dev/null "$gateway_env"
-
-set_env "$app/.env" CLOUD_WEB_BASE_DOMAIN be-stesy.cloud
-set_env "$app/.env" CLOUD_WEB_TOKEN_TTL 30
-set_env "$app/.env" CLOUD_WEB_ALLOWED_CIDR 10.8.0.0/24
-set_env "$app/.env" CLOUD_WEB_BRIDGE_SECRET "$secret"
-
-set_env "$gateway_env" BIND_HOST 127.0.0.1
-set_env "$gateway_env" PORT 8392
-set_env "$gateway_env" BASE_DOMAIN be-stesy.cloud
-set_env "$gateway_env" LARAVEL_INTERNAL_URL https://be-stesy.cloud/api/internal/cloud-web/validate
-set_env "$gateway_env" BRIDGE_SECRET "$secret"
-set_env "$gateway_env" ALLOWED_CIDRS 10.8.0.0/24
-set_env "$gateway_env" SESSION_IDLE_MS 1800000
-set_env "$gateway_env" SESSION_ABSOLUTE_MS 28800000
-set_env "$gateway_env" CONNECT_TIMEOUT_MS 10000
-set_env "$gateway_env" UPSTREAM_IDLE_TIMEOUT_MS 300000
-set_env "$gateway_env" CONNECT_RATE_LIMIT 20
-set_env "$gateway_env" CONNECT_RATE_WINDOW_MS 60000
-set_env "$gateway_env" CLOUD_BEACON_URL https://be-stesy.cloud/cloud-ssh
-
-unset secret
-shred -u "$secret_file"
-chown be-stesy:psacln "$app/.env"
-chmod 640 "$app/.env"
-chown root:root "$gateway_env"
-chmod 600 "$gateway_env"
-SERVER3
-```
-
-Setelah env selesai, rebuild cache tanpa menampilkan nilai:
-
-```bash
-ssh server3 '
-export PATH=/opt/plesk/php/8.3/bin:/opt/plesk/node/24/bin:$PATH
-cd /var/www/vhosts/be-stesy.cloud/httpdocs
-chown be-stesy:psacln .env
-chmod 640 .env
-chown root:root web-gateway/.env
-chmod 600 web-gateway/.env
-sudo -u be-stesy env PATH="$PATH" php artisan optimize:clear
-sudo -u be-stesy env PATH="$PATH" php artisan config:cache
-sudo -u be-stesy env PATH="$PATH" php artisan route:cache
-'
-```
-
 - [ ] Install production dependency gateway lalu start/reload PM2 dengan PATH Node Plesk.
 
 ```bash
+ssh server3 '
+set -eu
 export PATH=/opt/plesk/node/24/bin:$PATH
+export PM2_HOME=/root/.pm2
 cd /var/www/vhosts/be-stesy.cloud/httpdocs/web-gateway
 npm ci --omit=dev
 pm2 startOrReload ecosystem.config.cjs --update-env
 pm2 save
+'
 ```
 
 - [ ] Verifikasi sebelum Cloudflare disentuh.
@@ -1055,8 +990,7 @@ ssh server3 'stat -c "%U:%G %a %n" /etc/cloudflared/cloud-beacon-device-web.env'
 Expected: `root:root 600`; jangan pernah `cat` file tersebut.
 
 ```bash
-dnf install -y https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm
-cloudflared --version
+ssh server3 'dnf install -y https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm && cloudflared --version'
 ```
 
 - [ ] Jangan gunakan service installer yang menaruh token pada argv/unit readable. Buat `/etc/cloudflared/cloud-beacon-device-web.env` owner `root:root` mode `0600` berisi `TUNNEL_TOKEN`, dan unit `/etc/systemd/system/cloudflared-cloud-beacon-device-web.service`:
@@ -1081,10 +1015,12 @@ WantedBy=multi-user.target
 - [ ] Enable connector dan lanjut hanya bila systemd active, API tunnel `healthy`, connections tidak kosong, dan minimal satu `is_pending_reconnect=false`.
 
 ```bash
+ssh server3 '
 systemctl daemon-reload
 systemctl enable --now cloudflared-cloud-beacon-device-web
 systemctl status cloudflared-cloud-beacon-device-web --no-pager
 journalctl -u cloudflared-cloud-beacon-device-web -n 100 --no-pager
+'
 ```
 
 - [ ] Buat exact proxied canary CNAME dan simpan record ID:
@@ -1175,9 +1111,10 @@ Jika ada masalah setelah wildcard:
 
 1. Delete `WILDCARD_DNS_ID` terlebih dahulu; biarkan exact canary bila dibutuhkan untuk diagnosis.
 2. Untuk rollback penuh, delete `CANARY_DNS_ID` bila masih ada.
-3. `systemctl disable --now cloudflared-cloud-beacon-device-web`.
-4. `pm2 stop cloud-beacon-web-gateway && pm2 save`.
+3. Jalankan `systemctl disable --now cloudflared-cloud-beacon-device-web` di Server 3.
+4. Jalankan `pm2 stop cloud-beacon-web-gateway && pm2 save` di Server 3.
 5. Set `web_enabled=false` untuk perangkat; kolom/migration boleh tetap terpasang.
-6. Hapus tunnel hanya setelah connections kosong dan hanya dengan `TUNNEL_ID` yang dicatat.
+6. Jika `TUNNEL_CREATED_BY_ROLLOUT=true`, hapus hanya `TUNNEL_ID` yang dicatat setelah connections kosong.
+7. Jika `TUNNEL_CREATED_BY_ROLLOUT=false`, jangan pernah menghapus tunnel; PUT kembali snapshot konfigurasi pre-rollout yang sudah dicatat dan verifikasi hasil GET-nya.
 
 Tidak ada langkah rollback yang mengubah WireGuard, Nginx/Plesk, SSL zone, atau Cloud SSH.
