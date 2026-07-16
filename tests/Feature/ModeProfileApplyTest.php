@@ -262,9 +262,9 @@ it('applies AWLR Transducer and returns the calibration popup as the next step',
             'MAP_DATA' => [
                 'cmd' => 'SET',
                 's1' => 'AWLR_TD.TMA',
-                's2' => 'AWLR_TD.kedalaman_air',
-                's3' => 'AWLR_TD.pembacaan_sensor',
-                's4' => 'AWLR_TD.status_modbus',
+                's2' => 'AWLR_TD.Kedalaman_Air',
+                's3' => 'AWLR_TD.Pembacaan_Sensor',
+                's4' => 'AWLR_TD.Status_Modbus',
             ],
         ], 'MAP_DATA')
         ->andReturn(['success' => true]);

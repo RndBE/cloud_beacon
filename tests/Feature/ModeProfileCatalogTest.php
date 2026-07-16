@@ -57,7 +57,13 @@ it('provides the AWLR Transducer template and calibration metadata', function ()
                 'fast_poll' => false,
             ],
         ])
-        ->and($profile['calibration']['source'])->toBe('Water_level');
+        ->and($profile['calibration']['source'])->toBe('Water_level')
+        ->and($profile['default_mapping'])->toBe([
+            'AWLR_TD.TMA',
+            'AWLR_TD.Kedalaman_Air',
+            'AWLR_TD.Pembacaan_Sensor',
+            'AWLR_TD.Status_Modbus',
+        ]);
 });
 
 it('keeps incomplete templates and profiles visible but disabled', function () {

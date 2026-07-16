@@ -184,9 +184,9 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                 ],
                 'default_mapping' => [
                     'AWLR_TD.TMA',
-                    'AWLR_TD.kedalaman_air',
-                    'AWLR_TD.pembacaan_sensor',
-                    'AWLR_TD.status_modbus',
+                    'AWLR_TD.Kedalaman_Air',
+                    'AWLR_TD.Pembacaan_Sensor',
+                    'AWLR_TD.Status_Modbus',
                 ],
             ],
             'AWLR_US' => [
