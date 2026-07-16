@@ -752,7 +752,7 @@ Gateway listener: 127.0.0.1:8392
 Module pertama: 10.8.0.2:80
 ```
 
-- [ ] Pastikan local worktree bersih untuk file tracked dan HEAD berisi semua commit Cloud Web. Catat exact object sebagai `FEATURE_SHA`; file untracked pengguna boleh tetap ada tetapi tidak ikut source yang dipublikasikan.
+- [x] Pastikan local worktree bersih untuk file tracked dan HEAD berisi semua commit Cloud Web. Catat exact object sebagai `FEATURE_SHA`; file untracked pengguna boleh tetap ada tetapi tidak ikut source yang dipublikasikan.
 
 ```bash
 git status --short --branch
@@ -764,7 +764,7 @@ test "${#FEATURE_SHA}" -eq 40
 printf 'FEATURE_SHA=%s\n' "$FEATURE_SHA"
 ```
 
-- [ ] Push branch Cloud Web, review melalui PR, lalu merge ke `main` dengan merge commit tanpa force-push. Fetch ulang, buktikan `FEATURE_SHA` menjadi ancestor `origin/main`, lalu catat exact `origin/main` sebagai `RELEASE_SHA`. Jangan squash/rebase karena rollout harus dapat membuktikan ancestry commit yang direview.
+- [x] Push branch Cloud Web, review melalui PR, lalu merge ke `main` dengan merge commit tanpa force-push. Fetch ulang, buktikan `FEATURE_SHA` menjadi ancestor `origin/main`, lalu catat exact `origin/main` sebagai `RELEASE_SHA`. Jangan squash/rebase karena rollout harus dapat membuktikan ancestry commit yang direview.
 
 ```bash
 branch=$(git branch --show-current)
@@ -777,7 +777,7 @@ test "${#RELEASE_SHA}" -eq 40
 printf 'RELEASE_SHA=%s\n' "$RELEASE_SHA"
 ```
 
-- [ ] Preflight Server 3: app online, disk cukup, WireGuard active, modul menjawab redirect `/login`, port 8392 kosong, dan PHP/Composer/Node/npm/PM2/Plesk Git tersedia. Inspect repository Plesk read-only dan stop kecuali faktanya persis: domain `be-stesy.cloud`, nama `cloud_beacon.git`, type `pull`, remote `https://github.com/RndBE/cloud_beacon.git`, active branch `main`, deployment mode `manual`, deployment path `/httpdocs`, post-deploy actions disabled. Jangan menjalankan `--update`, mengubah setting repository, atau mengaktifkan post-deploy actions.
+- [x] Preflight Server 3: app online, disk cukup, WireGuard active, modul menjawab redirect `/login`, port 8392 kosong, dan PHP/Composer/Node/npm/PM2/Plesk Git tersedia. Inspect repository Plesk read-only dan stop kecuali faktanya persis: domain `be-stesy.cloud`, nama `cloud_beacon.git`, type `pull`, remote `https://github.com/RndBE/cloud_beacon.git`, active branch `main`, deployment mode `manual`, deployment path `/httpdocs`, post-deploy actions disabled. Jangan menjalankan `--update`, mengubah setting repository, atau mengaktifkan post-deploy actions.
 
 ```bash
 ssh server3 'systemctl is-active wg-quick@wg0; ss -lntp | grep -E ":(8391|8392)\\b" || true; curl -sSI --max-time 5 http://10.8.0.2:80/ | head'
@@ -786,7 +786,7 @@ ssh server3 'plesk ext git --info -domain be-stesy.cloud -name cloud_beacon.git'
 
 Expected: WireGuard `active`; 8391 tetap listen; 8392 belum listen; module `302 Location: /login`.
 
-- [ ] Buat backup konsisten database `cloud_config` sebelum migration tanpa menampilkan password Plesk. Credential file bersifat sementara mode 0600 dan wajib dihapus oleh trap.
+- [x] Buat backup konsisten database `cloud_config` sebelum migration tanpa menampilkan password Plesk. Credential file bersifat sementara mode 0600 dan wajib dihapus oleh trap.
 
 ```bash
 ssh server3 '
@@ -810,7 +810,7 @@ sha256sum "$backup_file"
 '
 ```
 
-- [ ] Query production DB read-only sebelum seed. Preflight 2026-07-15 menemukan tepat satu row dan ID `1`; konfirmasi ulang tuple seeder persis `10.8.0.2:22` + `orangepi`, hasil tetap satu row total, serta belum ada slug conflict. Jika hasil berubah, stop dan perbarui canary—jangan memaksa `device-001`.
+- [x] Query production DB read-only sebelum seed. Preflight 2026-07-15 menemukan tepat satu row dan ID `1`; konfirmasi ulang tuple seeder persis `10.8.0.2:22` + `orangepi`, hasil tetap satu row total, serta belum ada slug conflict. Jika hasil berubah, stop dan perbarui canary—jangan memaksa `device-001`.
 
 ```bash
 ssh server3 'plesk db -Ne "SELECT id, name, host, port, username FROM cloud_config.remote_devices WHERE host = '\''10.8.0.2'\'' AND port = 22 AND username = '\''orangepi'\''; SELECT COUNT(*) FROM cloud_config.remote_devices;"'
@@ -818,7 +818,7 @@ ssh server3 'plesk db -Ne "SELECT id, name, host, port, username FROM cloud_conf
 
 Expected: row pertama diawali `1`, host `10.8.0.2`, dan total row `1`.
 
-- [ ] Fetch repository pull Plesk, lalu verifikasi last commit-nya memuat exact `RELEASE_SHA`. Fetch tidak boleh diikuti deploy sampai backup, registry gate, dan migration-status gate lulus. Jangan memakai archive/rsync dan jangan mengubah setting repository Plesk.
+- [x] Fetch repository pull Plesk, lalu verifikasi last commit-nya memuat exact `RELEASE_SHA`. Fetch tidak boleh diikuti deploy sampai backup, registry gate, dan migration-status gate lulus. Jangan memakai archive/rsync dan jangan mengubah setting repository Plesk.
 
 ```bash
 test -n "${RELEASE_SHA:-}"
@@ -829,7 +829,7 @@ PLESK_SHA=$(ssh server3 \
 test "$PLESK_SHA" = "$RELEASE_SHA"
 ```
 
-- [ ] Masuk maintenance mode hanya di dalam deployment shell yang memasang EXIT trap. Jalankan manual `plesk ext git --deploy` terlebih dahulu, pastikan `.env` dan direktori `storage` existing tetap identik, lalu install dependency, exact migration, additive seed, dan build. Jalankan app commands sebagai user Plesk; trap wajib menjalankan `artisan up` pada sukses maupun gagal.
+- [x] Masuk maintenance mode hanya di dalam deployment shell yang memasang EXIT trap. Jalankan manual `plesk ext git --deploy` terlebih dahulu, pastikan `.env` dan direktori `storage` existing tetap identik, lalu install dependency, exact migration, additive seed, dan build. Jalankan app commands sebagai user Plesk; trap wajib menjalankan `artisan up` pada sukses maupun gagal.
 
 Sebelum maintenance, jalankan command berikut dan stop bila ada migration pending selain `2026_07_15_000001_add_web_access_to_remote_devices_table`. Rollout ini tidak berwenang menjalankan migration unrelated.
 
@@ -867,7 +867,7 @@ sudo -u be-stesy env PATH="$PATH" npm run build
 SERVER3
 ```
 
-- [ ] Jalankan prosedur canonical **Runbook §4 — Provision shared secret tanpa output** secara utuh. Prosedur itu wajib membuat satu secret Laravel↔gateway langsung di Server 3, mempertahankan key env yang tidak terkait, men-stage kedua file dengan permission final, memvalidasi secret yang sama, memasang keduanya secara atomic, dan mengembalikan backup melalui EXIT trap bila salah satu install gagal. Jangan memakai secret Cloud SSH/tunnel, jangan menaruh secret pada argv/log, dan jangan memakai blok env lain yang lebih pendek dari transaksi runbook. Setelah transaksi berhasil, rebuild cache persis seperti Runbook §4.
+- [x] Jalankan prosedur canonical **Runbook §4 — Provision shared secret tanpa output** secara utuh. Prosedur itu wajib membuat satu secret Laravel↔gateway langsung di Server 3, mempertahankan key env yang tidak terkait, men-stage kedua file dengan permission final, memvalidasi secret yang sama, memasang keduanya secara atomic, dan mengembalikan backup melalui EXIT trap bila salah satu install gagal. Jangan memakai secret Cloud SSH/tunnel, jangan menaruh secret pada argv/log, dan jangan memakai blok env lain yang lebih pendek dari transaksi runbook. Setelah transaksi berhasil, rebuild cache persis seperti Runbook §4.
 
 ```text
 Laravel .env:
@@ -892,7 +892,7 @@ CONNECT_RATE_WINDOW_MS=60000
 CLOUD_BEACON_URL=https://be-stesy.cloud/cloud-ssh
 ```
 
-- [ ] Install production dependency gateway lalu start/reload PM2 dengan PATH Node Plesk.
+- [x] Install production dependency gateway lalu start/reload PM2 dengan PATH Node Plesk.
 
 ```bash
 ssh server3 '
@@ -906,7 +906,7 @@ pm2 save
 '
 ```
 
-- [ ] Verifikasi sebelum Cloudflare disentuh.
+- [x] Verifikasi sebelum Cloudflare disentuh.
 
 ```bash
 ssh server3 'curl --fail-with-body -H "Host: localhost" http://127.0.0.1:8392/healthz'
@@ -916,7 +916,7 @@ ssh server3 'ss -lntp | grep ":8392"; export PATH=/opt/plesk/node/24/bin:$PATH; 
 
 Expected: health `ok`; unauthenticated device host `401`; listener hanya `127.0.0.1:8392`; PM2 `online`; 8391 Cloud SSH tetap online.
 
-- [ ] Verifikasi migration/seed: current module enabled, slug yang diharapkan, admin/superadmin memiliki `cloudweb.connect`, operator/technician tidak. Jika salah, stop sebelum tunnel/DNS.
+- [x] Verifikasi migration/seed: current module enabled, slug yang diharapkan, admin/superadmin memiliki `cloudweb.connect`, operator/technician tidak. Jika salah, stop sebelum tunnel/DNS.
 
 ---
 
@@ -931,11 +931,11 @@ Tunnel name: cloud-beacon-device-web
 Canary: device-001.be-stesy.cloud
 ```
 
-- [ ] Snapshot seluruh DNS via API (ID/type/name/content/proxied/TTL/comment) dan public resolution/status untuk apex, `bms`, `wms`, `coastal`, `irrigation`, `mining`, `plantation`, `www`, `wosusokas`, dan aggregator records. Konfirmasi `device-001` dan `*` belum ada.
+- [x] Snapshot seluruh DNS via API (ID/type/name/content/proxied/TTL/comment) dan public resolution/status untuk apex, `bms`, `wms`, `coastal`, `irrigation`, `mining`, `plantation`, `www`, `wosusokas`, dan aggregator records. Konfirmasi `device-001` dan `*` belum ada.
 
-- [ ] Lakukan permission preflight read + write scope. OAuth saat ini dapat GET tunnel/DNS tetapi pernah memberi `9109` pada zone settings. Rollout membutuhkan Tunnel Write, DNS Edit, Zone Read; tidak membutuhkan zone settings. Jika mutation mendapat `403/9109`, stop dan autentikasi ulang—jangan gunakan workaround SSL/Plesk.
+- [x] Lakukan permission preflight read + write scope. OAuth saat ini dapat GET tunnel/DNS tetapi pernah memberi `9109` pada zone settings. Rollout membutuhkan Tunnel Write, DNS Edit, Zone Read; tidak membutuhkan zone settings. Jika mutation mendapat `403/9109`, stop dan autentikasi ulang—jangan gunakan workaround SSL/Plesk.
 
-- [ ] Jalankan lifecycle tunnel canonical **Runbook §7 — Buat tunnel dan connector**. GET tunnel by name lalu catat ownership sebelum mutation: tunnel baru memakai `TUNNEL_CREATED_BY_ROLLOUT=true`, sedangkan tunnel existing memakai `false`. Bila existing, reuse hanya jika tidak deleted dan `config_src=cloudflare`; GET konfigurasi pre-rollout, simpan snapshot sanitasi beserta lokasi/checksum change record, dan jangan lanjut bila snapshot tidak dapat dipulihkan. Bila kosong, buat remotely managed tunnel:
+- [x] Jalankan lifecycle tunnel canonical **Runbook §7 — Buat tunnel dan connector**. GET tunnel by name lalu catat ownership sebelum mutation: tunnel baru memakai `TUNNEL_CREATED_BY_ROLLOUT=true`, sedangkan tunnel existing memakai `false`. Bila existing, reuse hanya jika tidak deleted dan `config_src=cloudflare`; GET konfigurasi pre-rollout, simpan snapshot sanitasi beserta lokasi/checksum change record, dan jangan lanjut bila snapshot tidak dapat dipulihkan. Bila kosong, buat remotely managed tunnel:
 
 ```http
 POST /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel
@@ -943,14 +943,14 @@ POST /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel
 
 ```json
 {
-  "name": "cloud-beacon-device-web",
-  "config_src": "cloudflare"
+    "name": "cloud-beacon-device-web",
+    "config_src": "cloudflare"
 }
 ```
 
 Simpan `result.id` sebagai `TUNNEL_ID`. State `TUNNEL_ID`, `TUNNEL_CREATED_BY_ROLLOUT`, dan—untuk reuse—lokasi/checksum snapshot konfigurasi wajib tercatat sebelum PUT ingress.
 
-- [ ] Set ingress dan verify GET config. Matcher ingress `*.be-stesy.cloud` hanya memilih service berdasarkan HTTP Host di dalam tunnel; matcher ini tidak membuat DNS dan tidak mengaktifkan wildcard publik. Selama exact canary, hanya exact CNAME `device-001.be-stesy.cloud` yang merutekan traffic publik. Wildcard publik baru aktif ketika record DNS `*.be-stesy.cloud` dibuat di Task 9.
+- [x] Set ingress dan verify GET config. Matcher ingress `*.be-stesy.cloud` hanya memilih service berdasarkan HTTP Host di dalam tunnel; matcher ini tidak membuat DNS dan tidak mengaktifkan wildcard publik. Selama exact canary, hanya exact CNAME `device-001.be-stesy.cloud` yang merutekan traffic publik. Wildcard publik baru aktif ketika record DNS `*.be-stesy.cloud` dibuat di Task 9.
 
 ```http
 PUT /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel/{TUNNEL_ID}/configurations
@@ -973,7 +973,7 @@ PUT /accounts/794f769e762786d5cbecd215fe482d5b/cfd_tunnel/{TUNNEL_ID}/configurat
 
 Jika PUT config gagal: delete `TUNNEL_ID` hanya ketika `TUNNEL_CREATED_BY_ROLLOUT=true`; ketika `false`, PUT kembali snapshot konfigurasi pre-rollout, GET ulang untuk membuktikan restore, dan jangan menghapus tunnel existing. Jangan meninggalkan tunnel kosong atau konfigurasi reused yang berubah sebagai side effect percobaan.
 
-- [ ] Ambil connector token melalui `GET /accounts/{account_id}/cfd_tunnel/{TUNNEL_ID}/token` tanpa menampilkannya. Install official `cloudflared` RPM di Server 3 bila belum ada.
+- [x] Ambil connector token melalui `GET /accounts/{account_id}/cfd_tunnel/{TUNNEL_ID}/token` tanpa menampilkannya. Install official `cloudflared` RPM di Server 3 bila belum ada.
 
 Handoff wajib dilakukan dalam satu orchestration: simpan hanya field `result` response MCP di memory, start SSH non-TTY berikut sampai menunggu stdin, kirim `${token}\n` melalui stdin, lalu buang variable. Jangan memanggil `text()`, log, shell argv, clipboard, atau file lokal dengan token.
 
@@ -993,7 +993,7 @@ Expected: `root:root 600`; jangan pernah `cat` file tersebut.
 ssh server3 'dnf install -y https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm && cloudflared --version'
 ```
 
-- [ ] Jangan gunakan service installer yang menaruh token pada argv/unit readable. Buat `/etc/cloudflared/cloud-beacon-device-web.env` owner `root:root` mode `0600` berisi `TUNNEL_TOKEN`, dan unit `/etc/systemd/system/cloudflared-cloud-beacon-device-web.service`:
+- [x] Jangan gunakan service installer yang menaruh token pada argv/unit readable. Buat `/etc/cloudflared/cloud-beacon-device-web.env` owner `root:root` mode `0600` berisi `TUNNEL_TOKEN`, dan unit `/etc/systemd/system/cloudflared-cloud-beacon-device-web.service`:
 
 ```ini
 [Unit]
@@ -1004,7 +1004,7 @@ Wants=network-online.target
 [Service]
 Type=notify
 EnvironmentFile=/etc/cloudflared/cloud-beacon-device-web.env
-ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run
 Restart=on-failure
 RestartSec=5s
 
@@ -1012,7 +1012,7 @@ RestartSec=5s
 WantedBy=multi-user.target
 ```
 
-- [ ] Enable connector dan lanjut hanya bila systemd active, API tunnel `healthy`, connections tidak kosong, dan minimal satu `is_pending_reconnect=false`.
+- [x] Enable connector dan lanjut hanya bila systemd active, API tunnel `healthy`, connections tidak kosong, dan minimal satu `is_pending_reconnect=false`.
 
 ```bash
 ssh server3 '
@@ -1023,7 +1023,7 @@ journalctl -u cloudflared-cloud-beacon-device-web -n 100 --no-pager
 '
 ```
 
-- [ ] Buat exact proxied canary CNAME dan simpan record ID:
+- [x] Buat exact proxied canary CNAME dan simpan record ID:
 
 ```http
 POST /zones/b6b7919b667bf6e2a938282ce6d378dd/dns_records
@@ -1040,11 +1040,11 @@ POST /zones/b6b7919b667bf6e2a938282ce6d378dd/dns_records
 }
 ```
 
-- [ ] Canary smoke test unauthenticated: DNS resolves via 1.1.1.1, TLS certificate valid untuk hostname, `/` memberi gateway 401, non-device Host tidak mencapai Plesk. Jangan lanjut bila Cloudflare 502/1033 atau certificate mismatch.
+- [x] Canary smoke test unauthenticated: DNS resolves via 1.1.1.1, TLS certificate valid untuk hostname, `/` memberi gateway 401, non-device Host tidak mencapai Plesk. Jangan lanjut bila Cloudflare 502/1033 atau certificate mismatch.
 
-- [ ] Canary E2E melalui browser yang sudah login Cloud Beacon: buka registry, klik **Buka Web**, pastikan connect redirect menghapus token dari address bar, halaman akhir `/login`, `/style.css` dan `/api/*` root-relative berfungsi, login modul berhasil, refresh tetap valid, dan browser lain/tanpa token ditolak.
+- [x] Canary E2E melalui browser yang sudah login Cloud Beacon: buka registry, klik **Buka Web**, pastikan connect redirect menghapus token dari address bar, halaman akhir `/login`, `/style.css` dan `/api/*` root-relative berfungsi, login modul berhasil, refresh tetap valid, dan browser lain/tanpa token ditolak.
 
-- [ ] Regression check sebelum wildcard: exact DNS snapshot masih byte-for-byte sama, subdomain existing tetap resolve/status seperti baseline, `http://be-stesy.cloud` behavior tidak berubah, serta terminal Cloud SSH masih bisa connect.
+- [x] Regression check sebelum wildcard: exact DNS snapshot masih byte-for-byte sama, subdomain existing tetap resolve/status seperti baseline, `http://be-stesy.cloud` behavior tidak berubah, serta terminal Cloud SSH masih bisa connect.
 
 **Stop gate:** jika canary atau regression gagal, hapus hanya `CANARY_DNS_ID`, disable connector bila perlu, dan jangan membuat wildcard.
 
@@ -1052,7 +1052,7 @@ POST /zones/b6b7919b667bf6e2a938282ce6d378dd/dns_records
 
 ### Task 9: Aktifkan wildcard sekali konfigurasi dan final verification
 
-- [ ] Buat proxied wildcard CNAME hanya setelah seluruh stop gate Task 8 lulus:
+- [x] Buat proxied wildcard CNAME hanya setelah seluruh stop gate Task 8 lulus:
 
 ```http
 POST /zones/b6b7919b667bf6e2a938282ce6d378dd/dns_records
@@ -1071,7 +1071,7 @@ POST /zones/b6b7919b667bf6e2a938282ce6d378dd/dns_records
 
 Simpan `WILDCARD_DNS_ID`; jangan melakukan update/delete berdasarkan nama saja.
 
-- [ ] Uji policy wildcard:
+- [x] Uji policy wildcard:
 
 ```text
 device-001.be-stesy.cloud       -> hanya session sah; dashboard modul
@@ -1080,13 +1080,13 @@ foo.be-stesy.cloud              -> 404 gateway
 compro.be-stesy.cloud           -> 404 gateway; tidak boleh konten Plesk latent vhost
 ```
 
-- [ ] Re-run E2E `device-001` sementara exact canary dan wildcard hidup bersama. Exact record menang tetapi target sama; kondisi ini bukan konflik.
+- [x] Re-run E2E `device-001` sementara exact canary dan wildcard hidup bersama. Exact record menang tetapi target sama; kondisi ini bukan konflik.
 
-- [ ] Hapus `CANARY_DNS_ID` saja, tunggu resolver, lalu ulang E2E `device-001`. Ini membuktikan perangkat pertama benar-benar memakai wildcard.
+- [x] Hapus `CANARY_DNS_ID` saja, tunggu resolver, lalu ulang E2E `device-001`. Ini membuktikan perangkat pertama benar-benar memakai wildcard.
 
-- [ ] Bandingkan DNS snapshot final. Satu-satunya perubahan existing zone harus tambahan wildcard record; seluruh exact record ID/content/proxied/TTL tidak berubah.
+- [x] Bandingkan DNS snapshot final. Satu-satunya perubahan existing zone harus tambahan wildcard record; seluruh exact record ID/content/proxied/TTL tidak berubah.
 
-- [ ] Verifikasi service persistence dan observability:
+- [x] Verifikasi service persistence dan observability:
 
 ```bash
 ssh server3 'systemctl is-enabled cloudflared-cloud-beacon-device-web; systemctl is-active cloudflared-cloud-beacon-device-web'
@@ -1096,9 +1096,9 @@ ssh server3 'journalctl -u cloudflared-cloud-beacon-device-web -n 50 --no-pager'
 
 Expected: systemd enabled+active, tunnel healthy, PM2 online, log tidak memuat token/cookie/secret.
 
-- [ ] Buktikan skalabilitas tanpa provisioning peer baru: automated test membuat registry kedua dan memverifikasi slug unik, sedangkan production wildcard test memverifikasi hostname device tak terdaftar ditolak. Uji perangkat fisik kedua hanya opsional bila peer WireGuard sudah tersedia; provisioning peer tetap di luar scope.
+- [x] Buktikan skalabilitas tanpa provisioning peer baru: automated test membuat registry kedua dan memverifikasi slug unik, sedangkan production wildcard test memverifikasi hostname device tak terdaftar ditolak. Uji perangkat fisik kedua hanya opsional bila peer WireGuard sudah tersedia; provisioning peer tetap di luar scope.
 
-- [ ] Catat resource IDs dan hasil checks di runbook operasional tanpa secret. Kriteria selesai:
+- [x] Catat resource IDs dan hasil checks di runbook operasional tanpa secret. Kriteria selesai:
 
 1. `device-001` hanya terbuka lewat user berizin dan masih meminta login modul.
 2. Modul tetap listen `10.8.0.2:80` di WireGuard; tidak ada port publik baru.
