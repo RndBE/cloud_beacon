@@ -8,6 +8,7 @@ use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MaintenanceTicketController;
+use App\Http\Controllers\ModeProfileController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
@@ -148,6 +149,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.ftp.logview');
     Route::post('api/mqtt/system/set-mode', [MqttController::class, 'setMode'])
         ->name('api.mqtt.system.set-mode');
+    Route::get('api/mqtt/mode-profiles/{mode}', [ModeProfileController::class, 'show'])
+        ->name('api.mqtt.mode-profiles.show');
+    Route::post('api/mqtt/mode-profile/preview', [ModeProfileController::class, 'preview'])
+        ->name('api.mqtt.mode-profile.preview');
     Route::post('api/mqtt/calibration/set', [MqttController::class, 'setCalibration'])
         ->name('api.mqtt.calibration.set');
     Route::post('api/mqtt/calibration/get', [MqttController::class, 'getCalibration'])
