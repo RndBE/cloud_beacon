@@ -29,12 +29,61 @@ resource yang dikembalikan API; jangan update/delete berdasarkan nama saja.
 
 ## 1. Preflight dan stop gate
 
-Pada workstation, pastikan release hanya berisi file tracked dan semua test
-lokal sudah dijalankan:
+Pada workstation, pastikan release hanya berisi file tracked. Jalankan seluruh
+release gate berikut dari root worktree yang akan di-archive. `set -euo
+pipefail` membuat gate berhenti pada command pertama yang exit nonzero; bila itu
+terjadi, hentikan rollout sebelum command `ssh`, Cloudflare API, atau mutation
+produksi apa pun.
 
 ```bash
+set -euo pipefail
 git status --short --branch
 git log --oneline -10
+php artisan test
+vendor/bin/pint --test
+npm run lint:check
+npm run format:check
+npm run types:check
+npm run build
+npm --prefix web-gateway ci
+npm --prefix web-gateway test
+git diff --check
+```
+
+Jangan menyimpulkan gate global hijau hanya karena gate focused lulus. Hasil
+non-produksi terakhir yang terdokumentasi mempunyai failure global pre-existing:
+3 test Laravel, 114 issue Pint, 38 error + 2 warning ESLint, dan 41 file gagal
+Prettier. `types:check`, build, install lockfile gateway, 112 test gateway, dan
+`git diff --check` lulus. Angka ini hanya baseline terdokumentasi, bukan izin
+untuk mengabaikan exit nonzero baru atau menyatakan full gate hijau.
+
+Gate focused Cloud Web berikut juga wajib lulus dan tidak menggantikan full
+release gate di atas. Script ini pun berhenti pada exit nonzero pertama:
+
+```bash
+set -euo pipefail
+php artisan test tests/Feature/CloudWebTest.php tests/Feature/CloudSshTest.php
+vendor/bin/pint --test \
+    app/Models/RemoteDevice.php \
+    app/Http/Controllers/RemoteDeviceController.php \
+    app/Http/Controllers/CloudWebSessionController.php \
+    app/Http/Controllers/Api/CloudWebBridgeController.php \
+    app/Services/CloudWebTargetPolicy.php \
+    config/cloud-web.php \
+    routes/web.php \
+    routes/api.php \
+    database/seeders/RolePermissionSeeder.php \
+    database/seeders/CloudWebPermissionSeeder.php \
+    database/seeders/RemoteDeviceSeeder.php \
+    database/migrations/2026_07_15_000001_add_web_access_to_remote_devices_table.php \
+    tests/Feature/CloudWebTest.php
+npx prettier --check resources/js/pages/cloud-ssh/index.tsx
+npx eslint resources/js/pages/cloud-ssh/index.tsx web-gateway
+npm run types:check
+npm run build
+npm --prefix web-gateway ci
+npm --prefix web-gateway test
+git diff --check
 ```
 
 Pada Server 3:
@@ -163,55 +212,176 @@ ssh server3 'bash -se' <<'SERVER3'
 set -euo pipefail
 umask 077
 app=/var/www/vhosts/be-stesy.cloud/httpdocs
-secret_file=/root/cloud-web-bridge-secret
+app_env=$app/.env
 gateway_env=$app/web-gateway/.env
+workdir=$(mktemp -d /root/cloud-web-env.XXXXXX)
+secret_file=$workdir/bridge-secret
+app_backup=$workdir/app.env.before
+gateway_backup=$workdir/gateway.env.before
+app_new=$workdir/app.env.new
+gateway_new=$workdir/gateway.env.new
+app_swap=$app/.env.cloud-web-new
+gateway_swap=$app/web-gateway/.env.cloud-web-new
+gateway_existed=false
+install_started=false
+committed=false
+app_uid=
+app_gid=
+app_mode=
+gateway_uid=
+gateway_gid=
+gateway_mode=
 
-cleanup_secret_file() {
+restore_file() {
+    backup=$1 uid=$2 gid=$3 mode=$4 swap=$5 destination=$6
+    install -o "$uid" -g "$gid" -m "$mode" "$backup" "$swap"
+    mv -f "$swap" "$destination"
+}
+
+cleanup() {
+    rc=$?
+    trap - EXIT
+    set +e
+
+    unset secret app_secret gateway_secret
+    rm -f "$app_swap" "$gateway_swap"
+
+    if test "$install_started" = true && test "$committed" != true; then
+        restore_file "$app_backup" "$app_uid" "$app_gid" "$app_mode" \
+            "$app_swap" "$app_env"
+        if test "$gateway_existed" = true; then
+            restore_file "$gateway_backup" "$gateway_uid" "$gateway_gid" \
+                "$gateway_mode" "$gateway_swap" "$gateway_env"
+        else
+            rm -f "$gateway_env"
+        fi
+    fi
+
     if test -e "$secret_file"; then
         shred -u "$secret_file" 2>/dev/null || rm -f "$secret_file"
     fi
+    rm -rf "$workdir"
+    exit "$rc"
 }
-trap cleanup_secret_file EXIT
+trap cleanup EXIT
 
 set_env() {
     file=$1 key=$2 value=$3
-    if grep -q "^${key}=" "$file"; then
-        sed -i "s|^${key}=.*|${key}=${value}|" "$file"
-    else
-        printf '%s=%s\n' "$key" "$value" >> "$file"
+    output=$file.edit
+    found=false
+    : > "$output"
+    chmod 600 "$output"
+    while IFS= read -r line || test -n "$line"; do
+        case "$line" in
+            "$key="*)
+                if test "$found" = false; then
+                    printf '%s=%s\n' "$key" "$value" >> "$output"
+                    found=true
+                fi
+                ;;
+            *) printf '%s\n' "$line" >> "$output" ;;
+        esac
+    done < "$file"
+    if test "$found" = false; then
+        printf '%s=%s\n' "$key" "$value" >> "$output"
     fi
+    mv -f "$output" "$file"
 }
+
+require_keys() {
+    file=$1
+    shift
+    for key in "$@"; do
+        test "$(grep -c "^${key}=[^[:space:]].*" "$file")" -eq 1
+    done
+}
+
+atomic_install() {
+    source=$1 owner=$2 group=$3 mode=$4 swap=$5 destination=$6
+    install -o "$owner" -g "$group" -m "$mode" "$source" "$swap"
+    mv -f "$swap" "$destination"
+}
+
+test -f "$app_env"
+test "$(stat -c '%U:%G:%a' "$workdir")" = root:root:700
+app_uid=$(stat -c %u "$app_env")
+app_gid=$(stat -c %g "$app_env")
+app_mode=$(stat -c %a "$app_env")
+install -o root -g root -m 600 "$app_env" "$app_backup"
+install -o root -g root -m 600 "$app_env" "$app_new"
+if test -e "$gateway_env"; then
+    test -f "$gateway_env"
+    gateway_existed=true
+    gateway_uid=$(stat -c %u "$gateway_env")
+    gateway_gid=$(stat -c %g "$gateway_env")
+    gateway_mode=$(stat -c %a "$gateway_env")
+    install -o root -g root -m 600 "$gateway_env" "$gateway_backup"
+    install -o root -g root -m 600 "$gateway_env" "$gateway_new"
+else
+    install -o root -g root -m 600 /dev/null "$gateway_new"
+fi
 
 openssl rand -hex 32 > "$secret_file"
 IFS= read -r secret < "$secret_file"
-install -m 600 /dev/null "$gateway_env"
+test "${#secret}" -eq 64
 
-set_env "$app/.env" CLOUD_WEB_BASE_DOMAIN be-stesy.cloud
-set_env "$app/.env" CLOUD_WEB_TOKEN_TTL 30
-set_env "$app/.env" CLOUD_WEB_ALLOWED_CIDR 10.8.0.0/24
-set_env "$app/.env" CLOUD_WEB_BRIDGE_SECRET "$secret"
+set_env "$app_new" CLOUD_WEB_BASE_DOMAIN be-stesy.cloud
+set_env "$app_new" CLOUD_WEB_TOKEN_TTL 30
+set_env "$app_new" CLOUD_WEB_ALLOWED_CIDR 10.8.0.0/24
+set_env "$app_new" CLOUD_WEB_BRIDGE_SECRET "$secret"
 
-set_env "$gateway_env" BIND_HOST 127.0.0.1
-set_env "$gateway_env" PORT 8392
-set_env "$gateway_env" BASE_DOMAIN be-stesy.cloud
-set_env "$gateway_env" LARAVEL_INTERNAL_URL https://be-stesy.cloud/api/internal/cloud-web/validate
-set_env "$gateway_env" BRIDGE_SECRET "$secret"
-set_env "$gateway_env" ALLOWED_CIDRS 10.8.0.0/24
-set_env "$gateway_env" SESSION_IDLE_MS 1800000
-set_env "$gateway_env" SESSION_ABSOLUTE_MS 28800000
-set_env "$gateway_env" CONNECT_TIMEOUT_MS 10000
-set_env "$gateway_env" UPSTREAM_IDLE_TIMEOUT_MS 300000
-set_env "$gateway_env" CONNECT_RATE_LIMIT 20
-set_env "$gateway_env" CONNECT_RATE_WINDOW_MS 60000
-set_env "$gateway_env" CLOUD_BEACON_URL https://be-stesy.cloud/cloud-ssh
+set_env "$gateway_new" BIND_HOST 127.0.0.1
+set_env "$gateway_new" PORT 8392
+set_env "$gateway_new" BASE_DOMAIN be-stesy.cloud
+set_env "$gateway_new" LARAVEL_INTERNAL_URL https://be-stesy.cloud/api/internal/cloud-web/validate
+set_env "$gateway_new" BRIDGE_SECRET "$secret"
+set_env "$gateway_new" ALLOWED_CIDRS 10.8.0.0/24
+set_env "$gateway_new" SESSION_IDLE_MS 1800000
+set_env "$gateway_new" SESSION_ABSOLUTE_MS 28800000
+set_env "$gateway_new" CONNECT_TIMEOUT_MS 10000
+set_env "$gateway_new" UPSTREAM_IDLE_TIMEOUT_MS 300000
+set_env "$gateway_new" CONNECT_RATE_LIMIT 20
+set_env "$gateway_new" CONNECT_RATE_WINDOW_MS 60000
+set_env "$gateway_new" CLOUD_BEACON_URL https://be-stesy.cloud/cloud-ssh
+
+require_keys "$app_new" \
+    CLOUD_WEB_BASE_DOMAIN CLOUD_WEB_TOKEN_TTL CLOUD_WEB_ALLOWED_CIDR \
+    CLOUD_WEB_BRIDGE_SECRET
+require_keys "$gateway_new" \
+    BIND_HOST PORT BASE_DOMAIN LARAVEL_INTERNAL_URL BRIDGE_SECRET \
+    ALLOWED_CIDRS SESSION_IDLE_MS SESSION_ABSOLUTE_MS CONNECT_TIMEOUT_MS \
+    UPSTREAM_IDLE_TIMEOUT_MS CONNECT_RATE_LIMIT CONNECT_RATE_WINDOW_MS \
+    CLOUD_BEACON_URL
+
+app_secret=$(sed -n 's/^CLOUD_WEB_BRIDGE_SECRET=//p' "$app_new")
+gateway_secret=$(sed -n 's/^BRIDGE_SECRET=//p' "$gateway_new")
+test "$app_secret" = "$secret"
+test "$gateway_secret" = "$secret"
+unset app_secret gateway_secret
+
+install_started=true
+atomic_install "$app_new" be-stesy psacln 640 "$app_swap" "$app_env"
+atomic_install "$gateway_new" root root 600 "$gateway_swap" "$gateway_env"
+
+test "$(stat -c '%U:%G:%a' "$app_env")" = be-stesy:psacln:640
+test "$(stat -c '%U:%G:%a' "$gateway_env")" = root:root:600
+require_keys "$app_env" \
+    CLOUD_WEB_BASE_DOMAIN CLOUD_WEB_TOKEN_TTL CLOUD_WEB_ALLOWED_CIDR \
+    CLOUD_WEB_BRIDGE_SECRET
+require_keys "$gateway_env" \
+    BIND_HOST PORT BASE_DOMAIN LARAVEL_INTERNAL_URL BRIDGE_SECRET \
+    ALLOWED_CIDRS SESSION_IDLE_MS SESSION_ABSOLUTE_MS CONNECT_TIMEOUT_MS \
+    UPSTREAM_IDLE_TIMEOUT_MS CONNECT_RATE_LIMIT CONNECT_RATE_WINDOW_MS \
+    CLOUD_BEACON_URL
+
+app_secret=$(sed -n 's/^CLOUD_WEB_BRIDGE_SECRET=//p' "$app_env")
+gateway_secret=$(sed -n 's/^BRIDGE_SECRET=//p' "$gateway_env")
+test "$app_secret" = "$secret"
+test "$gateway_secret" = "$secret"
+unset app_secret gateway_secret
 
 unset secret
-shred -u "$secret_file"
-trap - EXIT
-chown be-stesy:psacln "$app/.env"
-chmod 640 "$app/.env"
-chown root:root "$gateway_env"
-chmod 600 "$gateway_env"
+committed=true
 SERVER3
 ```
 
