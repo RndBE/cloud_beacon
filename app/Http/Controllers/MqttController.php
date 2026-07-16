@@ -1343,7 +1343,7 @@ class MqttController extends Controller
             };
         }
 
-        $mqtt   = new MqttService();
+        $mqtt   = app(MqttService::class);
         $result = $mqtt->sendCalibrationSet($idLogger, $logger->logger_mode, $params);
 
         if ($result['success']) {

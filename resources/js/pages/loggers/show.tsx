@@ -311,7 +311,7 @@ const SENSOR_TYPES = [
     { value: 'digital-output', label: 'Digital Output', defaultUnit: '-' },
 ] as const;
 
-const CONFIGURATOR_MODES = new Set(['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS']);
+const CONFIGURATOR_MODES = new Set(['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS']);
 
 const EMPTY_FORM = {
     name: '',
@@ -5073,7 +5073,8 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
     const [formValues, setFormValues] = useState<Record<string, string>>(() => {
         const initial: Record<string, string> = {};
         for (const f of fields) {
-            initial[f.key] = logger.calibrationData?.[f.key]?.toString() || '';
+            const savedValue = logger.calibrationData?.[f.key]?.toString();
+            initial[f.key] = savedValue || (f.type === 'select' && f.options?.length === 1 ? f.options[0].value : '');
         }
         return initial;
     });

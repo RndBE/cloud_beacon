@@ -5,6 +5,7 @@ use App\Models\LoggerMode;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\IdHasher;
+use App\Services\MqttService;
 use Database\Seeders\LoggerModeSeeder;
 use Inertia\Testing\AssertableInertia as Assert;
 
@@ -58,4 +59,71 @@ it('exposes APMS to the web logger configurator', function () {
                     && count($mode['calibrationFields']) === 6,
             ))
         );
+});
+
+it('validates and forwards the exact APMS calibration parameters', function () {
+    config([
+        'mqtt.host' => '127.0.0.1',
+        'mqtt.port' => 1,
+        'mqtt.timeout' => 1,
+    ]);
+    $user = User::factory()->create();
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'device_identifier' => 'APMS-001',
+        'logger_mode' => 'APMS',
+    ]);
+    $params = [
+        'awlr_source' => 'water.level',
+        'sumur' => 25.5,
+        'muka_air' => 12.0,
+        'arr_source' => 'rainfall.day',
+        'arr_sensor' => 'RK400-04',
+        'soil_source' => 'soil.moist',
+    ];
+
+    $this->mock(MqttService::class)
+        ->shouldReceive('sendCalibrationSet')
+        ->once()
+        ->with('APMS-001', 'APMS', $params)
+        ->andReturn([
+            'success' => true,
+            'data' => $params,
+            'message' => 'Kalibrasi berhasil',
+        ]);
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.calibration.set'), [
+            'id_logger' => 'APMS-001',
+            ...$params,
+        ])
+        ->assertOk()
+        ->assertJsonPath('success', true);
+
+    expect($logger->fresh()->calibration_data)->toMatchArray($params);
+});
+
+it('rejects non RK400-04 sensors for APMS calibration', function () {
+    $user = User::factory()->create();
+    Logger::factory()->create([
+        'user_id' => $user->id,
+        'device_identifier' => 'APMS-002',
+        'logger_mode' => 'APMS',
+    ]);
+
+    $this->mock(MqttService::class)
+        ->shouldNotReceive('sendCalibrationSet');
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.calibration.set'), [
+            'id_logger' => 'APMS-002',
+            'awlr_source' => 'water.level',
+            'sumur' => 25.5,
+            'muka_air' => 12.0,
+            'arr_source' => 'rainfall.day',
+            'arr_sensor' => 'SEM400',
+            'soil_source' => 'soil.moist',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('arr_sensor');
 });
