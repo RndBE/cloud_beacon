@@ -133,6 +133,51 @@ function request(
     });
 }
 
+function rawChunkedRequest(port, { method, path, cookie, body }) {
+    return new Promise((resolve, reject) => {
+        const payload = Buffer.from(body);
+        const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+            socket.write(
+                `${method} ${path} HTTP/1.1\r\n` +
+                    `Host: ${PUBLIC_HOST}\r\n` +
+                    `Cookie: ${cookie}\r\n` +
+                    'Content-Type: application/octet-stream\r\n' +
+                    'Transfer-Encoding: chunked\r\n' +
+                    'Connection: close\r\n' +
+                    '\r\n' +
+                    `${payload.length.toString(16)}\r\n`,
+            );
+            socket.write(payload);
+            socket.write('\r\n0\r\n\r\n');
+        });
+        const chunks = [];
+        let settled = false;
+        const finish = () => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            resolve(Buffer.concat(chunks).toString());
+        };
+
+        socket.setTimeout(1_000, () => {
+            socket.destroy(new Error('raw chunked request timed out'));
+        });
+        socket.on('data', (chunk) => chunks.push(chunk));
+        socket.once('end', finish);
+        socket.once('close', finish);
+        socket.once('error', (error) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            reject(error);
+        });
+    });
+}
+
 function requestUntilClosed(port, { path, host = PUBLIC_HOST, headers = {} }) {
     return new Promise((resolve, reject) => {
         const req = http.request(
@@ -703,6 +748,96 @@ test('preserves HTTP path, query, method, body, public forwarding headers, and m
     ]) {
         assert.equal(sanitizedResponse.headers[header], undefined, header);
     }
+});
+
+test('keeps chunked DELETE and OPTIONS bodies inside exactly one upstream request', async (t) => {
+    for (const method of ['DELETE', 'OPTIONS']) {
+        await t.test(method, async (t) => {
+            const harness = await createHarness();
+            t.after(() => harness.close());
+            const value = token(method === 'DELETE' ? 'd' : 'e');
+            harness.seedToken(value);
+            const connected = await harness.connect(value);
+            const injectedPath = `/smuggled-${method.toLowerCase()}`;
+            const body =
+                `GET ${injectedPath} HTTP/1.1\r\n` +
+                'Host: attacker.example\r\n' +
+                'Connection: close\r\n' +
+                '\r\n';
+            const path = `/chunked-${method.toLowerCase()}?mode=raw`;
+
+            const response = await rawChunkedRequest(harness.gatewayPort, {
+                method,
+                path,
+                cookie: gatewayCookie(connected),
+                body,
+            });
+
+            assert.match(response, /^HTTP\/1\.1 200 /);
+            await new Promise((resolve) => setImmediate(resolve));
+            assert.equal(
+                harness.moduleRequests.length,
+                1,
+                JSON.stringify(harness.moduleRequests),
+            );
+            assert.deepEqual(
+                {
+                    method: harness.moduleRequests[0].method,
+                    url: harness.moduleRequests[0].url,
+                    body: harness.moduleRequests[0].body,
+                },
+                { method, url: path, body },
+            );
+            assert.equal(harness.moduleRequests[0].headers.host, PUBLIC_HOST);
+            assert.equal(
+                harness.moduleRequests[0].headers['transfer-encoding'],
+                'chunked',
+            );
+            assert.equal(
+                harness.moduleRequests[0].headers['content-length'],
+                undefined,
+            );
+            assert.equal(
+                harness.moduleRequests.some(
+                    (request) =>
+                        request.url === injectedPath ||
+                        request.headers.host === 'attacker.example',
+                ),
+                false,
+            );
+        });
+    }
+});
+
+test('preserves legitimate empty DELETE and OPTIONS requests', async (t) => {
+    const harness = await createHarness();
+    t.after(() => harness.close());
+    const value = token('f');
+    harness.seedToken(value);
+    const connected = await harness.connect(value);
+    const cookie = gatewayCookie(connected);
+
+    for (const method of ['DELETE', 'OPTIONS']) {
+        const response = await request(harness.gatewayPort, {
+            method,
+            path: `/empty-${method.toLowerCase()}`,
+            headers: { Cookie: cookie },
+        });
+
+        assert.equal(response.status, 200);
+    }
+
+    assert.deepEqual(
+        harness.moduleRequests.map(({ method, url, body }) => ({
+            method,
+            url,
+            body,
+        })),
+        [
+            { method: 'DELETE', url: '/empty-delete', body: '' },
+            { method: 'OPTIONS', url: '/empty-options', body: '' },
+        ],
+    );
 });
 
 test('touches sessions during streamed module traffic and denies missing sessions', async (t) => {

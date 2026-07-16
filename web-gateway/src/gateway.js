@@ -2,6 +2,7 @@ import http from 'node:http';
 import net from 'node:net';
 
 import httpProxy from 'http-proxy';
+import httpProxyPackage from 'http-proxy/package.json' with { type: 'json' };
 
 import { ConnectTimeoutAgent } from './connect-timeout-agent.js';
 import {
@@ -33,6 +34,13 @@ const PROXY_IDENTITY_HEADERS = Object.freeze([
     'cf-connecting-ip',
     'forwarded',
     'x-real-ip',
+]);
+const SUPPORTED_HTTP_PROXY_VERSION = '1.18.1';
+const SUPPORTED_HTTP_PROXY_WEB_PASSES = Object.freeze([
+    'deleteLength',
+    'timeout',
+    'XHeaders',
+    'stream',
 ]);
 const STATUS_TEXT = Object.freeze({
     401: 'Unauthorized',
@@ -228,6 +236,31 @@ function sanitizeUpstreamHeaders(message, { webSocket = false } = {}) {
     }
 }
 
+function removeUnsafeDeleteLengthPass(proxy) {
+    const passNames = Array.isArray(proxy.webPasses)
+        ? proxy.webPasses.map((pass) => pass.name)
+        : [];
+    const supportedPipeline =
+        httpProxyPackage.version === SUPPORTED_HTTP_PROXY_VERSION &&
+        passNames.length === SUPPORTED_HTTP_PROXY_WEB_PASSES.length &&
+        passNames.every(
+            (passName, index) =>
+                passName === SUPPORTED_HTTP_PROXY_WEB_PASSES[index],
+        );
+
+    if (!supportedPipeline) {
+        throw new Error(
+            'Unsupported http-proxy web pass pipeline; refusing to start.',
+        );
+    }
+
+    // Node has already decoded and validated the browser's body framing before
+    // prepareForwardingHeaders recreates one canonical framing. http-proxy's
+    // deleteLength pass would overwrite that framing for DELETE/OPTIONS while
+    // the decoded body is still piped, turning body bytes into another request.
+    proxy.webPasses.shift();
+}
+
 export function createGateway({
     config,
     fetchImpl = globalThis.fetch,
@@ -259,6 +292,7 @@ export function createGateway({
         ws: true,
         xfwd: false,
     });
+    removeUnsafeDeleteLengthPass(proxy);
     const httpContexts = new Map();
     const webSocketContexts = new Set();
     const serverSockets = new Set();
