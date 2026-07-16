@@ -69,6 +69,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                                         'scale_factor' => 0.1,
                                         'register_address' => 0,
                                         'reg_count' => 1,
+                                        'data_type_label' => 'Unsigned 16-bit',
                                         'fast_poll' => false,
                                     ],
                                     [
@@ -77,6 +78,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                                         'scale_factor' => 0.1,
                                         'register_address' => 1,
                                         'reg_count' => 1,
+                                        'data_type_label' => 'Unsigned 16-bit',
                                         'fast_poll' => false,
                                     ],
                                     [
@@ -85,6 +87,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                                         'scale_factor' => 0.1,
                                         'register_address' => 2,
                                         'reg_count' => 1,
+                                        'data_type_label' => 'Unsigned 16-bit',
                                         'fast_poll' => false,
                                     ],
                                 ],
@@ -149,6 +152,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                                         'scale_factor' => 0.001,
                                         'register_address' => 19,
                                         'reg_count' => 5,
+                                        'data_type_label' => 'Unsigned 32-bit (Big Endian)',
                                         'fast_poll' => false,
                                     ],
                                 ],

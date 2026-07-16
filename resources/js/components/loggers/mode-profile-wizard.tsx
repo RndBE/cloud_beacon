@@ -69,6 +69,7 @@ interface TemplateParameter {
     scale_factor: number;
     register_address: number;
     reg_count: number;
+    data_type_label: string;
     fast_poll: boolean;
 }
 
@@ -1007,9 +1008,8 @@ export function ModeProfileWizard({
                                                                 }
                                                             </TableCell>
                                                             <TableCell className="font-mono">
-                                                                Code{' '}
                                                                 {
-                                                                    parameter.reg_count
+                                                                    parameter.data_type_label
                                                                 }
                                                             </TableCell>
                                                         </TableRow>

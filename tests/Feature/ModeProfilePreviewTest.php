@@ -60,6 +60,7 @@ it('returns an overwrite warning for RS485 sensors on the selected slave', funct
         ->assertJsonPath('changes.sensors.0.slave_id', 1)
         ->assertJsonPath('changes.sensors.0.template', 'TB-400-04')
         ->assertJsonPath('changes.sensors.0.parameters.2.name', 'Rainfall_hour')
+        ->assertJsonPath('changes.sensors.0.parameters.2.data_type_label', 'Unsigned 16-bit')
         ->assertJsonPath('changes.mapping.0', 'ARR.Rainfall_Minute');
 });
 

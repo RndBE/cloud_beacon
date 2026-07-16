@@ -593,7 +593,12 @@ For APMS:
   - `Kalibrasi`
   - `Preview`
 
-The preview modal must show both human labels and technical details. This helps development and field debugging.
+The preview modal must show both human labels and technical details. Modbus data
+types must use semantic labels such as `Unsigned 16-bit` or
+`Unsigned 32-bit (Big Endian)` instead of exposing internal numeric codes such
+as `Code 1` or `Code 5`. The numeric code remains part of the server template
+and MQTT payload only. This helps development and field debugging without
+forcing field users to memorize protocol codes.
 
 ## Suggested Files
 

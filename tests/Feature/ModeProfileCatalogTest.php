@@ -24,6 +24,11 @@ it('provides the complete TB-400-04 ARR template', function () {
             'Rainfall_hour',
         ])
         ->and(collect($template['parameters'])->pluck('reg_count')->all())->toBe([1, 1, 1])
+        ->and(collect($template['parameters'])->pluck('data_type_label')->all())->toBe([
+            'Unsigned 16-bit',
+            'Unsigned 16-bit',
+            'Unsigned 16-bit',
+        ])
         ->and($profile['default_mapping'])->toBe([
             'ARR.Rainfall_Minute',
             'ARR.Rainfall_hour',
@@ -48,6 +53,7 @@ it('provides the AWLR Transducer template and calibration metadata', function ()
                 'scale_factor' => 0.001,
                 'register_address' => 19,
                 'reg_count' => 5,
+                'data_type_label' => 'Unsigned 32-bit (Big Endian)',
                 'fast_poll' => false,
             ],
         ])
