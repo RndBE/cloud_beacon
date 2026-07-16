@@ -69,6 +69,24 @@ export default [
         },
     },
     {
+        files: ['web-gateway/**/*.js'],
+        languageOptions: {
+            globals: {
+                ...globals.node,
+            },
+            sourceType: 'module',
+        },
+    },
+    {
+        files: ['web-gateway/**/*.cjs'],
+        languageOptions: {
+            globals: {
+                ...globals.node,
+            },
+            sourceType: 'commonjs',
+        },
+    },
+    {
         ignores: [
             'vendor',
             'node_modules',

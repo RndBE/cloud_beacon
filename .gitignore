@@ -3,6 +3,7 @@
 /mobile_cloud/*
 /node_modules
 /ssh-bridge/node_modules
+/web-gateway/node_modules
 /public/build
 /public/hot
 /public/storage
@@ -28,3 +29,4 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
+/.worktrees
