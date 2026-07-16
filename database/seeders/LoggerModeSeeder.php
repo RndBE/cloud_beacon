@@ -30,6 +30,7 @@ class LoggerModeSeeder extends Seeder
                     ['key' => 'arr_source', 'label' => 'Sumber Data Curah Hujan', 'unit' => '', 'type' => 'sensor-source'],
                     ['key' => 'arr_sensor', 'label' => 'Jenis Sensor Curah Hujan', 'unit' => '', 'type' => 'select', 'options' => [
                         ['value' => 'TB-400-04', 'label' => 'TB-400-04'],
+                        ['value' => 'SEM400', 'label' => 'SEM400'],
                     ]],
                     ['key' => 'soil_source', 'label' => 'Sumber Data Kelembapan Tanah', 'unit' => '', 'type' => 'sensor-source'],
                 ],

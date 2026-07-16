@@ -24,6 +24,7 @@ function expectApmsMode(LoggerMode $mode): void
         ])
         ->and($mode->calibration_fields[4]['options'])->toBe([
             ['value' => 'TB-400-04', 'label' => 'TB-400-04'],
+            ['value' => 'SEM400', 'label' => 'SEM400'],
         ]);
 }
 
@@ -116,6 +117,44 @@ it('validates and forwards the exact APMS calibration parameters', function () {
         ->assertJsonPath('success', true);
 
     expect($logger->fresh()->calibration_data)->toMatchArray($params);
+});
+
+it('forwards SEM400 unchanged for APMS calibration', function () {
+    $user = User::factory()->create();
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'device_identifier' => 'APMS-SEM400',
+        'logger_mode' => 'APMS',
+    ]);
+    $params = [
+        'awlr_source' => 'water.level',
+        'sumur' => 25.5,
+        'muka_air' => 12.0,
+        'arr_source' => 'rainfall.day',
+        'arr_sensor' => 'SEM400',
+        'soil_source' => 'soil.moist',
+    ];
+
+    $this->mock(MqttService::class)
+        ->shouldReceive('sendCalibrationSet')
+        ->once()
+        ->with('APMS-SEM400', 'APMS', $params)
+        ->andReturn([
+            'success' => true,
+            'data' => $params,
+            'message' => 'Kalibrasi berhasil',
+        ]);
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.calibration.set'), [
+            'id_logger' => 'APMS-SEM400',
+            ...$params,
+        ])
+        ->assertOk()
+        ->assertJsonPath('success', true)
+        ->assertJsonPath('data.arr_sensor', 'SEM400');
+
+    expect($logger->fresh()->calibration_data['arr_sensor'])->toBe('SEM400');
 });
 
 it('accepts legacy RK400-04 requests and forwards TB-400-04 to APMS', function () {
@@ -239,7 +278,7 @@ it('rejects unsupported sensors for APMS calibration', function () {
             'sumur' => 25.5,
             'muka_air' => 12.0,
             'arr_source' => 'rainfall.day',
-            'arr_sensor' => 'SEM400',
+            'arr_sensor' => 'UNKNOWN',
             'soil_source' => 'soil.moist',
         ])
         ->assertUnprocessable()
