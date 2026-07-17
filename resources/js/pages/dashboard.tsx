@@ -251,7 +251,6 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                 <MapPin className="size-5" />
                                 Logger Distribution Map
                             </CardTitle>
-                            <CardDescription>{t('dashboard.logger_map_desc')}</CardDescription>
                         </CardHeader>
                         <CardContent>
                             <Suspense fallback={
@@ -272,7 +271,6 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                     <Server className="size-5" />
                                     Logger Health
                                 </CardTitle>
-                                <CardDescription>{t('dashboard.connection_status')}</CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="space-y-5">
@@ -316,7 +314,6 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                     <HardDrive className="size-5" />
                                     Quick Actions
                                 </CardTitle>
-                                <CardDescription>{t('dashboard.batch_operations')}</CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3">
@@ -358,7 +355,6 @@ export default function Dashboard({ stats, recentActivity, loggers }: DashboardP
                                         <Activity className="size-5" />
                                         Recent Activity
                                     </CardTitle>
-                                    <CardDescription>{t('dashboard.latest_events')}</CardDescription>
                                 </div>
                                 <Link href="/loggers">
                                     <Button variant="ghost" size="sm" className="gap-1">

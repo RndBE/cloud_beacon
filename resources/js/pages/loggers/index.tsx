@@ -63,6 +63,12 @@ import {
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
 import { postJson } from '@/lib/csrf-fetch';
+import {
+    normalizePageSize,
+    PAGE_SIZE_OPTIONS,
+    readStoredPageSize,
+    storePageSize,
+} from '@/lib/page-size-preference';
 import type { BreadcrumbItem } from '@/types';
 
 interface LoggerItem {
@@ -103,6 +109,8 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Dashboard', href: '/dashboard' },
     { title: 'Loggers', href: '/loggers' },
 ];
+
+const LOGGER_PAGE_SIZE_STORAGE_KEY = 'cloud-beacon.logger-page-size';
 
 function getStatusBadgeClass(status: string): string {
     switch (status) {
@@ -801,9 +809,11 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
     }, [loggers, search, statusFilter, projectFilter]);
 
     // Client-side pagination (data already loaded; no extra server round-trip)
-    const PER_PAGE = 12;
     const [currentPage, setCurrentPage] = useState(1);
-    const totalPages = Math.max(1, Math.ceil(filteredLoggers.length / PER_PAGE));
+    const [pageSize, setPageSize] = useState(() =>
+        readStoredPageSize(LOGGER_PAGE_SIZE_STORAGE_KEY),
+    );
+    const totalPages = Math.max(1, Math.ceil(filteredLoggers.length / pageSize));
     // Reset to first page whenever the filtered result set changes (search/filter)
     useEffect(() => {
         setCurrentPage(1);
@@ -813,9 +823,16 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
         if (currentPage > totalPages) setCurrentPage(totalPages);
     }, [currentPage, totalPages]);
     const paginatedLoggers = useMemo(
-        () => filteredLoggers.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE),
-        [filteredLoggers, currentPage],
+        () => filteredLoggers.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+        [filteredLoggers, currentPage, pageSize],
     );
+
+    function updatePageSize(value: string) {
+        const nextPageSize = normalizePageSize(value);
+        setPageSize(nextPageSize);
+        storePageSize(LOGGER_PAGE_SIZE_STORAGE_KEY, nextPageSize);
+        setCurrentPage(1);
+    }
 
     const onlineCount = loggers.filter(l => l.status === 'online').length;
     const offlineCount = loggers.filter(l => l.status === 'offline').length;
@@ -1081,11 +1098,29 @@ export default function LoggerList({ loggers, projects }: LoggerListProps) {
                                 )}
                             </TableBody>
                         </Table>
-                        {filteredLoggers.length > PER_PAGE && (
+                        {filteredLoggers.length > 0 && (
                             <div className="flex flex-col items-center justify-between gap-3 border-t px-4 py-3 sm:flex-row">
-                                <p className="text-xs text-muted-foreground">
-                                    {(currentPage - 1) * PER_PAGE + 1}–{Math.min(currentPage * PER_PAGE, filteredLoggers.length)} dari {filteredLoggers.length}
-                                </p>
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <p className="text-xs text-muted-foreground">
+                                        {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filteredLoggers.length)} dari {filteredLoggers.length}
+                                    </p>
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                        <span>Tampilkan</span>
+                                        <Select value={String(pageSize)} onValueChange={updatePageSize}>
+                                            <SelectTrigger className="h-8 w-[76px]" aria-label="Jumlah logger per halaman">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {PAGE_SIZE_OPTIONS.map((option) => (
+                                                    <SelectItem key={option} value={String(option)}>
+                                                        {option}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <span>per halaman</span>
+                                    </div>
+                                </div>
                                 <div className="flex items-center gap-2">
                                     <Button
                                         variant="outline"

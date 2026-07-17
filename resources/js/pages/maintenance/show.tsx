@@ -230,7 +230,6 @@ export default function MaintenanceShow({ ticket, technicians }: MaintenanceShow
                         <Card>
                             <CardHeader>
                                 <CardTitle>Masalah</CardTitle>
-                                <CardDescription>{ticket.failureType || 'Jenis kerusakan belum diisi'}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 {ticket.issues.length > 0 ? (
@@ -271,7 +270,6 @@ export default function MaintenanceShow({ ticket, technicians }: MaintenanceShow
                         <Card>
                             <CardHeader>
                                 <CardTitle>Perbaikan & Dokumentasi</CardTitle>
-                                <CardDescription>Referensi pekerjaan dan berkas pendukung dari tiket ini.</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-5">
                                 <div className="space-y-2">
@@ -564,7 +562,6 @@ export default function MaintenanceShow({ ticket, technicians }: MaintenanceShow
                                     <Radio className="size-5" />
                                     Logger
                                 </CardTitle>
-                                <CardDescription>Konteks perangkat yang diperbaiki.</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3 text-sm">
                                 <div className="flex items-center justify-between gap-4">

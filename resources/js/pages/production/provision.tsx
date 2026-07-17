@@ -364,9 +364,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                         <Usb className="size-6" />
                         Setup Logger via USB
                     </h1>
-                    <p className="text-sm text-muted-foreground">
-                        Hubungkan logger lewat kabel USB untuk mengisi Serial Number, Device ID, dan Nama Bluetooth sebelum unit dikirim ke lapangan.
-                    </p>
                 </div>
 
                 {serialSupported === false && (
@@ -418,9 +415,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                     <Usb className="size-5" />
                                     Koneksi USB
                                 </CardTitle>
-                                <CardDescription>
-                                    Pilih port serial logger yang tersambung ke komputer ini.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
                                 <div className="flex items-center gap-2">
@@ -488,10 +482,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                     {unlocked ? <LockOpen className="size-5" /> : <Lock className="size-5" />}
                                     Buka Kunci (AUTH)
                                 </CardTitle>
-                                <CardDescription>
-                                    Perintah provisioning terkunci sampai PIN diverifikasi. Kunci otomatis aktif
-                                    lagi setelah 5 menit tanpa aktivitas.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <form onSubmit={handleAuth} className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -533,9 +523,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                         <Card className={!unlocked ? 'opacity-60' : undefined}>
                             <CardHeader>
                                 <CardTitle>Provisioning Logger</CardTitle>
-                                <CardDescription>
-                                    Isi Serial Number, Device ID, dan (opsional) Nama Bluetooth, lalu tulis ke logger.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <form onSubmit={handleProvision} className="grid gap-4 sm:grid-cols-3">
@@ -857,9 +844,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                         <Card className={!connected ? 'opacity-60' : undefined}>
                             <CardHeader>
                                 <CardTitle>Verifikasi</CardTitle>
-                                <CardDescription>
-                                    Baca ulang info logger untuk memastikan SN, ID, dan topic tersimpan dengan benar.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
                                 <Button variant="outline" onClick={handleVerify} disabled={!connected || verifyBusy} className="gap-1.5">

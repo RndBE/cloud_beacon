@@ -299,9 +299,6 @@ export default function MaintenanceIndex({
                             <Wrench className="size-6" />
                             Maintenance
                         </h1>
-                        <p className="text-sm text-muted-foreground">
-                            Tiket perbaikan untuk logger yang sudah terdaftar.
-                        </p>
                     </div>
                     {canCreate && (
                         <Button className="gap-1.5" onClick={openCreate}>

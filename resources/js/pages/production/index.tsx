@@ -62,6 +62,12 @@ import {
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
+import {
+    normalizePageSize,
+    PAGE_SIZE_OPTIONS,
+    readStoredPageSize,
+    storePageSize,
+} from '@/lib/page-size-preference';
 import type { BreadcrumbItem } from '@/types';
 import { paginateItems } from './pagination';
 
@@ -95,7 +101,7 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Production', href: '/production' },
 ];
 
-const PRODUCTION_PAGE_SIZE = 10;
+const PRODUCTION_PAGE_SIZE_STORAGE_KEY = 'cloud-beacon.production-page-size';
 
 function getQcBadge(status: string) {
     switch (status) {
@@ -131,6 +137,9 @@ export default function ProductionIndex({
     const [search, setSearch] = useState(initialSearch);
     const [qcFilter, setQcFilter] = useState<string>('all');
     const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(() =>
+        readStoredPageSize(PRODUCTION_PAGE_SIZE_STORAGE_KEY),
+    );
     const [addOpen, setAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] =
@@ -172,8 +181,8 @@ export default function ProductionIndex({
     }, [devices, search, qcFilter]);
 
     const pagination = useMemo(
-        () => paginateItems(filtered, currentPage, PRODUCTION_PAGE_SIZE),
-        [filtered, currentPage],
+        () => paginateItems(filtered, currentPage, pageSize),
+        [filtered, currentPage, pageSize],
     );
 
     function updateSearch(value: string) {
@@ -183,6 +192,13 @@ export default function ProductionIndex({
 
     function updateQcFilter(value: string) {
         setQcFilter(value);
+        setCurrentPage(1);
+    }
+
+    function updatePageSize(value: string) {
+        const nextPageSize = normalizePageSize(value);
+        setPageSize(nextPageSize);
+        storePageSize(PRODUCTION_PAGE_SIZE_STORAGE_KEY, nextPageSize);
         setCurrentPage(1);
     }
 
@@ -805,11 +821,42 @@ export default function ProductionIndex({
                         </Table>
                         {pagination.total > 0 && (
                             <div className="flex flex-col items-center justify-between gap-3 border-t px-4 py-3 sm:flex-row">
-                                <p className="text-xs text-muted-foreground">
-                                    Showing {pagination.from}&ndash;
-                                    {pagination.to} of {pagination.total}
-                                </p>
-                                <div className="flex flex-wrap items-center justify-center gap-1">
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <p className="text-xs text-muted-foreground">
+                                        {pagination.from}&ndash;{pagination.to}{' '}
+                                        dari {pagination.total}
+                                    </p>
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                        <span>Tampilkan</span>
+                                        <Select
+                                            value={String(pageSize)}
+                                            onValueChange={updatePageSize}
+                                        >
+                                            <SelectTrigger
+                                                className="h-8 w-[76px]"
+                                                aria-label="Jumlah production per halaman"
+                                            >
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {PAGE_SIZE_OPTIONS.map(
+                                                    (option) => (
+                                                        <SelectItem
+                                                            key={option}
+                                                            value={String(
+                                                                option,
+                                                            )}
+                                                        >
+                                                            {option}
+                                                        </SelectItem>
+                                                    ),
+                                                )}
+                                            </SelectContent>
+                                        </Select>
+                                        <span>per halaman</span>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
                                     <Button
                                         type="button"
                                         variant="outline"
@@ -827,34 +874,12 @@ export default function ProductionIndex({
                                     >
                                         <ChevronLeft className="size-4" />
                                         <span className="hidden sm:inline">
-                                            Previous
+                                            Sebelumnya
                                         </span>
                                     </Button>
-                                    {Array.from(
-                                        { length: pagination.totalPages },
-                                        (_, index) => index + 1,
-                                    ).map((page) => (
-                                        <Button
-                                            key={page}
-                                            type="button"
-                                            variant={
-                                                page === pagination.currentPage
-                                                    ? 'default'
-                                                    : 'outline'
-                                            }
-                                            size="sm"
-                                            className="min-w-9"
-                                            onClick={() => setCurrentPage(page)}
-                                            aria-current={
-                                                page === pagination.currentPage
-                                                    ? 'page'
-                                                    : undefined
-                                            }
-                                            aria-label={`Page ${page}`}
-                                        >
-                                            {page}
-                                        </Button>
-                                    ))}
+                                    <span className="px-1 text-sm text-muted-foreground">
+                                        Halaman {pagination.currentPage} / {pagination.totalPages}
+                                    </span>
                                     <Button
                                         type="button"
                                         variant="outline"
@@ -872,10 +897,10 @@ export default function ProductionIndex({
                                             pagination.currentPage ===
                                             pagination.totalPages
                                         }
-                                    >
-                                        <span className="hidden sm:inline">
-                                            Next
-                                        </span>
+                                        >
+                                            <span className="hidden sm:inline">
+                                                Berikutnya
+                                            </span>
                                         <ChevronRight className="size-4" />
                                     </Button>
                                 </div>

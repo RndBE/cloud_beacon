@@ -349,16 +349,12 @@ export default function CloudSshIndex({
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Akses Perangkat" />
-            <div className="flex h-full flex-1 flex-col gap-4 px-4 pt-2 pb-4">
+            <div className="flex h-full flex-1 flex-col gap-6 p-4 md:p-6">
                 <div className="flex items-center justify-between">
                     <div>
                         <h1 className="text-xl font-semibold">
                             Registry Akses Perangkat
                         </h1>
-                        <p className="text-sm text-muted-foreground">
-                            Kelola akses SSH dan Web ke perangkat lapangan
-                            melalui tunnel WireGuard.
-                        </p>
                     </div>
                     {canManage && (
                         <Button onClick={() => setCreateOpen(true)}>
