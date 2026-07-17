@@ -14,13 +14,13 @@ class RemoteDeviceSeeder extends Seeder
             ['host' => '10.8.0.2', 'port' => 22, 'username' => 'orangepi'],
             [
                 'name' => 'Modul AI',
-                'description' => 'Modul AI via WireGuard wg0',
+                'description' => '',
             ],
         );
 
         $device->forceFill([
             'name' => 'Modul AI',
-            'description' => 'Modul AI via WireGuard wg0',
+            'description' => '',
             'web_enabled' => true,
             'web_port' => 80,
         ])->save();
