@@ -62,6 +62,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
+import { postJson } from '@/lib/csrf-fetch';
 import type { BreadcrumbItem } from '@/types';
 
 interface LoggerItem {
@@ -154,16 +155,6 @@ interface ProductionDeviceInfo {
     productionDate: string | null;
 }
 
-// Helper: fetch with CSRF
-async function apiFetch(url: string, body: Record<string, unknown>) {
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-    return fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken || '' },
-        body: JSON.stringify(body),
-    });
-}
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Add Logger Wizard
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -242,7 +233,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
         let mqttDone = false;
         const mqttResultRef: { current: { success: boolean; data?: Record<string, string | number | null>; message?: string } | null } = { current: null };
 
-        const mqttPromise = apiFetch('/api/mqtt/info', { id_logger: idLogger })
+        const mqttPromise = postJson('/api/mqtt/info', { id_logger: idLogger })
             .then(r => r.json())
             .then((data: { success: boolean; data?: Record<string, string | number | null>; message?: string }) => {
                 console.log('%c[MQTT] 📩 Response received:', 'color: #3b82f6', data);
@@ -323,7 +314,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
         setProdDevice(null);
 
         try {
-            const res = await apiFetch('/api/check-serial', { serial_number: form.data.serial_number.trim() });
+            const res = await postJson('/api/check-serial', { serial_number: form.data.serial_number.trim() });
             const data = await res.json();
 
             if (!data.found) {

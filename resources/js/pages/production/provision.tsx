@@ -51,6 +51,7 @@ import { useClipboard } from '@/hooks/use-clipboard';
 import { isWebSerialSupported, useLoggerSerial } from '@/hooks/use-logger-serial';
 import type { JsonRecord } from '@/hooks/use-logger-serial';
 import AppLayout from '@/layouts/app-layout';
+import { postJson } from '@/lib/csrf-fetch';
 import type { BreadcrumbItem } from '@/types';
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -225,31 +226,27 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
     async function registerToProduction() {
         setRegisterState({ status: 'saving' });
         try {
-            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
-            const res = await fetch('/production/provision/register', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    'X-CSRF-TOKEN': csrfToken,
-                },
-                body: JSON.stringify({
-                    serial_number: sn.trim(),
-                    device_id: deviceId.trim(),
-                    bt_name: btName.trim() !== '' ? btName.trim() : null,
-                    model: model.trim() !== '' ? model.trim() : null,
-                    hardware_version: hardwareVersion.trim() !== '' ? hardwareVersion.trim() : null,
-                    production_date: productionDate.trim() !== '' ? productionDate.trim() : null,
-                    tested_by: testedBy.trim() !== '' ? testedBy.trim() : null,
-                    qc_status: qcStatus,
-                    notes: notes.trim() !== '' ? notes.trim() : null,
-                }),
+            const res = await postJson('/production/provision/register', {
+                serial_number: sn.trim(),
+                device_id: deviceId.trim(),
+                bt_name: btName.trim() !== '' ? btName.trim() : null,
+                model: model.trim() !== '' ? model.trim() : null,
+                hardware_version: hardwareVersion.trim() !== '' ? hardwareVersion.trim() : null,
+                production_date: productionDate.trim() !== '' ? productionDate.trim() : null,
+                tested_by: testedBy.trim() !== '' ? testedBy.trim() : null,
+                qc_status: qcStatus,
+                notes: notes.trim() !== '' ? notes.trim() : null,
             });
             const data = await res.json().catch(() => null);
             if (!res.ok || !data?.success) {
-                throw new Error(
-                    typeof data?.message === 'string' ? data.message : `Server merespons ${res.status}.`,
-                );
+                const message =
+                    res.status === 419
+                        ? 'Sesi login sudah kedaluwarsa. Muat ulang halaman atau login kembali, lalu coba simpan lagi.'
+                        : typeof data?.message === 'string'
+                          ? data.message
+                          : `Server merespons ${res.status}.`;
+
+                throw new Error(message);
             }
             setRegisterState({ status: data.status === 'updated' ? 'updated' : 'created' });
         } catch (error) {
@@ -824,14 +821,20 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                         {registerState.status === 'saving'
                                             ? 'Menyimpan ke daftar Production…'
                                             : registerState.status === 'created'
-                                              ? 'Otomatis tercatat di daftar Production (QC: pending).'
+                                              ? `Otomatis tercatat di daftar Production (QC: ${qcStatus}).`
                                               : registerState.status === 'updated'
                                                 ? 'Data di daftar Production diperbarui (SN sudah terdaftar).'
-                                                : `Logger sudah ditulis, tapi gagal dicatat ke daftar Production: ${registerState.message} Tambahkan manual di halaman Production.`}
+                                                : `Logger sudah ditulis, tapi gagal dicatat ke daftar Production: ${registerState.message}`}
                                     </div>
                                 )}
 
                                 <DialogFooter>
+                                    {registerState?.status === 'error' && provisionResult?.ok && (
+                                        <Button type="button" variant="outline" onClick={registerToProduction}>
+                                            <RefreshCw className="mr-2 size-4" />
+                                            Coba simpan lagi
+                                        </Button>
+                                    )}
                                     <Button
                                         type="button"
                                         variant={provisionResult && !provisionResult.ok ? 'outline' : 'default'}

@@ -2,6 +2,8 @@ import { Head, router, useForm } from '@inertiajs/react';
 import {
     Check,
     CheckCircle2,
+    ChevronLeft,
+    ChevronRight,
     Download,
     Factory,
     FileUp,
@@ -61,6 +63,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
+import { paginateItems } from './pagination';
 
 interface ProductionDeviceItem {
     id: number;
@@ -91,6 +94,8 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Dashboard', href: '/dashboard' },
     { title: 'Production', href: '/production' },
 ];
+
+const PRODUCTION_PAGE_SIZE = 10;
 
 function getQcBadge(status: string) {
     switch (status) {
@@ -125,6 +130,7 @@ export default function ProductionIndex({
             : new URLSearchParams(window.location.search).get('model') || '';
     const [search, setSearch] = useState(initialSearch);
     const [qcFilter, setQcFilter] = useState<string>('all');
+    const [currentPage, setCurrentPage] = useState(1);
     const [addOpen, setAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] =
@@ -164,6 +170,21 @@ export default function ProductionIndex({
             return matchSearch && matchQc;
         });
     }, [devices, search, qcFilter]);
+
+    const pagination = useMemo(
+        () => paginateItems(filtered, currentPage, PRODUCTION_PAGE_SIZE),
+        [filtered, currentPage],
+    );
+
+    function updateSearch(value: string) {
+        setSearch(value);
+        setCurrentPage(1);
+    }
+
+    function updateQcFilter(value: string) {
+        setQcFilter(value);
+        setCurrentPage(1);
+    }
 
     const passedCount = devices.filter((d) => d.qcStatus === 'passed').length;
     const pendingCount = devices.filter((d) => d.qcStatus === 'pending').length;
@@ -220,7 +241,7 @@ export default function ProductionIndex({
                     </div>
                     <button
                         onClick={() =>
-                            setQcFilter(
+                            updateQcFilter(
                                 qcFilter === 'passed' ? 'all' : 'passed',
                             )
                         }
@@ -240,7 +261,7 @@ export default function ProductionIndex({
                     </button>
                     <button
                         onClick={() =>
-                            setQcFilter(
+                            updateQcFilter(
                                 qcFilter === 'pending' ? 'all' : 'pending',
                             )
                         }
@@ -260,7 +281,7 @@ export default function ProductionIndex({
                     </button>
                     <button
                         onClick={() =>
-                            setQcFilter(
+                            updateQcFilter(
                                 qcFilter === 'failed' ? 'all' : 'failed',
                             )
                         }
@@ -301,14 +322,14 @@ export default function ProductionIndex({
                                         placeholder="Search serial, model…"
                                         value={search}
                                         onChange={(e) =>
-                                            setSearch(e.target.value)
+                                            updateSearch(e.target.value)
                                         }
                                         className="w-full pl-9 sm:w-[240px]"
                                     />
                                 </div>
                                 <Select
                                     value={qcFilter}
-                                    onValueChange={setQcFilter}
+                                    onValueChange={updateQcFilter}
                                 >
                                     <SelectTrigger className="w-[130px]">
                                         <SelectValue placeholder="QC Status" />
@@ -681,7 +702,7 @@ export default function ProductionIndex({
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                {filtered.map((device) => (
+                                {pagination.items.map((device) => (
                                     <TableRow key={device.id}>
                                         <TableCell className="font-mono text-sm font-medium">
                                             {device.serialNumber}
@@ -782,6 +803,84 @@ export default function ProductionIndex({
                                 )}
                             </TableBody>
                         </Table>
+                        {pagination.total > 0 && (
+                            <div className="flex flex-col items-center justify-between gap-3 border-t px-4 py-3 sm:flex-row">
+                                <p className="text-xs text-muted-foreground">
+                                    Showing {pagination.from}&ndash;
+                                    {pagination.to} of {pagination.total}
+                                </p>
+                                <div className="flex flex-wrap items-center justify-center gap-1">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() =>
+                                            setCurrentPage(
+                                                Math.max(
+                                                    1,
+                                                    pagination.currentPage - 1,
+                                                ),
+                                            )
+                                        }
+                                        disabled={pagination.currentPage === 1}
+                                    >
+                                        <ChevronLeft className="size-4" />
+                                        <span className="hidden sm:inline">
+                                            Previous
+                                        </span>
+                                    </Button>
+                                    {Array.from(
+                                        { length: pagination.totalPages },
+                                        (_, index) => index + 1,
+                                    ).map((page) => (
+                                        <Button
+                                            key={page}
+                                            type="button"
+                                            variant={
+                                                page === pagination.currentPage
+                                                    ? 'default'
+                                                    : 'outline'
+                                            }
+                                            size="sm"
+                                            className="min-w-9"
+                                            onClick={() => setCurrentPage(page)}
+                                            aria-current={
+                                                page === pagination.currentPage
+                                                    ? 'page'
+                                                    : undefined
+                                            }
+                                            aria-label={`Page ${page}`}
+                                        >
+                                            {page}
+                                        </Button>
+                                    ))}
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() =>
+                                            setCurrentPage(
+                                                Math.min(
+                                                    pagination.totalPages,
+                                                    pagination.currentPage + 1,
+                                                ),
+                                            )
+                                        }
+                                        disabled={
+                                            pagination.currentPage ===
+                                            pagination.totalPages
+                                        }
+                                    >
+                                        <span className="hidden sm:inline">
+                                            Next
+                                        </span>
+                                        <ChevronRight className="size-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
 
