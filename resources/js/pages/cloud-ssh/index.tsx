@@ -352,7 +352,8 @@ export default function CloudSshIndex({
             <div className="flex h-full flex-1 flex-col gap-6 p-4 md:p-6">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h1 className="text-xl font-semibold">
+                        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+                            <TerminalSquare className="size-6" />
                             Registry Akses Perangkat
                         </h1>
                     </div>
