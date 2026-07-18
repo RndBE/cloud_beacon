@@ -31,7 +31,7 @@ it('provides the complete TB-400-04 ARR template', function () {
         ])
         ->and($profile['default_mapping'])->toBe([
             'ARR.Rainfall_Minute',
-            'ARR.Rainfall_hour',
+            'ARR.Rainfall_Hour',
             'ARR.Rainfall_Day',
             'ARR.status_modbus',
         ]);

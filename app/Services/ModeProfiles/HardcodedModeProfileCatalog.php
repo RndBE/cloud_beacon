@@ -113,7 +113,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                 'calibration' => null,
                 'default_mapping' => [
                     'ARR.Rainfall_Minute',
-                    'ARR.Rainfall_hour',
+                    'ARR.Rainfall_Hour',
                     'ARR.Rainfall_Day',
                     'ARR.status_modbus',
                 ],
