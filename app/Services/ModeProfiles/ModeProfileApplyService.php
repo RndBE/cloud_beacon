@@ -6,10 +6,13 @@ use App\Models\ActivityLog;
 use App\Models\Logger;
 use App\Services\MqttService;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Throwable;
 
 class ModeProfileApplyService
 {
+    private const LOGGER_SENSOR_NAME_MAX_LENGTH = 12;
+
     public function __construct(
         private readonly ModeProfileCatalog $catalog,
         private readonly ModeProfilePreviewService $previewService,
@@ -56,12 +59,16 @@ class ModeProfileApplyService
         $completed[] = 'set_mode';
 
         foreach ($preview['changes']['sensors'] as $sensorChange) {
+            $loggerParameters = $this->normalizeParametersForLogger(
+                $sensorChange['parameters'],
+            );
+
             $sensorResult = $this->mqtt->sendSensorSet(
                 $logger->device_identifier,
                 MqttService::buildGroupSetPayload(
                     $sensorChange['connection_type'],
                     $sensorChange['device'],
-                    $sensorChange['parameters'],
+                    $loggerParameters,
                 ),
             );
 
@@ -80,7 +87,7 @@ class ModeProfileApplyService
                 $this->syncRs485Slave(
                     $logger,
                     $sensorChange['device'],
-                    $sensorChange['parameters'],
+                    $loggerParameters,
                 );
             } catch (Throwable $exception) {
                 report($exception);
@@ -165,6 +172,19 @@ class ModeProfileApplyService
             'completed_steps' => $completed,
             'next_step' => $nextStep,
         ];
+    }
+
+    private function normalizeParametersForLogger(array $parameters): array
+    {
+        return array_map(static function (array $parameter): array {
+            $parameter['name'] = Str::substr(
+                (string) ($parameter['name'] ?? 'Unknown'),
+                0,
+                self::LOGGER_SENSOR_NAME_MAX_LENGTH,
+            );
+
+            return $parameter;
+        }, $parameters);
     }
 
     private function syncRs485Slave(Logger $logger, array $device, array $parameters): void
