@@ -105,7 +105,7 @@ it('applies ARR in mode sensor calibration mapping order and replaces the slave 
                 's1' => 'ARR.Rainfall_Minute',
                 's2' => 'ARR.Rainfall_Hour',
                 's3' => 'ARR.Rainfall_Day',
-                's4' => 'ARR.status_modbus',
+                's4' => 'ARR.Status_Modbus',
             ],
         ], 'MAP_DATA')
         ->andReturn(['success' => true, 'message' => 'Mapping OK']);

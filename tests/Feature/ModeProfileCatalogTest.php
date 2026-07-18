@@ -33,7 +33,7 @@ it('provides the complete TB-400-04 ARR template', function () {
             'ARR.Rainfall_Minute',
             'ARR.Rainfall_Hour',
             'ARR.Rainfall_Day',
-            'ARR.status_modbus',
+            'ARR.Status_Modbus',
         ]);
 });
 

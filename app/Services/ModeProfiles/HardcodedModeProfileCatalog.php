@@ -115,7 +115,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     'ARR.Rainfall_Minute',
                     'ARR.Rainfall_Hour',
                     'ARR.Rainfall_Day',
-                    'ARR.status_modbus',
+                    'ARR.Status_Modbus',
                 ],
             ],
             'AWLR_TD' => [
