@@ -358,6 +358,7 @@ type Rs485Param = {
 };
 
 const BLANK_RS485_PARAM: Rs485Param = { name: '', unit: '', scale_factor: '1', register_address: 0, reg_count: 1, fast_poll: false };
+const SENSOR_PARAMETER_NAME_MAX_LENGTH = 12;
 
 // ── Modbus data type codes (dtype) ───────────────────────────────────────────
 // The `reg_count` field carries the Modbus data TYPE code (1..27), not a literal register
@@ -1597,6 +1598,8 @@ function SensorCrudPanel({
     // RS485 unified device form (cfg + params). editingDeviceSlave: null = create, else the slave being edited.
     const [rs485Form, setRs485Form] = useState(emptyRs485Form);
     const [editingDeviceSlave, setEditingDeviceSlave] = useState<number | null>(null);
+    const hasInvalidRs485ParameterName = form.connection_type === 'rs485'
+        && rs485Form.params.some((parameter) => parameter.name.length > SENSOR_PARAMETER_NAME_MAX_LENGTH);
     // Accordion: device groups (RS485 slave / RS232 port) can be collapsed.
     // Track collapsed keys; absent key = expanded. Default: all device groups closed.
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
@@ -1670,7 +1673,7 @@ function SensorCrudPanel({
     };
 
     const submitRs485 = () => {
-        if (readOnly) return;
+        if (readOnly || hasInvalidRs485ParameterName) return;
         setProcessing(true);
         setErrors({});
         const body = {
@@ -2163,8 +2166,10 @@ function SensorCrudPanel({
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="grid gap-1.5">
                                                 <Label className="text-xs">Nama Parameter</Label>
-                                                <Input maxLength={12} value={p.name} onChange={e => updateRs485Param(i, { name: e.target.value })} placeholder="e.g. Rainfall" />
-                                                {errors[`params.${i}.name`] && <p className="text-xs text-red-500">{errors[`params.${i}.name`]}</p>}
+                                                <Input value={p.name} onChange={e => updateRs485Param(i, { name: e.target.value })} placeholder="e.g. Rainfall" />
+                                                {p.name.length > SENSOR_PARAMETER_NAME_MAX_LENGTH
+                                                    ? <p className="text-xs text-red-500">Maximum 12 characters</p>
+                                                    : errors[`params.${i}.name`] && <p className="text-xs text-red-500">{errors[`params.${i}.name`]}</p>}
                                             </div>
                                             <div className="grid gap-1.5">
                                                 <Label className="text-xs">Satuan</Label>
@@ -2377,7 +2382,7 @@ function SensorCrudPanel({
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
-                        <Button onClick={handleSubmit} disabled={readOnly || processing}>
+                        <Button onClick={handleSubmit} disabled={readOnly || processing || hasInvalidRs485ParameterName}>
                             {processing ? t('loggerDetail.saving_dots') : (editingSensor || editingDeviceSlave != null) ? t('loggerDetail.save_changes') : t('loggerDetail.create_sensor')}
                         </Button>
                     </DialogFooter>
