@@ -2,6 +2,8 @@ import { Head, router, useForm } from '@inertiajs/react';
 import {
     Check,
     CheckCircle2,
+    ChevronLeft,
+    ChevronRight,
     Download,
     Factory,
     FileUp,
@@ -60,7 +62,14 @@ import {
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
+import {
+    normalizePageSize,
+    PAGE_SIZE_OPTIONS,
+    readStoredPageSize,
+    storePageSize,
+} from '@/lib/page-size-preference';
 import type { BreadcrumbItem } from '@/types';
+import { paginateItems } from './pagination';
 
 interface ProductionDeviceItem {
     id: number;
@@ -91,6 +100,8 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Dashboard', href: '/dashboard' },
     { title: 'Production', href: '/production' },
 ];
+
+const PRODUCTION_PAGE_SIZE_STORAGE_KEY = 'cloud-beacon.production-page-size';
 
 function getQcBadge(status: string) {
     switch (status) {
@@ -125,6 +136,10 @@ export default function ProductionIndex({
             : new URLSearchParams(window.location.search).get('model') || '';
     const [search, setSearch] = useState(initialSearch);
     const [qcFilter, setQcFilter] = useState<string>('all');
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(() =>
+        readStoredPageSize(PRODUCTION_PAGE_SIZE_STORAGE_KEY),
+    );
     const [addOpen, setAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const [deleteTarget, setDeleteTarget] =
@@ -164,6 +179,28 @@ export default function ProductionIndex({
             return matchSearch && matchQc;
         });
     }, [devices, search, qcFilter]);
+
+    const pagination = useMemo(
+        () => paginateItems(filtered, currentPage, pageSize),
+        [filtered, currentPage, pageSize],
+    );
+
+    function updateSearch(value: string) {
+        setSearch(value);
+        setCurrentPage(1);
+    }
+
+    function updateQcFilter(value: string) {
+        setQcFilter(value);
+        setCurrentPage(1);
+    }
+
+    function updatePageSize(value: string) {
+        const nextPageSize = normalizePageSize(value);
+        setPageSize(nextPageSize);
+        storePageSize(PRODUCTION_PAGE_SIZE_STORAGE_KEY, nextPageSize);
+        setCurrentPage(1);
+    }
 
     const passedCount = devices.filter((d) => d.qcStatus === 'passed').length;
     const pendingCount = devices.filter((d) => d.qcStatus === 'pending').length;
@@ -220,7 +257,7 @@ export default function ProductionIndex({
                     </div>
                     <button
                         onClick={() =>
-                            setQcFilter(
+                            updateQcFilter(
                                 qcFilter === 'passed' ? 'all' : 'passed',
                             )
                         }
@@ -240,7 +277,7 @@ export default function ProductionIndex({
                     </button>
                     <button
                         onClick={() =>
-                            setQcFilter(
+                            updateQcFilter(
                                 qcFilter === 'pending' ? 'all' : 'pending',
                             )
                         }
@@ -260,7 +297,7 @@ export default function ProductionIndex({
                     </button>
                     <button
                         onClick={() =>
-                            setQcFilter(
+                            updateQcFilter(
                                 qcFilter === 'failed' ? 'all' : 'failed',
                             )
                         }
@@ -301,14 +338,14 @@ export default function ProductionIndex({
                                         placeholder="Search serial, model…"
                                         value={search}
                                         onChange={(e) =>
-                                            setSearch(e.target.value)
+                                            updateSearch(e.target.value)
                                         }
                                         className="w-full pl-9 sm:w-[240px]"
                                     />
                                 </div>
                                 <Select
                                     value={qcFilter}
-                                    onValueChange={setQcFilter}
+                                    onValueChange={updateQcFilter}
                                 >
                                     <SelectTrigger className="w-[130px]">
                                         <SelectValue placeholder="QC Status" />
@@ -681,7 +718,7 @@ export default function ProductionIndex({
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                {filtered.map((device) => (
+                                {pagination.items.map((device) => (
                                     <TableRow key={device.id}>
                                         <TableCell className="font-mono text-sm font-medium">
                                             {device.serialNumber}
@@ -782,6 +819,93 @@ export default function ProductionIndex({
                                 )}
                             </TableBody>
                         </Table>
+                        {pagination.total > 0 && (
+                            <div className="flex flex-col items-center justify-between gap-3 border-t px-4 py-3 sm:flex-row">
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <p className="text-xs text-muted-foreground">
+                                        {pagination.from}&ndash;{pagination.to}{' '}
+                                        dari {pagination.total}
+                                    </p>
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                        <span>Tampilkan</span>
+                                        <Select
+                                            value={String(pageSize)}
+                                            onValueChange={updatePageSize}
+                                        >
+                                            <SelectTrigger
+                                                className="h-8 w-[76px]"
+                                                aria-label="Jumlah production per halaman"
+                                            >
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {PAGE_SIZE_OPTIONS.map(
+                                                    (option) => (
+                                                        <SelectItem
+                                                            key={option}
+                                                            value={String(
+                                                                option,
+                                                            )}
+                                                        >
+                                                            {option}
+                                                        </SelectItem>
+                                                    ),
+                                                )}
+                                            </SelectContent>
+                                        </Select>
+                                        <span>per halaman</span>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() =>
+                                            setCurrentPage(
+                                                Math.max(
+                                                    1,
+                                                    pagination.currentPage - 1,
+                                                ),
+                                            )
+                                        }
+                                        disabled={pagination.currentPage === 1}
+                                    >
+                                        <ChevronLeft className="size-4" />
+                                        <span className="hidden sm:inline">
+                                            Sebelumnya
+                                        </span>
+                                    </Button>
+                                    <span className="px-1 text-sm text-muted-foreground">
+                                        Halaman {pagination.currentPage} / {pagination.totalPages}
+                                    </span>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() =>
+                                            setCurrentPage(
+                                                Math.min(
+                                                    pagination.totalPages,
+                                                    pagination.currentPage + 1,
+                                                ),
+                                            )
+                                        }
+                                        disabled={
+                                            pagination.currentPage ===
+                                            pagination.totalPages
+                                        }
+                                        >
+                                            <span className="hidden sm:inline">
+                                                Berikutnya
+                                            </span>
+                                        <ChevronRight className="size-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
 

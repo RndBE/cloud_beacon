@@ -217,7 +217,9 @@ it('updates web access for an existing seeded device', function () {
 
     $this->seed(RemoteDeviceSeeder::class);
 
-    expect($device->fresh()->web_enabled)->toBeTrue()
+    expect($device->fresh()->name)->toBe('Modul AI')
+        ->and($device->fresh()->description)->toBe('Modul AI via WireGuard wg0')
+        ->and($device->fresh()->web_enabled)->toBeTrue()
         ->and($device->fresh()->web_port)->toBe(80)
         ->and($device->fresh()->web_slug)->toBe(sprintf('device-%03d', $device->id))
         ->and(RemoteDevice::count())->toBe(1);

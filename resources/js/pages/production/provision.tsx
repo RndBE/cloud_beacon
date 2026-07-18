@@ -51,6 +51,7 @@ import { useClipboard } from '@/hooks/use-clipboard';
 import { isWebSerialSupported, useLoggerSerial } from '@/hooks/use-logger-serial';
 import type { JsonRecord } from '@/hooks/use-logger-serial';
 import AppLayout from '@/layouts/app-layout';
+import { postJson } from '@/lib/csrf-fetch';
 import type { BreadcrumbItem } from '@/types';
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -225,31 +226,27 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
     async function registerToProduction() {
         setRegisterState({ status: 'saving' });
         try {
-            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
-            const res = await fetch('/production/provision/register', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    'X-CSRF-TOKEN': csrfToken,
-                },
-                body: JSON.stringify({
-                    serial_number: sn.trim(),
-                    device_id: deviceId.trim(),
-                    bt_name: btName.trim() !== '' ? btName.trim() : null,
-                    model: model.trim() !== '' ? model.trim() : null,
-                    hardware_version: hardwareVersion.trim() !== '' ? hardwareVersion.trim() : null,
-                    production_date: productionDate.trim() !== '' ? productionDate.trim() : null,
-                    tested_by: testedBy.trim() !== '' ? testedBy.trim() : null,
-                    qc_status: qcStatus,
-                    notes: notes.trim() !== '' ? notes.trim() : null,
-                }),
+            const res = await postJson('/production/provision/register', {
+                serial_number: sn.trim(),
+                device_id: deviceId.trim(),
+                bt_name: btName.trim() !== '' ? btName.trim() : null,
+                model: model.trim() !== '' ? model.trim() : null,
+                hardware_version: hardwareVersion.trim() !== '' ? hardwareVersion.trim() : null,
+                production_date: productionDate.trim() !== '' ? productionDate.trim() : null,
+                tested_by: testedBy.trim() !== '' ? testedBy.trim() : null,
+                qc_status: qcStatus,
+                notes: notes.trim() !== '' ? notes.trim() : null,
             });
             const data = await res.json().catch(() => null);
             if (!res.ok || !data?.success) {
-                throw new Error(
-                    typeof data?.message === 'string' ? data.message : `Server merespons ${res.status}.`,
-                );
+                const message =
+                    res.status === 419
+                        ? 'Sesi login sudah kedaluwarsa. Muat ulang halaman atau login kembali, lalu coba simpan lagi.'
+                        : typeof data?.message === 'string'
+                          ? data.message
+                          : `Server merespons ${res.status}.`;
+
+                throw new Error(message);
             }
             setRegisterState({ status: data.status === 'updated' ? 'updated' : 'created' });
         } catch (error) {
@@ -367,9 +364,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                         <Usb className="size-6" />
                         Setup Logger via USB
                     </h1>
-                    <p className="text-sm text-muted-foreground">
-                        Hubungkan logger lewat kabel USB untuk mengisi Serial Number, Device ID, dan Nama Bluetooth sebelum unit dikirim ke lapangan.
-                    </p>
                 </div>
 
                 {serialSupported === false && (
@@ -421,9 +415,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                     <Usb className="size-5" />
                                     Koneksi USB
                                 </CardTitle>
-                                <CardDescription>
-                                    Pilih port serial logger yang tersambung ke komputer ini.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
                                 <div className="flex items-center gap-2">
@@ -491,10 +482,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                     {unlocked ? <LockOpen className="size-5" /> : <Lock className="size-5" />}
                                     Buka Kunci (AUTH)
                                 </CardTitle>
-                                <CardDescription>
-                                    Perintah provisioning terkunci sampai PIN diverifikasi. Kunci otomatis aktif
-                                    lagi setelah 5 menit tanpa aktivitas.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <form onSubmit={handleAuth} className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -536,9 +523,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                         <Card className={!unlocked ? 'opacity-60' : undefined}>
                             <CardHeader>
                                 <CardTitle>Provisioning Logger</CardTitle>
-                                <CardDescription>
-                                    Isi Serial Number, Device ID, dan (opsional) Nama Bluetooth, lalu tulis ke logger.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <form onSubmit={handleProvision} className="grid gap-4 sm:grid-cols-3">
@@ -824,14 +808,20 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                         {registerState.status === 'saving'
                                             ? 'Menyimpan ke daftar Production…'
                                             : registerState.status === 'created'
-                                              ? 'Otomatis tercatat di daftar Production (QC: pending).'
+                                              ? `Otomatis tercatat di daftar Production (QC: ${qcStatus}).`
                                               : registerState.status === 'updated'
                                                 ? 'Data di daftar Production diperbarui (SN sudah terdaftar).'
-                                                : `Logger sudah ditulis, tapi gagal dicatat ke daftar Production: ${registerState.message} Tambahkan manual di halaman Production.`}
+                                                : `Logger sudah ditulis, tapi gagal dicatat ke daftar Production: ${registerState.message}`}
                                     </div>
                                 )}
 
                                 <DialogFooter>
+                                    {registerState?.status === 'error' && provisionResult?.ok && (
+                                        <Button type="button" variant="outline" onClick={registerToProduction}>
+                                            <RefreshCw className="mr-2 size-4" />
+                                            Coba simpan lagi
+                                        </Button>
+                                    )}
                                     <Button
                                         type="button"
                                         variant={provisionResult && !provisionResult.ok ? 'outline' : 'default'}
@@ -854,9 +844,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                         <Card className={!connected ? 'opacity-60' : undefined}>
                             <CardHeader>
                                 <CardTitle>Verifikasi</CardTitle>
-                                <CardDescription>
-                                    Baca ulang info logger untuk memastikan SN, ID, dan topic tersimpan dengan benar.
-                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-3">
                                 <Button variant="outline" onClick={handleVerify} disabled={!connected || verifyBusy} className="gap-1.5">

@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
+import { getCloudSshDisplayName } from './display-name';
 
 interface TerminalDevice {
     id: number;
@@ -36,10 +37,11 @@ export default function CloudSshTerminal({ device, wsPath }: { device: TerminalD
     const [status, setStatus] = useState<ConnectionStatus>('connecting');
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [attempt, setAttempt] = useState(0);
+    const displayName = getCloudSshDisplayName(device.name);
 
     const breadcrumbs: BreadcrumbItem[] = [
         { title: 'Cloud SSH', href: '/cloud-ssh' },
-        { title: device.name, href: `/cloud-ssh/${device.id}/terminal` },
+        { title: displayName, href: `/cloud-ssh/${device.id}/terminal` },
     ];
 
     const connect = useCallback(
@@ -155,19 +157,14 @@ export default function CloudSshTerminal({ device, wsPath }: { device: TerminalD
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-            <Head title={`Terminal — ${device.name}`} />
+            <Head title={`Terminal — ${displayName}`} />
             <div className="flex h-full flex-1 flex-col gap-3 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-3">
                         <Button size="sm" variant="outline" onClick={() => router.visit('/cloud-ssh')}>
                             <ArrowLeft className="mr-1 size-4" /> Kembali
                         </Button>
-                        <div>
-                            <p className="font-medium leading-tight">{device.name}</p>
-                            <p className="text-xs text-muted-foreground">
-                                {device.username}@{device.host}:{device.port}
-                            </p>
-                        </div>
+                        <p className="font-medium leading-tight">{displayName}</p>
                     </div>
                     <div className="flex items-center gap-2">
                         <Badge variant="outline" className={statusBadge[status].className}>

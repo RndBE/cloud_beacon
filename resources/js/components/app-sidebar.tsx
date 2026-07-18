@@ -1,5 +1,6 @@
 import { Link, usePage } from '@inertiajs/react';
 import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, TerminalSquare, Usb, Users, Wrench } from 'lucide-react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -17,6 +18,11 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
+import {
+    readStoredSidebarGroups,
+    storeSidebarGroups,
+} from '@/lib/sidebar-group-preference';
+import type { SidebarGroupId } from '@/lib/sidebar-group-preference';
 import { dashboard } from '@/routes';
 import type { NavItem } from '@/types';
 
@@ -30,8 +36,15 @@ export function AppSidebar() {
     const permissions = auth.permissions ?? [];
     const canView = (permission?: string) => !permission || permissions.includes(permission);
     const visibleItems = (items: PermissionNavItem[]): NavItem[] => items.filter((item) => canView(item.permission));
+    const [openGroups, setOpenGroups] = useState(readStoredSidebarGroups);
 
-    const mainNavItems = visibleItems([
+    function updateGroupOpen(groupId: SidebarGroupId, open: boolean) {
+        const nextState = { ...openGroups, [groupId]: open };
+        setOpenGroups(nextState);
+        storeSidebarGroups(nextState);
+    }
+
+    const overviewNavItems = visibleItems([
         {
             title: t('nav.dashboard'),
             href: dashboard(),
@@ -44,6 +57,9 @@ export function AppSidebar() {
             icon: Network,
             permission: 'topology.view',
         },
+    ]);
+
+    const monitoringNavItems = visibleItems([
         {
             title: t('nav.loggers'),
             href: '/loggers',
@@ -56,6 +72,21 @@ export function AppSidebar() {
             icon: FolderKanban,
             permission: 'loggers.view',
         },
+        {
+            title: 'Forwarding Logs',
+            href: '/forwarding-logs',
+            icon: ArrowUpDown,
+            permission: 'loggers.view',
+        },
+        {
+            title: 'Data Audit',
+            href: '/data-audit',
+            icon: ClipboardCheck,
+            permission: 'loggers.view',
+        },
+    ]);
+
+    const productionNavItems = visibleItems([
         {
             title: t('nav.production'),
             href: '/production',
@@ -74,18 +105,9 @@ export function AppSidebar() {
             icon: Usb,
             permission: 'production.provision',
         },
-        {
-            title: 'Forwarding Logs',
-            href: '/forwarding-logs',
-            icon: ArrowUpDown,
-            permission: 'loggers.view',
-        },
-        {
-            title: 'Data Audit',
-            href: '/data-audit',
-            icon: ClipboardCheck,
-            permission: 'loggers.view',
-        },
+    ]);
+
+    const operationsNavItems = visibleItems([
         {
             title: 'Maintenance',
             href: '/maintenance',
@@ -138,8 +160,36 @@ export function AppSidebar() {
             </SidebarHeader>
 
             <SidebarContent>
-                <NavMain items={mainNavItems} />
-                <NavMain items={managementNavItems} label={t('nav.management')} />
+                <NavMain
+                    items={overviewNavItems}
+                    label="Overview"
+                    open={openGroups.overview}
+                    onOpenChange={(open) => updateGroupOpen('overview', open)}
+                />
+                <NavMain
+                    items={monitoringNavItems}
+                    label="Monitoring"
+                    open={openGroups.monitoring}
+                    onOpenChange={(open) => updateGroupOpen('monitoring', open)}
+                />
+                <NavMain
+                    items={productionNavItems}
+                    label="Production"
+                    open={openGroups.production}
+                    onOpenChange={(open) => updateGroupOpen('production', open)}
+                />
+                <NavMain
+                    items={operationsNavItems}
+                    label="Operations"
+                    open={openGroups.operations}
+                    onOpenChange={(open) => updateGroupOpen('operations', open)}
+                />
+                <NavMain
+                    items={managementNavItems}
+                    label="Management"
+                    open={openGroups.management}
+                    onOpenChange={(open) => updateGroupOpen('management', open)}
+                />
             </SidebarContent>
 
             <SidebarFooter>

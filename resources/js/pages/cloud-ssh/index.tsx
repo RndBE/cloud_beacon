@@ -206,7 +206,7 @@ export default function CloudSshIndex({
                         id={`${prefix}-name`}
                         value={form.data.name}
                         onChange={(e) => form.setData('name', e.target.value)}
-                        placeholder="Modul AI (Orange Pi)"
+                        placeholder="Modul AI"
                     />
                     {form.errors.name && (
                         <p className="text-sm text-destructive">
@@ -276,7 +276,7 @@ export default function CloudSshIndex({
                         onChange={(e) =>
                             form.setData('description', e.target.value)
                         }
-                        placeholder="Orange Pi RK3588 via WireGuard"
+                        placeholder="Perangkat lapangan via WireGuard"
                     />
                     {form.errors.description && (
                         <p className="text-sm text-destructive">
@@ -349,16 +349,13 @@ export default function CloudSshIndex({
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Akses Perangkat" />
-            <div className="flex h-full flex-1 flex-col gap-4 p-4">
+            <div className="flex h-full flex-1 flex-col gap-6 p-4 md:p-6">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h1 className="text-xl font-semibold">
+                        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+                            <TerminalSquare className="size-6" />
                             Registry Akses Perangkat
                         </h1>
-                        <p className="text-sm text-muted-foreground">
-                            Kelola akses SSH dan Web ke perangkat lapangan
-                            melalui tunnel WireGuard.
-                        </p>
                     </div>
                     {canManage && (
                         <Button onClick={() => setCreateOpen(true)}>
@@ -401,16 +398,12 @@ export default function CloudSshIndex({
                 ) : (
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                         {devices.map((device) => (
-                            <Card key={device.id}>
+                            <Card key={device.id} className="py-0">
                                 <CardContent className="flex flex-col gap-3 p-4">
                                     <div className="flex items-start justify-between gap-2">
                                         <div className="min-w-0">
                                             <p className="truncate font-medium">
                                                 {device.name}
-                                            </p>
-                                            <p className="truncate text-sm text-muted-foreground">
-                                                {device.username}@{device.host}:
-                                                {device.port}
                                             </p>
                                         </div>
                                         <div className="flex shrink-0 items-center gap-1">

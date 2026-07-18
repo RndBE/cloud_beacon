@@ -1,6 +1,7 @@
 import { MapContainer, TileLayer, useMap } from 'react-leaflet';
 import { useEffect } from 'react';
 import L from 'leaflet';
+import { useAppearance } from '@/hooks/use-appearance';
 import 'leaflet/dist/leaflet.css';
 // Marker clustering: groups nearby markers, splits on click/zoom (spiderfy).
 import 'leaflet.markercluster';
@@ -17,7 +18,8 @@ const INDONESIA_BOUNDS: L.LatLngBoundsLiteral = [
 // Fix default marker icons in webpack/vite bundled environments
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
-    iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+    iconRetinaUrl:
+        'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
     iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
     shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
@@ -75,14 +77,34 @@ const statusLabel: Record<string, string> = {
     offline: '🔴 Offline',
 };
 
+const lightTileLayer = {
+    attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19,
+    subdomains: 'abc',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+};
+
+const darkTileLayer = {
+    attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    maxZoom: 20,
+    subdomains: 'abcd',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+};
+
 function escapeHtml(value: string): string {
-    return value.replace(/[&<>"']/g, (c) => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;',
-    }[c] as string));
+    return value.replace(
+        /[&<>"']/g,
+        (c) =>
+            ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;',
+            })[c] as string,
+    );
 }
 
 // Build the marker popup as an HTML string (markercluster works with raw
@@ -99,15 +121,24 @@ function buildPopupHtml(logger: LoggerMarker): string {
         : '';
 
     const location = logger.location
-        ? row('Lokasi', `<span style="text-align:right;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;">${escapeHtml(logger.location)}</span>`)
+        ? row(
+              'Lokasi',
+              `<span style="text-align:right;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;">${escapeHtml(logger.location)}</span>`,
+          )
         : '';
 
     const mode = logger.loggerMode
-        ? row('Mode', `<span style="font-family:monospace;font-size:11px;background:#f3f4f6;padding:1px 6px;border-radius:4px;">${escapeHtml(logger.loggerMode)}</span>`)
+        ? row(
+              'Mode',
+              `<span style="font-family:monospace;font-size:11px;background:#f3f4f6;padding:1px 6px;border-radius:4px;">${escapeHtml(logger.loggerMode)}</span>`,
+          )
         : '';
 
     const project = logger.projectName
-        ? row('Project', `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:8px;height:8px;border-radius:50%;background:${logger.projectColor || '#6b7280'};display:inline-block;"></span>${escapeHtml(logger.projectName)}</span>`)
+        ? row(
+              'Project',
+              `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:8px;height:8px;border-radius:50%;background:${logger.projectColor || '#6b7280'};display:inline-block;"></span>${escapeHtml(logger.projectName)}</span>`,
+          )
         : '';
 
     return `
@@ -159,6 +190,9 @@ function ClusteredMarkers({ loggers }: { loggers: LoggerMarker[] }) {
 }
 
 export default function LoggerMap({ loggers }: LoggerMapProps) {
+    const { resolvedAppearance } = useAppearance();
+    const activeTileLayer =
+        resolvedAppearance === 'dark' ? darkTileLayer : lightTileLayer;
     // Filter loggers that have valid coordinates
     const validLoggers = loggers.filter((l) => l.lat !== 0 && l.lng !== 0);
 
@@ -173,12 +207,20 @@ export default function LoggerMap({ loggers }: LoggerMapProps) {
     return (
         <MapContainer
             bounds={INDONESIA_BOUNDS}
+            className="logger-map"
             scrollWheelZoom={true}
-            style={{ height: '400px', width: '100%', borderRadius: '0.5rem', zIndex: 0 }}
+            style={{
+                height: '400px',
+                width: '100%',
+                borderRadius: '0.5rem',
+                zIndex: 0,
+            }}
         >
             <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                attribution={activeTileLayer.attribution}
+                maxZoom={activeTileLayer.maxZoom}
+                subdomains={activeTileLayer.subdomains}
+                url={activeTileLayer.url}
             />
             <ClusteredMarkers loggers={validLoggers} />
         </MapContainer>
