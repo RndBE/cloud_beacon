@@ -19,9 +19,9 @@ it('provides the complete TB-400-04 ARR template', function () {
             'serial_format' => '8N1',
         ])
         ->and(collect($template['parameters'])->pluck('name')->all())->toBe([
-            'Rainfall_Day',
-            'Rainfall_Minute',
-            'Rainfall_hour',
+            'Rain_Day',
+            'Rain_Minute',
+            'Rain_Hour',
         ])
         ->and(collect($template['parameters'])->pluck('reg_count')->all())->toBe([1, 1, 1])
         ->and(collect($template['parameters'])->pluck('data_type_label')->all())->toBe([
@@ -29,6 +29,7 @@ it('provides the complete TB-400-04 ARR template', function () {
             'Unsigned 16-bit',
             'Unsigned 16-bit',
         ])
+        ->and($profile['automatic_calibration']['source'])->toBe('Rain_Day')
         ->and($profile['default_mapping'])->toBe([
             'ARR.Rainfall_Minute',
             'ARR.Rainfall_Hour',

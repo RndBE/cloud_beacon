@@ -79,21 +79,21 @@ it('applies ARR in mode sensor calibration mapping order and replaces the slave 
         ->withArgs(fn (string $id, array $payload) => $id === 'ARR-APPLY-1'
             && $payload['SENSORS']['d'][0]['cfg'] === [1, 'TB-400-04', 3, 0, 9600, '8N1']
             && $payload['SENSORS']['d'][0]['s'] === [
-                ['Rainfall_Day', 0.1, 'mm', 0, 1, 0],
-                ['Rainfall_Min', 0.1, 'mm', 1, 1, 0],
-                ['Rainfall_hou', 0.1, 'mm', 2, 1, 0],
+                ['Rain_Day', 0.1, 'mm', 0, 1, 0],
+                ['Rain_Minute', 0.1, 'mm', 1, 1, 0],
+                ['Rain_Hour', 0.1, 'mm', 2, 1, 0],
             ])
         ->andReturn(['success' => true, 'message' => 'Sensor OK']);
     $mqtt->shouldReceive('sendCalibrationSet')
         ->once()->ordered()
         ->with('ARR-APPLY-1', 'ARR', [
-            'source' => 'Rainfall_Day',
+            'source' => 'Rain_Day',
             'sensor' => 'TB-400-04',
         ])
         ->andReturn([
             'success' => true,
             'data' => [
-                'source' => 'Rainfall_Day',
+                'source' => 'Rain_Day',
                 'sensor' => 'TB-400-04',
             ],
         ]);
@@ -125,16 +125,16 @@ it('applies ARR in mode sensor calibration mapping order and replaces the slave 
     expect(Sensor::query()->whereKey($existing->id)->exists())->toBeFalse()
         ->and($logger->fresh()->logger_mode)->toBe('ARR')
         ->and($logger->fresh()->calibration_data)->toMatchArray([
-            'source' => 'Rainfall_Day',
+            'source' => 'Rain_Day',
             'sensor' => 'TB-400-04',
         ])
         ->and($logger->sensors()->where('connection_type', 'rs485')->where('modbus_slave_id', 1)->count())->toBe(3)
         ->and($logger->sensors()->where('modbus_slave_id', 1)->orderBy('register_address')->pluck('name')->all())->toBe([
-            'Rainfall_Day',
-            'Rainfall_Min',
-            'Rainfall_hou',
+            'Rain_Day',
+            'Rain_Minute',
+            'Rain_Hour',
         ])
-        ->and($logger->sensors()->where('name', 'Rainfall_hou')->value('quantity'))->toBe(1)
+        ->and($logger->sensors()->where('name', 'Rain_Hour')->value('quantity'))->toBe(1)
         ->and(ActivityLog::query()->where('logger_id', $logger->id)->where('action', 'mode_profile_apply')->where('status', 'success')->exists())->toBeTrue();
 });
 

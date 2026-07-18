@@ -64,7 +64,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                                 ],
                                 'parameters' => [
                                     [
-                                        'name' => 'Rainfall_Day',
+                                        'name' => 'Rain_Day',
                                         'unit' => 'mm',
                                         'scale_factor' => 0.1,
                                         'register_address' => 0,
@@ -73,7 +73,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                                         'fast_poll' => false,
                                     ],
                                     [
-                                        'name' => 'Rainfall_Minute',
+                                        'name' => 'Rain_Minute',
                                         'unit' => 'mm',
                                         'scale_factor' => 0.1,
                                         'register_address' => 1,
@@ -82,7 +82,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                                         'fast_poll' => false,
                                     ],
                                     [
-                                        'name' => 'Rainfall_hour',
+                                        'name' => 'Rain_Hour',
                                         'unit' => 'mm',
                                         'scale_factor' => 0.1,
                                         'register_address' => 2,
@@ -107,7 +107,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     ],
                 ],
                 'automatic_calibration' => [
-                    'source' => 'Rainfall_Day',
+                    'source' => 'Rain_Day',
                     'sensor' => 'TB-400-04',
                 ],
                 'calibration' => null,
