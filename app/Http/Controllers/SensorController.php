@@ -11,6 +11,8 @@ use Illuminate\Http\Request;
 
 class SensorController extends Controller
 {
+    private const SENSOR_PARAMETER_NAME_MAX_LENGTH = 12;
+
     /**
      * Resolve the logger, enforcing ownership for non-super-admins.
      */
@@ -500,7 +502,7 @@ class SensorController extends Controller
             'serial_format' => 'required|string|in:8N1,8E1,8O1',
             'params' => 'required|array|min:1|max:16', // MAX_SENSORS_PER_SLAVE
             'params.*.id' => 'nullable|integer',
-            'params.*.name' => 'required|string|max:255',
+            'params.*.name' => 'required|string|max:' . self::SENSOR_PARAMETER_NAME_MAX_LENGTH,
             'params.*.unit' => 'nullable|string|max:50',
             'params.*.scale_factor' => 'nullable|numeric',
             'params.*.register_address' => 'nullable|integer|min:0|max:65535',

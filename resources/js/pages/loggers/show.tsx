@@ -2163,7 +2163,7 @@ function SensorCrudPanel({
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="grid gap-1.5">
                                                 <Label className="text-xs">Nama Parameter</Label>
-                                                <Input value={p.name} onChange={e => updateRs485Param(i, { name: e.target.value })} placeholder="e.g. Rainfall" />
+                                                <Input maxLength={12} value={p.name} onChange={e => updateRs485Param(i, { name: e.target.value })} placeholder="e.g. Rainfall" />
                                                 {errors[`params.${i}.name`] && <p className="text-xs text-red-500">{errors[`params.${i}.name`]}</p>}
                                             </div>
                                             <div className="grid gap-1.5">
