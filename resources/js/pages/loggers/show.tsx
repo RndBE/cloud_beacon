@@ -374,6 +374,7 @@ function serialProtocolKeyMatches(module: string, key: string): boolean {
     }
 
     if (module === 'SIM' && key === 'SIMSET') return true;
+    if (module === 'REBOOT' && key === 'STATUS') return true;
 
     if (module === 'SENSORS') {
         return ['DIGITAL ', 'ANALOG ', 'RS485 ', 'RS232 '].some((prefix) =>
@@ -2045,9 +2046,13 @@ type RebootPhase = 'confirm' | 'sending' | 'waiting' | 'success' | 'error';
 function RebootDialog({
     deviceIdentifier,
     disabled,
+    transportMode = 'mqtt',
+    commandTransport,
 }: {
     deviceIdentifier: string;
     disabled?: boolean;
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
 }) {
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
@@ -2084,10 +2089,12 @@ function RebootDialog({
         }, 2000);
 
         try {
-            const res = await apiFetch('/api/mqtt/reboot', {
-                id_logger: deviceIdentifier,
-            });
-            const data = await res.json();
+            const data =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport('REBOOT', { REBOOT: 1 })
+                    : await apiFetch('/api/mqtt/reboot', {
+                          id_logger: deviceIdentifier,
+                      }).then((res) => res.json());
 
             if (timerRef.current) clearInterval(timerRef.current);
 
@@ -2316,11 +2323,15 @@ function AnalogCalibration({
     mode,
     deviceIdentifier,
     disabled,
+    transportMode = 'mqtt',
+    commandTransport,
 }: {
     channel: number;
     mode: number;
     deviceIdentifier: string | null;
     disabled: boolean;
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
 }) {
     const [actualVal, setActualVal] = useState('');
     const [offsetVal, setOffsetVal] = useState('');
@@ -2338,7 +2349,7 @@ function AnalogCalibration({
 
     async function sendCal(kind: 'gain' | 'offset') {
         if (!deviceIdentifier) return;
-        const payload =
+        const payload: ProtocolCommandPayload =
             kind === 'gain'
                 ? {
                       CAL: {
@@ -2358,12 +2369,14 @@ function AnalogCalibration({
         setBusy(kind);
         setStatus(null);
         try {
-            const res = await apiFetch('/api/mqtt/protocol/command', {
-                id_logger: deviceIdentifier,
-                module: 'CAL',
-                payload,
-            });
-            const data = await res.json();
+            const data =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport('CAL', payload)
+                    : await apiFetch('/api/mqtt/protocol/command', {
+                          id_logger: deviceIdentifier,
+                          module: 'CAL',
+                          payload,
+                      }).then((res) => res.json());
             setStatus(
                 data.success
                     ? {
@@ -2506,6 +2519,8 @@ function SensorCrudPanel({
     analogChannelMax,
     digitalChannelMax,
     readOnly = false,
+    transportMode = 'mqtt',
+    commandTransport,
 }: {
     loggerId: string;
     sensors: SensorItem[];
@@ -2513,6 +2528,8 @@ function SensorCrudPanel({
     analogChannelMax: number;
     digitalChannelMax: number;
     readOnly?: boolean;
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
 }) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -2812,12 +2829,31 @@ function SensorCrudPanel({
         setCtrlBusy(state);
         setCtrlResult(null);
         try {
-            const res = await apiFetch('/api/mqtt/sensors/ctrl', {
-                id_logger: deviceIdentifier,
-                sensor_id: editingSensor.id,
-                state,
-            });
-            const data = await res.json();
+            const data =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport('SENSORS', {
+                          SENSORS: {
+                              cmd: 'CTRL',
+                              type: 'DIGITAL',
+                              ch: editingSensor.channel ?? 1,
+                              state,
+                          },
+                      }).then(async (result) => {
+                          if (result.success) {
+                              await apiFetch('/api/serial/sensors/ctrl/import', {
+                                  id_logger: deviceIdentifier,
+                                  sensor_id: editingSensor.id,
+                                  state,
+                                  response: result.data ?? null,
+                              });
+                          }
+                          return result;
+                      })
+                    : await apiFetch('/api/mqtt/sensors/ctrl', {
+                          id_logger: deviceIdentifier,
+                          sensor_id: editingSensor.id,
+                          state,
+                      }).then((res) => res.json());
             setCtrlResult(data?.message ?? (data?.success ? 'OK' : 'Gagal'));
         } catch (e) {
             setCtrlResult(e instanceof Error ? e.message : 'Request gagal.');
@@ -3061,6 +3097,10 @@ function SensorCrudPanel({
                                                 disabled={
                                                     readOnly ||
                                                     !deviceIdentifier
+                                                }
+                                                transportMode={transportMode}
+                                                commandTransport={
+                                                    commandTransport
                                                 }
                                             />
                                         </CollapsibleContent>
@@ -5878,9 +5918,13 @@ type SetModePhase = 'idle' | 'sending' | 'success' | 'error';
 function SetModeCard({
     logger,
     disabled = false,
+    transportMode = 'mqtt',
+    commandTransport,
 }: {
     logger: LoggerDetail;
     disabled?: boolean;
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
 }) {
     const allowedModes = configuratorModes(logger.availableModes);
     const initialMode = allowedModes.some(
@@ -5910,11 +5954,28 @@ function SetModeCard({
         setPhase('sending');
         setMessage('');
         try {
-            const res = await apiFetch('/api/mqtt/system/set-mode', {
-                id_logger: logger.deviceIdentifier!,
-                mode: selectedMode,
-            });
-            const data = await res.json();
+            const data =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport('SYSTEM', {
+                          SYSTEM: { cmd: 'SET_MODE', mode: selectedMode },
+                      }).then(async (result) => {
+                          if (result.success) {
+                              const persist = await apiFetch(
+                                  '/api/serial/system/set-mode/import',
+                                  {
+                                      id_logger: logger.deviceIdentifier!,
+                                      mode: selectedMode,
+                                      response: result.data ?? null,
+                                  },
+                              );
+                              return persist.json();
+                          }
+                          return result;
+                      })
+                    : await apiFetch('/api/mqtt/system/set-mode', {
+                          id_logger: logger.deviceIdentifier!,
+                          mode: selectedMode,
+                      }).then((res) => res.json());
             if (data.success) {
                 setPhase('success');
                 setMessage(
@@ -5944,6 +6005,8 @@ function SetModeCard({
                     availableModes: allowedModes,
                 }}
                 disabled={disabled}
+                transportMode={transportMode}
+                commandTransport={commandTransport}
                 onComplete={() => router.reload()}
             />
         );
@@ -6125,9 +6188,13 @@ type CalibPhase = 'idle' | 'sending' | 'success' | 'error';
 function CalibrationCard({
     logger,
     disabled = false,
+    transportMode = 'mqtt',
+    commandTransport,
 }: {
     logger: LoggerDetail;
     disabled?: boolean;
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
 }) {
     const activeMode = logger.availableModes.find(
         (m) => m.slug === logger.loggerMode,
@@ -6149,7 +6216,7 @@ function CalibrationCard({
     const [message, setMessage] = useState('');
     const [responseData, setResponseData] = useState<Record<
         string,
-        number
+        number | string
     > | null>(null);
     const [formValues, setFormValues] = useState<Record<string, string>>(() => {
         const initial: Record<string, string> = {};
@@ -6247,19 +6314,34 @@ function CalibrationCard({
         if (disabled) return;
         if (
             !logger.deviceIdentifier ||
-            logger.status === 'offline' ||
+            (transportMode !== 'serial' && logger.status === 'offline') ||
             calibLoading
         )
             return;
         setCalibLoading(true);
         try {
-            const r = await apiFetch('/api/mqtt/calibration/get', {
-                id_logger: logger.deviceIdentifier,
-            });
             const data: {
                 success: boolean;
                 data?: Record<string, number | string>;
-            } = await r.json();
+            } =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport(logger.loggerMode!, {
+                            [logger.loggerMode!]: { cmd: 'GET' },
+                        }).then((result) => {
+                            const raw = asRecord(result.data);
+                            const moduleData = asRecord(
+                                raw?.[logger.loggerMode!],
+                            );
+                            const clean = { ...(moduleData ?? raw ?? {}) };
+                            delete clean.status;
+                            return {
+                                success: result.success,
+                                data: clean as Record<string, number | string>,
+                            };
+                        })
+                        : await apiFetch('/api/mqtt/calibration/get', {
+                            id_logger: logger.deviceIdentifier,
+                        }).then((r) => r.json());
             if (data.success && data.data) {
                 const dd = data.data;
                 setDeviceCalib(dd);
@@ -6305,8 +6387,38 @@ function CalibrationCard({
                         : formValues[f.key];
             }
 
-            const res = await apiFetch('/api/mqtt/calibration/set', body);
-            const data = await res.json();
+            const data =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport(logger.loggerMode!, {
+                          [logger.loggerMode!]: {
+                              cmd: 'SET',
+                              ...Object.fromEntries(
+                                  Object.entries(body).filter(
+                                      ([key]) => key !== 'id_logger',
+                                  ),
+                              ),
+                          },
+                      }).then(async (result) => {
+                          if (result.success) {
+                              const persist = await apiFetch(
+                                  '/api/serial/calibration/import',
+                                  {
+                                      id_logger: logger.deviceIdentifier!,
+                                      params: Object.fromEntries(
+                                          Object.entries(body).filter(
+                                              ([key]) => key !== 'id_logger',
+                                          ),
+                                      ),
+                                      response: result.data ?? null,
+                                  },
+                              );
+                              return persist.json();
+                          }
+                          return result;
+                      })
+                    : await apiFetch('/api/mqtt/calibration/set', body).then(
+                          (res) => res.json(),
+                      );
             if (data.success) {
                 setPhase('success');
                 setMessage(data.message || 'Kalibrasi berhasil');
@@ -6354,7 +6466,8 @@ function CalibrationCard({
                         disabled={
                             disabled ||
                             !logger.deviceIdentifier ||
-                            logger.status === 'offline' ||
+                            (transportMode !== 'serial' &&
+                                logger.status === 'offline') ||
                             calibLoading ||
                             phase === 'sending'
                         }
@@ -6789,10 +6902,14 @@ function QuickSetupWizard({
     logger,
     open,
     onClose,
+    transportMode = 'mqtt',
+    commandTransport,
 }: {
     logger: LoggerDetail;
     open: boolean;
     onClose: () => void;
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
 }) {
     const allowedModes = configuratorModes(logger.availableModes);
 
@@ -6845,6 +6962,8 @@ function QuickSetupWizard({
                         }}
                         disabled={false}
                         variant="inline"
+                        transportMode={transportMode}
+                        commandTransport={commandTransport}
                         onComplete={() => {
                             sessionStorage.removeItem(
                                 `skip_setup_${logger.id}`,
@@ -7466,7 +7585,11 @@ export default function LoggerShow({
                         serialProtocolKeyMatches(upperModule, key),
                     );
                 },
-                upperModule === 'OTA' ? 330_000 : 12_000,
+                upperModule === 'OTA'
+                    ? 330_000
+                    : upperModule === 'REBOOT'
+                      ? 120_000
+                      : 12_000,
             );
 
             return serialProtocolResultFromMessage(upperModule, response);
@@ -7579,6 +7702,10 @@ export default function LoggerShow({
                     <QuickSetupWizard
                         logger={logger}
                         open={wizardOpen}
+                        transportMode={dongleEnabled ? 'serial' : 'mqtt'}
+                        commandTransport={
+                            dongleEnabled ? serialProtocolCommand : undefined
+                        }
                         onClose={() => setWizardOpen(false)}
                     />
                 )}
@@ -7831,7 +7958,18 @@ export default function LoggerShow({
                                         deviceIdentifier={
                                             logger.deviceIdentifier
                                         }
-                                        disabled={logger.status === 'offline'}
+                                        disabled={
+                                            !dongleEnabled &&
+                                            logger.status === 'offline'
+                                        }
+                                        transportMode={
+                                            dongleEnabled ? 'serial' : 'mqtt'
+                                        }
+                                        commandTransport={
+                                            dongleEnabled
+                                                ? serialProtocolCommand
+                                                : undefined
+                                        }
                                     />
                                 ) : (
                                     <Button
@@ -8098,6 +8236,12 @@ export default function LoggerShow({
                             analogChannelMax={maxAnalogChannel(logger)}
                             digitalChannelMax={maxDigitalChannel(logger)}
                             readOnly={readOnly}
+                            transportMode={dongleEnabled ? 'serial' : 'mqtt'}
+                            commandTransport={
+                                dongleEnabled
+                                    ? serialProtocolCommand
+                                    : undefined
+                            }
                         />
 
                         {/* Data Mapping — sensor order for telemetry/LCD/SD (MAP_DATA), minimal. */}
@@ -8428,11 +8572,30 @@ export default function LoggerShow({
                     {/* ==================== MODE (operating profile + mode-specific calibration + modules) ==================== */}
                     <TabsContent value="mode" className="mt-6 space-y-4">
                         <div className="grid gap-4 lg:grid-cols-2">
-                            <SetModeCard logger={logger} disabled={readOnly} />
+                            <SetModeCard
+                                logger={logger}
+                                disabled={readOnly}
+                                transportMode={
+                                    dongleEnabled ? 'serial' : 'mqtt'
+                                }
+                                commandTransport={
+                                    dongleEnabled
+                                        ? serialProtocolCommand
+                                        : undefined
+                                }
+                            />
                             <CalibrationCard
                                 key={logger.loggerMode || 'no-mode'}
                                 logger={logger}
                                 disabled={readOnly}
+                                transportMode={
+                                    dongleEnabled ? 'serial' : 'mqtt'
+                                }
+                                commandTransport={
+                                    dongleEnabled
+                                        ? serialProtocolCommand
+                                        : undefined
+                                }
                             />
                         </div>
                         <Card>

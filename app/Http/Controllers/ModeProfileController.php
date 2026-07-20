@@ -54,6 +54,17 @@ class ModeProfileController extends Controller
         return response()->json($result, $statusCode);
     }
 
+    public function importSerialApply(Request $request): JsonResponse
+    {
+        $validated = $this->validateProfileRequest($request, true);
+        $logger = $this->resolveManageableLogger($request, $validated['id_logger']);
+        $result = $this->applyService->persistSerialApply($logger, $validated);
+        $statusCode = (int) ($result['status_code'] ?? 200);
+        unset($result['status_code']);
+
+        return response()->json($result, $statusCode);
+    }
+
     private function validateProfileRequest(Request $request, bool $apply = false): array
     {
         $rules = [

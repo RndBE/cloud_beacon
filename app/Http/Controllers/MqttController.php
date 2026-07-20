@@ -436,6 +436,202 @@ class MqttController extends Controller
         ));
     }
 
+    /**
+     * Persist a successful SENSORS CTRL command that was sent locally over Web Serial.
+     * This endpoint does not talk to the device; it only mirrors the acknowledged state in the DB.
+     */
+    public function importSensorCtrlFromSerial(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'sensor_id' => 'required|integer',
+            'state' => 'required|integer|in:0,1',
+            'response' => 'nullable|array',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $state = (int) $request->input('state');
+        $logger = $this->resolveVisibleLogger($idLogger);
+        abort_unless($logger, 404, 'Logger not found');
+
+        $sensor = Sensor::query()
+            ->where('logger_id', $logger->id)
+            ->findOrFail($request->input('sensor_id'));
+
+        if ($sensor->connection_type !== 'digital' || (int) $sensor->analog_mode !== 3) {
+            return response()->json([
+                'success' => false,
+                'message' => 'CTRL hanya untuk sensor digital output (mode 3).',
+            ], 422);
+        }
+
+        $sensor->update(['value' => $state]);
+
+        \App\Models\ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'sensor_ctrl',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => "Output {$sensor->name} (ch {$sensor->channel}) di-set ke " . ($state ? 'ON' : 'OFF') . ' via Serial',
+            'created_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Output berhasil diubah via Serial',
+        ]);
+    }
+
+    /**
+     * Persist a successful SYSTEM SET_MODE response from Web Serial.
+     */
+    public function importSetModeFromSerial(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'mode' => 'required|string|exists:logger_modes,slug',
+            'response' => 'nullable|array',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $mode = $request->input('mode');
+        $logger = $this->resolveVisibleLogger($idLogger);
+        abort_unless($logger, 404, 'Logger not found');
+
+        $response = $request->input('response', []);
+        $system = is_array($response) && isset($response['SYSTEM']) && is_array($response['SYSTEM'])
+            ? $response['SYSTEM']
+            : (is_array($response) ? $response : []);
+        $status = strtoupper((string) ($system['status'] ?? 'OK'));
+
+        if (in_array($status, ['ERR', 'ERROR'], true)) {
+            $message = (string) ($system['msg'] ?? $system['message'] ?? 'Gagal mengubah mode');
+            \App\Models\ActivityLog::create([
+                'logger_id' => $logger->id,
+                'action' => 'set_mode',
+                'status' => 'failed',
+                'level' => 'warning',
+                'message' => 'Gagal set mode ke ' . $mode . ' via Serial: ' . $message,
+                'created_at' => now(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => $message,
+            ]);
+        }
+
+        $oldMode = $logger->logger_mode;
+        $activeMode = (string) ($system['mode'] ?? $mode);
+        $modeConfig = \App\Models\LoggerMode::where('slug', $activeMode)->first()
+            ?: \App\Models\LoggerMode::where('slug', $mode)->first();
+        $modeLabel = $modeConfig?->label ?? $activeMode;
+
+        $logger->update([
+            'logger_mode' => $activeMode,
+            'status' => 'online',
+            'last_connected_at' => now(),
+            'last_seen_at' => now(),
+            'last_sync_status' => 'success',
+            'last_sync_error' => null,
+            'last_synced_at' => now(),
+        ]);
+
+        \App\Models\ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'set_mode',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => 'Mode diubah dari ' . ($oldMode ?? '—') . ' ke ' . $activeMode . ' (' . $modeLabel . ') via Serial',
+            'created_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'mode' => $activeMode,
+            'message' => 'Mode berhasil diubah ke ' . $activeMode,
+        ]);
+    }
+
+    /**
+     * Persist a successful mode calibration/settings response from Web Serial.
+     */
+    public function importCalibrationFromSerial(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'params' => 'required|array',
+            'response' => 'nullable|array',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $logger = $this->resolveVisibleLogger($idLogger);
+        abort_unless($logger, 404, 'Logger not found');
+
+        if (!$logger->logger_mode) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Logger belum memiliki mode. Set mode terlebih dahulu.',
+            ], 400);
+        }
+
+        $modeConfig = \App\Models\LoggerMode::where('slug', $logger->logger_mode)->first();
+        if (!$modeConfig || !$modeConfig->has_calibration) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Mode ' . $logger->logger_mode . ' tidak memiliki fitur kalibrasi.',
+            ], 400);
+        }
+
+        $params = MqttService::normalizeCalibrationData($logger->logger_mode, $request->input('params', []));
+        $response = $request->input('response', []);
+        $modeResponse = is_array($response) && isset($response[$logger->logger_mode]) && is_array($response[$logger->logger_mode])
+            ? $response[$logger->logger_mode]
+            : (is_array($response) ? $response : []);
+        $status = strtoupper((string) ($modeResponse['status'] ?? 'OK'));
+
+        if (in_array($status, ['ERR', 'ERROR'], true)) {
+            $message = (string) ($modeResponse['msg'] ?? $modeResponse['message'] ?? 'Kalibrasi gagal');
+            \App\Models\ActivityLog::create([
+                'logger_id' => $logger->id,
+                'action' => 'calibration_set',
+                'status' => 'failed',
+                'level' => 'warning',
+                'message' => 'Kalibrasi ' . $logger->logger_mode . ' via Serial gagal: ' . $message,
+                'created_at' => now(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => $message,
+            ]);
+        }
+
+        unset($modeResponse['status']);
+        $responseData = MqttService::normalizeCalibrationData($logger->logger_mode, $modeResponse);
+        $calibrationData = array_merge($params, $responseData);
+
+        $logger->update([
+            'calibration_data' => $calibrationData,
+            'calibrated_at' => now(),
+        ]);
+
+        \App\Models\ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'calibration_set',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => 'Kalibrasi ' . $logger->logger_mode . ' berhasil via Serial — ' . json_encode($calibrationData),
+            'created_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $responseData,
+            'message' => 'Kalibrasi berhasil',
+        ]);
+    }
+
     private function buildSensorSyncPreview(Logger $logger, array $config, ?array $getAllResult = null): array
     {
         $loggerId = $logger->id;

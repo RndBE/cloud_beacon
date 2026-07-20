@@ -174,6 +174,104 @@ class ModeProfileApplyService
         ];
     }
 
+    /**
+     * Persist a profile that was already sent to the device from the browser over Web Serial.
+     * This mirrors apply()'s DB side effects without publishing MQTT commands.
+     */
+    public function persistSerialApply(Logger $logger, array $input): array
+    {
+        $preview = $this->previewService->preview($logger, $input);
+        $unconfirmed = $this->unconfirmedWarningTypes(
+            $preview['warnings'],
+            $input['confirmed_warnings'] ?? [],
+        );
+
+        if ($unconfirmed !== []) {
+            return [
+                'success' => false,
+                'status_code' => 409,
+                'code' => 'confirmation_required',
+                'message' => 'Konfirmasi diperlukan sebelum sensor lama diganti.',
+                'warnings' => $preview['warnings'],
+                'unconfirmed_warnings' => $unconfirmed,
+            ];
+        }
+
+        $profile = $this->catalog->find($preview['mode']);
+        $completed = [];
+
+        $logger->update([
+            'logger_mode' => $profile['mode'],
+            'status' => 'online',
+            'last_connected_at' => now(),
+            'last_seen_at' => now(),
+            'last_sync_status' => 'success',
+            'last_sync_error' => null,
+            'last_synced_at' => now(),
+        ]);
+        $completed[] = 'set_mode';
+
+        foreach ($preview['changes']['sensors'] as $sensorChange) {
+            $loggerParameters = $this->normalizeParametersForLogger(
+                $sensorChange['parameters'],
+            );
+
+            try {
+                $this->syncRs485Slave(
+                    $logger,
+                    $sensorChange['device'],
+                    $loggerParameters,
+                );
+            } catch (Throwable $exception) {
+                report($exception);
+
+                return $this->failure(
+                    $logger,
+                    'sync_database',
+                    $completed,
+                    'Device berhasil diset via Serial, tetapi database lokal gagal diperbarui.',
+                );
+            }
+
+            $completed[] = 'sync_database';
+        }
+
+        $automaticCalibration = $profile['automatic_calibration'] ?? null;
+        if (is_array($automaticCalibration)) {
+            $logger->update([
+                'calibration_data' => $automaticCalibration,
+                'calibrated_at' => now(),
+            ]);
+            $completed[] = 'set_calibration';
+        }
+
+        if (($profile['default_mapping'] ?? []) !== []) {
+            $completed[] = 'set_mapping';
+        }
+
+        $nextStep = $this->nextStep($profile);
+        $message = $nextStep
+            ? "{$profile['label']} berhasil diset via Serial. Lanjutkan kalibrasi."
+            : "{$profile['label']} berhasil diterapkan via Serial.";
+
+        ActivityLog::create([
+            'logger_id' => $logger->id,
+            'action' => 'mode_profile_apply',
+            'status' => 'success',
+            'level' => 'info',
+            'message' => $message,
+            'created_at' => now(),
+        ]);
+
+        return [
+            'success' => true,
+            'message' => $message,
+            'mode' => $profile['mode'],
+            'completed_steps' => $completed,
+            'next_step' => $nextStep,
+        ];
+    }
+
     private function normalizeParametersForLogger(array $parameters): array
     {
         return array_map(static function (array $parameter): array {

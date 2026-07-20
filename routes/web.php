@@ -135,6 +135,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.serial.info.import');
     Route::post('api/serial/sensors/preview', [MqttController::class, 'previewSensorsFromSerial'])
         ->name('api.serial.sensors.preview');
+    Route::post('api/serial/sensors/ctrl/import', [MqttController::class, 'importSensorCtrlFromSerial'])
+        ->name('api.serial.sensors.ctrl.import');
+    Route::post('api/serial/system/set-mode/import', [MqttController::class, 'importSetModeFromSerial'])
+        ->name('api.serial.system.set-mode.import');
+    Route::post('api/serial/calibration/import', [MqttController::class, 'importCalibrationFromSerial'])
+        ->name('api.serial.calibration.import');
+    Route::post('api/serial/mode-profile/import', [ModeProfileController::class, 'importSerialApply'])
+        ->name('api.serial.mode-profile.import');
     Route::post('api/mqtt/reboot', [MqttController::class, 'reboot'])
         ->name('api.mqtt.reboot');
     // INTERVAL routes removed — firmware locks read/send interval to 1 min (spec §2).

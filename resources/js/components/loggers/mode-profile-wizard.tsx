@@ -46,6 +46,10 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import type {
+    ProtocolCommandPayload,
+    ProtocolCommandTransport,
+} from '@/pages/loggers/protocol';
 
 interface ModeOption {
     slug: string;
@@ -122,6 +126,7 @@ interface ModeProfile {
         source: string;
         fields: CalibrationField[];
     } | null;
+    automatic_calibration?: Record<string, string | number> | null;
 }
 
 interface PreviewWarning {
@@ -140,6 +145,7 @@ interface PreviewSensor {
     role_label: string;
     slave_id: number;
     template: string;
+    connection_type: 'rs485';
     device: TemplateDevice & { modbus_slave_id: number };
     parameters: TemplateParameter[];
 }
@@ -186,6 +192,8 @@ interface ModeProfileWizardProps {
     };
     disabled?: boolean;
     variant?: 'card' | 'inline';
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
     onComplete: () => void;
 }
 
@@ -232,10 +240,49 @@ function responseMessage(data: ApiResponse, fallback: string): string {
     return firstError || fallback;
 }
 
+function sensorSetPayload(sensor: PreviewSensor): ProtocolCommandPayload {
+    return {
+        SENSORS: {
+            cmd: 'SET',
+            type: 'RS485',
+            d: [
+                {
+                    cfg: [
+                        sensor.device.modbus_slave_id,
+                        sensor.device.device_name,
+                        sensor.device.function_code,
+                        sensor.device.register_address,
+                        sensor.device.baudrate,
+                        sensor.device.serial_format,
+                    ],
+                    s: sensor.parameters.map((parameter) => [
+                        parameter.name,
+                        parameter.scale_factor,
+                        parameter.unit,
+                        parameter.register_address,
+                        parameter.reg_count,
+                        parameter.fast_poll ? 1 : 0,
+                    ]),
+                },
+            ],
+        },
+    };
+}
+
+function mappingSetPayload(mapping: string[]): ProtocolCommandPayload {
+    const body: Record<string, string | number> = { cmd: 'SET' };
+    mapping.forEach((name, index) => {
+        body[`s${index + 1}`] = name;
+    });
+    return { MAP_DATA: body };
+}
+
 export function ModeProfileWizard({
     logger,
     disabled = false,
     variant = 'card',
+    transportMode = 'mqtt',
+    commandTransport,
     onComplete,
 }: ModeProfileWizardProps) {
     const { t } = useTranslation();
@@ -468,17 +515,86 @@ export function ModeProfileWizard({
         setPhase('applying');
         setMessage('');
         try {
-            const data = await postJson<ApiResponse>(
-                '/api/mqtt/mode-profile/apply',
-                {
-                    id_logger: logger.deviceIdentifier,
-                    mode: selectedMode,
-                    selections: selections(),
-                    confirmed_warnings: preview.warnings.map(
-                        (warning) => warning.type,
-                    ),
-                },
+            const confirmedWarnings = preview.warnings.map(
+                (warning) => warning.type,
             );
+            const data: ApiResponse =
+                transportMode === 'serial' && commandTransport
+                    ? await (async () => {
+                          const modeResult = await commandTransport('SYSTEM', {
+                              SYSTEM: {
+                                  cmd: 'SET_MODE',
+                                  mode: selectedMode,
+                              },
+                          });
+                          if (!modeResult.success)
+                              return {
+                                  success: false,
+                                  message: modeResult.message,
+                              };
+
+                          for (const sensor of preview.changes.sensors) {
+                              const sensorResult = await commandTransport(
+                                  'SENSORS',
+                                  sensorSetPayload(sensor),
+                              );
+                              if (!sensorResult.success)
+                                  return {
+                                      success: false,
+                                      message: sensorResult.message,
+                                  };
+                          }
+
+                          const automaticCalibration =
+                              profile?.automatic_calibration;
+                          if (automaticCalibration) {
+                              const calibrationResult = await commandTransport(
+                                  selectedMode,
+                                  {
+                                      [selectedMode]: {
+                                          cmd: 'SET',
+                                          ...automaticCalibration,
+                                      },
+                                  },
+                              );
+                              if (!calibrationResult.success)
+                                  return {
+                                      success: false,
+                                      message: calibrationResult.message,
+                                  };
+                          }
+
+                          if (preview.changes.mapping.length > 0) {
+                              const mappingResult = await commandTransport(
+                                  'MAP_DATA',
+                                  mappingSetPayload(preview.changes.mapping),
+                              );
+                              if (!mappingResult.success)
+                                  return {
+                                      success: false,
+                                      message: mappingResult.message,
+                                  };
+                          }
+
+                          return postJson<ApiResponse>(
+                              '/api/serial/mode-profile/import',
+                              {
+                                  id_logger: logger.deviceIdentifier,
+                                  mode: selectedMode,
+                                  selections: selections(),
+                                  confirmed_warnings: confirmedWarnings,
+                              },
+                          );
+                      })()
+                    : await postJson<ApiResponse>(
+                          '/api/mqtt/mode-profile/apply',
+                          {
+                              id_logger: logger.deviceIdentifier,
+                              mode: selectedMode,
+                              selections: selections(),
+                              confirmed_warnings: confirmedWarnings,
+                          },
+                      );
 
             if (!data.success) {
                 setPhase('error');
@@ -520,13 +636,30 @@ export function ModeProfileWizard({
         setPhase('direct');
         setMessage('');
         try {
-            const data = await postJson<ApiResponse>(
-                '/api/mqtt/system/set-mode',
-                {
-                    id_logger: logger.deviceIdentifier,
-                    mode: selectedMode,
-                },
-            );
+            const data =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport('SYSTEM', {
+                          SYSTEM: { cmd: 'SET_MODE', mode: selectedMode },
+                      }).then(async (result) => {
+                          if (result.success) {
+                              return postJson<ApiResponse>(
+                                  '/api/serial/system/set-mode/import',
+                                  {
+                                      id_logger: logger.deviceIdentifier,
+                                      mode: selectedMode,
+                                      response: result.data ?? null,
+                                  },
+                              );
+                          }
+                          return result;
+                      })
+                    : await postJson<ApiResponse>(
+                          '/api/mqtt/system/set-mode',
+                          {
+                              id_logger: logger.deviceIdentifier,
+                              mode: selectedMode,
+                          },
+                      );
 
             if (!data.success) {
                 setPhase('error');
@@ -562,19 +695,42 @@ export function ModeProfileWizard({
         setCalibrationSending(true);
         setCalibrationError('');
         try {
-            const data = await postJson<ApiResponse>(
-                '/api/mqtt/calibration/set',
-                {
-                    id_logger: logger.deviceIdentifier,
-                    source: nextStep.source,
-                    ...Object.fromEntries(
-                        nextStep.fields.map((field) => [
-                            field.key,
-                            Number(calibrationValues[field.key]),
-                        ]),
-                    ),
-                },
-            );
+            const calibrationParams = {
+                source: nextStep.source,
+                ...Object.fromEntries(
+                    nextStep.fields.map((field) => [
+                        field.key,
+                        Number(calibrationValues[field.key]),
+                    ]),
+                ),
+            };
+            const data =
+                transportMode === 'serial' && commandTransport
+                    ? await commandTransport(nextStep.mode, {
+                          [nextStep.mode]: {
+                              cmd: 'SET',
+                              ...calibrationParams,
+                          },
+                      }).then(async (result) => {
+                          if (result.success) {
+                              return postJson<ApiResponse>(
+                                  '/api/serial/calibration/import',
+                                  {
+                                      id_logger: logger.deviceIdentifier,
+                                      params: calibrationParams,
+                                      response: result.data ?? null,
+                                  },
+                              );
+                          }
+                          return result;
+                      })
+                    : await postJson<ApiResponse>(
+                          '/api/mqtt/calibration/set',
+                          {
+                              id_logger: logger.deviceIdentifier,
+                              ...calibrationParams,
+                          },
+                      );
 
             if (!data.success) {
                 setCalibrationError(responseMessage(data, 'Kalibrasi gagal.'));

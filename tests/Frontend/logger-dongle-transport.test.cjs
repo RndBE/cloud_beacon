@@ -14,6 +14,13 @@ const protocolSource = readFileSync(
     path.resolve(__dirname, '../../resources/js/pages/loggers/protocol.tsx'),
     'utf8',
 );
+const modeProfileWizardSource = readFileSync(
+    path.resolve(
+        __dirname,
+        '../../resources/js/components/loggers/mode-profile-wizard.tsx',
+    ),
+    'utf8',
+);
 
 test('logger detail exposes a Dongle toggle that switches protocol transport to serial', () => {
     assert.match(showSource, /useLoggerSerial/);
@@ -47,6 +54,12 @@ test('logger detail exposes a Dongle toggle that switches protocol transport to 
     assert.match(showSource, /MAP_DATA: \{ cmd: 'GET' \}/);
     assert.match(showSource, /setCachedSensorNames/);
     assert.match(showSource, /setCachedMapSlots/);
+    assert.match(showSource, /commandTransport\('REBOOT', \{ REBOOT: 1 \}\)/);
+    assert.match(showSource, /SYSTEM: \{ cmd: 'SET_MODE', mode: selectedMode \}/);
+    assert.match(showSource, /api\/serial\/system\/set-mode\/import/);
+    assert.match(showSource, /api\/serial\/calibration\/import/);
+    assert.match(showSource, /api\/serial\/sensors\/ctrl\/import/);
+    assert.match(showSource, /commandTransport\('CAL', payload\)/);
 });
 
 test('protocol panel routes generic commands through the selected transport', () => {
@@ -56,4 +69,15 @@ test('protocol panel routes generic commands through the selected transport', ()
     assert.match(protocolSource, /runProtocolCommand/);
     assert.match(protocolSource, /commandTransport\(module, payload\)/);
     assert.match(protocolSource, /postJson\('\/api\/mqtt\/protocol\/command'/);
+});
+
+test('mode profile wizard applies guided setup through serial transport when enabled', () => {
+    assert.match(modeProfileWizardSource, /transportMode = 'mqtt'/);
+    assert.match(modeProfileWizardSource, /commandTransport/);
+    assert.match(modeProfileWizardSource, /commandTransport\('SYSTEM'/);
+    assert.match(modeProfileWizardSource, /commandTransport\(\s*'SENSORS'/);
+    assert.match(modeProfileWizardSource, /commandTransport\(\s*'MAP_DATA'/);
+    assert.match(modeProfileWizardSource, /api\/serial\/mode-profile\/import/);
+    assert.match(modeProfileWizardSource, /api\/serial\/system\/set-mode\/import/);
+    assert.match(modeProfileWizardSource, /api\/serial\/calibration\/import/);
 });
