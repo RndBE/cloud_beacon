@@ -18,10 +18,22 @@ const cacheSource = readFileSync(
 test('Data Mapping panel auto-loads MAP_DATA when the shared cache is empty', () => {
     assert.match(protocolSource, /fetchMapSlots,/);
     assert.match(protocolSource, /mapReadState/);
+    assert.match(protocolSource, /const \[mapBusy, setMapBusy\]/);
     assert.match(protocolSource, /getCachedMapSlots\(deviceId\) !== null/);
     assert.match(protocolSource, /readMapSlots\(deviceId\)/);
     assert.match(protocolSource, /Memuat mapping dari perangkat/);
     assert.match(protocolSource, /Mapping tidak dapat dimuat dari perangkat/);
+});
+
+test('Data Mapping buttons use operation-specific loading states', () => {
+    assert.doesNotMatch(protocolSource, /setLoading\('MAP_DATA'\)/);
+    assert.match(protocolSource, /setMapBusy\('read'\)/);
+    assert.match(protocolSource, /setMapBusy\('write'\)/);
+    assert.match(protocolSource, /setMapBusy\('auto'\)/);
+    assert.match(protocolSource, /setMapBusy\('clear'\)/);
+    assert.match(protocolSource, /mapBusy === 'read'/);
+    assert.match(protocolSource, /mapBusy === 'write'/);
+    assert.match(protocolSource, /disabled=\{!canSend \|\| !mapDirty \|\| mapBusy !== null\}/);
 });
 
 test('device sync cache deduplicates concurrent MAP_DATA reads', () => {

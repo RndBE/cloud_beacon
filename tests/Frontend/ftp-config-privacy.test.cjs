@@ -41,10 +41,10 @@ test('FTP configured card hides connection details until the file browser is ope
     const browserDialog = source.slice(browserStart, browserEnd);
 
     assert.match(configuredCard, /border-emerald-500\/20 bg-emerald-500\/5/);
-    assert.match(configuredCard, /sm:grid-cols-2/);
-    assert.match(configuredCard, /FTP File\s*Browser/);
+    assert.match(configuredCard, /className="flex shrink-0 items-center gap-1"/);
+    assert.match(configuredCard, /title="FTP File Browser"/);
     assert.match(configuredCard, /<SystemLogsCard/);
-    assert.match(configuredCard, /variant="button"/);
+    assert.match(configuredCard, /variant="icon"/);
     assert.match(source, /Log Sistem Harian/);
     assert.doesNotMatch(configuredCard, /\{ftpHost\}:\{ftpPort\}/);
     assert.doesNotMatch(configuredCard, /\{ftpUser\}/);

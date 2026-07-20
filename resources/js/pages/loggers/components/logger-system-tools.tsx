@@ -370,48 +370,48 @@ export function FtpConfigCard({
                 {!editing ? (
                     configured ? (
                         <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
-                            <div className="mb-3 flex items-center gap-2">
-                                <CheckCircle2 className="size-4 text-emerald-500" />
-                                <span className="text-sm font-medium">
-                                    FTP Terkonfigurasi
-                                </span>
-                            </div>
-                            <div className="flex items-center justify-between gap-2">
-                                <p className="text-xs text-muted-foreground">
-                                    Detail host dan username tersedia di FTP
-                                    File Browser.
-                                </p>
-                                <div className="flex items-center gap-2">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <CheckCircle2 className="size-4 text-emerald-500" />
+                                        <span className="text-sm font-medium">
+                                            FTP Terkonfigurasi
+                                        </span>
+                                    </div>
+                                    <p className="mt-3 text-xs text-muted-foreground">
+                                        Detail host dan username tersedia di FTP
+                                        File Browser.
+                                    </p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1">
                                     <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="gap-1.5"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="size-8"
+                                        onClick={handleBrowseFiles}
+                                        disabled={disabled}
+                                        title="FTP File Browser"
+                                    >
+                                        <HardDrive className="size-4" />
+                                    </Button>
+                                    <SystemLogsCard
+                                        deviceIdentifier={deviceIdentifier}
+                                        disabled={Boolean(disabled)}
+                                        ftpConfigured={Boolean(
+                                            configured && ftpHost && ftpUser,
+                                        )}
+                                        variant="icon"
+                                    />
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="size-8"
                                         onClick={() => setEditing(true)}
                                         title="Edit Konfigurasi"
                                     >
-                                        <Pencil className="size-4" /> Edit
+                                        <Pencil className="size-4" />
                                     </Button>
                                 </div>
-                            </div>
-                            <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="gap-1.5"
-                                    onClick={handleBrowseFiles}
-                                    disabled={disabled}
-                                >
-                                    <HardDrive className="size-4" /> FTP File
-                                    Browser
-                                </Button>
-                                <SystemLogsCard
-                                    deviceIdentifier={deviceIdentifier}
-                                    disabled={Boolean(disabled)}
-                                    ftpConfigured={Boolean(
-                                        configured && ftpHost && ftpUser,
-                                    )}
-                                    variant="button"
-                                />
                             </div>
                         </div>
                     ) : (
@@ -1903,7 +1903,7 @@ export function SystemLogsCard({
     deviceIdentifier: string;
     disabled: boolean;
     ftpConfigured: boolean;
-    variant?: 'card' | 'button';
+    variant?: 'card' | 'button' | 'icon';
 }) {
     const [open, setOpen] = useState(false);
     const [view, setView] = useState<'list' | 'viewer'>('list');
@@ -2016,7 +2016,25 @@ export function SystemLogsCard({
         [content],
     );
 
-    const triggerButton = (
+    const triggerButton =
+        variant === 'icon' ? (
+            <Button
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                onClick={openBrowser}
+                disabled={disabled || !ftpConfigured}
+                title={
+                    disabled
+                        ? 'Device offline — tidak bisa mengirim'
+                        : !ftpConfigured
+                          ? 'Konfigurasi FTP diperlukan terlebih dahulu'
+                          : 'Log Sistem Harian'
+                }
+            >
+                <ScrollText className="size-4" />
+            </Button>
+        ) : (
         <Button
             variant="outline"
             size="sm"
@@ -2033,7 +2051,7 @@ export function SystemLogsCard({
         >
             <ScrollText className="size-4" /> Log Sistem Harian
         </Button>
-    );
+        );
 
     return (
         <>

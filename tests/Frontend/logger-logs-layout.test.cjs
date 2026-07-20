@@ -44,7 +44,7 @@ test('logger system tab places FTP config and SD Card in a two-column row with l
             systemSection.indexOf('<UsbCopyCard'),
         'FTP config should be the first card in the row',
     );
-    assert.match(systemToolsSource, /<SystemLogsCard[\s\S]*variant="button"/);
+    assert.match(systemToolsSource, /<SystemLogsCard[\s\S]*variant="icon"/);
     assert.match(systemToolsSource, /Log Sistem Harian/);
     assert.doesNotMatch(
         logsSection,

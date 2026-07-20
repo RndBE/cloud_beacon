@@ -18,8 +18,11 @@ const protocolSource = readFileSync(
 test('logger detail exposes a Dongle toggle that switches protocol transport to serial', () => {
     assert.match(showSource, /useLoggerSerial/);
     assert.match(showSource, /dongleEnabled/);
+    assert.match(showSource, /disconnect: disconnectDongle/);
     assert.match(showSource, /Serial ON/);
     assert.match(showSource, /Serial OFF/);
+    assert.match(showSource, /Memutuskan\.\.\./);
+    assert.match(showSource, /await disconnectDongle\(\)/);
     assert.match(showSource, /dongleButtonLabel/);
     assert.doesNotMatch(showSource, /Serial Dongle/);
     assert.doesNotMatch(showSource, /formatSerialDongleName/);
@@ -36,6 +39,14 @@ test('logger detail exposes a Dongle toggle that switches protocol transport to 
         showSource,
         /commandTransport=\{\s*dongleEnabled\s*\?\s*serialProtocolCommand\s*:\s*undefined\s*\}/,
     );
+    assert.match(showSource, /api\/serial\/info\/import/);
+    assert.match(showSource, /api\/serial\/sensors\/preview/);
+    assert.match(showSource, /SENSORS: \{ cmd: 'GET' \}/);
+    assert.match(showSource, /SENSORS: \{ cmd: 'GET_ALL' \}/);
+    assert.match(showSource, /SENSORS: \{ cmd: 'GET_NAME' \}/);
+    assert.match(showSource, /MAP_DATA: \{ cmd: 'GET' \}/);
+    assert.match(showSource, /setCachedSensorNames/);
+    assert.match(showSource, /setCachedMapSlots/);
 });
 
 test('protocol panel routes generic commands through the selected transport', () => {

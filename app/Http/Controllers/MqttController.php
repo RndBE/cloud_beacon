@@ -111,6 +111,54 @@ class MqttController extends Controller
     }
 
     /**
+     * Import an INFO response that was read locally through Web Serial.
+     * The server only parses/persists the payload; it does not contact the device.
+     */
+    public function importInfoFromSerial(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'info' => 'required|array',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $logger = $this->resolveVisibleLogger($idLogger);
+        abort_unless($logger, 404, 'Logger not found');
+
+        $rawInfo = $request->input('info');
+        $info = is_array($rawInfo) && array_key_exists('INFO', $rawInfo)
+            ? $rawInfo['INFO']
+            : $rawInfo;
+
+        if (!is_array($info)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Format respons INFO serial tidak dikenali.',
+            ], 422);
+        }
+
+        $parsed = MqttService::parseInfoResponse($info);
+
+        $logger->update(array_merge(
+            array_filter($parsed, fn($v) => $v !== null),
+            [
+                'status' => 'online',
+                'last_connected_at' => now(),
+                'last_seen_at' => now(),
+                'last_sync_status' => 'success',
+                'last_sync_error' => null,
+                'last_synced_at' => now(),
+            ]
+        ));
+
+        return response()->json([
+            'success' => true,
+            'data' => $parsed,
+            'raw' => $info,
+        ]);
+    }
+
+    /**
      * Poll all registered loggers for status updates.
      * Triggered by the frontend "Refresh" button.
      *
@@ -336,6 +384,173 @@ class MqttController extends Controller
             ],
             'raw' => $config,
         ]);
+    }
+
+    /**
+     * Build the same sensor sync preview as getSensorsConfig(), but from data
+     * already read locally through Web Serial. No MQTT request happens here.
+     */
+    public function previewSensorsFromSerial(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'logger_id' => 'required|string',
+            'sensors' => 'required|array',
+            'get_all' => 'nullable|array',
+        ]);
+
+        $idLogger = $request->input('id_logger');
+        $loggerId = IdHasher::decode($request->input('logger_id'));
+        abort_unless($loggerId, 400, 'Invalid logger ID');
+        $logger = Logger::query()->visibleTo(auth()->user())->findOrFail($loggerId);
+        abort_unless($logger->device_identifier === $idLogger, 404, 'Logger not found');
+
+        $rawSensors = $request->input('sensors');
+        $config = is_array($rawSensors) && array_key_exists('SENSORS', $rawSensors)
+            ? $rawSensors['SENSORS']
+            : $rawSensors;
+
+        if (!is_array($config)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Format respons SENSORS serial tidak dikenali.',
+            ], 422);
+        }
+
+        if (isset($config['_error'])) {
+            return response()->json([
+                'success' => false,
+                'message' => $config['_error'],
+            ]);
+        }
+
+        $rawGetAll = $request->input('get_all');
+        $getAllResult = is_array($rawGetAll) && array_key_exists('SENSORS', $rawGetAll)
+            ? $rawGetAll['SENSORS']
+            : $rawGetAll;
+
+        return response()->json($this->buildSensorSyncPreview(
+            $logger,
+            $config,
+            is_array($getAllResult) ? $getAllResult : null,
+        ));
+    }
+
+    private function buildSensorSyncPreview(Logger $logger, array $config, ?array $getAllResult = null): array
+    {
+        $loggerId = $logger->id;
+        $deviceSensors = [];
+        // True only when GET_ALL actually returned live readings — so we never
+        // overwrite stored values with the merge's zero fallbacks on a failed call.
+        $getAllValid = is_array($getAllResult) && !isset($getAllResult['_error']);
+
+        $deviceSensors = MqttService::parseSensorsResponse($config);
+
+        // Merge values from GET_ALL if available
+        if ($getAllValid) {
+            $deviceSensors = MqttService::mergeValuesFromGetAll($deviceSensors, $getAllResult);
+        }
+
+        // Add 'type' field using guessType
+        foreach ($deviceSensors as &$ds) {
+            $ds['type'] = $this->guessType($ds['name'], $ds['unit'] ?? '');
+        }
+        unset($ds);
+
+        // Get current DB sensors for this logger (external only)
+        $dbSensors = Sensor::where('logger_id', $loggerId)
+            ->whereNotNull('connection_type')
+            ->get();
+
+        // Build diff: added, removed, changed, unchanged
+        $added = [];
+        $changed = [];
+        $unchanged = [];
+        $matchedDbIds = [];
+
+        foreach ($deviceSensors as $ds) {
+            // Find matching DB sensor by unique key
+            $match = $dbSensors->first(function ($s) use ($ds) {
+                if ($s->connection_type !== $ds['connection_type'] || $s->name !== $ds['name']) return false;
+                return match ($ds['connection_type']) {
+                    'rs485' => $s->modbus_slave_id == $ds['modbus_slave_id'],
+                    'rs232' => $s->port == $ds['port'],
+                    'analog', 'digital' => $s->channel == $ds['channel'],
+                    default => true,
+                };
+            });
+
+            if (!$match) {
+                $added[] = $ds;
+            } else {
+                $matchedDbIds[] = $match->id;
+
+                // Persist the live reading immediately. The structural diff below
+                // intentionally ignores `value`, and an all-"unchanged" sync skips the
+                // confirm step entirely — so without this write the Sensor Summary would
+                // keep showing stale/zero readings even though GET_ALL just returned fresh
+                // ones. Value is a reading, not config, so it's safe to store pre-confirm.
+                if ($getAllValid && array_key_exists('value', $ds) && $ds['value'] !== null) {
+                    $match->update(['value' => $ds['value']]);
+                }
+
+                // Check for structural changes — NOT value (readings change constantly).
+                // Only compare fields that the protocol actually carries for THIS
+                // connection type, so e.g. an RS485 sensor never diffs on analog_mode
+                // or min/max (those belong to ANALOG only).
+                $changes = [];
+                if ($match->unit !== ($ds['unit'] ?? '')) $changes['unit'] = ['old' => $match->unit, 'new' => $ds['unit']];
+
+                $compareFields = match ($ds['connection_type']) {
+                    'rs485' => ['device_name', 'scale_factor', 'function_code', 'register_address', 'quantity', 'baudrate', 'serial_format', 'fast_poll'],
+                    'rs232' => ['scale_factor'],
+                    'analog' => ['min_value', 'max_value', 'analog_mode'],
+                    'digital' => ['analog_mode', 'scale_factor'],
+                    default => [],
+                };
+                foreach ($compareFields as $field) {
+                    if (($match->{$field} ?? null) != ($ds[$field] ?? null)) {
+                        $changes[$field] = ['old' => $match->{$field} ?? null, 'new' => $ds[$field] ?? null];
+                    }
+                }
+
+                if (!empty($changes)) {
+                    $changed[] = ['sensor' => $ds, 'db_id' => $match->id, 'db_name' => $match->name, 'changes' => $changes];
+                } else {
+                    $unchanged[] = ['sensor' => $ds, 'db_id' => $match->id];
+                }
+            }
+        }
+
+        // DB sensors not matched = removed from device
+        $removed = $dbSensors->filter(fn($s) => !in_array($s->id, $matchedDbIds))
+            ->map(fn($s) => [
+                'db_id' => $s->id,
+                'name' => $s->name,
+                'connection_type' => $s->connection_type,
+                'device_name' => $s->device_name,
+                'unit' => $s->unit,
+            ])->values()->toArray();
+
+        return [
+            'success' => true,
+            'preview' => true,
+            'diff' => [
+                'added' => $added,
+                'removed' => $removed,
+                'changed' => $changed,
+                'unchanged' => $unchanged,
+            ],
+            'summary' => [
+                'added_count' => count($added),
+                'removed_count' => count($removed),
+                'changed_count' => count($changed),
+                'unchanged_count' => count($unchanged),
+                'total_device' => count($deviceSensors),
+                'total_db' => $dbSensors->count(),
+            ],
+            'raw' => $config,
+        ];
     }
 
     /**

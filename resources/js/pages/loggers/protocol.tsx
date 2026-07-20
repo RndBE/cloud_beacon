@@ -1064,6 +1064,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const [mapReadState, setMapReadState] = useState<
             'idle' | 'loading' | 'loaded' | 'error'
         >('idle');
+        const [mapBusy, setMapBusy] = useState<
+            'read' | 'write' | 'auto' | 'clear' | null
+        >(null);
         const mapAutoLoadAttemptRef = useRef<string | null>(null);
         // Available sensor names for the picker only (NOT shown as a list), from SENSORS GET_NAME.
         const [deviceSensors, setDeviceSensors] = useState<
@@ -1254,7 +1257,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             mapAutoLoadAttemptRef.current = deviceId;
             setMapReadState('loading');
             setMapStatus(null);
-            setLoading('MAP_DATA');
+            setMapBusy('read');
 
             Promise.all([
                 readMapSlots(deviceId),
@@ -1288,8 +1291,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 })
                 .finally(() => {
                     if (cancelled) return;
-                    setLoading((current) =>
-                        current === 'MAP_DATA' ? null : current,
+                    setMapBusy((current) =>
+                        current === 'read' ? null : current,
                     );
                 });
 
@@ -1476,7 +1479,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         function handleTabChange(value: string) {
             setActiveTab(value);
             if (manualSync) return;
-            if (value === 'map' && canSend && loading !== 'MAP_DATA') {
+            if (value === 'map' && canSend && mapBusy === null) {
                 loadMap();
             }
             if (value === 'gcm' && canSend && loading !== 'GCM') {
@@ -2091,7 +2094,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         // state; the tabs panel (Module card) pulls EWS + GCM.
         useImperativeHandle(ref, () => ({
             sync: () => {
-                if (!canSend || loading === 'GCM' || loading === 'MAP_DATA')
+                if (!canSend || loading === 'GCM' || mapBusy !== null)
                     return;
                 if (ioRow) void loadIo();
                 else void loadModule();
@@ -2393,7 +2396,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 return;
             }
             const deviceId = logger.deviceIdentifier;
-            setLoading('MAP_DATA');
+            setMapBusy('read');
             setMapReadState('loading');
             try {
                 const [mapData, names] = await Promise.all([
@@ -2434,7 +2437,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     error instanceof Error ? error.message : 'Request gagal.',
                 );
             } finally {
-                setLoading(null);
+                setMapBusy((current) => (current === 'read' ? null : current));
             }
         }
 
@@ -2518,7 +2521,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 return;
             }
 
-            setLoading('MAP_DATA');
+            setMapBusy('write');
             setMapStatus(null);
             try {
                 const data = await runProtocolCommand('MAP_DATA', {
@@ -2551,7 +2554,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             : 'Request gagal.',
                 });
             } finally {
-                setLoading(null);
+                setMapBusy((current) =>
+                    current === 'write' ? null : current,
+                );
             }
         }
 
@@ -2562,7 +2567,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 localError('MAP_DATA', 'Logger belum punya device identifier.');
                 return;
             }
-            setLoading('MAP_DATA');
+            setMapBusy('auto');
             setMapStatus(null);
             try {
                 const data = await runProtocolCommand('MAP_DATA', {
@@ -2589,7 +2594,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             : 'Request gagal.',
                 });
             } finally {
-                setLoading(null);
+                setMapBusy((current) => (current === 'auto' ? null : current));
             }
         }
 
@@ -2600,7 +2605,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 return;
             }
             const deviceId = logger.deviceIdentifier;
-            setLoading('MAP_DATA');
+            setMapBusy('clear');
             setMapStatus(null);
             try {
                 const data = await runProtocolCommand('MAP_DATA', {
@@ -2630,7 +2635,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             : 'Request gagal.',
                 });
             } finally {
-                setLoading(null);
+                setMapBusy((current) =>
+                    current === 'clear' ? null : current,
+                );
             }
         }
 
@@ -2969,7 +2976,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             className="gap-1"
                             disabled={
                                 !canSend ||
-                                loading === 'MAP_DATA' ||
+                                mapBusy !== null ||
                                 mapSlots.length >= MAP_SLOT_MAX
                             }
                             onClick={addMapping}
@@ -2981,10 +2988,10 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             size="sm"
                             variant="outline"
                             className="gap-1.5"
-                            disabled={!canSend || loading === 'MAP_DATA'}
+                            disabled={!canSend || mapBusy !== null}
                             onClick={loadMap}
                         >
-                            {loading === 'MAP_DATA' ? (
+                            {mapBusy === 'read' ? (
                                 <Loader2 className="size-3.5 animate-spin" />
                             ) : (
                                 <RefreshCw className="size-3.5" />
@@ -2997,7 +3004,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             size="sm"
                             variant="outline"
                             className="gap-1.5"
-                            disabled={!canSend || loading === 'MAP_DATA'}
+                            disabled={!canSend || mapBusy !== null}
                             onClick={() =>
                                 setConfirmDialog({
                                     message:
@@ -3006,7 +3013,12 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                 })
                             }
                         >
-                            <Wand2 className="size-3.5" /> Auto
+                            {mapBusy === 'auto' ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                                <Wand2 className="size-3.5" />
+                            )}{' '}
+                            Auto
                         </Button>
                         {/* CLEAR: wipe the device's mapping entirely. */}
                         <Button
@@ -3014,7 +3026,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             size="sm"
                             variant="outline"
                             className="gap-1.5 text-red-600 hover:text-red-600"
-                            disabled={!canSend || loading === 'MAP_DATA'}
+                            disabled={!canSend || mapBusy !== null}
                             onClick={() =>
                                 setConfirmDialog({
                                     message:
@@ -3023,19 +3035,22 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                 })
                             }
                         >
-                            <Trash2 className="size-3.5" /> Clear
+                            {mapBusy === 'clear' ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                                <Trash2 className="size-3.5" />
+                            )}{' '}
+                            Clear
                         </Button>
                     </div>
                     <Button
                         type="button"
                         size="sm"
                         className="gap-1.5"
-                        disabled={
-                            !canSend || !mapDirty || loading === 'MAP_DATA'
-                        }
+                        disabled={!canSend || !mapDirty || mapBusy !== null}
                         onClick={saveMap}
                     >
-                        {loading === 'MAP_DATA' ? (
+                        {mapBusy === 'write' ? (
                             <Loader2 className="size-3.5 animate-spin" />
                         ) : (
                             <Send className="size-3.5" />

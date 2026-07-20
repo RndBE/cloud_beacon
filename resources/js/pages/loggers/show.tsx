@@ -126,6 +126,8 @@ import {
     fetchSensorNames,
     fetchMapSlots,
     getCachedSensorNames,
+    setCachedMapSlots,
+    setCachedSensorNames,
     subscribeDeviceCache,
 } from '@/lib/device-sync-cache';
 import type { BreadcrumbItem } from '@/types';
@@ -139,6 +141,7 @@ import { ProtocolPanel, MODULE_PROTOCOL_TABS } from './protocol';
 import type {
     ProtocolCommandPayload,
     ProtocolCommandResult,
+    ProtocolCommandTransport,
     ProtocolPanelHandle,
 } from './protocol';
 import type { ProtocolLogger } from './protocol';
@@ -1016,16 +1019,76 @@ interface SyncSummary {
     total_db: number;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+}
+
+function modulePayload(data: ProtocolCommandResult['data'], module: string) {
+    const root = asRecord(data);
+    if (!root) return null;
+    return root[module] ?? data;
+}
+
+function sensorNamesFromSerialData(
+    data: ProtocolCommandResult['data'],
+): { nama: string; nilai: number | null; satuan: string }[] | null {
+    const payload = modulePayload(data, 'SENSORS');
+    if (!Array.isArray(payload)) return null;
+
+    const names = payload
+        .map((item) => {
+            const row = asRecord(item);
+            if (!row) return null;
+            const nama = row.nama;
+            if (typeof nama !== 'string' || !nama.trim()) return null;
+            const nilai = row.nilai;
+            const satuan = row.satuan;
+            return {
+                nama: nama.trim(),
+                nilai: typeof nilai === 'number' ? nilai : null,
+                satuan: typeof satuan === 'string' ? satuan : '',
+            };
+        })
+        .filter((item): item is { nama: string; nilai: number | null; satuan: string } =>
+            Boolean(item),
+        );
+
+    return names.length > 0 ? names : null;
+}
+
+function mapSlotsFromSerialData(
+    data: ProtocolCommandResult['data'],
+): { slot: number; name: string }[] | null {
+    const payload = asRecord(modulePayload(data, 'MAP_DATA'));
+    if (!payload) return null;
+
+    const slots: { slot: number; name: string }[] = [];
+    for (let slot = 1; slot <= 43; slot += 1) {
+        const value = payload[`s${slot}`];
+        if (typeof value === 'string' && value.trim() !== '') {
+            slots.push({ slot, name: value.trim() });
+        }
+    }
+
+    return slots;
+}
+
 function SyncFromDeviceDialog({
     deviceIdentifier,
     loggerId,
     label = 'Sync from Device',
     canApplySensorChanges = true,
+    transportMode = 'mqtt',
+    commandTransport,
 }: {
     deviceIdentifier: string;
     loggerId: string;
     label?: string;
     canApplySensorChanges?: boolean;
+    transportMode?: 'mqtt' | 'serial';
+    commandTransport?: ProtocolCommandTransport;
 }) {
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
@@ -1081,7 +1144,7 @@ function SyncFromDeviceDialog({
         cancelled.current = false;
         setPhase('syncing');
 
-        // === Step 0: Connect & Fetch INFO (real MQTT) ===
+        // === Step 0: Connect & Fetch INFO (MQTT or local serial dongle) ===
         setStepStatuses((prev) => {
             const n = [...prev];
             n[0] = 'running';
@@ -1098,10 +1161,32 @@ function SyncFromDeviceDialog({
             } | null;
         } = { current: null };
 
-        const mqttPromise = apiFetch('/api/mqtt/info', {
-            id_logger: deviceIdentifier,
-        })
-            .then((r) => r.json())
+        const mqttPromise =
+            transportMode === 'serial'
+                ? (async () => {
+                      if (!commandTransport) {
+                          throw new Error('Dongle serial belum terhubung.');
+                      }
+                      const serialInfo = await commandTransport('INFO', {
+                          INFO: { cmd: 'GET' },
+                      });
+                      if (!serialInfo.success) {
+                          throw new Error(serialInfo.message);
+                      }
+                      const response = await apiFetch(
+                          '/api/serial/info/import',
+                          {
+                              id_logger: deviceIdentifier,
+                              info: serialInfo.data,
+                          },
+                      );
+                      return response.json();
+                  })()
+                : apiFetch('/api/mqtt/info', {
+                      id_logger: deviceIdentifier,
+                  }).then((r) => r.json());
+
+        mqttPromise
             .then(
                 (data: {
                     success: boolean;
@@ -1112,10 +1197,13 @@ function SyncFromDeviceDialog({
                     mqttDone = true;
                 },
             )
-            .catch(() => {
+            .catch((error: unknown) => {
                 mqttResultRef.current = {
                     success: false,
-                    message: 'Network error',
+                    message:
+                        error instanceof Error
+                            ? error.message
+                            : 'Network error',
                 };
                 mqttDone = true;
             });
@@ -1190,19 +1278,59 @@ function SyncFromDeviceDialog({
 
         const sensorResultRef: { current: any } = { current: null };
 
-        const sensorPromise = apiFetch('/api/mqtt/sensors/get', {
-            id_logger: deviceIdentifier,
-            logger_id: loggerId,
-        })
-            .then((r) => r.json())
+        const sensorPromise = (
+            transportMode === 'serial'
+                ? (async () => {
+                      if (!commandTransport) {
+                          throw new Error('Dongle serial belum terhubung.');
+                      }
+                      const sensors = await commandTransport('SENSORS', {
+                          SENSORS: { cmd: 'GET' },
+                      });
+                      if (!sensors.success) {
+                          throw new Error(sensors.message);
+                      }
+
+                      let getAll: ProtocolCommandResult['data'] | null = null;
+                      try {
+                          const getAllResult = await commandTransport(
+                              'SENSORS',
+                              { SENSORS: { cmd: 'GET_ALL' } },
+                          );
+                          if (getAllResult.success) {
+                              getAll = getAllResult.data;
+                          }
+                      } catch {
+                          getAll = null;
+                      }
+
+                      const response = await apiFetch(
+                          '/api/serial/sensors/preview',
+                          {
+                              id_logger: deviceIdentifier,
+                              logger_id: loggerId,
+                              sensors: sensors.data,
+                              get_all: getAll,
+                          },
+                      );
+                      return response.json();
+                  })()
+                : apiFetch('/api/mqtt/sensors/get', {
+                      id_logger: deviceIdentifier,
+                      logger_id: loggerId,
+                  }).then((r) => r.json())
+        )
             .then((data) => {
                 sensorResultRef.current = data;
                 sensorDone = true;
             })
-            .catch(() => {
+            .catch((error: unknown) => {
                 sensorResultRef.current = {
                     success: false,
-                    message: 'Failed to fetch sensors',
+                    message:
+                        error instanceof Error
+                            ? error.message
+                            : 'Failed to fetch sensors',
                 };
                 sensorDone = true;
             });
@@ -1263,13 +1391,43 @@ function SyncFromDeviceDialog({
             setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
         }, 100);
         try {
-            const cacheReads: Promise<unknown>[] = [
-                fetchSensorNames(deviceIdentifier, true),
-            ];
-            if (canApplySensorChanges) {
-                cacheReads.push(fetchMapSlots(deviceIdentifier, true));
+            if (transportMode === 'serial') {
+                if (!commandTransport) {
+                    throw new Error('Dongle serial belum terhubung.');
+                }
+
+                const cacheReads: Promise<unknown>[] = [
+                    commandTransport('SENSORS', {
+                        SENSORS: { cmd: 'GET_NAME' },
+                    }).then((result) => {
+                        if (!result.success) return;
+                        const names = sensorNamesFromSerialData(result.data);
+                        if (names) setCachedSensorNames(deviceIdentifier, names);
+                    }),
+                ];
+
+                if (canApplySensorChanges) {
+                    cacheReads.push(
+                        commandTransport('MAP_DATA', {
+                            MAP_DATA: { cmd: 'GET' },
+                        }).then((result) => {
+                            if (!result.success) return;
+                            const slots = mapSlotsFromSerialData(result.data);
+                            if (slots) setCachedMapSlots(deviceIdentifier, slots);
+                        }),
+                    );
+                }
+
+                await Promise.all(cacheReads);
+            } else {
+                const cacheReads: Promise<unknown>[] = [
+                    fetchSensorNames(deviceIdentifier, true),
+                ];
+                if (canApplySensorChanges) {
+                    cacheReads.push(fetchMapSlots(deviceIdentifier, true));
+                }
+                await Promise.all(cacheReads);
             }
-            await Promise.all(cacheReads);
         } catch {
             /* non-critical — Data Mapping just falls back to DB sensors */
         }
@@ -1299,7 +1457,13 @@ function SyncFromDeviceDialog({
 
         // Show review phase
         setPhase('review');
-    }, [canApplySensorChanges, deviceIdentifier, loggerId]);
+    }, [
+        canApplySensorChanges,
+        commandTransport,
+        deviceIdentifier,
+        loggerId,
+        transportMode,
+    ]);
 
     const handleConfirmSync = useCallback(async () => {
         if (!canApplySensorChanges) return;
@@ -6621,11 +6785,6 @@ function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
     );
 }
 
-// =============================================================================
-// Quick Setup Wizard (router-style)
-// =============================================================================
-type WizardPhase = 'select' | 'sending' | 'success' | 'error';
-
 function QuickSetupWizard({
     logger,
     open,
@@ -6635,55 +6794,11 @@ function QuickSetupWizard({
     open: boolean;
     onClose: () => void;
 }) {
-    const [selectedMode, setSelectedMode] = useState<string>('');
-    const [phase, setPhase] = useState<WizardPhase>('select');
-    const [message, setMessage] = useState('');
     const allowedModes = configuratorModes(logger.availableModes);
-
-    // Group modes
-    const grouped: Record<string, LoggerModeOption[]> = {};
-    for (const m of allowedModes) {
-        if (!grouped[m.group]) grouped[m.group] = [];
-        grouped[m.group].push(m);
-    }
-
-    const selectedModeInfo = allowedModes.find((m) => m.slug === selectedMode);
-
-    async function handleSetMode() {
-        if (!selectedMode) return;
-        setPhase('sending');
-        setMessage('');
-        try {
-            const res = await apiFetch('/api/mqtt/system/set-mode', {
-                id_logger: logger.deviceIdentifier!,
-                mode: selectedMode,
-            });
-            const data = await res.json();
-            if (data.success) {
-                setPhase('success');
-                setMessage(
-                    data.message ||
-                        `Mode berhasil diubah ke ${selectedModeInfo?.label || selectedMode}`,
-                );
-                setTimeout(() => router.reload(), 1500);
-            } else {
-                setPhase('error');
-                setMessage(data.message || 'Gagal mengubah mode');
-            }
-        } catch {
-            setPhase('error');
-            setMessage('Koneksi gagal. Pastikan perangkat online.');
-        }
-    }
 
     function handleSkip() {
         sessionStorage.setItem(`skip_setup_${logger.id}`, '1');
         onClose();
-    }
-
-    function handleRetry() {
-        setPhase('select');
-        setMessage('');
     }
 
     return (
@@ -6693,178 +6808,52 @@ function QuickSetupWizard({
                 if (!v) handleSkip();
             }}
         >
-            <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden p-0 sm:max-w-lg">
-                {/* Header */}
-                <div className="bg-gradient-to-br from-primary/10 via-primary/5 to-transparent px-6 pt-6 pb-4">
-                    <div className="mb-2 flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/20">
-                            <Settings className="size-5 text-primary" />
-                        </div>
-                        <div>
-                            <DialogTitle className="text-lg">
-                                Quick Setup
-                            </DialogTitle>
-                            <DialogDescription className="text-xs">
-                                {logger.name}
-                            </DialogDescription>
-                        </div>
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                        Logger ini belum dikonfigurasi. Pilih mode operasi untuk
-                        memulai.
-                    </p>
-                </div>
-
-                {/* Content */}
-                <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-                    {phase === 'select' && (
-                        <div className="space-y-4">
-                            {Object.entries(grouped).map(([group, modes]) => (
-                                <div key={group}>
-                                    <p className="mb-2 text-[10px] font-semibold tracking-widest text-muted-foreground uppercase">
-                                        {group}
-                                    </p>
-                                    <div className="space-y-1.5">
-                                        {modes.map((m) => (
-                                            <label
-                                                key={m.slug}
-                                                className={`flex cursor-pointer items-start gap-3 rounded-xl border-2 px-4 py-3 transition-all ${
-                                                    selectedMode === m.slug
-                                                        ? 'border-primary bg-primary/5 shadow-sm'
-                                                        : 'border-muted hover:border-muted-foreground/20 hover:bg-muted/30'
-                                                }`}
-                                            >
-                                                <input
-                                                    type="radio"
-                                                    name="wizard_mode"
-                                                    value={m.slug}
-                                                    checked={
-                                                        selectedMode === m.slug
-                                                    }
-                                                    onChange={() =>
-                                                        setSelectedMode(m.slug)
-                                                    }
-                                                    className="sr-only"
-                                                />
-                                                <div
-                                                    className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
-                                                        selectedMode === m.slug
-                                                            ? 'border-primary bg-primary'
-                                                            : 'border-muted-foreground/30'
-                                                    }`}
-                                                >
-                                                    {selectedMode ===
-                                                        m.slug && (
-                                                        <Check className="size-3 text-primary-foreground" />
-                                                    )}
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                    <div className="flex items-center gap-2">
-                                                        <p className="text-sm font-semibold">
-                                                            {m.label}
-                                                        </p>
-                                                        <span className="font-mono text-[10px] text-muted-foreground">
-                                                            {m.slug}
-                                                        </span>
-                                                    </div>
-                                                    {m.description && (
-                                                        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-                                                            {m.description}
-                                                        </p>
-                                                    )}
-                                                    {m.hasCalibration && (
-                                                        <Badge
-                                                            variant="secondary"
-                                                            className="mt-1.5 gap-1 text-[10px]"
-                                                        >
-                                                            <SlidersHorizontal className="size-3" />
-                                                            Memerlukan kalibrasi
-                                                        </Badge>
-                                                    )}
-                                                </div>
-                                            </label>
-                                        ))}
-                                    </div>
-                                </div>
-                            ))}
-
-                            <div className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2">
-                                <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-blue-500" />
-                                <p className="text-[11px] text-blue-700 dark:text-blue-400">
-                                    Mode bisa diubah kapan saja di tab Mode.
-                                </p>
+            <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden border bg-card p-0 shadow-2xl sm:max-w-2xl">
+                <div className="border-b bg-muted/30 px-6 pt-6 pb-4">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                            <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-primary/20 bg-primary/10">
+                                <Settings className="size-5 text-primary" />
+                            </div>
+                            <div>
+                                <DialogTitle className="text-lg">
+                                    Quick Setup
+                                </DialogTitle>
+                                <DialogDescription className="text-xs">
+                                    {logger.name}
+                                </DialogDescription>
                             </div>
                         </div>
-                    )}
-
-                    {phase === 'sending' && (
-                        <div className="flex flex-col items-center justify-center gap-3 py-12">
-                            <Loader2 className="size-8 animate-spin text-primary" />
-                            <p className="text-sm text-muted-foreground">
-                                Mengirim ke perangkat...
-                            </p>
-                            <p className="font-mono text-xs text-muted-foreground">
-                                {selectedModeInfo?.label || selectedMode}
-                            </p>
-                        </div>
-                    )}
-
-                    {phase === 'success' && (
-                        <div className="flex flex-col items-center justify-center gap-3 py-12">
-                            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
-                                <CheckCircle2 className="size-7 text-emerald-500" />
-                            </div>
-                            <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                                {message}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                                Halaman akan diperbarui...
-                            </p>
-                        </div>
-                    )}
-
-                    {phase === 'error' && (
-                        <div className="flex flex-col items-center justify-center gap-3 py-12">
-                            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10">
-                                <XCircle className="size-7 text-red-500" />
-                            </div>
-                            <p className="text-sm font-medium text-red-700 dark:text-red-400">
-                                {message}
-                            </p>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                className="mt-2 gap-1.5"
-                                onClick={handleRetry}
-                            >
-                                <RefreshCw className="size-3.5" /> Coba Lagi
-                            </Button>
-                        </div>
-                    )}
-                </div>
-
-                {/* Footer */}
-                {phase === 'select' && (
-                    <div className="flex items-center justify-between border-t px-6 py-4">
                         <Button
                             variant="ghost"
                             size="sm"
                             onClick={handleSkip}
                             className="text-muted-foreground"
                         >
-                            Lewati untuk sekarang
-                        </Button>
-                        <Button
-                            className="gap-2"
-                            disabled={
-                                !selectedMode || logger.status === 'offline'
-                            }
-                            onClick={handleSetMode}
-                        >
-                            Set Mode <ChevronRight className="size-4" />
+                            Lewati
                         </Button>
                     </div>
-                )}
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-y-auto bg-background/40 px-6 py-5">
+                    <ModeProfileWizard
+                        logger={{
+                            deviceIdentifier: logger.deviceIdentifier,
+                            loggerMode: logger.loggerMode,
+                            status: logger.status,
+                            availableModes: allowedModes,
+                        }}
+                        disabled={false}
+                        variant="inline"
+                        onComplete={() => {
+                            sessionStorage.removeItem(
+                                `skip_setup_${logger.id}`,
+                            );
+                            onClose();
+                            router.reload({ only: ['logger'] });
+                        }}
+                    />
+                </div>
             </DialogContent>
         </Dialog>
     );
@@ -7050,6 +7039,13 @@ function LoggerConditionCard({
                     targets: dataHealth.forwarding?.targets ?? 0,
                 })
               : t('loggerDetail.logger_condition_forwarding_empty_desc');
+    const auditCtaLabel =
+        healthView === 'data' && dataHealth.missing > 0
+            ? t('loggerDetail.logger_condition_cta_missing')
+            : healthView === 'forwarding' &&
+                (forwardingFailed > 0 || forwardingPending > 0)
+              ? t('loggerDetail.logger_condition_cta_forwarding')
+              : t('loggerDetail.logger_condition_view_audit');
 
     return (
         <Card>
@@ -7179,7 +7175,7 @@ function LoggerConditionCard({
                         <Button asChild variant="outline" size="sm">
                             <Link href={dataHealth.auditUrl}>
                                 <Link2 className="size-3.5" />{' '}
-                                {t('loggerDetail.logger_condition_view_audit')}
+                                {auditCtaLabel}
                             </Link>
                         </Button>
                     </div>
@@ -7220,6 +7216,7 @@ function HealthDiagnosticsPanel({
 }: {
     diagnostics: DiagnosticsResult;
 }) {
+    const { t } = useTranslation();
     const allChecks = Object.values(diagnostics.categories).flatMap(
         (c) => c.checks,
     );
@@ -7258,6 +7255,19 @@ function HealthDiagnosticsPanel({
                             </>
                         )}
                     </div>
+
+                    {failedChecks.length > 0 && (
+                        <div className="flex justify-end">
+                            <Button asChild variant="outline" size="sm">
+                                <a href="#logger-diagnostics-recommendations">
+                                    <AlertCircle className="size-3.5" />{' '}
+                                    {t(
+                                        'loggerDetail.logger_condition_cta_diagnostics',
+                                    )}
+                                </a>
+                            </Button>
+                        </div>
+                    )}
 
                     {/* Category Grid */}
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -7342,7 +7352,10 @@ function HealthDiagnosticsPanel({
 
                     {/* Failed Checks Detail */}
                     {failedChecks.length > 0 && (
-                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                        <div
+                            id="logger-diagnostics-recommendations"
+                            className="scroll-mt-24 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3"
+                        >
                             <p className="mb-2 text-[10px] font-semibold tracking-wider text-amber-600 uppercase dark:text-amber-400">
                                 Rekomendasi
                             </p>
@@ -7392,13 +7405,16 @@ export default function LoggerShow({
     const {
         connected: dongleConnected,
         connect: connectDongle,
+        disconnect: disconnectDongle,
         sendCommandUntil: sendDongleCommandUntil,
     } = useLoggerSerial();
     const [dongleEnabled, setDongleEnabled] = useState(false);
     const [dongleBusy, setDongleBusy] = useState(false);
     const [dongleError, setDongleError] = useState<string | null>(null);
     const dongleButtonLabel = dongleBusy
-        ? 'Menghubungkan...'
+        ? dongleEnabled
+            ? 'Memutuskan...'
+            : 'Menghubungkan...'
         : dongleEnabled
           ? 'Serial ON'
           : 'Serial OFF';
@@ -7462,8 +7478,20 @@ export default function LoggerShow({
         if (readOnly || dongleBusy) return;
 
         if (dongleEnabled) {
-            setDongleEnabled(false);
+            setDongleBusy(true);
             setDongleError(null);
+            try {
+                setDongleEnabled(false);
+                await disconnectDongle();
+            } catch (error) {
+                setDongleError(
+                    error instanceof Error
+                        ? error.message
+                        : 'Gagal memutuskan dongle serial.',
+                );
+            } finally {
+                setDongleBusy(false);
+            }
             return;
         }
 
@@ -7743,6 +7771,14 @@ export default function LoggerShow({
                                         loggerId={logger.id}
                                         label={t('loggerDetail.sync')}
                                         canApplySensorChanges={false}
+                                        transportMode={
+                                            dongleEnabled ? 'serial' : 'mqtt'
+                                        }
+                                        commandTransport={
+                                            dongleEnabled
+                                                ? serialProtocolCommand
+                                                : undefined
+                                        }
                                     />
                                 ) : (
                                     <Button
@@ -7768,6 +7804,14 @@ export default function LoggerShow({
                                         }
                                         loggerId={logger.id}
                                         label={t('loggerDetail.sync')}
+                                        transportMode={
+                                            dongleEnabled ? 'serial' : 'mqtt'
+                                        }
+                                        commandTransport={
+                                            dongleEnabled
+                                                ? serialProtocolCommand
+                                                : undefined
+                                        }
                                     />
                                 )}
                                 {!logger.deviceIdentifier && (
