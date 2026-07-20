@@ -484,9 +484,9 @@ export default function MaintenanceIndex({
                     >
                         <DialogHeader>
                             <DialogTitle>Buat Tiket Maintenance</DialogTitle>
-                            <DialogDescription>
+                            {/* <DialogDescription>
                                 Isi kendala, perbaikan, laporan, dan dokumentasi untuk logger terdaftar.
-                            </DialogDescription>
+                            </DialogDescription> */}
                         </DialogHeader>
                         <form onSubmit={submitCreate} className="space-y-4">
                             <div className="grid gap-4 lg:grid-cols-2">

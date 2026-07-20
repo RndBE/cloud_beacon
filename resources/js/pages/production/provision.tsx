@@ -568,9 +568,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
 
                                     <div className="sm:col-span-3">
                                         <p className="text-sm font-medium">Data Produksi (opsional)</p>
-                                        <p className="text-xs text-muted-foreground">
-                                            Ikut tersimpan ke daftar Production saat penulisan berhasil.
-                                        </p>
                                     </div>
 
                                     <div className="space-y-2">

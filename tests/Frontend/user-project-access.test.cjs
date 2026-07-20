@@ -33,3 +33,33 @@ test('project access picker uses compact rows that do not stretch vertically', (
         /className="grid content-start gap-2 self-start rounded-lg/,
     );
 });
+
+test('project access picker uses themed select components for access controls', () => {
+    assert.match(source, /@\/components\/ui\/select/);
+    assert.match(source, /<SelectTrigger className="h-10/);
+    assert.match(source, /<SelectContent position="popper"/);
+    assert.match(source, /<SelectItem value="manage">/);
+    assert.match(source, /projectAccessLevelMeta\s*\.manage\.label/);
+    assert.match(
+        source,
+        /<SelectItem value="selected">\s*Pilih logger tertentu\s*<\/SelectItem>/,
+    );
+
+    const selectTriggerUsages = source.match(/<SelectTrigger className=/g);
+
+    assert.equal(selectTriggerUsages?.length, 2);
+});
+
+test('project access picker explains access and logger scope choices', () => {
+    assert.match(source, /const projectAccessLevelMeta/);
+    assert.match(source, /Hak akses/);
+    assert.match(source, /Cakupan logger/);
+    assert.match(source, /User hanya dapat melihat data logger/);
+    assert.match(source, /User dapat mengelola data dan akses logger/);
+    assert.match(source, /Semua logger di project ini otomatis tercakup/);
+    assert.match(
+        source,
+        /\$\{selectedLoggerIds\.length\} dari \$\{project\.loggers\.length\} logger dipilih/,
+    );
+    assert.match(source, /Pilih logger yang boleh diakses/);
+});

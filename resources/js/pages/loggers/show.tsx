@@ -9,8 +9,6 @@ import {
     ChevronDown,
     ChevronRight,
     Clock,
-    Code2,
-    Copy,
     Cpu,
     Database,
     Download,
@@ -18,7 +16,6 @@ import {
     Eye,
     EyeOff,
     FolderKanban,
-    HardDrive,
     Key,
     Link2,
     ListOrdered,
@@ -32,18 +29,15 @@ import {
     RefreshCw,
     RotateCcw,
     Save,
-    ScrollText,
     Settings,
     Signal,
     SlidersHorizontal,
-    FileText,
     Terminal,
     Thermometer,
     Trash2,
     Timer,
     Upload,
     Wifi,
-    WifiOff,
     XCircle,
     Zap,
     Loader2,
@@ -55,7 +49,7 @@ import {
     HeartPulse,
     ShieldAlert,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LoggerToaster } from '@/components/logger-toaster';
 import { ModeProfileWizard } from '@/components/loggers/mode-profile-wizard';
@@ -71,8 +65,18 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from '@/components/ui/card';
+import {
+    Collapsible,
+    CollapsibleContent,
+    CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import {
     Dialog,
     DialogContent,
@@ -94,7 +98,13 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import {
     Table,
@@ -105,12 +115,32 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+    isWebSerialSupported,
+    useLoggerSerial,
+} from '@/hooks/use-logger-serial';
+import type { JsonRecord } from '@/hooks/use-logger-serial';
 import { useModuleEventToasts } from '@/hooks/use-module-event-toasts';
 import AppLayout from '@/layouts/app-layout';
-import { fetchSensorNames, fetchMapSlots, getCachedSensorNames, subscribeDeviceCache } from '@/lib/device-sync-cache';
+import {
+    fetchSensorNames,
+    fetchMapSlots,
+    getCachedSensorNames,
+    subscribeDeviceCache,
+} from '@/lib/device-sync-cache';
 import type { BreadcrumbItem } from '@/types';
+import { ApiDocumentation } from './components/api-documentation';
+import { apiFetch } from './components/api-fetch';
+import { FtpConfigCard } from './components/ftp-config-card';
+import { UsbCopyCard } from './components/usb-copy-card';
+import { ModuleAiCard } from './module-ai-card';
+import type { LoggerRemoteDevice } from './module-ai-card';
 import { ProtocolPanel, MODULE_PROTOCOL_TABS } from './protocol';
-import type { ProtocolPanelHandle } from './protocol';
+import type {
+    ProtocolCommandPayload,
+    ProtocolCommandResult,
+    ProtocolPanelHandle,
+} from './protocol';
 import type { ProtocolLogger } from './protocol';
 
 interface SensorItem {
@@ -197,7 +227,9 @@ interface PowerRailReading {
 }
 // Rails present vary by hardware: bat is shown with the internal sensors; out5/out12/out24
 // render as the per-rail cards. The set depends on what the device returns.
-type PowerRails = Partial<Record<'bat' | 'out5' | 'out12' | 'out24', PowerRailReading>>;
+type PowerRails = Partial<
+    Record<'bat' | 'out5' | 'out12' | 'out24', PowerRailReading>
+>;
 
 interface LoggerDetail {
     id: string;
@@ -257,7 +289,13 @@ interface LoggerDetail {
     projectId: number | null;
     projectName: string | null;
     projectColor: string | null;
-    availableProjects: { id: number; name: string; code: string | null; color: string }[];
+    remoteDevice: LoggerRemoteDevice | null;
+    availableProjects: {
+        id: number;
+        name: string;
+        code: string | null;
+        color: string;
+    }[];
     lastSyncStatus: string | null;
     lastSyncedAt: string | null;
     lastSyncError: string | null;
@@ -289,9 +327,135 @@ interface DiagnosticsResult {
     categories: Record<string, DiagnosticCategory>;
 }
 
+interface DataHealthForwardingSummary {
+    due: number;
+    ok: number;
+    failed: number;
+    neverAttempted: number;
+    targets: number;
+    completeness: number;
+}
+
+interface DataHealthMissingWindow {
+    start: string;
+    end: string;
+    count: number;
+}
+
+interface DataHealthSummary {
+    date: string;
+    expected: number;
+    present: number;
+    missing: number;
+    missingWindows: DataHealthMissingWindow[];
+    missingWindowCount: number;
+    completeness: number;
+    status: 'healthy' | 'warning' | 'critical';
+    auditUrl: string;
+    forwarding: DataHealthForwardingSummary | null;
+}
+
 interface LoggerShowProps {
     logger: LoggerDetail;
     diagnostics: DiagnosticsResult;
+    dataHealth: DataHealthSummary;
+}
+
+function serialProtocolKeyMatches(module: string, key: string): boolean {
+    if (
+        key === module ||
+        key.startsWith(`${module} `) ||
+        key.startsWith(`${module}_`)
+    ) {
+        return true;
+    }
+
+    if (module === 'SIM' && key === 'SIMSET') return true;
+
+    if (module === 'SENSORS') {
+        return ['DIGITAL ', 'ANALOG ', 'RS485 ', 'RS232 '].some((prefix) =>
+            key.startsWith(prefix),
+        );
+    }
+
+    return false;
+}
+
+function serialProtocolResultFromMessage(
+    module: string,
+    message: JsonRecord,
+): ProtocolCommandResult {
+    const raw = JSON.stringify(message);
+
+    if (
+        module === 'RTC' &&
+        (Object.prototype.hasOwnProperty.call(message, 'date') ||
+            Object.prototype.hasOwnProperty.call(message, 'time'))
+    ) {
+        return {
+            success: true,
+            message: 'RTC response received',
+            data: message as ProtocolCommandResult['data'],
+            raw,
+        };
+    }
+
+    for (const [key, value] of Object.entries(message)) {
+        if (!serialProtocolKeyMatches(module, key)) continue;
+
+        if (typeof value === 'string') {
+            const upper = value.trim().toUpperCase();
+            if (upper.startsWith('ERR')) {
+                return {
+                    success: false,
+                    message:
+                        typeof message.msg === 'string'
+                            ? message.msg
+                            : `${key}: ${value}`,
+                    data: message as ProtocolCommandResult['data'],
+                    raw,
+                };
+            }
+
+            return {
+                success: true,
+                message: `${key}: ${value}`,
+                data: message as ProtocolCommandResult['data'],
+                raw,
+            };
+        }
+
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            const objectValue = value as Record<string, unknown>;
+            const status = String(objectValue.status ?? '').toUpperCase();
+            if (status === 'ERR' || status === 'ERROR') {
+                return {
+                    success: false,
+                    message: String(
+                        objectValue.msg ??
+                            objectValue.message ??
+                            `${key}: ${status}`,
+                    ),
+                    data: message as ProtocolCommandResult['data'],
+                    raw,
+                };
+            }
+        }
+
+        return {
+            success: true,
+            message: `${key} response received`,
+            data: message as ProtocolCommandResult['data'],
+            raw,
+        };
+    }
+
+    return {
+        success: true,
+        message: `${module} response received`,
+        data: message as ProtocolCommandResult['data'],
+        raw,
+    };
 }
 
 // =============================================================================
@@ -312,7 +476,14 @@ const SENSOR_TYPES = [
     { value: 'digital-output', label: 'Digital Output', defaultUnit: '-' },
 ] as const;
 
-const CONFIGURATOR_MODES = new Set(['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS']);
+const CONFIGURATOR_MODES = new Set([
+    'DEFAULT',
+    'AWLR_TD',
+    'AWLR_US',
+    'ARR',
+    'GNSS',
+    'APMS',
+]);
 
 const EMPTY_FORM = {
     name: '',
@@ -357,8 +528,15 @@ type Rs485Param = {
     fast_poll: boolean;
 };
 
-const BLANK_RS485_PARAM: Rs485Param = { name: '', unit: '', scale_factor: '1', register_address: 0, reg_count: 1, fast_poll: false };
 const SENSOR_PARAMETER_NAME_MAX_LENGTH = 12;
+const BLANK_RS485_PARAM: Rs485Param = {
+    name: '',
+    unit: '',
+    scale_factor: '1',
+    register_address: 0,
+    reg_count: 1,
+    fast_poll: false,
+};
 
 // ── Modbus data type codes (dtype) ───────────────────────────────────────────
 // The `reg_count` field carries the Modbus data TYPE code (1..27), not a literal register
@@ -366,7 +544,12 @@ const SENSOR_PARAMETER_NAME_MAX_LENGTH = 12;
 // in the firmware (see docs/modbus_data_type_codes.md). The cloud only stores/forwards the code.
 // The picker mirrors a Modbus-Poll-style cascading menu: pick a type, then its byte order. 16-bit
 // types have no byte-order choice; code 4 (U32 bulat.pecahan) is a locked legacy mode kept reachable.
-const DTYPE_BYTE_ORDERS = ['Big-endian', 'Little-endian', 'Big-endian byte swap', 'Little-endian byte swap'] as const;
+const DTYPE_BYTE_ORDERS = [
+    'Big-endian',
+    'Little-endian',
+    'Big-endian byte swap',
+    'Little-endian byte swap',
+] as const;
 
 type DtypeGroup =
     | { kind: 'single'; code: number; label: string; note: string }
@@ -374,21 +557,22 @@ type DtypeGroup =
 
 // Order within each `codes` tuple matches DTYPE_BYTE_ORDERS (BE, LE, BE swap, LE swap).
 const DTYPE_GROUPS: DtypeGroup[] = [
-    { kind: 'single', code: 3, label: 'Signed', note: '16-bit' },           // INT16
-    { kind: 'single', code: 1, label: 'Unsigned', note: '16-bit' },         // UINT16 (legacy code 1)
-    { kind: 'sub', label: '32 Bit signed', codes: [9, 10, 11, 12] },        // INT32
-    { kind: 'sub', label: '32 Bit unsigned', codes: [5, 6, 7, 8] },         // UINT32
-    { kind: 'sub', label: '64 Bit signed', codes: [20, 21, 22, 23] },       // INT64
-    { kind: 'sub', label: '64 Bit unsigned', codes: [16, 17, 18, 19] },     // UINT64
-    { kind: 'sub', label: '32 Bit float', codes: [2, 13, 14, 15] },         // FLOAT32 (BE = legacy code 2)
-    { kind: 'sub', label: '64 Bit double', codes: [24, 25, 26, 27] },       // FLOAT64
+    { kind: 'single', code: 3, label: 'Signed', note: '16-bit' }, // INT16
+    { kind: 'single', code: 1, label: 'Unsigned', note: '16-bit' }, // UINT16 (legacy code 1)
+    { kind: 'sub', label: '32 Bit signed', codes: [9, 10, 11, 12] }, // INT32
+    { kind: 'sub', label: '32 Bit unsigned', codes: [5, 6, 7, 8] }, // UINT32
+    { kind: 'sub', label: '64 Bit signed', codes: [20, 21, 22, 23] }, // INT64
+    { kind: 'sub', label: '64 Bit unsigned', codes: [16, 17, 18, 19] }, // UINT64
+    { kind: 'sub', label: '32 Bit float', codes: [2, 13, 14, 15] }, // FLOAT32 (BE = legacy code 2)
+    { kind: 'sub', label: '64 Bit double', codes: [24, 25, 26, 27] }, // FLOAT64
     { kind: 'single', code: 4, label: 'U32 bulat.pecahan', note: 'legacy' }, // locked legacy
 ];
 
 // Reverse lookup: dtype code → compact label for the trigger button.
 function dtypeLabel(code: number): string {
     for (const g of DTYPE_GROUPS) {
-        if (g.kind === 'single' && g.code === code) return `${g.label} (${g.note})`;
+        if (g.kind === 'single' && g.code === code)
+            return `${g.label} (${g.note})`;
         if (g.kind === 'sub') {
             const idx = g.codes.indexOf(code);
             if (idx >= 0) return `${g.label} · ${DTYPE_BYTE_ORDERS[idx]}`;
@@ -400,11 +584,21 @@ function dtypeLabel(code: number): string {
 // A 16px slot that holds the check mark for the selected row (keeps every row left-aligned
 // whether or not it is the current selection).
 function DtypeCheck({ active }: { active: boolean }) {
-    return <span className="flex size-4 shrink-0 items-center justify-center">{active && <Check className="size-4" />}</span>;
+    return (
+        <span className="flex size-4 shrink-0 items-center justify-center">
+            {active && <Check className="size-4" />}
+        </span>
+    );
 }
 
 // Cascading data-type picker (Modbus-Poll style): pick a type, then a byte order.
-function DtypeSelect({ value, onChange }: { value: number; onChange: (code: number) => void }) {
+function DtypeSelect({
+    value,
+    onChange,
+}: {
+    value: number;
+    onChange: (code: number) => void;
+}) {
     return (
         <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -413,7 +607,9 @@ function DtypeSelect({ value, onChange }: { value: number; onChange: (code: numb
                     className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-1 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     title={dtypeLabel(value)}
                 >
-                    <span className="min-w-0 truncate">{dtypeLabel(value)}</span>
+                    <span className="min-w-0 truncate">
+                        {dtypeLabel(value)}
+                    </span>
                     <ChevronDown className="size-4 shrink-0 opacity-50" />
                 </button>
             </DropdownMenuTrigger>
@@ -422,26 +618,54 @@ function DtypeSelect({ value, onChange }: { value: number; onChange: (code: numb
                     if (g.kind === 'single') {
                         const active = value === g.code;
                         const row = (
-                            <DropdownMenuItem key={g.code} onSelect={() => onChange(g.code)} className={active ? 'font-medium text-primary' : undefined}>
+                            <DropdownMenuItem
+                                key={g.code}
+                                onSelect={() => onChange(g.code)}
+                                className={
+                                    active
+                                        ? 'font-medium text-primary'
+                                        : undefined
+                                }
+                            >
                                 <DtypeCheck active={active} />
                                 <span>{g.label}</span>
-                                {g.note === 'legacy' && <span className="ml-auto text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">legacy</span>}
+                                {g.note === 'legacy' && (
+                                    <span className="ml-auto text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
+                                        legacy
+                                    </span>
+                                )}
                             </DropdownMenuItem>
                         );
                         // Set the trailing legacy entry (code 4) off with a separator.
-                        return g.code === 4 ? [<DropdownMenuSeparator key="dtype-sep" />, row] : row;
+                        return g.code === 4
+                            ? [<DropdownMenuSeparator key="dtype-sep" />, row]
+                            : row;
                     }
                     const activeInSub = g.codes.includes(value);
                     return (
                         <DropdownMenuSub key={g.label}>
-                            <DropdownMenuSubTrigger className={activeInSub ? 'font-medium text-primary' : undefined}>
+                            <DropdownMenuSubTrigger
+                                className={
+                                    activeInSub
+                                        ? 'font-medium text-primary'
+                                        : undefined
+                                }
+                            >
                                 {g.label}
                             </DropdownMenuSubTrigger>
                             <DropdownMenuSubContent className="w-52">
                                 {g.codes.map((code, i) => {
                                     const active = value === code;
                                     return (
-                                        <DropdownMenuItem key={code} onSelect={() => onChange(code)} className={active ? 'font-medium text-primary' : undefined}>
+                                        <DropdownMenuItem
+                                            key={code}
+                                            onSelect={() => onChange(code)}
+                                            className={
+                                                active
+                                                    ? 'font-medium text-primary'
+                                                    : undefined
+                                            }
+                                        >
                                             <DtypeCheck active={active} />
                                             <span>{DTYPE_BYTE_ORDERS[i]}</span>
                                         </DropdownMenuItem>
@@ -491,15 +715,23 @@ function configuratorModes(modes: LoggerModeOption[]): LoggerModeOption[] {
     return modes.filter((mode) => CONFIGURATOR_MODES.has(mode.slug));
 }
 
-function inferBoardVariant(logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>): 'BL11' | 'BL110' | 'BL1100' | null {
-    const normalized = (logger.model || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (normalized.includes('BL1100') || (logger.channelCount ?? 0) >= 8) return 'BL1100';
+function inferBoardVariant(
+    logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>,
+): 'BL11' | 'BL110' | 'BL1100' | null {
+    const normalized = (logger.model || '-')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '');
+    if (normalized.includes('BL1100') || (logger.channelCount ?? 0) >= 8)
+        return 'BL1100';
     if (normalized.includes('BL110')) return 'BL110';
-    if (normalized.includes('BL11') || logger.connectionType === 'cellular') return 'BL11';
+    if (normalized.includes('BL11') || logger.connectionType === 'cellular')
+        return 'BL11';
     return null;
 }
 
-function maxAnalogChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>): number {
+function maxAnalogChannel(
+    logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>,
+): number {
     if (logger.channelCount && logger.channelCount > 0) {
         return Math.min(logger.channelCount, 8);
     }
@@ -510,15 +742,17 @@ function maxAnalogChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' 
     return 2;
 }
 
-function maxDigitalChannel(logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>): number {
+function maxDigitalChannel(
+    logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>,
+): number {
     // Spec §3.2.9: digital channels 1–2 (BL11/BL110), 1–4 (BL1100).
     return inferBoardVariant(logger) === 'BL1100' ? 4 : 2;
 }
 
 interface SensorGroup {
     key: string;
-    deviceLabel: string;          // e.g. "RainGauge" (RS485 device) or "Analog"
-    locator: string | null;       // e.g. "Slave 1" / "Ch 1" / "Port 2"
+    deviceLabel: string; // e.g. "RainGauge" (RS485 device) or "Analog"
+    locator: string | null; // e.g. "Slave 1" / "Ch 1" / "Port 2"
     interfaceLabel: string | null; // "RS485"/"RS232"/"ANALOG"/"DIGITAL"; null = virtual (no device header)
     members: SensorItem[];
 }
@@ -542,7 +776,9 @@ function groupSensorsByDevice(sensors: SensorItem[]): SensorGroup[] {
         switch (s.connectionType) {
             case 'rs485':
                 key = `rs485:${s.modbusSlaveId}`;
-                deviceLabel = s.deviceName?.trim() ? s.deviceName : 'RS485 Device';
+                deviceLabel = s.deviceName?.trim()
+                    ? s.deviceName
+                    : 'RS485 Device';
                 locator = `Slave ${s.modbusSlaveId ?? '?'}`;
                 interfaceLabel = 'RS485';
                 break;
@@ -605,7 +841,9 @@ function groupDiffItemsByDevice(items: SyncDiffItem[]): DiffGroup[] {
         switch (s.connection_type) {
             case 'rs485':
                 key = `rs485:${s.modbus_slave_id}`;
-                deviceLabel = s.device_name?.trim() ? s.device_name : 'RS485 Device';
+                deviceLabel = s.device_name?.trim()
+                    ? s.device_name
+                    : 'RS485 Device';
                 locator = `Slave ${s.modbus_slave_id ?? '?'}`;
                 interfaceLabel = 'RS485';
                 break;
@@ -646,27 +884,18 @@ function groupDiffItemsByDevice(items: SyncDiffItem[]): DiffGroup[] {
     return groups;
 }
 
-// Helper: fetch with CSRF
-async function apiFetch(url: string, body: Record<string, unknown>) {
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-    return fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken || '' },
-        body: JSON.stringify(body),
-    });
-}
-
 function formatUptime(raw: string | number | null | undefined): string {
-    if (raw === null || raw === undefined || raw === '' || raw === '—') return '—';
+    if (raw === null || raw === undefined || raw === '' || raw === '—')
+        return '—';
 
     // Format baru dari protocol 26-element: "Xd Yh Zm" (e.g. "5d 20h 7m")
     if (typeof raw === 'string') {
         const match = raw.match(/^(\d+)d\s*(\d+)h\s*(\d+)m$/);
         if (match) {
-            const days    = parseInt(match[1], 10);
-            const hours   = parseInt(match[2], 10);
+            const days = parseInt(match[1], 10);
+            const hours = parseInt(match[2], 10);
             const minutes = parseInt(match[3], 10);
-            if (days > 0)  return `${days} hari ${hours} jam ${minutes} menit`;
+            if (days > 0) return `${days} hari ${hours} jam ${minutes} menit`;
             if (hours > 0) return `${hours} jam ${minutes} menit`;
             return `${minutes} menit`;
         }
@@ -676,8 +905,8 @@ function formatUptime(raw: string | number | null | undefined): string {
             const d = Math.floor(totalMinutes / 1440);
             const h = Math.floor((totalMinutes % 1440) / 60);
             const m = totalMinutes % 60;
-            if (d > 0)  return `${d} hari ${h} jam ${m} menit`;
-            if (h > 0)  return `${h} jam ${m} menit`;
+            if (d > 0) return `${d} hari ${h} jam ${m} menit`;
+            if (h > 0) return `${h} jam ${m} menit`;
             return `${m} menit`;
         }
         // Fallback: tampilkan apa adanya
@@ -688,15 +917,21 @@ function formatUptime(raw: string | number | null | undefined): string {
     const d = Math.floor(raw / 1440);
     const h = Math.floor((raw % 1440) / 60);
     const m = raw % 60;
-    if (d > 0)  return `${d} hari ${h} jam ${m} menit`;
-    if (h > 0)  return `${h} jam ${m} menit`;
+    if (d > 0) return `${d} hari ${h} jam ${m} menit`;
+    if (h > 0) return `${h} jam ${m} menit`;
     return `${m} menit`;
 }
 
 // =============================================================================
 // Sync From Device Dialog
 // =============================================================================
-type SyncPhase = 'idle' | 'syncing' | 'review' | 'applying' | 'success' | 'error';
+type SyncPhase =
+    | 'idle'
+    | 'syncing'
+    | 'review'
+    | 'applying'
+    | 'success'
+    | 'error';
 type StepStatus = 'idle' | 'running' | 'done' | 'error';
 
 interface SyncStep {
@@ -708,10 +943,34 @@ interface SyncStep {
 }
 
 const SYNC_STEPS: SyncStep[] = [
-    { id: 'connect', label: 'Connecting to Logger', description: 'Menghubungkan ke perangkat…', icon: Plug, durationMs: 2000 },
-    { id: 'info', label: 'Fetching Device Info', description: 'Reading configuration data…', icon: Settings, durationMs: 1800 },
-    { id: 'sensors', label: 'Syncing Sensor Config', description: 'Mengambil konfigurasi sensor…', icon: Cable, durationMs: 2200 },
-    { id: 'mapping', label: 'Syncing Data Mapping', description: 'Mengambil nama sensor & data mapping…', icon: ListOrdered, durationMs: 2000 },
+    {
+        id: 'connect',
+        label: 'Connecting to Logger',
+        description: 'Menghubungkan ke perangkat…',
+        icon: Plug,
+        durationMs: 2000,
+    },
+    {
+        id: 'info',
+        label: 'Fetching Device Info',
+        description: 'Reading configuration data…',
+        icon: Settings,
+        durationMs: 1800,
+    },
+    {
+        id: 'sensors',
+        label: 'Syncing Sensor Config',
+        description: 'Mengambil konfigurasi sensor…',
+        icon: Cable,
+        durationMs: 2200,
+    },
+    {
+        id: 'mapping',
+        label: 'Syncing Data Mapping',
+        description: 'Mengambil nama sensor & data mapping…',
+        icon: ListOrdered,
+        durationMs: 2000,
+    },
 ];
 
 interface SyncDiffItem {
@@ -735,7 +994,10 @@ interface SyncDiffChanged {
     sensor: SyncDiffItem;
     db_id: number;
     db_name: string;
-    changes: Record<string, { old: string | number | null; new: string | number | null }>;
+    changes: Record<
+        string,
+        { old: string | number | null; new: string | number | null }
+    >;
 }
 
 interface SyncDiff {
@@ -768,10 +1030,15 @@ function SyncFromDeviceDialog({
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const [phase, setPhase] = useState<SyncPhase>('idle');
-    const [stepStatuses, setStepStatuses] = useState<StepStatus[]>(SYNC_STEPS.map(() => 'idle'));
+    const [stepStatuses, setStepStatuses] = useState<StepStatus[]>(
+        SYNC_STEPS.map(() => 'idle'),
+    );
     const [stepProgress, setStepProgress] = useState(0);
     const [errorMessage, setErrorMessage] = useState('');
-    const [syncedInfo, setSyncedInfo] = useState<Record<string, string | number | null> | null>(null);
+    const [syncedInfo, setSyncedInfo] = useState<Record<
+        string,
+        string | number | null
+    > | null>(null);
     const [diff, setDiff] = useState<SyncDiff | null>(null);
     const [diffSummary, setDiffSummary] = useState<SyncSummary | null>(null);
     const [applyResult, setApplyResult] = useState<string[]>([]);
@@ -795,10 +1062,17 @@ function SyncFromDeviceDialog({
             const ticks = durationMs / intervalMs;
             let tick = 0;
             const interval = setInterval(() => {
-                if (cancelled.current) { clearInterval(interval); resolve(); return; }
+                if (cancelled.current) {
+                    clearInterval(interval);
+                    resolve();
+                    return;
+                }
                 tick++;
                 setStepProgress(Math.min(100, (tick / ticks) * 100));
-                if (tick >= ticks) { clearInterval(interval); resolve(); }
+                if (tick >= ticks) {
+                    clearInterval(interval);
+                    resolve();
+                }
             }, intervalMs);
         });
     }
@@ -808,25 +1082,51 @@ function SyncFromDeviceDialog({
         setPhase('syncing');
 
         // === Step 0: Connect & Fetch INFO (real MQTT) ===
-        setStepStatuses(prev => { const n = [...prev]; n[0] = 'running'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[0] = 'running';
+            return n;
+        });
         setStepProgress(0);
 
         let mqttDone = false;
-        const mqttResultRef: { current: { success: boolean; data?: Record<string, string | number | null>; message?: string } | null } = { current: null };
+        const mqttResultRef: {
+            current: {
+                success: boolean;
+                data?: Record<string, string | number | null>;
+                message?: string;
+            } | null;
+        } = { current: null };
 
-        const mqttPromise = apiFetch('/api/mqtt/info', { id_logger: deviceIdentifier })
-            .then(r => r.json())
-            .then((data: { success: boolean; data?: Record<string, string | number | null>; message?: string }) => {
-                mqttResultRef.current = data; mqttDone = true;
-            })
+        const mqttPromise = apiFetch('/api/mqtt/info', {
+            id_logger: deviceIdentifier,
+        })
+            .then((r) => r.json())
+            .then(
+                (data: {
+                    success: boolean;
+                    data?: Record<string, string | number | null>;
+                    message?: string;
+                }) => {
+                    mqttResultRef.current = data;
+                    mqttDone = true;
+                },
+            )
             .catch(() => {
-                mqttResultRef.current = { success: false, message: 'Network error' }; mqttDone = true;
+                mqttResultRef.current = {
+                    success: false,
+                    message: 'Network error',
+                };
+                mqttDone = true;
             });
 
         const start = Date.now();
         const maxMs = 30000;
         const progressInterval = setInterval(() => {
-            if (cancelled.current || mqttDone) { clearInterval(progressInterval); return; }
+            if (cancelled.current || mqttDone) {
+                clearInterval(progressInterval);
+                return;
+            }
             const elapsed = Date.now() - start;
             setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
         }, 100);
@@ -838,47 +1138,81 @@ function SyncFromDeviceDialog({
 
         const result = mqttResultRef.current;
         if (!result || !result.success) {
-            setStepStatuses(prev => { const n = [...prev]; n[0] = 'error'; return n; });
+            setStepStatuses((prev) => {
+                const n = [...prev];
+                n[0] = 'error';
+                return n;
+            });
             setStepProgress(100);
-            setErrorMessage(result?.message || 'No response from logger. Device may be offline.');
+            setErrorMessage(
+                result?.message ||
+                    'No response from logger. Device may be offline.',
+            );
             setPhase('error');
             return;
         }
 
         setSyncedInfo(result.data || null);
         setStepProgress(100);
-        setStepStatuses(prev => { const n = [...prev]; n[0] = 'done'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[0] = 'done';
+            return n;
+        });
 
         // === Step 1: Fetching Device Info (simulated) ===
         if (cancelled.current) return;
         setStepProgress(0);
-        setStepStatuses(prev => { const n = [...prev]; n[1] = 'running'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[1] = 'running';
+            return n;
+        });
         await animateProgress(SYNC_STEPS[1].durationMs);
         if (cancelled.current) return;
-        setStepStatuses(prev => { const n = [...prev]; n[1] = 'done'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[1] = 'done';
+            return n;
+        });
         setStepProgress(100);
 
         // === Step 2: Fetch Sensors Preview (real MQTT → returns diff) ===
         if (cancelled.current) return;
         setStepProgress(0);
-        setStepStatuses(prev => { const n = [...prev]; n[2] = 'running'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[2] = 'running';
+            return n;
+        });
 
         let sensorDone = false;
 
         const sensorResultRef: { current: any } = { current: null };
 
-        const sensorPromise = apiFetch('/api/mqtt/sensors/get', { id_logger: deviceIdentifier, logger_id: loggerId })
-            .then(r => r.json())
+        const sensorPromise = apiFetch('/api/mqtt/sensors/get', {
+            id_logger: deviceIdentifier,
+            logger_id: loggerId,
+        })
+            .then((r) => r.json())
             .then((data) => {
-                sensorResultRef.current = data; sensorDone = true;
+                sensorResultRef.current = data;
+                sensorDone = true;
             })
             .catch(() => {
-                sensorResultRef.current = { success: false, message: 'Failed to fetch sensors' }; sensorDone = true;
+                sensorResultRef.current = {
+                    success: false,
+                    message: 'Failed to fetch sensors',
+                };
+                sensorDone = true;
             });
 
         const sensorStart = Date.now();
         const sensorProgressInterval = setInterval(() => {
-            if (cancelled.current || sensorDone) { clearInterval(sensorProgressInterval); return; }
+            if (cancelled.current || sensorDone) {
+                clearInterval(sensorProgressInterval);
+                return;
+            }
             const elapsed = Date.now() - sensorStart;
             setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
         }, 100);
@@ -888,11 +1222,17 @@ function SyncFromDeviceDialog({
 
         if (cancelled.current) return;
         setStepProgress(100);
-        setStepStatuses(prev => { const n = [...prev]; n[2] = 'done'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[2] = 'done';
+            return n;
+        });
 
         const sensorResult = sensorResultRef.current;
         if (!sensorResult?.success) {
-            setErrorMessage(sensorResult?.message || 'Failed to fetch sensor config');
+            setErrorMessage(
+                sensorResult?.message || 'Failed to fetch sensor config',
+            );
             setPhase('error');
             return;
         }
@@ -907,30 +1247,51 @@ function SyncFromDeviceDialog({
         // Caches both so the Data Mapping card, GCM and Calibration reuse them without re-querying.
         if (cancelled.current) return;
         setStepProgress(0);
-        setStepStatuses(prev => { const n = [...prev]; n[3] = 'running'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[3] = 'running';
+            return n;
+        });
         let mapDone = false;
         const mapStart = Date.now();
         const mapProgressInterval = setInterval(() => {
-            if (cancelled.current || mapDone) { clearInterval(mapProgressInterval); return; }
+            if (cancelled.current || mapDone) {
+                clearInterval(mapProgressInterval);
+                return;
+            }
             const elapsed = Date.now() - mapStart;
             setStepProgress(Math.min(90, (elapsed / maxMs) * 90));
         }, 100);
         try {
-            const cacheReads: Promise<unknown>[] = [fetchSensorNames(deviceIdentifier, true)];
+            const cacheReads: Promise<unknown>[] = [
+                fetchSensorNames(deviceIdentifier, true),
+            ];
             if (canApplySensorChanges) {
                 cacheReads.push(fetchMapSlots(deviceIdentifier, true));
             }
             await Promise.all(cacheReads);
-        } catch { /* non-critical — Data Mapping just falls back to DB sensors */ }
+        } catch {
+            /* non-critical — Data Mapping just falls back to DB sensors */
+        }
         mapDone = true;
         clearInterval(mapProgressInterval);
         if (cancelled.current) return;
         setStepProgress(100);
-        setStepStatuses(prev => { const n = [...prev]; n[3] = 'done'; return n; });
+        setStepStatuses((prev) => {
+            const n = [...prev];
+            n[3] = 'done';
+            return n;
+        });
 
         // If no changes at all, auto-apply (no confirmation needed)
-        if (fetchedSummary.added_count === 0 && fetchedSummary.removed_count === 0 && fetchedSummary.changed_count === 0) {
-            setApplyResult(['No changes detected — sensors are already in sync.']);
+        if (
+            fetchedSummary.added_count === 0 &&
+            fetchedSummary.removed_count === 0 &&
+            fetchedSummary.changed_count === 0
+        ) {
+            setApplyResult([
+                'No changes detected — sensors are already in sync.',
+            ]);
             setPhase('success');
             router.reload();
             return;
@@ -938,7 +1299,6 @@ function SyncFromDeviceDialog({
 
         // Show review phase
         setPhase('review');
-
     }, [canApplySensorChanges, deviceIdentifier, loggerId]);
 
     const handleConfirmSync = useCallback(async () => {
@@ -947,7 +1307,10 @@ function SyncFromDeviceDialog({
         setPhase('applying');
 
         try {
-            const res = await apiFetch('/api/mqtt/sensors/confirm', { logger_id: loggerId, diff });
+            const res = await apiFetch('/api/mqtt/sensors/confirm', {
+                logger_id: loggerId,
+                diff,
+            });
             const data = await res.json();
             if (data.success) {
                 setApplyResult(data.changes_applied || []);
@@ -982,36 +1345,66 @@ function SyncFromDeviceDialog({
     }
 
     const overallProgress = (() => {
-        const doneSteps = stepStatuses.filter(s => s === 'done').length;
+        const doneSteps = stepStatuses.filter((s) => s === 'done').length;
         if (phase === 'success') return 100;
-        return ((doneSteps / SYNC_STEPS.length) * 100) + (stepProgress / SYNC_STEPS.length);
+        return (
+            (doneSteps / SYNC_STEPS.length) * 100 +
+            stepProgress / SYNC_STEPS.length
+        );
     })();
 
-    const hasChanges = diffSummary && (diffSummary.added_count > 0 || diffSummary.removed_count > 0 || diffSummary.changed_count > 0);
+    const hasChanges =
+        diffSummary &&
+        (diffSummary.added_count > 0 ||
+            diffSummary.removed_count > 0 ||
+            diffSummary.changed_count > 0);
 
     return (
         <>
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={handleOpen}>
+            <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={handleOpen}
+            >
                 <RefreshCw className="size-4" />
                 {label}
             </Button>
-            <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
-                <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto" onInteractOutside={(e) => { if (phase === 'syncing' || phase === 'applying') e.preventDefault(); }}>
-
+            <Dialog
+                open={open}
+                onOpenChange={(v) => {
+                    if (!v) handleClose();
+                }}
+            >
+                <DialogContent
+                    className="max-h-[85vh] overflow-y-auto sm:max-w-lg"
+                    onInteractOutside={(e) => {
+                        if (phase === 'syncing' || phase === 'applying')
+                            e.preventDefault();
+                    }}
+                >
                     {/* ─── SYNCING ─── */}
                     {phase === 'syncing' && (
                         <>
                             <DialogHeader>
                                 <DialogTitle>Syncing Device Data</DialogTitle>
-                                <DialogDescription>Fetching latest data from <strong>{deviceIdentifier}</strong>…</DialogDescription>
+                                <DialogDescription>
+                                    Fetching latest data from{' '}
+                                    <strong>{deviceIdentifier}</strong>…
+                                </DialogDescription>
                             </DialogHeader>
                             <div className="py-4">
                                 <div className="mb-6 space-y-2">
                                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                                         <span>Overall Progress</span>
-                                        <span className="font-mono">{Math.round(overallProgress)}%</span>
+                                        <span className="font-mono">
+                                            {Math.round(overallProgress)}%
+                                        </span>
                                     </div>
-                                    <Progress value={overallProgress} className="h-2 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-200" />
+                                    <Progress
+                                        value={overallProgress}
+                                        className="h-2 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-200"
+                                    />
                                 </div>
                                 <div className="space-y-1">
                                     {SYNC_STEPS.map((step, i) => {
@@ -1020,42 +1413,75 @@ function SyncFromDeviceDialog({
                                         const isActive = status === 'running';
                                         const isDone = status === 'done';
                                         return (
-                                            <div key={step.id} className={`flex items-center gap-4 rounded-lg border px-4 py-3 transition-all duration-300 ${
-                                                isActive ? 'border-emerald-500/40 bg-emerald-500/5 shadow-sm' :
-                                                isDone ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-transparent'
-                                            }`}>
-                                                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-all duration-300 ${
-                                                    isDone ? 'bg-emerald-500/20 text-emerald-500' :
-                                                    isActive ? 'bg-emerald-500/10 text-emerald-500' : 'bg-muted text-muted-foreground'
-                                                }`}>
-                                                    {isDone ? <Check className="size-5 animate-in fade-in zoom-in duration-300" /> :
-                                                     isActive ? <Loader2 className="size-5 animate-spin" /> :
-                                                     <StepIcon className="size-5" />}
+                                            <div
+                                                key={step.id}
+                                                className={`flex items-center gap-4 rounded-lg border px-4 py-3 transition-all duration-300 ${
+                                                    isActive
+                                                        ? 'border-emerald-500/40 bg-emerald-500/5 shadow-sm'
+                                                        : isDone
+                                                          ? 'border-emerald-500/20 bg-emerald-500/5'
+                                                          : 'border-transparent'
+                                                }`}
+                                            >
+                                                <div
+                                                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-all duration-300 ${
+                                                        isDone
+                                                            ? 'bg-emerald-500/20 text-emerald-500'
+                                                            : isActive
+                                                              ? 'bg-emerald-500/10 text-emerald-500'
+                                                              : 'bg-muted text-muted-foreground'
+                                                    }`}
+                                                >
+                                                    {isDone ? (
+                                                        <Check className="size-5 animate-in duration-300 fade-in zoom-in" />
+                                                    ) : isActive ? (
+                                                        <Loader2 className="size-5 animate-spin" />
+                                                    ) : (
+                                                        <StepIcon className="size-5" />
+                                                    )}
                                                 </div>
                                                 <div className="min-w-0 flex-1">
-                                                    <p className={`text-sm font-medium transition-colors duration-200 ${
-                                                        isDone ? 'text-emerald-600 dark:text-emerald-400' :
-                                                        isActive ? 'text-foreground' : 'text-muted-foreground'
-                                                    }`}>{step.label}</p>
+                                                    <p
+                                                        className={`text-sm font-medium transition-colors duration-200 ${
+                                                            isDone
+                                                                ? 'text-emerald-600 dark:text-emerald-400'
+                                                                : isActive
+                                                                  ? 'text-foreground'
+                                                                  : 'text-muted-foreground'
+                                                        }`}
+                                                    >
+                                                        {step.label}
+                                                    </p>
                                                     {isActive && (
                                                         <>
-                                                            <p className="mt-0.5 text-xs text-muted-foreground animate-in fade-in slide-in-from-left-2 duration-200">
-                                                                {step.description}
+                                                            <p className="mt-0.5 animate-in text-xs text-muted-foreground duration-200 fade-in slide-in-from-left-2">
+                                                                {
+                                                                    step.description
+                                                                }
                                                             </p>
                                                             <div className="mt-2">
-                                                                <Progress value={stepProgress} className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100" />
+                                                                <Progress
+                                                                    value={
+                                                                        stepProgress
+                                                                    }
+                                                                    className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100"
+                                                                />
                                                             </div>
                                                         </>
                                                     )}
                                                 </div>
-                                                {isDone && <CheckCircle2 className="size-4 shrink-0 text-emerald-500 animate-in fade-in zoom-in duration-300" />}
+                                                {isDone && (
+                                                    <CheckCircle2 className="size-4 shrink-0 animate-in text-emerald-500 duration-300 fade-in zoom-in" />
+                                                )}
                                             </div>
                                         );
                                     })}
                                 </div>
                             </div>
                             <DialogFooter>
-                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
+                                <Button variant="outline" onClick={handleClose}>
+                                    {t('common.cancel')}
+                                </Button>
                             </DialogFooter>
                         </>
                     )}
@@ -1066,30 +1492,36 @@ function SyncFromDeviceDialog({
                             <DialogHeader>
                                 <DialogTitle>Review Sensor Changes</DialogTitle>
                                 <DialogDescription>
-                                    Found differences between device and database. Review before applying.
+                                    Found differences between device and
+                                    database. Review before applying.
                                 </DialogDescription>
                             </DialogHeader>
-                            <div className="py-4 space-y-4">
+                            <div className="space-y-4 py-4">
                                 {/* Summary badges */}
                                 <div className="flex flex-wrap gap-2">
                                     {diffSummary.added_count > 0 && (
                                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                                            <Plus className="size-3" /> {diffSummary.added_count} New
+                                            <Plus className="size-3" />{' '}
+                                            {diffSummary.added_count} New
                                         </span>
                                     )}
                                     {diffSummary.changed_count > 0 && (
                                         <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-                                            <ArrowUpDown className="size-3" /> {diffSummary.changed_count} Changed
+                                            <ArrowUpDown className="size-3" />{' '}
+                                            {diffSummary.changed_count} Changed
                                         </span>
                                     )}
                                     {diffSummary.removed_count > 0 && (
                                         <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-3 py-1 text-xs font-medium text-red-600 dark:text-red-400">
-                                            <Trash2 className="size-3" /> {diffSummary.removed_count} Removed
+                                            <Trash2 className="size-3" />{' '}
+                                            {diffSummary.removed_count} Removed
                                         </span>
                                     )}
                                     {diffSummary.unchanged_count > 0 && (
                                         <span className="inline-flex items-center gap-1 rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
-                                            <Check className="size-3" /> {diffSummary.unchanged_count} Unchanged
+                                            <Check className="size-3" />{' '}
+                                            {diffSummary.unchanged_count}{' '}
+                                            Unchanged
                                         </span>
                                     )}
                                 </div>
@@ -1098,20 +1530,50 @@ function SyncFromDeviceDialog({
                                 {diff.added.length > 0 && (
                                     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
                                         <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                                            <Plus className="size-3.5" /> New Sensors (will be added)
+                                            <Plus className="size-3.5" /> New
+                                            Sensors (will be added)
                                         </p>
                                         <div className="space-y-1.5">
-                                            {groupDiffItemsByDevice(diff.added).map((group) => (
-                                                <div key={group.key} className="rounded bg-background/50 px-3 py-1.5 text-xs">
+                                            {groupDiffItemsByDevice(
+                                                diff.added,
+                                            ).map((group) => (
+                                                <div
+                                                    key={group.key}
+                                                    className="rounded bg-background/50 px-3 py-1.5 text-xs"
+                                                >
                                                     <div className="flex items-center justify-between">
-                                                        <span className="font-medium">{group.deviceLabel}{group.locator ? ` · ${group.locator}` : ''}</span>
-                                                        <span className="text-muted-foreground">{group.interfaceLabel}{group.members.length > 1 ? ` · ${group.members.length} parameter` : ` · ${group.members[0].unit ?? ''}`}</span>
+                                                        <span className="font-medium">
+                                                            {group.deviceLabel}
+                                                            {group.locator
+                                                                ? ` · ${group.locator}`
+                                                                : ''}
+                                                        </span>
+                                                        <span className="text-muted-foreground">
+                                                            {
+                                                                group.interfaceLabel
+                                                            }
+                                                            {group.members
+                                                                .length > 1
+                                                                ? ` · ${group.members.length} parameter`
+                                                                : ` · ${group.members[0].unit ?? ''}`}
+                                                        </span>
                                                     </div>
-                                                    {group.members.length > 1 && (
+                                                    {group.members.length >
+                                                        1 && (
                                                         <div className="mt-1 flex flex-wrap gap-1">
-                                                            {group.members.map((m, mi) => (
-                                                                <span key={mi} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.name}{m.unit ? ` (${m.unit})` : ''}</span>
-                                                            ))}
+                                                            {group.members.map(
+                                                                (m, mi) => (
+                                                                    <span
+                                                                        key={mi}
+                                                                        className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                                                                    >
+                                                                        {m.name}
+                                                                        {m.unit
+                                                                            ? ` (${m.unit})`
+                                                                            : ''}
+                                                                    </span>
+                                                                ),
+                                                            )}
                                                         </div>
                                                     )}
                                                 </div>
@@ -1124,19 +1586,42 @@ function SyncFromDeviceDialog({
                                 {diff.changed.length > 0 && (
                                     <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
                                         <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
-                                            <ArrowUpDown className="size-3.5" /> Changed Sensors (will be updated)
+                                            <ArrowUpDown className="size-3.5" />{' '}
+                                            Changed Sensors (will be updated)
                                         </p>
                                         <div className="space-y-2">
                                             {diff.changed.map((item, i) => (
-                                                <div key={i} className="rounded bg-background/50 px-3 py-2 text-xs">
-                                                    <span className="font-medium">{item.db_name}</span>
+                                                <div
+                                                    key={i}
+                                                    className="rounded bg-background/50 px-3 py-2 text-xs"
+                                                >
+                                                    <span className="font-medium">
+                                                        {item.db_name}
+                                                    </span>
                                                     <div className="mt-1 space-y-0.5">
-                                                        {Object.entries(item.changes).map(([key, val]) => (
-                                                            <div key={key} className="flex items-center gap-2 text-muted-foreground">
-                                                                <span className="w-20 shrink-0 capitalize">{key}:</span>
-                                                                <span className="line-through text-red-500">{String(val.old ?? '—')}</span>
+                                                        {Object.entries(
+                                                            item.changes,
+                                                        ).map(([key, val]) => (
+                                                            <div
+                                                                key={key}
+                                                                className="flex items-center gap-2 text-muted-foreground"
+                                                            >
+                                                                <span className="w-20 shrink-0 capitalize">
+                                                                    {key}:
+                                                                </span>
+                                                                <span className="text-red-500 line-through">
+                                                                    {String(
+                                                                        val.old ??
+                                                                            '—',
+                                                                    )}
+                                                                </span>
                                                                 <span>→</span>
-                                                                <span className="text-emerald-600 dark:text-emerald-400">{String(val.new ?? '—')}</span>
+                                                                <span className="text-emerald-600 dark:text-emerald-400">
+                                                                    {String(
+                                                                        val.new ??
+                                                                            '—',
+                                                                    )}
+                                                                </span>
                                                             </div>
                                                         ))}
                                                     </div>
@@ -1150,20 +1635,51 @@ function SyncFromDeviceDialog({
                                 {diff.removed.length > 0 && (
                                     <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
                                         <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-red-600 dark:text-red-400">
-                                            <Trash2 className="size-3.5" /> Missing from Device (will be removed)
+                                            <Trash2 className="size-3.5" />{' '}
+                                            Missing from Device (will be
+                                            removed)
                                         </p>
                                         <div className="space-y-1.5">
-                                            {groupDiffItemsByDevice(diff.removed).map((group) => (
-                                                <div key={group.key} className="rounded bg-background/50 px-3 py-1.5 text-xs">
+                                            {groupDiffItemsByDevice(
+                                                diff.removed,
+                                            ).map((group) => (
+                                                <div
+                                                    key={group.key}
+                                                    className="rounded bg-background/50 px-3 py-1.5 text-xs"
+                                                >
                                                     <div className="flex items-center justify-between">
-                                                        <span className="font-medium">{group.deviceLabel}{group.locator ? ` · ${group.locator}` : ''}</span>
-                                                        <span className="text-muted-foreground">{group.interfaceLabel}{group.members.length > 1 ? ` · ${group.members.length} parameter` : ` · ${group.members[0].unit ?? ''}`}</span>
+                                                        <span className="font-medium">
+                                                            {group.deviceLabel}
+                                                            {group.locator
+                                                                ? ` · ${group.locator}`
+                                                                : ''}
+                                                        </span>
+                                                        <span className="text-muted-foreground">
+                                                            {
+                                                                group.interfaceLabel
+                                                            }
+                                                            {group.members
+                                                                .length > 1
+                                                                ? ` · ${group.members.length} parameter`
+                                                                : ` · ${group.members[0].unit ?? ''}`}
+                                                        </span>
                                                     </div>
-                                                    {group.members.length > 1 && (
+                                                    {group.members.length >
+                                                        1 && (
                                                         <div className="mt-1 flex flex-wrap gap-1">
-                                                            {group.members.map((m, mi) => (
-                                                                <span key={mi} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.name}{m.unit ? ` (${m.unit})` : ''}</span>
-                                                            ))}
+                                                            {group.members.map(
+                                                                (m, mi) => (
+                                                                    <span
+                                                                        key={mi}
+                                                                        className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                                                                    >
+                                                                        {m.name}
+                                                                        {m.unit
+                                                                            ? ` (${m.unit})`
+                                                                            : ''}
+                                                                    </span>
+                                                                ),
+                                                            )}
                                                         </div>
                                                     )}
                                                 </div>
@@ -1174,15 +1690,26 @@ function SyncFromDeviceDialog({
 
                                 {!canApplySensorChanges && hasChanges && (
                                     <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
-                                        Akses kamu hanya view. Data terbaru sudah dibaca dari device, tapi perubahan konfigurasi sensor harus diterapkan oleh user dengan akses manage.
+                                        Akses kamu hanya view. Data terbaru
+                                        sudah dibaca dari device, tapi perubahan
+                                        konfigurasi sensor harus diterapkan oleh
+                                        user dengan akses manage.
                                     </div>
                                 )}
                             </div>
                             <DialogFooter className="gap-2 sm:gap-0">
-                                <Button variant="outline" onClick={handleClose}>{canApplySensorChanges ? t('common.cancel') : 'Close'}</Button>
+                                <Button variant="outline" onClick={handleClose}>
+                                    {canApplySensorChanges
+                                        ? t('common.cancel')
+                                        : 'Close'}
+                                </Button>
                                 {canApplySensorChanges && (
-                                    <Button onClick={handleConfirmSync} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
-                                        <Check className="size-4" /> Apply Changes
+                                    <Button
+                                        onClick={handleConfirmSync}
+                                        className="gap-1.5 bg-emerald-600 hover:bg-emerald-700"
+                                    >
+                                        <Check className="size-4" /> Apply
+                                        Changes
                                     </Button>
                                 )}
                             </DialogFooter>
@@ -1194,7 +1721,9 @@ function SyncFromDeviceDialog({
                         <>
                             <DialogHeader>
                                 <DialogTitle>Applying Changes…</DialogTitle>
-                                <DialogDescription>Saving sensor changes to database…</DialogDescription>
+                                <DialogDescription>
+                                    Saving sensor changes to database…
+                                </DialogDescription>
                             </DialogHeader>
                             <div className="flex justify-center py-8">
                                 <Loader2 className="size-10 animate-spin text-emerald-500" />
@@ -1206,17 +1735,26 @@ function SyncFromDeviceDialog({
                     {phase === 'error' && (
                         <>
                             <div className="flex flex-col items-center gap-4 py-8">
-                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
+                                <div className="flex h-16 w-16 animate-in items-center justify-center rounded-full bg-red-500/10 duration-500 zoom-in">
                                     <XCircle className="size-8 text-red-500" />
                                 </div>
                                 <div className="text-center">
-                                    <h3 className="text-lg font-semibold">Sync Failed</h3>
-                                    <p className="mt-1 text-sm text-muted-foreground">{errorMessage}</p>
+                                    <h3 className="text-lg font-semibold">
+                                        Sync Failed
+                                    </h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">
+                                        {errorMessage}
+                                    </p>
                                 </div>
                             </div>
                             <DialogFooter>
-                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
-                                <Button onClick={handleRetry} className="gap-1.5">
+                                <Button variant="outline" onClick={handleClose}>
+                                    {t('common.cancel')}
+                                </Button>
+                                <Button
+                                    onClick={handleRetry}
+                                    className="gap-1.5"
+                                >
                                     <Plug className="size-4" /> Retry
                                 </Button>
                             </DialogFooter>
@@ -1227,33 +1765,91 @@ function SyncFromDeviceDialog({
                     {phase === 'success' && (
                         <>
                             <div className="flex flex-col items-center gap-4 py-8">
-                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
+                                <div className="flex h-16 w-16 animate-in items-center justify-center rounded-full bg-emerald-500/10 duration-500 zoom-in">
                                     <CheckCircle2 className="size-8 text-emerald-500" />
                                 </div>
                                 <div className="text-center">
-                                    <h3 className="text-lg font-semibold">Sync Complete</h3>
+                                    <h3 className="text-lg font-semibold">
+                                        Sync Complete
+                                    </h3>
                                     <p className="mt-1 text-sm text-muted-foreground">
-                                        {hasChanges ? 'Changes have been applied successfully.' : 'Sensors are already in sync.'}
+                                        {hasChanges
+                                            ? 'Changes have been applied successfully.'
+                                            : 'Sensors are already in sync.'}
                                     </p>
                                 </div>
                                 {syncedInfo && (
                                     <div className="w-full rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
-                                        <p className="mb-2 text-xs font-medium text-emerald-600 dark:text-emerald-400">Device Info Retrieved</p>
+                                        <p className="mb-2 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                                            Device Info Retrieved
+                                        </p>
                                         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                                            {syncedInfo.ip_address && (<><span className="text-muted-foreground">IP Address</span><span className="font-mono">{String(syncedInfo.ip_address)}</span></>)}
-                                            {syncedInfo.battery && (<><span className="text-muted-foreground">Battery</span><span>{String(syncedInfo.battery)}V</span></>)}
-                                            {syncedInfo.temperature && (<><span className="text-muted-foreground">Temperature</span><span>{String(syncedInfo.temperature)}°C</span></>)}
-                                            {syncedInfo.humidity && (<><span className="text-muted-foreground">Humidity</span><span>{String(syncedInfo.humidity)}%</span></>)}
+                                            {syncedInfo.ip_address && (
+                                                <>
+                                                    <span className="text-muted-foreground">
+                                                        IP Address
+                                                    </span>
+                                                    <span className="font-mono">
+                                                        {String(
+                                                            syncedInfo.ip_address,
+                                                        )}
+                                                    </span>
+                                                </>
+                                            )}
+                                            {syncedInfo.battery && (
+                                                <>
+                                                    <span className="text-muted-foreground">
+                                                        Battery
+                                                    </span>
+                                                    <span>
+                                                        {String(
+                                                            syncedInfo.battery,
+                                                        )}
+                                                        V
+                                                    </span>
+                                                </>
+                                            )}
+                                            {syncedInfo.temperature && (
+                                                <>
+                                                    <span className="text-muted-foreground">
+                                                        Temperature
+                                                    </span>
+                                                    <span>
+                                                        {String(
+                                                            syncedInfo.temperature,
+                                                        )}
+                                                        °C
+                                                    </span>
+                                                </>
+                                            )}
+                                            {syncedInfo.humidity && (
+                                                <>
+                                                    <span className="text-muted-foreground">
+                                                        Humidity
+                                                    </span>
+                                                    <span>
+                                                        {String(
+                                                            syncedInfo.humidity,
+                                                        )}
+                                                        %
+                                                    </span>
+                                                </>
+                                            )}
                                         </div>
                                     </div>
                                 )}
                                 {applyResult.length > 0 && (
                                     <div className="w-full rounded-lg border border-muted bg-muted/30 p-3">
-                                        <p className="mb-2 text-xs font-medium text-foreground">Changes Applied</p>
+                                        <p className="mb-2 text-xs font-medium text-foreground">
+                                            Changes Applied
+                                        </p>
                                         <div className="space-y-1 text-xs text-muted-foreground">
                                             {applyResult.map((log, i) => (
-                                                <p key={i} className="flex items-start gap-1.5">
-                                                    <Check className="size-3 mt-0.5 shrink-0 text-emerald-500" />
+                                                <p
+                                                    key={i}
+                                                    className="flex items-start gap-1.5"
+                                                >
+                                                    <Check className="mt-0.5 size-3 shrink-0 text-emerald-500" />
                                                     {log}
                                                 </p>
                                             ))}
@@ -1262,13 +1858,15 @@ function SyncFromDeviceDialog({
                                 )}
                             </div>
                             <DialogFooter>
-                                <Button onClick={handleClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                <Button
+                                    onClick={handleClose}
+                                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700"
+                                >
                                     Done
                                 </Button>
                             </DialogFooter>
                         </>
                     )}
-
                 </DialogContent>
             </Dialog>
         </>
@@ -1280,7 +1878,13 @@ function SyncFromDeviceDialog({
 // =============================================================================
 type RebootPhase = 'confirm' | 'sending' | 'waiting' | 'success' | 'error';
 
-function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string; disabled?: boolean }) {
+function RebootDialog({
+    deviceIdentifier,
+    disabled,
+}: {
+    deviceIdentifier: string;
+    disabled?: boolean;
+}) {
     const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const [phase, setPhase] = useState<RebootPhase>('confirm');
@@ -1312,11 +1916,13 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
 
         // After 2s show "waiting" phase (device is rebooting)
         setTimeout(() => {
-            setPhase((prev) => prev === 'sending' ? 'waiting' : prev);
+            setPhase((prev) => (prev === 'sending' ? 'waiting' : prev));
         }, 2000);
 
         try {
-            const res = await apiFetch('/api/mqtt/reboot', { id_logger: deviceIdentifier });
+            const res = await apiFetch('/api/mqtt/reboot', {
+                id_logger: deviceIdentifier,
+            });
             const data = await res.json();
 
             if (timerRef.current) clearInterval(timerRef.current);
@@ -1351,14 +1957,27 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
                 size="sm"
                 className="gap-1.5"
                 disabled={disabled}
-                onClick={() => { reset(); setOpen(true); }}
+                onClick={() => {
+                    reset();
+                    setOpen(true);
+                }}
             >
                 <Power className="size-4" />
                 {t('loggerDetail.reboot')}
             </Button>
-            <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
-                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (phase === 'sending' || phase === 'waiting') e.preventDefault(); }}>
-
+            <Dialog
+                open={open}
+                onOpenChange={(v) => {
+                    if (!v) handleClose();
+                }}
+            >
+                <DialogContent
+                    className="sm:max-w-md"
+                    onInteractOutside={(e) => {
+                        if (phase === 'sending' || phase === 'waiting')
+                            e.preventDefault();
+                    }}
+                >
                     {/* ── Confirmation ── */}
                     {phase === 'confirm' && (
                         <>
@@ -1367,13 +1986,20 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
                                     <AlertTriangle className="size-5" />
                                     Reboot Logger
                                 </DialogTitle>
-                                <DialogDescription> 
-                                    Device akan restart dan sementara offline. Lanjutkan?
+                                <DialogDescription>
+                                    Device akan restart dan sementara offline.
+                                    Lanjutkan?
                                 </DialogDescription>
                             </DialogHeader>
                             <DialogFooter className="gap-2 sm:gap-0">
-                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
-                                <Button variant="destructive" onClick={handleReboot} className="gap-1.5">
+                                <Button variant="outline" onClick={handleClose}>
+                                    {t('common.cancel')}
+                                </Button>
+                                <Button
+                                    variant="destructive"
+                                    onClick={handleReboot}
+                                    className="gap-1.5"
+                                >
                                     <Power className="size-4" />
                                     Reboot Sekarang
                                 </Button>
@@ -1386,55 +2012,66 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
                         <div className="flex flex-col items-center gap-6 py-8">
                             {/* Animated icon */}
                             <div className="relative">
-                                <div className={`flex h-20 w-20 items-center justify-center rounded-full ${
-                                    phase === 'sending'
-                                        ? 'bg-amber-500/10'
-                                        : 'bg-blue-500/10 animate-pulse'
-                                }`}>
+                                <div
+                                    className={`flex h-20 w-20 items-center justify-center rounded-full ${
+                                        phase === 'sending'
+                                            ? 'bg-amber-500/10'
+                                            : 'animate-pulse bg-blue-500/10'
+                                    }`}
+                                >
                                     {phase === 'sending' ? (
                                         <Loader2 className="size-10 animate-spin text-amber-500" />
                                     ) : (
-                                        <Power className="size-10 text-blue-500 animate-pulse" />
+                                        <Power className="size-10 animate-pulse text-blue-500" />
                                     )}
                                 </div>
                                 {/* Ripple effect */}
                                 {phase === 'waiting' && (
                                     <>
-                                        <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
-                                        <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
+                                        <div className="absolute inset-0 animate-ping rounded-full border-2 border-blue-500/30" />
+                                        <div
+                                            className="absolute -inset-3 animate-ping rounded-full border border-blue-500/10"
+                                            style={{ animationDelay: '0.5s' }}
+                                        />
                                     </>
                                 )}
                             </div>
 
                             <div className="text-center">
                                 <h3 className="text-lg font-semibold">
-                                    {phase === 'sending' ? 'Mengirim Perintah Reboot...' : 'Menunggu Logger Restart...'}
+                                    {phase === 'sending'
+                                        ? 'Mengirim Perintah Reboot...'
+                                        : 'Menunggu Logger Restart...'}
                                 </h3>
                                 <p className="mt-1 text-sm text-muted-foreground">
                                     {phase === 'sending'
                                         ? 'Mengirim perintah ke device...'
                                         : 'Menunggu device booting kembali...'}
                                 </p>
-                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">
+                                <p className="mt-3 font-mono text-2xl font-bold text-muted-foreground tabular-nums">
                                     {formatElapsed(elapsed)}
                                 </p>
                             </div>
 
                             {/* Steps indicator */}
                             <div className="w-full max-w-xs space-y-2">
-                                <div className={`flex items-center gap-3 text-sm ${phase === 'sending' ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                <div
+                                    className={`flex items-center gap-3 text-sm ${phase === 'sending' ? 'text-foreground' : 'text-muted-foreground'}`}
+                                >
                                     {phase === 'sending' ? (
-                                        <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" />
+                                        <Loader2 className="size-4 shrink-0 animate-spin text-amber-500" />
                                     ) : (
-                                        <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                                        <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />
                                     )}
                                     <span>Mengirim perintah ke Logger</span>
                                 </div>
-                                <div className={`flex items-center gap-3 text-sm ${phase === 'waiting' ? 'text-foreground' : 'text-muted-foreground/50'}`}>
+                                <div
+                                    className={`flex items-center gap-3 text-sm ${phase === 'waiting' ? 'text-foreground' : 'text-muted-foreground/50'}`}
+                                >
                                     {phase === 'waiting' ? (
-                                        <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" />
+                                        <Loader2 className="size-4 shrink-0 animate-spin text-blue-500" />
                                     ) : (
-                                        <div className="size-4 rounded-full border-2 border-muted shrink-0" />
+                                        <div className="size-4 shrink-0 rounded-full border-2 border-muted" />
                                     )}
                                     <span>Menunggu balasan</span>
                                 </div>
@@ -1445,17 +2082,24 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
                     {/* ── Success ── */}
                     {phase === 'success' && (
                         <div className="flex flex-col items-center gap-4 py-8">
-                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
+                            <div className="flex h-16 w-16 animate-in items-center justify-center rounded-full bg-emerald-500/10 duration-500 zoom-in">
                                 <CheckCircle2 className="size-8 text-emerald-500" />
                             </div>
                             <div className="text-center">
-                                <h3 className="text-lg font-semibold">Reboot Berhasil!</h3>
+                                <h3 className="text-lg font-semibold">
+                                    Reboot Berhasil!
+                                </h3>
                                 <p className="mt-1 text-sm text-muted-foreground">
-                                    Device telah restart dan kembali online dalam <strong>{formatElapsed(elapsed)}</strong>
+                                    Device telah restart dan kembali online
+                                    dalam{' '}
+                                    <strong>{formatElapsed(elapsed)}</strong>
                                 </p>
                             </div>
                             <DialogFooter>
-                                <Button onClick={handleClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                <Button
+                                    onClick={handleClose}
+                                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700"
+                                >
                                     Done
                                 </Button>
                             </DialogFooter>
@@ -1466,17 +2110,30 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
                     {phase === 'error' && (
                         <>
                             <div className="flex flex-col items-center gap-4 py-8">
-                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
+                                <div className="flex h-16 w-16 animate-in items-center justify-center rounded-full bg-red-500/10 duration-500 zoom-in">
                                     <XCircle className="size-8 text-red-500" />
                                 </div>
                                 <div className="text-center">
-                                    <h3 className="text-lg font-semibold">Reboot Gagal</h3>
-                                    <p className="mt-1 text-sm text-muted-foreground">{errorMessage}</p>
+                                    <h3 className="text-lg font-semibold">
+                                        Reboot Gagal
+                                    </h3>
+                                    <p className="mt-1 text-sm text-muted-foreground">
+                                        {errorMessage}
+                                    </p>
                                 </div>
                             </div>
                             <DialogFooter>
-                                <Button variant="outline" onClick={handleClose}>{t('common.cancel')}</Button>
-                                <Button variant="destructive" onClick={() => { reset(); handleReboot(); }} className="gap-1.5">
+                                <Button variant="outline" onClick={handleClose}>
+                                    {t('common.cancel')}
+                                </Button>
+                                <Button
+                                    variant="destructive"
+                                    onClick={() => {
+                                        reset();
+                                        handleReboot();
+                                    }}
+                                    className="gap-1.5"
+                                >
                                     <Power className="size-4" /> Coba Lagi
                                 </Button>
                             </DialogFooter>
@@ -1490,7 +2147,12 @@ function RebootDialog({ deviceIdentifier, disabled }: { deviceIdentifier: string
 
 // Analog calibration controls (moved from the Advanced/Protocol CAL card). Shown inside the
 // expanded analog sensor row. Sends CAL SET (gain) / CAL OFFSET via the protocol command endpoint.
-function AnalogCalibration({ channel, mode, deviceIdentifier, disabled }: {
+function AnalogCalibration({
+    channel,
+    mode,
+    deviceIdentifier,
+    disabled,
+}: {
     channel: number;
     mode: number;
     deviceIdentifier: string | null;
@@ -1500,22 +2162,55 @@ function AnalogCalibration({ channel, mode, deviceIdentifier, disabled }: {
     const [offsetVal, setOffsetVal] = useState('');
     const [busy, setBusy] = useState<'gain' | 'offset' | null>(null);
     const [confirm, setConfirm] = useState<'gain' | 'offset' | null>(null);
-    const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+    const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(
+        null,
+    );
 
     // actual_val = the RAW signal the calibrator reads. Mode 1 (current) 4–20 mA, mode 0 (voltage) 0–10 V.
-    const range = mode === 1 ? { min: 4, max: 20, unit: 'mA' } : { min: 0, max: 10, unit: 'V' };
+    const range =
+        mode === 1
+            ? { min: 4, max: 20, unit: 'mA' }
+            : { min: 0, max: 10, unit: 'V' };
 
     async function sendCal(kind: 'gain' | 'offset') {
         if (!deviceIdentifier) return;
-        const payload = kind === 'gain'
-            ? { CAL: { cmd: 'SET', ch: channel, actual_val: parseFloat(actualVal) } }
-            : { CAL: { cmd: 'OFFSET', Sens: 'Analog', ch: channel, actual_val: parseFloat(offsetVal) } };
+        const payload =
+            kind === 'gain'
+                ? {
+                      CAL: {
+                          cmd: 'SET',
+                          ch: channel,
+                          actual_val: parseFloat(actualVal),
+                      },
+                  }
+                : {
+                      CAL: {
+                          cmd: 'OFFSET',
+                          Sens: 'Analog',
+                          ch: channel,
+                          actual_val: parseFloat(offsetVal),
+                      },
+                  };
         setBusy(kind);
         setStatus(null);
         try {
-            const res = await apiFetch('/api/mqtt/protocol/command', { id_logger: deviceIdentifier, module: 'CAL', payload });
+            const res = await apiFetch('/api/mqtt/protocol/command', {
+                id_logger: deviceIdentifier,
+                module: 'CAL',
+                payload,
+            });
             const data = await res.json();
-            setStatus(data.success ? { ok: true, msg: kind === 'gain' ? 'Calibration sent.' : 'Offset saved.' } : { ok: false, msg: data.message || 'Failed to send.' });
+            setStatus(
+                data.success
+                    ? {
+                          ok: true,
+                          msg:
+                              kind === 'gain'
+                                  ? 'Calibration sent.'
+                                  : 'Offset saved.',
+                      }
+                    : { ok: false, msg: data.message || 'Failed to send.' },
+            );
         } catch {
             setStatus({ ok: false, msg: 'Network error.' });
         } finally {
@@ -1524,45 +2219,115 @@ function AnalogCalibration({ channel, mode, deviceIdentifier, disabled }: {
     }
 
     const gainNum = parseFloat(actualVal);
-    const gainValid = actualVal !== '' && !isNaN(gainNum) && gainNum >= range.min && gainNum <= range.max;
+    const gainValid =
+        actualVal !== '' &&
+        !isNaN(gainNum) &&
+        gainNum >= range.min &&
+        gainNum <= range.max;
     const offsetValid = offsetVal !== '' && !isNaN(parseFloat(offsetVal));
 
     return (
         <div className="border-t bg-muted/20 px-4 py-3">
             <div className="grid gap-3 sm:grid-cols-2">
                 <div className="grid gap-1.5">
-                    <Label className="text-xs">Calibration <span className="font-normal text-muted-foreground">({range.unit} {range.min}–{range.max})</span></Label>
+                    <Label className="text-xs">
+                        Calibration{' '}
+                        <span className="font-normal text-muted-foreground">
+                            ({range.unit} {range.min}–{range.max})
+                        </span>
+                    </Label>
                     <div className="flex items-start gap-2">
-                        <Input inputMode="decimal" value={actualVal} disabled={disabled || busy !== null} onChange={(e) => setActualVal(e.target.value)} placeholder={mode === 1 ? 'e.g. 5.0' : 'e.g. 2.5'} className="flex-1" />
-                        <Button size="sm" className="gap-1" disabled={disabled || !gainValid || busy !== null} onClick={() => setConfirm('gain')}>
-                            {busy === 'gain' ? <Loader2 className="size-3.5 animate-spin" /> : <SlidersHorizontal className="size-3.5" />} Set
+                        <Input
+                            inputMode="decimal"
+                            value={actualVal}
+                            disabled={disabled || busy !== null}
+                            onChange={(e) => setActualVal(e.target.value)}
+                            placeholder={mode === 1 ? 'e.g. 5.0' : 'e.g. 2.5'}
+                            className="flex-1"
+                        />
+                        <Button
+                            size="sm"
+                            className="gap-1"
+                            disabled={disabled || !gainValid || busy !== null}
+                            onClick={() => setConfirm('gain')}
+                        >
+                            {busy === 'gain' ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                                <SlidersHorizontal className="size-3.5" />
+                            )}{' '}
+                            Set
                         </Button>
                     </div>
-                </div>
+                    </div>
                 <div className="grid gap-1.5">
                     <Label className="text-xs">Offset</Label>
                     <div className="flex items-start gap-2">
-                        <Input inputMode="decimal" value={offsetVal} disabled={disabled || busy !== null} onChange={(e) => setOffsetVal(e.target.value)} placeholder="e.g. 0.0" className="flex-1" />
-                        <Button size="sm" variant="outline" className="gap-1" disabled={disabled || !offsetValid || busy !== null} onClick={() => setConfirm('offset')}>
-                            {busy === 'offset' ? <Loader2 className="size-3.5 animate-spin" /> : <SlidersHorizontal className="size-3.5" />} Set
+                        <Input
+                            inputMode="decimal"
+                            value={offsetVal}
+                            disabled={disabled || busy !== null}
+                            onChange={(e) => setOffsetVal(e.target.value)}
+                            placeholder="e.g. 0.0"
+                            className="flex-1"
+                        />
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1"
+                            disabled={disabled || !offsetValid || busy !== null}
+                            onClick={() => setConfirm('offset')}
+                        >
+                            {busy === 'offset' ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                                <SlidersHorizontal className="size-3.5" />
+                            )}{' '}
+                            Set
                         </Button>
                     </div>
                 </div>
             </div>
-            {status && <p className={`mt-2 text-[11px] ${status.ok ? 'text-emerald-600' : 'text-red-600'}`}>{status.msg}</p>}
+            {status && (
+                <p
+                    className={`mt-2 text-[11px] ${status.ok ? 'text-emerald-600' : 'text-red-600'}`}
+                >
+                    {status.msg}
+                </p>
+            )}
 
-            <AlertDialog open={confirm !== null} onOpenChange={(o) => { if (!o) setConfirm(null); }}>
+            <AlertDialog
+                open={confirm !== null}
+                onOpenChange={(o) => {
+                    if (!o) setConfirm(null);
+                }}
+            >
                 <AlertDialogContent>
                     <AlertDialogHeader>
                         <AlertDialogTitle>Confirm Calibration</AlertDialogTitle>
                         <AlertDialogDescription>
-                            The calibration value is the <strong>raw {mode === 1 ? 'current (mA)' : 'voltage (V)'}</strong> read from your calibrator —
-                            <strong> not</strong> the final scaled value. Example: if the calibrator shows <strong>5&nbsp;mA</strong>, enter <strong>5.0</strong>. Send to the device?
+                            The calibration value is the{' '}
+                            <strong>
+                                raw{' '}
+                                {mode === 1 ? 'current (mA)' : 'voltage (V)'}
+                            </strong>{' '}
+                            read from your calibrator —<strong> not</strong> the
+                            final scaled value. Example: if the calibrator shows{' '}
+                            <strong>5&nbsp;mA</strong>, enter{' '}
+                            <strong>5.0</strong>. Send to the device?
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => { const k = confirm; setConfirm(null); if (k) sendCal(k); }}>Continue</AlertDialogAction>
+                        <AlertDialogAction
+                            onClick={() => {
+                                const k = confirm;
+                                setConfirm(null);
+                                if (k) sendCal(k);
+                            }}
+                        >
+                            Continue
+                        </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -1588,7 +2353,9 @@ function SensorCrudPanel({
     const [dialogOpen, setDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [editingSensor, setEditingSensor] = useState<SensorItem | null>(null);
-    const [deletingSensor, setDeletingSensor] = useState<SensorItem | null>(null);
+    const [deletingSensor, setDeletingSensor] = useState<SensorItem | null>(
+        null,
+    );
     const [form, setForm] = useState(EMPTY_FORM);
     const [processing, setProcessing] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
@@ -1597,13 +2364,24 @@ function SensorCrudPanel({
     const [deviceLocked, setDeviceLocked] = useState(false);
     // RS485 unified device form (cfg + params). editingDeviceSlave: null = create, else the slave being edited.
     const [rs485Form, setRs485Form] = useState(emptyRs485Form);
-    const [editingDeviceSlave, setEditingDeviceSlave] = useState<number | null>(null);
-    const hasInvalidRs485ParameterName = form.connection_type === 'rs485'
-        && rs485Form.params.some((parameter) => parameter.name.length > SENSOR_PARAMETER_NAME_MAX_LENGTH);
+    const [editingDeviceSlave, setEditingDeviceSlave] = useState<number | null>(
+        null,
+    );
+    const hasInvalidRs485ParameterName =
+        form.connection_type === 'rs485' &&
+        rs485Form.params.some(
+            (parameter) =>
+                parameter.name.length > SENSOR_PARAMETER_NAME_MAX_LENGTH,
+        );
     // Accordion: device groups (RS485 slave / RS232 port) can be collapsed.
     // Track collapsed keys; absent key = expanded. Default: all device groups closed.
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-        () => new Set(groupSensorsByDevice(sensors).filter((g) => g.interfaceLabel).map((g) => g.key)),
+        () =>
+            new Set(
+                groupSensorsByDevice(sensors)
+                    .filter((g) => g.interfaceLabel)
+                    .map((g) => g.key),
+            ),
     );
     const toggleGroup = (key: string) =>
         setCollapsedGroups((prev) => {
@@ -1626,20 +2404,38 @@ function SensorCrudPanel({
     };
 
     // ── RS485 unified device form helpers ──
-    const setRs485 = (patch: Partial<ReturnType<typeof emptyRs485Form>>) => setRs485Form(f => ({ ...f, ...patch }));
+    const setRs485 = (patch: Partial<ReturnType<typeof emptyRs485Form>>) =>
+        setRs485Form((f) => ({ ...f, ...patch }));
     const updateRs485Param = (i: number, patch: Partial<Rs485Param>) =>
-        setRs485Form(f => ({ ...f, params: f.params.map((p, idx) => (idx === i ? { ...p, ...patch } : p)) }));
+        setRs485Form((f) => ({
+            ...f,
+            params: f.params.map((p, idx) =>
+                idx === i ? { ...p, ...patch } : p,
+            ),
+        }));
     const addRs485Param = () =>
-        setRs485Form(f => {
-            const nextReg = Math.max(-1, ...f.params.map(p => p.register_address ?? 0)) + 1;
-            return { ...f, params: [...f.params, { ...BLANK_RS485_PARAM, register_address: nextReg }] };
+        setRs485Form((f) => {
+            const nextReg =
+                Math.max(-1, ...f.params.map((p) => p.register_address ?? 0)) +
+                1;
+            return {
+                ...f,
+                params: [
+                    ...f.params,
+                    { ...BLANK_RS485_PARAM, register_address: nextReg },
+                ],
+            };
         });
     const removeRs485Param = (i: number) =>
-        setRs485Form(f => (f.params.length > 1 ? { ...f, params: f.params.filter((_, idx) => idx !== i) } : f));
+        setRs485Form((f) =>
+            f.params.length > 1
+                ? { ...f, params: f.params.filter((_, idx) => idx !== i) }
+                : f,
+        );
 
     // When the connection type switches to RS485 during create, start a fresh device form.
     const handleConnTypeChange = (value: string) => {
-        setForm(f => ({ ...f, connection_type: value }));
+        setForm((f) => ({ ...f, connection_type: value }));
         if (value === 'rs485' && editingDeviceSlave === null) {
             setRs485Form(emptyRs485Form());
         }
@@ -1658,7 +2454,7 @@ function SensorCrudPanel({
             function_code: head.functionCode ?? 3,
             baudrate: head.baudrate ?? 9600,
             serial_format: head.serialFormat ?? '8N1',
-            params: group.members.map(m => ({
+            params: group.members.map((m) => ({
                 id: m.id,
                 name: m.name,
                 unit: m.unit,
@@ -1682,19 +2478,21 @@ function SensorCrudPanel({
             function_code: rs485Form.function_code,
             baudrate: rs485Form.baudrate,
             serial_format: rs485Form.serial_format,
-            params: rs485Form.params.map(p => ({
+            params: rs485Form.params.map((p) => ({
                 ...(p.id != null ? { id: p.id } : {}),
                 name: p.name,
                 unit: p.unit,
-                scale_factor: p.scale_factor === '' ? 1 : Number(p.scale_factor),
+                scale_factor:
+                    p.scale_factor === '' ? 1 : Number(p.scale_factor),
                 register_address: p.register_address,
                 reg_count: p.reg_count,
                 fast_poll: p.fast_poll,
             })),
         };
-        const url = editingDeviceSlave != null
-            ? `/loggers/${loggerId}/sensor-devices/rs485/${editingDeviceSlave}`
-            : `/loggers/${loggerId}/sensor-devices/rs485`;
+        const url =
+            editingDeviceSlave != null
+                ? `/loggers/${loggerId}/sensor-devices/rs485/${editingDeviceSlave}`
+                : `/loggers/${loggerId}/sensor-devices/rs485`;
         const method = editingDeviceSlave != null ? 'put' : 'post';
         router[method](url, body, {
             preserveScroll: true,
@@ -1730,7 +2528,10 @@ function SensorCrudPanel({
             channel: sensor.channel || 1,
             analog_mode: sensor.analogMode ?? 1,
             port: sensor.port || 1,
-            digital_mode: sensor.connectionType === 'digital' ? sensor.analogMode ?? 0 : 0,
+            digital_mode:
+                sensor.connectionType === 'digital'
+                    ? (sensor.analogMode ?? 0)
+                    : 0,
             label_high: 'HIGH',
             label_low: 'LOW',
             debounce_ms: 50,
@@ -1755,8 +2556,8 @@ function SensorCrudPanel({
     };
 
     const handleTypeChange = (type: string) => {
-        const found = SENSOR_TYPES.find(t => t.value === type);
-        setForm(prev => ({
+        const found = SENSOR_TYPES.find((t) => t.value === type);
+        setForm((prev) => ({
             ...prev,
             type,
             unit: found?.defaultUnit || prev.unit,
@@ -1781,7 +2582,9 @@ function SensorCrudPanel({
         const method = editingSensor ? 'put' : 'post';
 
         // RS232/Analog/Digital no longer show a Type dropdown — derive it from name/unit.
-        const payload = ['rs232', 'analog', 'digital'].includes(form.connection_type)
+        const payload = ['rs232', 'analog', 'digital'].includes(
+            form.connection_type,
+        )
             ? { ...form, type: guessSensorType(form.name, form.unit) }
             : form;
 
@@ -1819,10 +2622,16 @@ function SensorCrudPanel({
         const groupId = connType === 'rs485' ? head.modbusSlaveId : head.port;
         if (!connType || groupId == null) return;
         const label = `${group.deviceLabel}${group.locator ? ` · ${group.locator}` : ''}`;
-        router.delete(`/loggers/${loggerId}/sensor-devices/${connType}/${groupId}`, {
-            preserveScroll: true,
-            onBefore: () => window.confirm(`Hapus seluruh device "${label}" beserta ${group.members.length} parameter-nya?`),
-        });
+        router.delete(
+            `/loggers/${loggerId}/sensor-devices/${connType}/${groupId}`,
+            {
+                preserveScroll: true,
+                onBefore: () =>
+                    window.confirm(
+                        `Hapus seluruh device "${label}" beserta ${group.members.length} parameter-nya?`,
+                    ),
+            },
+        );
     };
 
     // DIGITAL CTRL — toggle a configured Mode-3 output channel (spec §3.2.11).
@@ -1862,29 +2671,73 @@ function SensorCrudPanel({
     // showActions=false for RS485 members — those are managed entirely in the device form.
     // locator (e.g. "Ch 1" / "Port 1") is shown inline next to the name for one-per-channel
     // sensors (analog/digital/rs232) that no longer have a device-group header.
-    const renderRow = (sensor: SensorItem, indented: boolean, showActions = true, locator?: string | null) => (
-        <div key={sensor.id} className={`${colsClass} px-4 py-2.5 text-sm transition-colors hover:bg-muted/30`}>
-            <div className={indented ? 'truncate pl-6 font-medium' : 'truncate font-medium'}>
+    const renderRow = (
+        sensor: SensorItem,
+        indented: boolean,
+        showActions = true,
+        locator?: string | null,
+    ) => (
+        <div
+            key={sensor.id}
+            className={`${colsClass} px-4 py-2.5 text-sm transition-colors hover:bg-muted/30`}
+        >
+            <div
+                className={
+                    indented
+                        ? 'truncate pl-6 font-medium'
+                        : 'truncate font-medium'
+                }
+            >
                 {sensor.name}
-                {locator && <span className="ml-1.5 text-xs font-normal text-muted-foreground">· {locator}</span>}
+                {locator && (
+                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                        · {locator}
+                    </span>
+                )}
             </div>
-            <div className="truncate capitalize text-muted-foreground">{sensor.type.replace('-', ' ')}</div>
+            <div className="truncate text-muted-foreground capitalize">
+                {sensor.type.replace('-', ' ')}
+            </div>
             <div className="font-mono font-semibold">
-                {sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span>
+                {sensor.value}{' '}
+                <span className="text-xs font-normal text-muted-foreground">
+                    {sensor.unit}
+                </span>
             </div>
             <div>
-                <Badge variant={sensor.status === 'active' ? 'default' : sensor.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">
+                <Badge
+                    variant={
+                        sensor.status === 'active'
+                            ? 'default'
+                            : sensor.status === 'error'
+                              ? 'destructive'
+                              : 'secondary'
+                    }
+                    className="text-xs capitalize"
+                >
                     {sensor.status}
                 </Badge>
             </div>
-            <div className="hidden truncate text-xs text-muted-foreground md:block">{sensor.lastReading || '—'}</div>
+            <div className="hidden truncate text-xs text-muted-foreground md:block">
+                {sensor.lastReading || '—'}
+            </div>
             <div className="flex items-center justify-end gap-1">
                 {showActions && !readOnly && (
                     <>
-                        <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(sensor)}>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            onClick={() => openEdit(sensor)}
+                        >
                             <Pencil className="size-3.5" />
                         </Button>
-                        <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(sensor)}>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                            onClick={() => openDelete(sensor)}
+                        >
                             <Trash2 className="size-3.5" />
                         </Button>
                     </>
@@ -1899,13 +2752,24 @@ function SensorCrudPanel({
                 <CardHeader>
                     <div className="flex items-center justify-between">
                         <div>
-                            <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> {t('loggerDetail.sensor_channels')}</CardTitle>
-                            <CardDescription>{t('loggerDetail.channels_configured', { count: sensors.length })}</CardDescription>
+                            <CardTitle className="flex items-center gap-2">
+                                <Thermometer className="size-5" />{' '}
+                                {t('loggerDetail.sensor_channels')}
+                            </CardTitle>
+                            <CardDescription>
+                                {t('loggerDetail.channels_configured', {
+                                    count: sensors.length,
+                                })}
+                            </CardDescription>
                         </div>
                         <div className="flex items-center gap-2">
                             {/* Sync from Device lives in the page header — no duplicate here. */}
                             {!readOnly && (
-                                <Button size="sm" className="gap-1.5" onClick={openCreate}>
+                                <Button
+                                    size="sm"
+                                    className="gap-1.5"
+                                    onClick={openCreate}
+                                >
                                     <Plus className="size-4" />
                                     {t('loggerDetail.add_sensor')}
                                 </Button>
@@ -1916,13 +2780,19 @@ function SensorCrudPanel({
                 <Separator />
                 <CardContent className="p-0">
                     {/* Column header (mirrors colsClass; Interface & Range columns removed). */}
-                    <div className={`${colsClass} border-b px-4 py-2.5 text-xs font-medium text-muted-foreground`}>
+                    <div
+                        className={`${colsClass} border-b px-4 py-2.5 text-xs font-medium text-muted-foreground`}
+                    >
                         <div>{t('loggerDetail.channel')}</div>
                         <div>{t('loggerDetail.type')}</div>
                         <div>{t('loggerDetail.value')}</div>
                         <div>{t('loggerDetail.status')}</div>
-                        <div className="hidden md:block">{t('loggerDetail.last_reading')}</div>
-                        <div className="text-right">{t('loggerDetail.actions')}</div>
+                        <div className="hidden md:block">
+                            {t('loggerDetail.last_reading')}
+                        </div>
+                        <div className="text-right">
+                            {t('loggerDetail.actions')}
+                        </div>
                     </div>
 
                     <div className="divide-y">
@@ -1934,28 +2804,83 @@ function SensorCrudPanel({
                             if (head?.connectionType === 'analog') {
                                 const open = !collapsedGroups.has(group.key);
                                 return (
-                                    <Collapsible key={group.key} open={open} onOpenChange={() => toggleGroup(group.key)}>
-                                        <div className={`${colsClass} px-4 py-2.5 text-sm transition-colors hover:bg-muted/30`}>
+                                    <Collapsible
+                                        key={group.key}
+                                        open={open}
+                                        onOpenChange={() =>
+                                            toggleGroup(group.key)
+                                        }
+                                    >
+                                        <div
+                                            className={`${colsClass} px-4 py-2.5 text-sm transition-colors hover:bg-muted/30`}
+                                        >
                                             <div className="flex items-center gap-1 truncate font-medium">
-                                                <CollapsibleTrigger aria-expanded={open} title="Kalibrasi" className="shrink-0 text-muted-foreground hover:text-foreground">
-                                                    <ChevronRight className={`size-4 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+                                                <CollapsibleTrigger
+                                                    aria-expanded={open}
+                                                    title="Kalibrasi"
+                                                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                                                >
+                                                    <ChevronRight
+                                                        className={`size-4 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+                                                    />
                                                 </CollapsibleTrigger>
-                                                <span className="truncate">{head.name}</span>
-                                                {group.locator && <span className="text-xs font-normal text-muted-foreground">· {group.locator}</span>}
+                                                <span className="truncate">
+                                                    {head.name}
+                                                </span>
+                                                {group.locator && (
+                                                    <span className="text-xs font-normal text-muted-foreground">
+                                                        · {group.locator}
+                                                    </span>
+                                                )}
                                             </div>
-                                            <div className="truncate capitalize text-muted-foreground">{head.type.replace('-', ' ')}</div>
-                                            <div className="font-mono font-semibold">{head.value} <span className="text-xs font-normal text-muted-foreground">{head.unit}</span></div>
+                                            <div className="truncate text-muted-foreground capitalize">
+                                                {head.type.replace('-', ' ')}
+                                            </div>
+                                            <div className="font-mono font-semibold">
+                                                {head.value}{' '}
+                                                <span className="text-xs font-normal text-muted-foreground">
+                                                    {head.unit}
+                                                </span>
+                                            </div>
                                             <div>
-                                                <Badge variant={head.status === 'active' ? 'default' : head.status === 'error' ? 'destructive' : 'secondary'} className="capitalize text-xs">{head.status}</Badge>
+                                                <Badge
+                                                    variant={
+                                                        head.status === 'active'
+                                                            ? 'default'
+                                                            : head.status ===
+                                                                'error'
+                                                              ? 'destructive'
+                                                              : 'secondary'
+                                                    }
+                                                    className="text-xs capitalize"
+                                                >
+                                                    {head.status}
+                                                </Badge>
                                             </div>
-                                            <div className="hidden truncate text-xs text-muted-foreground md:block">{head.lastReading || '—'}</div>
+                                            <div className="hidden truncate text-xs text-muted-foreground md:block">
+                                                {head.lastReading || '—'}
+                                            </div>
                                             <div className="flex items-center justify-end gap-1">
                                                 {!readOnly && (
                                                     <>
-                                                        <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(head)}>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="size-8"
+                                                            onClick={() =>
+                                                                openEdit(head)
+                                                            }
+                                                        >
                                                             <Pencil className="size-3.5" />
                                                         </Button>
-                                                        <Button variant="ghost" size="icon" className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => openDelete(head)}>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                            onClick={() =>
+                                                                openDelete(head)
+                                                            }
+                                                        >
                                                             <Trash2 className="size-3.5" />
                                                         </Button>
                                                     </>
@@ -1966,8 +2891,13 @@ function SensorCrudPanel({
                                             <AnalogCalibration
                                                 channel={head.channel ?? 1}
                                                 mode={head.analogMode ?? 1}
-                                                deviceIdentifier={deviceIdentifier ?? null}
-                                                disabled={readOnly || !deviceIdentifier}
+                                                deviceIdentifier={
+                                                    deviceIdentifier ?? null
+                                                }
+                                                disabled={
+                                                    readOnly ||
+                                                    !deviceIdentifier
+                                                }
                                             />
                                         </CollapsibleContent>
                                     </Collapsible>
@@ -1978,14 +2908,25 @@ function SensorCrudPanel({
                             if (head?.connectionType !== 'rs485') {
                                 return (
                                     <div key={group.key} className="divide-y">
-                                        {group.members.map((sensor) => renderRow(sensor, false, true, group.locator))}
+                                        {group.members.map((sensor) =>
+                                            renderRow(
+                                                sensor,
+                                                false,
+                                                true,
+                                                group.locator,
+                                            ),
+                                        )}
                                     </div>
                                 );
                             }
 
                             const open = !collapsedGroups.has(group.key);
                             return (
-                                <Collapsible key={group.key} open={open} onOpenChange={() => toggleGroup(group.key)}>
+                                <Collapsible
+                                    key={group.key}
+                                    open={open}
+                                    onOpenChange={() => toggleGroup(group.key)}
+                                >
                                     <div className="flex items-center justify-between gap-2 px-4 py-2.5 transition-colors hover:bg-muted/30">
                                         <CollapsibleTrigger
                                             aria-expanded={open}
@@ -1994,39 +2935,59 @@ function SensorCrudPanel({
                                             <ChevronRight
                                                 className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
                                             />
-                                            <span className="font-semibold">{group.deviceLabel}</span>
-                                            {group.locator && <span className="text-xs text-muted-foreground">· {group.locator}</span>}
-                                            <Badge variant="outline" className="text-[10px] uppercase">{group.interfaceLabel}</Badge>
+                                            <span className="font-semibold">
+                                                {group.deviceLabel}
+                                            </span>
+                                            {group.locator && (
+                                                <span className="text-xs text-muted-foreground">
+                                                    · {group.locator}
+                                                </span>
+                                            )}
+                                            <Badge
+                                                variant="outline"
+                                                className="text-[10px] uppercase"
+                                            >
+                                                {group.interfaceLabel}
+                                            </Badge>
                                             {group.members.length > 1 && (
-                                                <span className="text-[10px] text-muted-foreground">· {group.members.length} parameter</span>
+                                                <span className="text-[10px] text-muted-foreground">
+                                                    · {group.members.length}{' '}
+                                                    parameter
+                                                </span>
                                             )}
                                         </CollapsibleTrigger>
                                         {!readOnly && (
                                             <div className="flex items-center gap-1">
-                                            <Button
-                                                variant="ghost"
-                                                size="icon"
-                                                className="size-7"
-                                                title="Edit device & parameter"
-                                                onClick={() => openEditDevice(group)}
-                                            >
-                                                <Pencil className="size-3.5" />
-                                            </Button>
-                                            <Button
-                                                variant="ghost"
-                                                size="icon"
-                                                className="size-7 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
-                                                title="Hapus device (semua parameter)"
-                                                onClick={() => deleteDevice(group)}
-                                            >
-                                                <Trash2 className="size-3.5" />
-                                            </Button>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="size-7"
+                                                    title="Edit device & parameter"
+                                                    onClick={() =>
+                                                        openEditDevice(group)
+                                                    }
+                                                >
+                                                    <Pencil className="size-3.5" />
+                                                </Button>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="size-7 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                    title="Hapus device (semua parameter)"
+                                                    onClick={() =>
+                                                        deleteDevice(group)
+                                                    }
+                                                >
+                                                    <Trash2 className="size-3.5" />
+                                                </Button>
                                             </div>
                                         )}
                                     </div>
                                     <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
                                         <div className="divide-y border-t">
-                                            {group.members.map((sensor) => renderRow(sensor, true, false))}
+                                            {group.members.map((sensor) =>
+                                                renderRow(sensor, true, false),
+                                            )}
                                         </div>
                                     </CollapsibleContent>
                                 </Collapsible>
@@ -2043,23 +3004,35 @@ function SensorCrudPanel({
 
             {/* Create / Edit Dialog */}
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-                <DialogContent className="sm:max-w-2xl max-h-[90vh] grid-rows-[auto_1fr_auto]">
+                <DialogContent className="max-h-[90vh] grid-rows-[auto_1fr_auto] sm:max-w-2xl">
                     <DialogHeader>
-                        <DialogTitle>{(editingSensor || editingDeviceSlave != null) ? t('loggerDetail.edit_sensor') : t('loggerDetail.add_sensor')}</DialogTitle>
+                        <DialogTitle>
+                            {editingSensor || editingDeviceSlave != null
+                                ? t('loggerDetail.edit_sensor')
+                                : t('loggerDetail.add_sensor')}
+                        </DialogTitle>
                         <DialogDescription>
-                            {(editingSensor || editingDeviceSlave != null) ? t('loggerDetail.edit_sensor_desc') : t('loggerDetail.add_sensor_desc')}
+                            {editingSensor || editingDeviceSlave != null
+                                ? t('loggerDetail.edit_sensor_desc')
+                                : t('loggerDetail.add_sensor_desc')}
                         </DialogDescription>
                     </DialogHeader>
-                    <div className="grid gap-4 overflow-y-auto py-2 -mx-1 px-1">
+                    <div className="-mx-1 grid gap-4 overflow-y-auto px-1 py-2">
                         {/* Connection Type — always first; the rest of the form follows the choice. */}
                         <div className="grid gap-2">
-                            <Label htmlFor="sensor-conn-type">Connection Type</Label>
+                            <Label htmlFor="sensor-conn-type">
+                                Connection Type
+                            </Label>
                             <select
                                 id="sensor-conn-type"
                                 value={form.connection_type}
-                                onChange={e => handleConnTypeChange(e.target.value)}
-                                disabled={deviceLocked || editingDeviceSlave != null}
-                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                                onChange={(e) =>
+                                    handleConnTypeChange(e.target.value)
+                                }
+                                disabled={
+                                    deviceLocked || editingDeviceSlave != null
+                                }
+                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
                             >
                                 <option value="">None (Generic)</option>
                                 <option value="rs485">RS485 (Modbus)</option>
@@ -2073,27 +3046,93 @@ function SensorCrudPanel({
                         {form.connection_type === '' && (
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="grid gap-2 sm:col-span-2">
-                                    <Label htmlFor="sensor-name">{t('loggerDetail.sensor_name')}</Label>
-                                    <Input id="sensor-name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Water Level Sensor" />
-                                    {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                                    <Label htmlFor="sensor-name">
+                                        {t('loggerDetail.sensor_name')}
+                                    </Label>
+                                    <Input
+                                        id="sensor-name"
+                                        value={form.name}
+                                        onChange={(e) =>
+                                            setForm({
+                                                ...form,
+                                                name: e.target.value,
+                                            })
+                                        }
+                                        placeholder="e.g. Water Level Sensor"
+                                    />
+                                    {errors.name && (
+                                        <p className="text-xs text-red-500">
+                                            {errors.name}
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="sensor-type">{t('loggerDetail.type')}</Label>
-                                    <select id="sensor-type" value={form.type} onChange={e => handleTypeChange(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-                                        {SENSOR_TYPES.map(t => (<option key={t.value} value={t.value}>{t.label}</option>))}
+                                    <Label htmlFor="sensor-type">
+                                        {t('loggerDetail.type')}
+                                    </Label>
+                                    <select
+                                        id="sensor-type"
+                                        value={form.type}
+                                        onChange={(e) =>
+                                            handleTypeChange(e.target.value)
+                                        }
+                                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                                    >
+                                        {SENSOR_TYPES.map((t) => (
+                                            <option
+                                                key={t.value}
+                                                value={t.value}
+                                            >
+                                                {t.label}
+                                            </option>
+                                        ))}
                                     </select>
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="sensor-unit">{t('loggerDetail.sensor_unit')}</Label>
-                                    <Input id="sensor-unit" value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="e.g. °C, m, mm" />
-                                    {errors.unit && <p className="text-xs text-red-500">{errors.unit}</p>}
+                                    <Label htmlFor="sensor-unit">
+                                        {t('loggerDetail.sensor_unit')}
+                                    </Label>
+                                    <Input
+                                        id="sensor-unit"
+                                        value={form.unit}
+                                        onChange={(e) =>
+                                            setForm({
+                                                ...form,
+                                                unit: e.target.value,
+                                            })
+                                        }
+                                        placeholder="e.g. °C, m, mm"
+                                    />
+                                    {errors.unit && (
+                                        <p className="text-xs text-red-500">
+                                            {errors.unit}
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="sensor-status">{t('loggerDetail.status')}</Label>
-                                    <select id="sensor-status" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-                                        <option value="active">{t('loggerDetail.active')}</option>
-                                        <option value="inactive">{t('loggerDetail.inactive')}</option>
-                                        <option value="error">{t('loggerDetail.error')}</option>
+                                    <Label htmlFor="sensor-status">
+                                        {t('loggerDetail.status')}
+                                    </Label>
+                                    <select
+                                        id="sensor-status"
+                                        value={form.status}
+                                        onChange={(e) =>
+                                            setForm({
+                                                ...form,
+                                                status: e.target.value,
+                                            })
+                                        }
+                                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                                    >
+                                        <option value="active">
+                                            {t('loggerDetail.active')}
+                                        </option>
+                                        <option value="inactive">
+                                            {t('loggerDetail.inactive')}
+                                        </option>
+                                        <option value="error">
+                                            {t('loggerDetail.error')}
+                                        </option>
                                     </select>
                                 </div>
                             </div>
@@ -2101,40 +3140,119 @@ function SensorCrudPanel({
 
                         {/* RS485 — device communication (cfg) */}
                         {form.connection_type === 'rs485' && (
-                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Komunikasi Device (RS485 / Modbus)</p>
+                            <div className="grid gap-3 rounded-md border bg-muted/30 p-3">
+                                <p className="text-xs font-semibold text-muted-foreground uppercase">
+                                    Komunikasi Device (RS485 / Modbus)
+                                </p>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Nama Sensor (Device)</Label>
-                                        <Input value={rs485Form.device_name} onChange={e => setRs485({ device_name: e.target.value })} placeholder="e.g. Rain Gauge" />
-                                        {errors.device_name && <p className="text-xs text-red-500">{errors.device_name}</p>}
+                                        <Label className="text-xs">
+                                            Nama Sensor (Device)
+                                        </Label>
+                                        <Input
+                                            value={rs485Form.device_name}
+                                            onChange={(e) =>
+                                                setRs485({
+                                                    device_name: e.target.value,
+                                                })
+                                            }
+                                            placeholder="e.g. Rain Gauge"
+                                        />
+                                        {errors.device_name && (
+                                            <p className="text-xs text-red-500">
+                                                {errors.device_name}
+                                            </p>
+                                        )}
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Slave ID</Label>
-                                        <Input type="number" min={1} max={10} value={rs485Form.modbus_slave_id} onChange={e => setRs485({ modbus_slave_id: parseInt(e.target.value) || 1 })} />
-                                        {errors.modbus_slave_id && <p className="text-xs text-red-500">{errors.modbus_slave_id}</p>}
-                                        {errors.mqtt && <p className="text-xs text-red-500">{errors.mqtt}</p>}
+                                        <Label className="text-xs">
+                                            Slave ID
+                                        </Label>
+                                        <Input
+                                            type="number"
+                                            min={1}
+                                            max={10}
+                                            value={rs485Form.modbus_slave_id}
+                                            onChange={(e) =>
+                                                setRs485({
+                                                    modbus_slave_id:
+                                                        parseInt(
+                                                            e.target.value,
+                                                        ) || 1,
+                                                })
+                                            }
+                                        />
+                                        {errors.modbus_slave_id && (
+                                            <p className="text-xs text-red-500">
+                                                {errors.modbus_slave_id}
+                                            </p>
+                                        )}
+                                        {errors.mqtt && (
+                                            <p className="text-xs text-red-500">
+                                                {errors.mqtt}
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-3 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Function Code</Label>
-                                        <select value={rs485Form.function_code} onChange={e => setRs485({ function_code: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <Label className="text-xs">
+                                            Function Code
+                                        </Label>
+                                        <select
+                                            value={rs485Form.function_code}
+                                            onChange={(e) =>
+                                                setRs485({
+                                                    function_code: parseInt(
+                                                        e.target.value,
+                                                    ),
+                                                })
+                                            }
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                        >
                                             <option value={3}>03 (HR)</option>
                                             <option value={4}>04 (IR)</option>
                                         </select>
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Baudrate</Label>
-                                        <select value={rs485Form.baudrate} onChange={e => setRs485({ baudrate: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                            {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map(rate => (
-                                                <option key={rate} value={rate}>{rate}</option>
+                                        <Label className="text-xs">
+                                            Baudrate
+                                        </Label>
+                                        <select
+                                            value={rs485Form.baudrate}
+                                            onChange={(e) =>
+                                                setRs485({
+                                                    baudrate: parseInt(
+                                                        e.target.value,
+                                                    ),
+                                                })
+                                            }
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                        >
+                                            {[
+                                                1200, 2400, 4800, 9600, 19200,
+                                                38400, 57600, 115200,
+                                            ].map((rate) => (
+                                                <option key={rate} value={rate}>
+                                                    {rate}
+                                                </option>
                                             ))}
                                         </select>
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Format</Label>
-                                        <select value={rs485Form.serial_format} onChange={e => setRs485({ serial_format: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                        <Label className="text-xs">
+                                            Format
+                                        </Label>
+                                        <select
+                                            value={rs485Form.serial_format}
+                                            onChange={(e) =>
+                                                setRs485({
+                                                    serial_format:
+                                                        e.target.value,
+                                                })
+                                            }
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                        >
                                             <option value="8N1">8N1</option>
                                             <option value="8E1">8E1</option>
                                             <option value="8O1">8O1</option>
@@ -2146,53 +3264,160 @@ function SensorCrudPanel({
 
                         {/* RS485 — parameters (the `s` array; one device can have many) */}
                         {form.connection_type === 'rs485' && (
-                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
+                            <div className="grid gap-3 rounded-md border bg-muted/30 p-3">
                                 <div className="flex items-center justify-between">
-                                    <p className="text-xs font-semibold uppercase text-muted-foreground">Parameter ({rs485Form.params.length})</p>
-                                    <Button type="button" size="sm" variant="outline" className="h-7 gap-1" onClick={addRs485Param}>
-                                        <Plus className="size-3.5" /> Tambah parameter
+                                    <p className="text-xs font-semibold text-muted-foreground uppercase">
+                                        Parameter ({rs485Form.params.length})
+                                    </p>
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 gap-1"
+                                        onClick={addRs485Param}
+                                    >
+                                        <Plus className="size-3.5" /> Tambah
+                                        parameter
                                     </Button>
                                 </div>
                                 {rs485Form.params.map((p, i) => (
-                                    <div key={i} className="grid gap-3 rounded-md border bg-background p-3">
+                                    <div
+                                        key={i}
+                                        className="grid gap-3 rounded-md border bg-background p-3"
+                                    >
                                         <div className="flex items-center justify-between">
-                                            <span className="text-[11px] font-medium text-muted-foreground">Parameter {i + 1}</span>
+                                            <span className="text-[11px] font-medium text-muted-foreground">
+                                                Parameter {i + 1}
+                                            </span>
                                             {rs485Form.params.length > 1 && (
-                                                <Button type="button" size="icon" variant="ghost" className="size-6 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950" onClick={() => removeRs485Param(i)}>
+                                                <Button
+                                                    type="button"
+                                                    size="icon"
+                                                    variant="ghost"
+                                                    className="size-6 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                    onClick={() =>
+                                                        removeRs485Param(i)
+                                                    }
+                                                >
                                                     <Trash2 className="size-3.5" />
                                                 </Button>
                                             )}
                                         </div>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="grid gap-1.5">
-                                                <Label className="text-xs">Nama Parameter</Label>
-                                                <Input value={p.name} onChange={e => updateRs485Param(i, { name: e.target.value })} placeholder="e.g. Rainfall" />
-                                                {p.name.length > SENSOR_PARAMETER_NAME_MAX_LENGTH
-                                                    ? <p className="text-xs text-red-500">Maximum 12 characters</p>
-                                                    : errors[`params.${i}.name`] && <p className="text-xs text-red-500">{errors[`params.${i}.name`]}</p>}
+                                                <Label className="text-xs">
+                                                    Nama Parameter
+                                                </Label>
+                                                <Input
+                                                    value={p.name}
+                                                    onChange={(e) =>
+                                                        updateRs485Param(i, {
+                                                            name: e.target
+                                                                .value,
+                                                        })
+                                                    }
+                                                    placeholder="e.g. Rainfall"
+                                                />
+                                                {p.name.length >
+                                                SENSOR_PARAMETER_NAME_MAX_LENGTH ? (
+                                                    <p className="text-xs text-red-500">
+                                                        Maximum 12 characters
+                                                    </p>
+                                                ) : (
+                                                    errors[
+                                                        `params.${i}.name`
+                                                    ] && (
+                                                    <p className="text-xs text-red-500">
+                                                        {
+                                                            errors[
+                                                                `params.${i}.name`
+                                                            ]
+                                                        }
+                                                    </p>
+                                                    )
+                                                )}
                                             </div>
                                             <div className="grid gap-1.5">
-                                                <Label className="text-xs">Satuan</Label>
-                                                <Input value={p.unit} onChange={e => updateRs485Param(i, { unit: e.target.value })} placeholder="e.g. mm" />
+                                                <Label className="text-xs">
+                                                    Satuan
+                                                </Label>
+                                                <Input
+                                                    value={p.unit}
+                                                    onChange={(e) =>
+                                                        updateRs485Param(i, {
+                                                            unit: e.target
+                                                                .value,
+                                                        })
+                                                    }
+                                                    placeholder="e.g. mm"
+                                                />
                                             </div>
                                         </div>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="grid gap-1.5">
-                                                <Label className="text-xs">Scale</Label>
-                                                <Input inputMode="decimal" value={p.scale_factor} onChange={e => updateRs485Param(i, { scale_factor: e.target.value })} placeholder="1.0" />
+                                                <Label className="text-xs">
+                                                    Scale
+                                                </Label>
+                                                <Input
+                                                    inputMode="decimal"
+                                                    value={p.scale_factor}
+                                                    onChange={(e) =>
+                                                        updateRs485Param(i, {
+                                                            scale_factor:
+                                                                e.target.value,
+                                                        })
+                                                    }
+                                                    placeholder="1.0"
+                                                />
                                             </div>
                                             <div className="grid gap-1.5">
-                                                <Label className="text-xs">Address</Label>
-                                                <Input type="number" min={0} max={65535} value={p.register_address} onChange={e => updateRs485Param(i, { register_address: parseInt(e.target.value) || 0 })} />
+                                                <Label className="text-xs">
+                                                    Address
+                                                </Label>
+                                                <Input
+                                                    type="number"
+                                                    min={0}
+                                                    max={65535}
+                                                    value={p.register_address}
+                                                    onChange={(e) =>
+                                                        updateRs485Param(i, {
+                                                            register_address:
+                                                                parseInt(
+                                                                    e.target
+                                                                        .value,
+                                                                ) || 0,
+                                                        })
+                                                    }
+                                                />
                                             </div>
                                         </div>
                                         <div className="flex items-end gap-3">
                                             <div className="grid min-w-0 flex-1 gap-1.5">
-                                                <Label className="text-xs">Tipe Data (dtype)</Label>
-                                                <DtypeSelect value={p.reg_count} onChange={code => updateRs485Param(i, { reg_count: code })} />
+                                                <Label className="text-xs">
+                                                    Tipe Data (dtype)
+                                                </Label>
+                                                <DtypeSelect
+                                                    value={p.reg_count}
+                                                    onChange={(code) =>
+                                                        updateRs485Param(i, {
+                                                            reg_count: code,
+                                                        })
+                                                    }
+                                                />
                                             </div>
-                                            <label className="flex h-9 shrink-0 items-center gap-2 whitespace-nowrap text-xs">
-                                                <input type="checkbox" checked={p.fast_poll} onChange={e => updateRs485Param(i, { fast_poll: e.target.checked })} className="rounded" />
+                                            <label className="flex h-9 shrink-0 items-center gap-2 text-xs whitespace-nowrap">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={p.fast_poll}
+                                                    onChange={(e) =>
+                                                        updateRs485Param(i, {
+                                                            fast_poll:
+                                                                e.target
+                                                                    .checked,
+                                                        })
+                                                    }
+                                                    className="rounded"
+                                                />
                                                 Fast Poll
                                             </label>
                                         </div>
@@ -2203,27 +3428,82 @@ function SensorCrudPanel({
 
                         {/* RS232 — one sensor per port: channel(port), name, scale, unit. */}
                         {form.connection_type === 'rs232' && (
-                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">RS232</p>
+                            <div className="grid gap-3 rounded-md border bg-muted/30 p-3">
+                                <p className="text-xs font-semibold text-muted-foreground uppercase">
+                                    RS232
+                                </p>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Channel (Port)</Label>
-                                        <Input type="number" min={1} max={2} value={form.port} onChange={e => setForm({ ...form, port: parseInt(e.target.value) || 1 })} />
+                                        <Label className="text-xs">
+                                            Channel (Port)
+                                        </Label>
+                                        <Input
+                                            type="number"
+                                            min={1}
+                                            max={2}
+                                            value={form.port}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    port:
+                                                        parseInt(
+                                                            e.target.value,
+                                                        ) || 1,
+                                                })
+                                            }
+                                        />
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Nama Sensor</Label>
-                                        <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. RainGauge" />
-                                        {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                                        <Label className="text-xs">
+                                            Nama Sensor
+                                        </Label>
+                                        <Input
+                                            value={form.name}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    name: e.target.value,
+                                                })
+                                            }
+                                            placeholder="e.g. RainGauge"
+                                        />
+                                        {errors.name && (
+                                            <p className="text-xs text-red-500">
+                                                {errors.name}
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Scale</Label>
-                                        <Input inputMode="decimal" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: e.target.value })} placeholder="1.0" />
+                                        <Input
+                                            inputMode="decimal"
+                                            value={form.scale_factor}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    scale_factor:
+                                                        e.target.value,
+                                                })
+                                            }
+                                            placeholder="1.0"
+                                        />
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Satuan</Label>
-                                        <Input value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="e.g. mm" />
+                                        <Label className="text-xs">
+                                            Satuan
+                                        </Label>
+                                        <Input
+                                            value={form.unit}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    unit: e.target.value,
+                                                })
+                                            }
+                                            placeholder="e.g. mm"
+                                        />
                                     </div>
                                 </div>
                             </div>
@@ -2231,42 +3511,135 @@ function SensorCrudPanel({
 
                         {/* Analog — one sensor per channel: channel, mode, name, unit, range. */}
                         {form.connection_type === 'analog' && (
-                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Analog</p>
+                            <div className="grid gap-3 rounded-md border bg-muted/30 p-3">
+                                <p className="text-xs font-semibold text-muted-foreground uppercase">
+                                    Analog
+                                </p>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Channel</Label>
-                                        <Input type="number" min={1} max={analogChannelMax} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
+                                        <Label className="text-xs">
+                                            Channel
+                                        </Label>
+                                        <Input
+                                            type="number"
+                                            min={1}
+                                            max={analogChannelMax}
+                                            value={form.channel}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    channel:
+                                                        parseInt(
+                                                            e.target.value,
+                                                        ) || 1,
+                                                })
+                                            }
+                                        />
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Input Mode</Label>
-                                        <select value={form.analog_mode} onChange={e => setForm({ ...form, analog_mode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                            <option value={1}>4-20mA Current Loop</option>
-                                            <option value={0}>0-10V Voltage</option>
+                                        <Label className="text-xs">
+                                            Input Mode
+                                        </Label>
+                                        <select
+                                            value={form.analog_mode}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    analog_mode: parseInt(
+                                                        e.target.value,
+                                                    ),
+                                                })
+                                            }
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                        >
+                                            <option value={1}>
+                                                4-20mA Current Loop
+                                            </option>
+                                            <option value={0}>
+                                                0-10V Voltage
+                                            </option>
                                         </select>
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Nama Sensor</Label>
-                                        <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Water Level" />
-                                        {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                                        <Label className="text-xs">
+                                            Nama Sensor
+                                        </Label>
+                                        <Input
+                                            value={form.name}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    name: e.target.value,
+                                                })
+                                            }
+                                            placeholder="e.g. Water Level"
+                                        />
+                                        {errors.name && (
+                                            <p className="text-xs text-red-500">
+                                                {errors.name}
+                                            </p>
+                                        )}
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Satuan</Label>
-                                        <Input value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="e.g. m" />
+                                        <Label className="text-xs">
+                                            Satuan
+                                        </Label>
+                                        <Input
+                                            value={form.unit}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    unit: e.target.value,
+                                                })
+                                            }
+                                            placeholder="e.g. m"
+                                        />
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Batas Bawah (Min)</Label>
-                                        <Input inputMode="decimal" value={form.min_value} onChange={e => setForm({ ...form, min_value: e.target.value })} placeholder="0.0" />
-                                        {errors.min_value && <p className="text-xs text-red-500">{errors.min_value}</p>}
+                                        <Label className="text-xs">
+                                            Batas Bawah (Min)
+                                        </Label>
+                                        <Input
+                                            inputMode="decimal"
+                                            value={form.min_value}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    min_value: e.target.value,
+                                                })
+                                            }
+                                            placeholder="0.0"
+                                        />
+                                        {errors.min_value && (
+                                            <p className="text-xs text-red-500">
+                                                {errors.min_value}
+                                            </p>
+                                        )}
                                     </div>
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Batas Atas (Max)</Label>
-                                        <Input inputMode="decimal" value={form.max_value} onChange={e => setForm({ ...form, max_value: e.target.value })} placeholder="100.0" />
-                                        {errors.max_value && <p className="text-xs text-red-500">{errors.max_value}</p>}
+                                        <Label className="text-xs">
+                                            Batas Atas (Max)
+                                        </Label>
+                                        <Input
+                                            inputMode="decimal"
+                                            value={form.max_value}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    max_value: e.target.value,
+                                                })
+                                            }
+                                            placeholder="100.0"
+                                        />
+                                        {errors.max_value && (
+                                            <p className="text-xs text-red-500">
+                                                {errors.max_value}
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -2274,69 +3647,217 @@ function SensorCrudPanel({
 
                         {/* Digital — one sensor per channel: channel, mode, name. */}
                         {form.connection_type === 'digital' && (
-                            <div className="grid gap-3 rounded-md border p-3 bg-muted/30">
-                                <p className="text-xs font-semibold uppercase text-muted-foreground">Digital</p>
+                            <div className="grid gap-3 rounded-md border bg-muted/30 p-3">
+                                <p className="text-xs font-semibold text-muted-foreground uppercase">
+                                    Digital
+                                </p>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="grid gap-1.5">
-                                        <Label className="text-xs">Channel</Label>
-                                        <Input type="number" min={1} max={digitalChannelMax} value={form.channel} onChange={e => setForm({ ...form, channel: parseInt(e.target.value) || 1 })} />
+                                        <Label className="text-xs">
+                                            Channel
+                                        </Label>
+                                        <Input
+                                            type="number"
+                                            min={1}
+                                            max={digitalChannelMax}
+                                            value={form.channel}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    channel:
+                                                        parseInt(
+                                                            e.target.value,
+                                                        ) || 1,
+                                                })
+                                            }
+                                        />
                                     </div>
                                     <div className="grid gap-1.5">
                                         <Label className="text-xs">Mode</Label>
-                                        <select value={form.digital_mode} onChange={e => setForm({ ...form, digital_mode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                            <option value={0}>Logic Input</option>
-                                            <option value={1}>Pulse Volatile</option>
-                                            <option value={2}>Pulse Persistent</option>
+                                        <select
+                                            value={form.digital_mode}
+                                            onChange={(e) =>
+                                                setForm({
+                                                    ...form,
+                                                    digital_mode: parseInt(
+                                                        e.target.value,
+                                                    ),
+                                                })
+                                            }
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                        >
+                                            <option value={0}>
+                                                Logic Input
+                                            </option>
+                                            <option value={1}>
+                                                Pulse Volatile
+                                            </option>
+                                            <option value={2}>
+                                                Pulse Persistent
+                                            </option>
                                             {/* Logic Output (mode 3) moved to Mode → Module → "Logic OUT".
                                                 Option kept hidden so legacy mode-3 sensors still open for edit/control. */}
-                                            {form.digital_mode === 3 && <option value={3}>Logic Output (legacy)</option>}
+                                            {form.digital_mode === 3 && (
+                                                <option value={3}>
+                                                    Logic Output (legacy)
+                                                </option>
+                                            )}
                                         </select>
                                     </div>
                                 </div>
                                 <div className="grid gap-1.5">
-                                    <Label className="text-xs">Nama Sensor</Label>
-                                    <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Status Pintu" />
-                                    {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+                                    <Label className="text-xs">
+                                        Nama Sensor
+                                    </Label>
+                                    <Input
+                                        value={form.name}
+                                        onChange={(e) =>
+                                            setForm({
+                                                ...form,
+                                                name: e.target.value,
+                                            })
+                                        }
+                                        placeholder="e.g. Status Pintu"
+                                    />
+                                    {errors.name && (
+                                        <p className="text-xs text-red-500">
+                                            {errors.name}
+                                        </p>
+                                    )}
                                 </div>
 
                                 {form.digital_mode === 0 && (
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Label HIGH</Label>
-                                            <Input value={form.label_high} onChange={e => setForm({ ...form, label_high: e.target.value })} />
+                                            <Label className="text-xs">
+                                                Label HIGH
+                                            </Label>
+                                            <Input
+                                                value={form.label_high}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        label_high:
+                                                            e.target.value,
+                                                    })
+                                                }
+                                            />
                                         </div>
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Label LOW</Label>
-                                            <Input value={form.label_low} onChange={e => setForm({ ...form, label_low: e.target.value })} />
+                                            <Label className="text-xs">
+                                                Label LOW
+                                            </Label>
+                                            <Input
+                                                value={form.label_low}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        label_low:
+                                                            e.target.value,
+                                                    })
+                                                }
+                                            />
                                         </div>
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Debounce (ms)</Label>
-                                            <Input type="number" min={0} value={form.debounce_ms} onChange={e => setForm({ ...form, debounce_ms: parseInt(e.target.value) || 0 })} />
+                                            <Label className="text-xs">
+                                                Debounce (ms)
+                                            </Label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                value={form.debounce_ms}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        debounce_ms:
+                                                            parseInt(
+                                                                e.target.value,
+                                                            ) || 0,
+                                                    })
+                                                }
+                                            />
                                         </div>
                                         <label className="flex items-center gap-2 pt-5 text-xs">
-                                            <input type="checkbox" checked={form.invert_logic} onChange={e => setForm({ ...form, invert_logic: e.target.checked })} className="rounded" />
+                                            <input
+                                                type="checkbox"
+                                                checked={form.invert_logic}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        invert_logic:
+                                                            e.target.checked,
+                                                    })
+                                                }
+                                                className="rounded"
+                                            />
                                             Invert logic
                                         </label>
                                     </div>
                                 )}
 
-                                {(form.digital_mode === 1 || form.digital_mode === 2) && (
+                                {(form.digital_mode === 1 ||
+                                    form.digital_mode === 2) && (
                                     <div className="grid gap-3 sm:grid-cols-3">
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Pulse Submode</Label>
-                                            <select value={form.pulse_submode} onChange={e => setForm({ ...form, pulse_submode: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
-                                                <option value={0}>Counter</option>
+                                            <Label className="text-xs">
+                                                Pulse Submode
+                                            </Label>
+                                            <select
+                                                value={form.pulse_submode}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        pulse_submode: parseInt(
+                                                            e.target.value,
+                                                        ),
+                                                    })
+                                                }
+                                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                            >
+                                                <option value={0}>
+                                                    Counter
+                                                </option>
                                                 <option value={1}>Rate</option>
-                                                <option value={2}>Auto Reset</option>
+                                                <option value={2}>
+                                                    Auto Reset
+                                                </option>
                                             </select>
                                         </div>
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Scale</Label>
-                                            <Input inputMode="decimal" value={form.scale_factor} onChange={e => setForm({ ...form, scale_factor: e.target.value })} placeholder="1.0" />
+                                            <Label className="text-xs">
+                                                Scale
+                                            </Label>
+                                            <Input
+                                                inputMode="decimal"
+                                                value={form.scale_factor}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        scale_factor:
+                                                            e.target.value,
+                                                    })
+                                                }
+                                                placeholder="1.0"
+                                            />
                                         </div>
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Timeout (s)</Label>
-                                            <Input type="number" min={0} value={form.timeout_sec} onChange={e => setForm({ ...form, timeout_sec: parseInt(e.target.value) || 0 })} />
+                                            <Label className="text-xs">
+                                                Timeout (s)
+                                            </Label>
+                                            <Input
+                                                type="number"
+                                                min={0}
+                                                value={form.timeout_sec}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        timeout_sec:
+                                                            parseInt(
+                                                                e.target.value,
+                                                            ) || 0,
+                                                    })
+                                                }
+                                            />
                                         </div>
                                     </div>
                                 )}
@@ -2344,15 +3865,41 @@ function SensorCrudPanel({
                                 {form.digital_mode === 3 && (
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Default State</Label>
-                                            <select value={form.default_state} onChange={e => setForm({ ...form, default_state: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            <Label className="text-xs">
+                                                Default State
+                                            </Label>
+                                            <select
+                                                value={form.default_state}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        default_state: parseInt(
+                                                            e.target.value,
+                                                        ),
+                                                    })
+                                                }
+                                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                            >
                                                 <option value={0}>OFF</option>
                                                 <option value={1}>ON</option>
                                             </select>
                                         </div>
                                         <div className="grid gap-1.5">
-                                            <Label className="text-xs">Failsafe</Label>
-                                            <select value={form.failsafe} onChange={e => setForm({ ...form, failsafe: parseInt(e.target.value) })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm">
+                                            <Label className="text-xs">
+                                                Failsafe
+                                            </Label>
+                                            <select
+                                                value={form.failsafe}
+                                                onChange={(e) =>
+                                                    setForm({
+                                                        ...form,
+                                                        failsafe: parseInt(
+                                                            e.target.value,
+                                                        ),
+                                                    })
+                                                }
+                                                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                                            >
                                                 <option value={0}>OFF</option>
                                                 <option value={1}>ON</option>
                                             </select>
@@ -2363,16 +3910,50 @@ function SensorCrudPanel({
                                 {/* Live output control — only for an already-saved Mode-3 output (spec §3.2.11) */}
                                 {form.digital_mode === 3 && editingSensor && (
                                     <div className="grid gap-2 rounded-md border border-dashed p-3">
-                                        <Label className="text-xs">Kontrol Output (live)</Label>
+                                        <Label className="text-xs">
+                                            Kontrol Output (live)
+                                        </Label>
                                         <div className="flex items-center gap-2">
-                                            <Button type="button" size="sm" variant="outline" disabled={readOnly || ctrlBusy !== null} onClick={() => sendDigitalCtrl(1)}>
-                                                {ctrlBusy === 1 ? <Loader2 className="size-3.5 animate-spin" /> : null} ON
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={
+                                                    readOnly ||
+                                                    ctrlBusy !== null
+                                                }
+                                                onClick={() =>
+                                                    sendDigitalCtrl(1)
+                                                }
+                                            >
+                                                {ctrlBusy === 1 ? (
+                                                    <Loader2 className="size-3.5 animate-spin" />
+                                                ) : null}{' '}
+                                                ON
                                             </Button>
-                                            <Button type="button" size="sm" variant="outline" disabled={readOnly || ctrlBusy !== null} onClick={() => sendDigitalCtrl(0)}>
-                                                {ctrlBusy === 0 ? <Loader2 className="size-3.5 animate-spin" /> : null} OFF
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={
+                                                    readOnly ||
+                                                    ctrlBusy !== null
+                                                }
+                                                onClick={() =>
+                                                    sendDigitalCtrl(0)
+                                                }
+                                            >
+                                                {ctrlBusy === 0 ? (
+                                                    <Loader2 className="size-3.5 animate-spin" />
+                                                ) : null}{' '}
+                                                OFF
                                             </Button>
                                         </div>
-                                        {ctrlResult && <p className="text-[10px] text-muted-foreground">{ctrlResult}</p>}
+                                        {ctrlResult && (
+                                            <p className="text-[10px] text-muted-foreground">
+                                                {ctrlResult}
+                                            </p>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -2381,51 +3962,89 @@ function SensorCrudPanel({
                         {/* LCD/SD/Server map flags removed — firmware always shows, stores, and sends every configured sensor (spec §3.2). */}
                     </div>
                     <DialogFooter>
-                        <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
-                        <Button onClick={handleSubmit} disabled={readOnly || processing || hasInvalidRs485ParameterName}>
-                            {processing ? t('loggerDetail.saving_dots') : (editingSensor || editingDeviceSlave != null) ? t('loggerDetail.save_changes') : t('loggerDetail.create_sensor')}
+                        <Button
+                            variant="outline"
+                            onClick={() => setDialogOpen(false)}
+                        >
+                            {t('common.cancel')}
+                        </Button>
+                        <Button
+                            onClick={handleSubmit}
+                            disabled={
+                                readOnly ||
+                                processing ||
+                                hasInvalidRs485ParameterName
+                            }
+                        >
+                            {processing
+                                ? t('loggerDetail.saving_dots')
+                                : editingSensor || editingDeviceSlave != null
+                                  ? t('loggerDetail.save_changes')
+                                  : t('loggerDetail.create_sensor')}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
 
             {/* Delete Confirmation */}
-            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+            <AlertDialog
+                open={deleteDialogOpen}
+                onOpenChange={setDeleteDialogOpen}
+            >
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>{t('loggerDetail.delete_sensor')}</AlertDialogTitle>
+                        <AlertDialogTitle>
+                            {t('loggerDetail.delete_sensor')}
+                        </AlertDialogTitle>
                         <AlertDialogDescription>
-                            Are you sure you want to delete <strong>{deletingSensor?.name}</strong>? This action cannot be undone.
+                            Are you sure you want to delete{' '}
+                            <strong>{deletingSensor?.name}</strong>? This action
+                            cannot be undone.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                        <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={handleDelete} disabled={readOnly || processing}>
-                            {processing ? t('loggerDetail.deleting') : t('loggerDetail.delete_sensor')}
+                        <AlertDialogCancel>
+                            {t('common.cancel')}
+                        </AlertDialogCancel>
+                        <AlertDialogAction
+                            className="bg-red-600 hover:bg-red-700"
+                            onClick={handleDelete}
+                            disabled={readOnly || processing}
+                        >
+                            {processing
+                                ? t('loggerDetail.deleting')
+                                : t('loggerDetail.delete_sensor')}
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
-
         </>
     );
 }
 
 function getStatusBadgeClass(status: string): string {
     switch (status) {
-        case 'online':  return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20';
-        case 'offline': return 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30 hover:bg-red-500/20';
-        case 'warning': return 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/20';
-        default:        return 'bg-muted text-muted-foreground';
+        case 'online':
+            return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20';
+        case 'offline':
+            return 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30 hover:bg-red-500/20';
+        case 'warning':
+            return 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/20';
+        default:
+            return 'bg-muted text-muted-foreground';
     }
 }
 
 function getLogLevelColor(level: string) {
     switch (level) {
-        case 'info': return 'text-blue-500';
-        case 'warning': return 'text-amber-500';
-        case 'error': return 'text-red-500';
-        default: return 'text-muted-foreground';
+        case 'info':
+            return 'text-blue-500';
+        case 'warning':
+            return 'text-amber-500';
+        case 'error':
+            return 'text-red-500';
+        default:
+            return 'text-muted-foreground';
     }
 }
 
@@ -2442,7 +4061,13 @@ type FirmwareCheck = {
     fileSize?: number | null;
 };
 
-type FirmwarePhase = 'idle' | 'downloading' | 'downloaded' | 'installing' | 'online' | 'error';
+type FirmwarePhase =
+    | 'idle'
+    | 'downloading'
+    | 'downloaded'
+    | 'installing'
+    | 'online'
+    | 'error';
 
 // Shared OTA state returned by useFirmwareOta and consumed by both the card (System tab)
 // and the live progress popup (rendered at page level so it survives tab switches).
@@ -2485,14 +4110,19 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
     const esRef = useRef<EventSource | null>(null);
 
     const closeStream = useCallback(() => {
-        if (esRef.current) { esRef.current.close(); esRef.current = null; }
+        if (esRef.current) {
+            esRef.current.close();
+            esRef.current = null;
+        }
     }, []);
 
     const checkFirmware = useCallback(async () => {
         if (!deviceIdentifier) return;
         setChecking(true);
         try {
-            const res = await apiFetch('/api/mqtt/ota/check', { id_logger: deviceIdentifier });
+            const res = await apiFetch('/api/mqtt/ota/check', {
+                id_logger: deviceIdentifier,
+            });
             const data = await res.json();
             if (data.success) {
                 setInfo(data as FirmwareCheck);
@@ -2500,7 +4130,9 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
                 // the card back from Install → Up to date once the new firmware is running.
                 setReady(data.state === 'install');
             }
-        } catch { /* ignore — leave as "up to date" fallback */ }
+        } catch {
+            /* ignore — leave as "up to date" fallback */
+        }
         setChecking(false);
     }, [deviceIdentifier]);
 
@@ -2538,7 +4170,11 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
 
         // Stream live download progress over a single SSE connection (works even with one
         // PHP worker — no concurrent poll request that would block behind the download).
-        const params = new URLSearchParams({ id_logger: deviceIdentifier, ver: info.ver, file: info.file });
+        const params = new URLSearchParams({
+            id_logger: deviceIdentifier,
+            ver: info.ver,
+            file: info.file,
+        });
         const es = new EventSource(`/api/mqtt/ota/stream?${params.toString()}`);
         esRef.current = es;
         let finished = false;
@@ -2548,11 +4184,18 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
                 const d = JSON.parse((e as MessageEvent).data);
                 setPercent(d.percent ?? 0);
                 if (d.message) setProgressMsg(d.message);
-            } catch { /* ignore malformed frame */ }
+            } catch {
+                /* ignore malformed frame */
+            }
         });
         es.addEventListener('done', (e) => {
             finished = true;
-            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+            try {
+                const d = JSON.parse((e as MessageEvent).data);
+                if (d.message) setProgressMsg(d.message);
+            } catch {
+                /* ignore */
+            }
             setPercent(100);
             setPhase('downloaded');
             setReady(true);
@@ -2561,7 +4204,11 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
         es.addEventListener('failed', (e) => {
             finished = true;
             let msg = 'Gagal mengunduh firmware';
-            try { msg = JSON.parse((e as MessageEvent).data).message || msg; } catch { /* ignore */ }
+            try {
+                msg = JSON.parse((e as MessageEvent).data).message || msg;
+            } catch {
+                /* ignore */
+            }
             setPhase('error');
             setErrorMsg(msg);
             closeStream();
@@ -2590,37 +4237,68 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
         // Tell the backend which version we're installing (the staged one), so the running
         // firmware is recorded correctly once the device reports back online.
         if (info?.stagedVersion) params.set('ver', info.stagedVersion);
-        const es = new EventSource(`/api/mqtt/ota/install-stream?${params.toString()}`);
+        const es = new EventSource(
+            `/api/mqtt/ota/install-stream?${params.toString()}`,
+        );
         esRef.current = es;
         let finished = false;
 
         es.addEventListener('installing', (e) => {
-            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+            try {
+                const d = JSON.parse((e as MessageEvent).data);
+                if (d.message) setProgressMsg(d.message);
+            } catch {
+                /* ignore */
+            }
         });
         // Triggered but online not yet confirmed (still rebooting / soft timeout) — reload to re-check.
         es.addEventListener('rebooting', (e) => {
             finished = true;
-            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+            try {
+                const d = JSON.parse((e as MessageEvent).data);
+                if (d.message) setProgressMsg(d.message);
+            } catch {
+                /* ignore */
+            }
             closeStream();
             setTimeout(() => router.reload(), 4000);
         });
         // Device reported STATUS=1 → back online with the new firmware. Show OK, then refresh.
         es.addEventListener('online', (e) => {
             finished = true;
-            try { const d = JSON.parse((e as MessageEvent).data); if (d.message) setProgressMsg(d.message); } catch { /* ignore */ }
+            try {
+                const d = JSON.parse((e as MessageEvent).data);
+                if (d.message) setProgressMsg(d.message);
+            } catch {
+                /* ignore */
+            }
             setPercent(100);
             setPhase('online');
             setReady(false);
             // Reflect "up to date" immediately so dismissing the popup (X) doesn't fall back to a
             // stale "Update available" before the reload lands.
-            setInfo(prev => (prev ? { ...prev, state: 'uptodate', checkStatus: 'EMPTY', updateAvailable: false, downloaded: false } : prev));
+            setInfo((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          state: 'uptodate',
+                          checkStatus: 'EMPTY',
+                          updateAvailable: false,
+                          downloaded: false,
+                      }
+                    : prev,
+            );
             closeStream();
             setTimeout(() => router.reload(), 3000);
         });
         es.addEventListener('failed', (e) => {
             finished = true;
             let msg = 'Gagal install firmware';
-            try { msg = JSON.parse((e as MessageEvent).data).message || msg; } catch { /* ignore */ }
+            try {
+                msg = JSON.parse((e as MessageEvent).data).message || msg;
+            } catch {
+                /* ignore */
+            }
             setPhase('error');
             setErrorMsg(msg);
             closeStream();
@@ -2636,12 +4314,33 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
 
     const state = info?.state ?? 'uptodate';
     // The "→ new version" hint: staged version when installable, otherwise the DB latest.
-    const targetVersion = state === 'install' ? (info?.stagedVersion ?? info?.latestVersion) : info?.latestVersion;
-    const showPopup = phase === 'downloading' || phase === 'downloaded' || phase === 'installing' || phase === 'online' || phase === 'error';
+    const targetVersion =
+        state === 'install'
+            ? (info?.stagedVersion ?? info?.latestVersion)
+            : info?.latestVersion;
+    const showPopup =
+        phase === 'downloading' ||
+        phase === 'downloaded' ||
+        phase === 'installing' ||
+        phase === 'online' ||
+        phase === 'error';
 
     return {
-        checking, info, dialogOpen, setDialogOpen, phase, setPhase, ready, percent, progressMsg, errorMsg,
-        handleDownload, handleInstall, state, targetVersion, showPopup,
+        checking,
+        info,
+        dialogOpen,
+        setDialogOpen,
+        phase,
+        setPhase,
+        ready,
+        percent,
+        progressMsg,
+        errorMsg,
+        handleDownload,
+        handleInstall,
+        state,
+        targetVersion,
+        showPopup,
     };
 }
 
@@ -2650,20 +4349,59 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
  * it stays visible while the user moves between tabs of the same logger.
  */
 function FirmwareOtaPopup({ ota }: { ota: FirmwareOta }) {
-    const { phase, percent, progressMsg, errorMsg, showPopup, setPhase, handleInstall } = ota;
+    const {
+        phase,
+        percent,
+        progressMsg,
+        errorMsg,
+        showPopup,
+        setPhase,
+        handleInstall,
+    } = ota;
     if (!showPopup) return null;
     return (
-        <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border bg-background p-4 shadow-lg animate-in slide-in-from-bottom-2 fade-in">
+        <div className="fixed right-4 bottom-4 z-50 w-80 animate-in rounded-lg border bg-background p-4 shadow-lg fade-in slide-in-from-bottom-2">
             <div className="mb-2 flex items-center justify-between">
                 <p className="flex items-center gap-2 text-sm font-medium">
-                    {phase === 'downloading' && <><Loader2 className="size-4 animate-spin text-blue-500" />Mengunduh Firmware</>}
-                    {phase === 'downloaded' && <><CheckCircle2 className="size-4 text-emerald-500" />Unduhan Selesai</>}
-                    {phase === 'installing' && <><Loader2 className="size-4 animate-spin text-amber-500" />Menginstall…</>}
-                    {phase === 'online' && <><CheckCircle2 className="size-4 text-emerald-500" />OK — Perangkat Online</>}
-                    {phase === 'error' && <><XCircle className="size-4 text-red-500" />Gagal</>}
+                    {phase === 'downloading' && (
+                        <>
+                            <Loader2 className="size-4 animate-spin text-blue-500" />
+                            Mengunduh Firmware
+                        </>
+                    )}
+                    {phase === 'downloaded' && (
+                        <>
+                            <CheckCircle2 className="size-4 text-emerald-500" />
+                            Unduhan Selesai
+                        </>
+                    )}
+                    {phase === 'installing' && (
+                        <>
+                            <Loader2 className="size-4 animate-spin text-amber-500" />
+                            Menginstall…
+                        </>
+                    )}
+                    {phase === 'online' && (
+                        <>
+                            <CheckCircle2 className="size-4 text-emerald-500" />
+                            OK — Perangkat Online
+                        </>
+                    )}
+                    {phase === 'error' && (
+                        <>
+                            <XCircle className="size-4 text-red-500" />
+                            Gagal
+                        </>
+                    )}
                 </p>
-                {(phase === 'downloaded' || phase === 'online' || phase === 'error') && (
-                    <button type="button" onClick={() => setPhase('idle')} className="text-muted-foreground hover:text-foreground">
+                {(phase === 'downloaded' ||
+                    phase === 'online' ||
+                    phase === 'error') && (
+                    <button
+                        type="button"
+                        onClick={() => setPhase('idle')}
+                        className="text-muted-foreground hover:text-foreground"
+                    >
                         <XCircle className="size-4" />
                     </button>
                 )}
@@ -2672,7 +4410,9 @@ function FirmwareOtaPopup({ ota }: { ota: FirmwareOta }) {
                 <p className="text-xs text-red-500">{errorMsg}</p>
             ) : phase === 'online' ? (
                 <p className="flex items-center gap-1.5 text-xs text-emerald-600">
-                    <CheckCircle2 className="size-3.5 shrink-0" /> {progressMsg || 'Perangkat kembali online dengan firmware baru.'}
+                    <CheckCircle2 className="size-3.5 shrink-0" />{' '}
+                    {progressMsg ||
+                        'Perangkat kembali online dengan firmware baru.'}
                 </p>
             ) : (
                 <>
@@ -2681,14 +4421,19 @@ function FirmwareOtaPopup({ ota }: { ota: FirmwareOta }) {
                         {phase === 'downloading'
                             ? `Mengunduh ${percent}%`
                             : phase === 'downloaded'
-                                ? 'Unduhan selesai'
-                                : phase === 'installing'
-                                    ? (progressMsg || 'Menginstall…')
-                                    : `${percent}%`}
+                              ? 'Unduhan selesai'
+                              : phase === 'installing'
+                                ? progressMsg || 'Menginstall…'
+                                : `${percent}%`}
                     </p>
                     {phase === 'downloaded' && (
-                        <Button size="sm" className="mt-3 w-full" onClick={handleInstall}>
-                            <Download className="mr-1 size-3.5" />Install Sekarang
+                        <Button
+                            size="sm"
+                            className="mt-3 w-full"
+                            onClick={handleInstall}
+                        >
+                            <Download className="mr-1 size-3.5" />
+                            Install Sekarang
                         </Button>
                     )}
                 </>
@@ -2702,70 +4447,228 @@ function FirmwareOtaPopup({ ota }: { ota: FirmwareOta }) {
  * latest firmware registered for its hardware model, lets the user download it (the live
  * progress popup lives at the page level via FirmwareOtaPopup), then install ({"OTA":{"cmd":"INSTALL"}}).
  */
-function FirmwareCard({ ota, currentVersion, disabled }: {
+function FirmwareCard({
+    ota,
+    currentVersion,
+    disabled,
+    embedded = false,
+}: {
     ota: FirmwareOta;
     currentVersion: string | null;
     disabled?: boolean;
+    embedded?: boolean;
 }) {
     const { t } = useTranslation();
-    const { checking, info, dialogOpen, setDialogOpen, phase, ready, handleDownload, handleInstall, state, targetVersion } = ota;
+    const {
+        checking,
+        info,
+        dialogOpen,
+        setDialogOpen,
+        phase,
+        ready,
+        handleDownload,
+        handleInstall,
+        state,
+        targetVersion,
+    } = ota;
+
+    const statusPanel = (
+        <div className="flex items-center justify-between rounded-lg border p-3">
+            <div>
+                <p className="text-sm font-medium">
+                    {t('loggerDetail.current_firmware')}
+                </p>
+                <p className="font-mono text-xs text-muted-foreground">
+                    {currentVersion || 'â€”'}
+                </p>
+                {(state === 'install' || state === 'update') &&
+                    targetVersion && (
+                        <p className="mt-0.5 font-mono text-xs text-emerald-600">
+                            â†’ {targetVersion}
+                        </p>
+                    )}
+            </div>
+            {phase === 'online' ? (
+                <Badge variant="default" className="gap-1">
+                    <CheckCircle2 className="size-3" />
+                    Terinstall
+                </Badge>
+            ) : phase === 'installing' ? (
+                <Button size="sm" disabled>
+                    <Loader2 className="mr-1 size-3.5 animate-spin" />
+                    Installingâ€¦
+                </Button>
+            ) : checking ? (
+                <Badge variant="secondary" className="gap-1">
+                    <Loader2 className="size-3 animate-spin" />
+                    Checkingâ€¦
+                </Badge>
+            ) : ready || state === 'install' ? (
+                <Button size="sm" onClick={handleInstall} disabled={disabled}>
+                    <Download className="mr-1 size-3.5" />
+                    Install
+                </Button>
+            ) : state === 'update' ? (
+                <button
+                    type="button"
+                    onClick={() => setDialogOpen(true)}
+                    disabled={disabled}
+                    className="disabled:opacity-50"
+                >
+                    <Badge variant="destructive" className="cursor-pointer gap-1">
+                        <Download className="size-3" />
+                        Update available
+                    </Badge>
+                </button>
+            ) : state === 'busy' ? (
+                <Badge variant="secondary" className="gap-1">
+                    <Loader2 className="size-3 animate-spin" />
+                    Device busy
+                </Badge>
+            ) : (
+                <Badge variant="default">
+                    {t('loggerDetail.up_to_date')}
+                </Badge>
+            )}
+        </div>
+    );
 
     return (
         <>
+            {embedded ? (
+                statusPanel
+            ) : (
             <Card>
                 <CardHeader>
-                    <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> {t('loggerDetail.firmware')}</CardTitle>
-                    <CardDescription>Current: {currentVersion || '—'}</CardDescription>
+                    <CardTitle className="flex items-center gap-2">
+                        <Zap className="size-5" /> {t('loggerDetail.firmware')}
+                    </CardTitle>
+                    <CardDescription>
+                        Current: {currentVersion || '—'}
+                    </CardDescription>
                 </CardHeader>
                 <CardContent>
                     <div className="flex items-center justify-between rounded-lg border p-3">
                         <div>
-                            <p className="text-sm font-medium">{t('loggerDetail.current_firmware')}</p>
-                            <p className="font-mono text-xs text-muted-foreground">{currentVersion || '—'}</p>
-                            {(state === 'install' || state === 'update') && targetVersion && (
-                                <p className="mt-0.5 font-mono text-xs text-emerald-600">→ {targetVersion}</p>
-                            )}
+                            <p className="text-sm font-medium">
+                                {t('loggerDetail.current_firmware')}
+                            </p>
+                            <p className="font-mono text-xs text-muted-foreground">
+                                {currentVersion || '—'}
+                            </p>
+                            {(state === 'install' || state === 'update') &&
+                                targetVersion && (
+                                    <p className="mt-0.5 font-mono text-xs text-emerald-600">
+                                        → {targetVersion}
+                                    </p>
+                                )}
                         </div>
                         {phase === 'online' ? (
-                            <Badge variant="default" className="gap-1"><CheckCircle2 className="size-3" />Terinstall</Badge>
+                            <Badge variant="default" className="gap-1">
+                                <CheckCircle2 className="size-3" />
+                                Terinstall
+                            </Badge>
                         ) : phase === 'installing' ? (
                             <Button size="sm" disabled>
-                                <Loader2 className="mr-1 size-3.5 animate-spin" />Installing…
+                                <Loader2 className="mr-1 size-3.5 animate-spin" />
+                                Installing…
                             </Button>
                         ) : checking ? (
-                            <Badge variant="secondary" className="gap-1"><Loader2 className="size-3 animate-spin" />Checking…</Badge>
+                            <Badge variant="secondary" className="gap-1">
+                                <Loader2 className="size-3 animate-spin" />
+                                Checking…
+                            </Badge>
                         ) : ready || state === 'install' ? (
-                            <Button size="sm" onClick={handleInstall} disabled={disabled}>
-                                <Download className="mr-1 size-3.5" />Install
+                            <Button
+                                size="sm"
+                                onClick={handleInstall}
+                                disabled={disabled}
+                            >
+                                <Download className="mr-1 size-3.5" />
+                                Install
                             </Button>
                         ) : state === 'update' ? (
-                            <button type="button" onClick={() => setDialogOpen(true)} disabled={disabled} className="disabled:opacity-50">
-                                <Badge variant="destructive" className="cursor-pointer gap-1"><Download className="size-3" />Update available</Badge>
+                            <button
+                                type="button"
+                                onClick={() => setDialogOpen(true)}
+                                disabled={disabled}
+                                className="disabled:opacity-50"
+                            >
+                                <Badge
+                                    variant="destructive"
+                                    className="cursor-pointer gap-1"
+                                >
+                                    <Download className="size-3" />
+                                    Update available
+                                </Badge>
                             </button>
                         ) : state === 'busy' ? (
-                            <Badge variant="secondary" className="gap-1"><Loader2 className="size-3 animate-spin" />Device busy</Badge>
+                            <Badge variant="secondary" className="gap-1">
+                                <Loader2 className="size-3 animate-spin" />
+                                Device busy
+                            </Badge>
                         ) : (
-                            <Badge variant="default">{t('loggerDetail.up_to_date')}</Badge>
+                            <Badge variant="default">
+                                {t('loggerDetail.up_to_date')}
+                            </Badge>
                         )}
                     </div>
                 </CardContent>
             </Card>
+            )}
 
             {/* Latest-firmware dialog with download trigger */}
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2"><Zap className="size-5 text-amber-500" /> Firmware Terbaru Tersedia</DialogTitle>
-                        <DialogDescription>Versi firmware baru tersedia untuk perangkat ini. Unduh ke perangkat lalu install.</DialogDescription>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Zap className="size-5 text-amber-500" /> Firmware
+                            Terbaru Tersedia
+                        </DialogTitle>
+                        <DialogDescription>
+                            Versi firmware baru tersedia untuk perangkat ini.
+                            Unduh ke perangkat lalu install.
+                        </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-2 rounded-lg border p-3 text-sm">
-                        <div className="flex justify-between"><span className="text-muted-foreground">Versi saat ini</span><span className="font-mono">{currentVersion || '—'}</span></div>
-                        <div className="flex justify-between"><span className="text-muted-foreground">Versi terbaru</span><span className="font-mono font-semibold text-emerald-600">{info?.latestVersion || '—'}</span></div>
-                        {info?.file && <div className="flex justify-between gap-2"><span className="text-muted-foreground">File</span><span className="truncate font-mono text-xs">{info.file}</span></div>}
+                        <div className="flex justify-between">
+                            <span className="text-muted-foreground">
+                                Versi saat ini
+                            </span>
+                            <span className="font-mono">
+                                {currentVersion || '—'}
+                            </span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-muted-foreground">
+                                Versi terbaru
+                            </span>
+                            <span className="font-mono font-semibold text-emerald-600">
+                                {info?.latestVersion || '—'}
+                            </span>
+                        </div>
+                        {info?.file && (
+                            <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">
+                                    File
+                                </span>
+                                <span className="truncate font-mono text-xs">
+                                    {info.file}
+                                </span>
+                            </div>
+                        )}
                     </div>
                     <DialogFooter>
-                        <Button variant="outline" onClick={() => setDialogOpen(false)}>Batal</Button>
-                        <Button onClick={handleDownload} disabled={disabled}><Download className="mr-1 size-4" />Unduh</Button>
+                        <Button
+                            variant="outline"
+                            onClick={() => setDialogOpen(false)}
+                        >
+                            Batal
+                        </Button>
+                        <Button onClick={handleDownload} disabled={disabled}>
+                            <Download className="mr-1 size-4" />
+                            Unduh
+                        </Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
@@ -2773,7 +4676,12 @@ function FirmwareCard({ ota, currentVersion, disabled }: {
     );
 }
 
-function DeviceConfigCard({ intervalRead, intervalSend, maxReset }: {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for the hidden System-tab Device Configuration card.
+function DeviceConfigCard({
+    intervalRead,
+    intervalSend,
+    maxReset,
+}: {
     intervalRead: number;
     intervalSend: number;
     maxReset: number;
@@ -2785,23 +4693,37 @@ function DeviceConfigCard({ intervalRead, intervalSend, maxReset }: {
     return (
         <Card>
             <CardHeader>
-                <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="size-5" /> {t('loggerDetail.device_configuration')}</CardTitle>
-                <CardDescription>{t('loggerDetail.interval_locked_note')}</CardDescription>
+                <CardTitle className="flex items-center gap-2">
+                    <SlidersHorizontal className="size-5" />{' '}
+                    {t('loggerDetail.device_configuration')}
+                </CardTitle>
+                <CardDescription>
+                    {t('loggerDetail.interval_locked_note')}
+                </CardDescription>
             </CardHeader>
             <CardContent>
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                    <dt className="text-muted-foreground flex items-center gap-1.5">
-                        <Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_read')}
+                    <dt className="flex items-center gap-1.5 text-muted-foreground">
+                        <Timer className="size-3.5 text-blue-500" />{' '}
+                        {t('loggerDetail.interval_read')}
                     </dt>
-                    <dd className="font-medium">{intervalRead} {t('loggerDetail.minutes')}</dd>
-                    <dt className="text-muted-foreground flex items-center gap-1.5">
-                        <Upload className="size-3.5 text-emerald-500" /> {t('loggerDetail.interval_send')}
+                    <dd className="font-medium">
+                        {intervalRead} {t('loggerDetail.minutes')}
+                    </dd>
+                    <dt className="flex items-center gap-1.5 text-muted-foreground">
+                        <Upload className="size-3.5 text-emerald-500" />{' '}
+                        {t('loggerDetail.interval_send')}
                     </dt>
-                    <dd className="font-medium">{intervalSend} {t('loggerDetail.minutes')}</dd>
-                    <dt className="text-muted-foreground flex items-center gap-1.5">
-                        <RotateCcw className="size-3.5 text-amber-500" /> {t('loggerDetail.max_reset_watchdog')}
+                    <dd className="font-medium">
+                        {intervalSend} {t('loggerDetail.minutes')}
+                    </dd>
+                    <dt className="flex items-center gap-1.5 text-muted-foreground">
+                        <RotateCcw className="size-3.5 text-amber-500" />{' '}
+                        {t('loggerDetail.max_reset_watchdog')}
                     </dt>
-                    <dd className="font-medium">{maxReset} {t('loggerDetail.times')}</dd>
+                    <dd className="font-medium">
+                        {maxReset} {t('loggerDetail.times')}
+                    </dd>
                 </dl>
             </CardContent>
         </Card>
@@ -2811,7 +4733,15 @@ function DeviceConfigCard({ intervalRead, intervalSend, maxReset }: {
 // =============================================================================
 // Helper: Toggle Switch
 // =============================================================================
-function ToggleSwitch({ checked, onChange, disabled }: { checked: boolean; onChange: () => void; disabled?: boolean }) {
+function ToggleSwitch({
+    checked,
+    onChange,
+    disabled,
+}: {
+    checked: boolean;
+    onChange: () => void;
+    disabled?: boolean;
+}) {
     return (
         <button
             type="button"
@@ -2819,9 +4749,11 @@ function ToggleSwitch({ checked, onChange, disabled }: { checked: boolean; onCha
             aria-checked={checked}
             onClick={onChange}
             disabled={disabled}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-primary' : 'bg-input'}`}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-primary' : 'bg-input'}`}
         >
-            <span className={`pointer-events-none inline-block size-5 rounded-full bg-background shadow-lg ring-0 transition-transform duration-200 ease-in-out ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
+            <span
+                className={`pointer-events-none inline-block size-5 rounded-full bg-background shadow-lg ring-0 transition-transform duration-200 ease-in-out ${checked ? 'translate-x-5' : 'translate-x-0'}`}
+            />
         </button>
     );
 }
@@ -2847,7 +4779,9 @@ const EMPTY_INTEGRATION_FORM = {
     is_enabled: true,
 };
 
-function initialIntegrationForm(integration?: Integration | null): typeof EMPTY_INTEGRATION_FORM {
+function initialIntegrationForm(
+    integration?: Integration | null,
+): typeof EMPTY_INTEGRATION_FORM {
     if (!integration) {
         return { ...EMPTY_INTEGRATION_FORM };
     }
@@ -2863,7 +4797,12 @@ function initialIntegrationForm(integration?: Integration | null): typeof EMPTY_
     };
 }
 
-function IntegrationFormModal({ open, onClose, loggerId, integration }: {
+function IntegrationFormModal({
+    open,
+    onClose,
+    loggerId,
+    integration,
+}: {
     open: boolean;
     onClose: () => void;
     loggerId: string;
@@ -2873,115 +4812,298 @@ function IntegrationFormModal({ open, onClose, loggerId, integration }: {
     const [form, setForm] = useState(() => initialIntegrationForm(integration));
     const [saving, setSaving] = useState(false);
 
-    const setAuthCfg = (key: string, value: string) => setForm(f => ({ ...f, auth_config: { ...f.auth_config, [key]: value } }));
+    const setAuthCfg = (key: string, value: string) =>
+        setForm((f) => ({
+            ...f,
+            auth_config: { ...f.auth_config, [key]: value },
+        }));
 
     const handleSubmit = () => {
         setSaving(true);
-        const payload = { name: form.name, endpoint_url: form.endpoint_url, auth_type: form.auth_type, auth_config: form.auth_config, interval_minutes: form.interval_minutes, raw_forward: form.raw_forward, is_enabled: form.is_enabled };
+        const payload = {
+            name: form.name,
+            endpoint_url: form.endpoint_url,
+            auth_type: form.auth_type,
+            auth_config: form.auth_config,
+            interval_minutes: form.interval_minutes,
+            raw_forward: form.raw_forward,
+            is_enabled: form.is_enabled,
+        };
         if (isEdit) {
-            router.put(`/loggers/${loggerId}/integrations/${integration!.id}`, payload, {
-                preserveScroll: true, onSuccess: () => onClose(), onFinish: () => setSaving(false),
-            });
+            router.put(
+                `/loggers/${loggerId}/integrations/${integration!.id}`,
+                payload,
+                {
+                    preserveScroll: true,
+                    onSuccess: () => onClose(),
+                    onFinish: () => setSaving(false),
+                },
+            );
         } else {
             router.post(`/loggers/${loggerId}/integrations`, payload, {
-                preserveScroll: true, onSuccess: () => onClose(), onFinish: () => setSaving(false),
+                preserveScroll: true,
+                onSuccess: () => onClose(),
+                onFinish: () => setSaving(false),
             });
         }
     };
 
-    const inputCls = "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-    const inputXsCls = "flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    const inputCls =
+        'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
+    const inputXsCls =
+        'flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
     return (
-        <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+        <Dialog
+            open={open}
+            onOpenChange={(v) => {
+                if (!v) onClose();
+            }}
+        >
             <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
                         <Globe className="size-5 text-blue-500" />
                         {isEdit ? 'Edit Platform' : 'Tambah Platform Baru'}
                     </DialogTitle>
-                    <DialogDescription>Konfigurasi endpoint dan autentikasi platform tujuan pengiriman data.</DialogDescription>
+                    <DialogDescription>
+                        Konfigurasi endpoint dan autentikasi platform tujuan
+                        pengiriman data.
+                    </DialogDescription>
                 </DialogHeader>
 
                 <div className="space-y-4 py-2">
                     <div className="space-y-1.5">
                         <Label htmlFor="int-name">Nama Platform</Label>
-                        <input id="int-name" type="text" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                            placeholder="Contoh: BMKG Pusat, SiPuji BBWS" className={inputCls} />
+                        <input
+                            id="int-name"
+                            type="text"
+                            value={form.name}
+                            onChange={(e) =>
+                                setForm((f) => ({ ...f, name: e.target.value }))
+                            }
+                            placeholder="Contoh: BMKG Pusat, SiPuji BBWS"
+                            className={inputCls}
+                        />
                     </div>
                     <div className="space-y-1.5">
                         <Label htmlFor="int-url">Endpoint URL</Label>
-                        <input id="int-url" type="url" value={form.endpoint_url} onChange={e => setForm(f => ({ ...f, endpoint_url: e.target.value }))}
-                            placeholder="https://platform.example.com/api/data" className={inputCls + " font-mono"} />
+                        <input
+                            id="int-url"
+                            type="url"
+                            value={form.endpoint_url}
+                            onChange={(e) =>
+                                setForm((f) => ({
+                                    ...f,
+                                    endpoint_url: e.target.value,
+                                }))
+                            }
+                            placeholder="https://platform.example.com/api/data"
+                            className={inputCls + ' font-mono'}
+                        />
                     </div>
                     <div className="space-y-1.5">
                         <Label htmlFor="int-auth">Autentikasi</Label>
-                        <select id="int-auth" value={form.auth_type} onChange={e => setForm(f => ({ ...f, auth_type: e.target.value as AuthType, auth_config: {} }))}
-                            className={inputCls}>
-                            {Object.entries(AUTH_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                        <select
+                            id="int-auth"
+                            value={form.auth_type}
+                            onChange={(e) =>
+                                setForm((f) => ({
+                                    ...f,
+                                    auth_type: e.target.value as AuthType,
+                                    auth_config: {},
+                                }))
+                            }
+                            className={inputCls}
+                        >
+                            {Object.entries(AUTH_TYPE_LABELS).map(([v, l]) => (
+                                <option key={v} value={v}>
+                                    {l}
+                                </option>
+                            ))}
                         </select>
                     </div>
 
                     {form.auth_type === 'api_key' && (
                         <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-3">
-                            <div className="space-y-1.5"><Label className="text-xs">Nama Header</Label>
-                                <input type="text" value={form.auth_config.header ?? 'X-API-Key'} onChange={e => setAuthCfg('header', e.target.value)} placeholder="X-API-Key" className={inputXsCls} /></div>
-                            <div className="space-y-1.5"><Label className="text-xs">Nilai / Key</Label>
-                                <input type="text" value={form.auth_config.value ?? ''} onChange={e => setAuthCfg('value', e.target.value)} placeholder="abc123..." className={inputXsCls} /></div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Nama Header</Label>
+                                <input
+                                    type="text"
+                                    value={
+                                        form.auth_config.header ?? 'X-API-Key'
+                                    }
+                                    onChange={(e) =>
+                                        setAuthCfg('header', e.target.value)
+                                    }
+                                    placeholder="X-API-Key"
+                                    className={inputXsCls}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Nilai / Key</Label>
+                                <input
+                                    type="text"
+                                    value={form.auth_config.value ?? ''}
+                                    onChange={(e) =>
+                                        setAuthCfg('value', e.target.value)
+                                    }
+                                    placeholder="abc123..."
+                                    className={inputXsCls}
+                                />
+                            </div>
                         </div>
                     )}
                     {form.auth_type === 'bearer' && (
-                        <div className="rounded-lg border bg-muted/30 p-3 space-y-1.5">
+                        <div className="space-y-1.5 rounded-lg border bg-muted/30 p-3">
                             <Label className="text-xs">Bearer Token</Label>
-                            <input type="text" value={form.auth_config.value ?? ''} onChange={e => setAuthCfg('value', e.target.value)} placeholder="eyJhbGciOiJ..." className={inputXsCls} />
+                            <input
+                                type="text"
+                                value={form.auth_config.value ?? ''}
+                                onChange={(e) =>
+                                    setAuthCfg('value', e.target.value)
+                                }
+                                placeholder="eyJhbGciOiJ..."
+                                className={inputXsCls}
+                            />
                         </div>
                     )}
                     {form.auth_type === 'basic' && (
                         <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-3">
-                            <div className="space-y-1.5"><Label className="text-xs">Username</Label>
-                                <input type="text" value={form.auth_config.username ?? ''} onChange={e => setAuthCfg('username', e.target.value)} className={inputXsCls} /></div>
-                            <div className="space-y-1.5"><Label className="text-xs">Password</Label>
-                                <input type="password" value={form.auth_config.password ?? ''} onChange={e => setAuthCfg('password', e.target.value)} className={inputXsCls} /></div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Username</Label>
+                                <input
+                                    type="text"
+                                    value={form.auth_config.username ?? ''}
+                                    onChange={(e) =>
+                                        setAuthCfg('username', e.target.value)
+                                    }
+                                    className={inputXsCls}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Password</Label>
+                                <input
+                                    type="password"
+                                    value={form.auth_config.password ?? ''}
+                                    onChange={(e) =>
+                                        setAuthCfg('password', e.target.value)
+                                    }
+                                    className={inputXsCls}
+                                />
+                            </div>
                         </div>
                     )}
                     {form.auth_type === 'custom_header' && (
                         <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-3">
-                            <div className="space-y-1.5"><Label className="text-xs">Nama Header</Label>
-                                <input type="text" value={form.auth_config.header ?? ''} onChange={e => setAuthCfg('header', e.target.value)} placeholder="X-Custom-Header" className={inputXsCls} /></div>
-                            <div className="space-y-1.5"><Label className="text-xs">Nilai Header</Label>
-                                <input type="text" value={form.auth_config.value ?? ''} onChange={e => setAuthCfg('value', e.target.value)} className={inputXsCls} /></div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Nama Header</Label>
+                                <input
+                                    type="text"
+                                    value={form.auth_config.header ?? ''}
+                                    onChange={(e) =>
+                                        setAuthCfg('header', e.target.value)
+                                    }
+                                    placeholder="X-Custom-Header"
+                                    className={inputXsCls}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Nilai Header</Label>
+                                <input
+                                    type="text"
+                                    value={form.auth_config.value ?? ''}
+                                    onChange={(e) =>
+                                        setAuthCfg('value', e.target.value)
+                                    }
+                                    className={inputXsCls}
+                                />
+                            </div>
                         </div>
                     )}
 
                     <div className="flex items-start gap-2.5 rounded-lg border bg-muted/30 p-3">
-                        <input id="int-raw" type="checkbox" checked={form.raw_forward}
-                            onChange={e => setForm(f => ({ ...f, raw_forward: e.target.checked }))}
-                            className="mt-0.5 size-4 shrink-0 rounded border-input accent-blue-600" />
+                        <input
+                            id="int-raw"
+                            type="checkbox"
+                            checked={form.raw_forward}
+                            onChange={(e) =>
+                                setForm((f) => ({
+                                    ...f,
+                                    raw_forward: e.target.checked,
+                                }))
+                            }
+                            className="mt-0.5 size-4 shrink-0 rounded border-input accent-blue-600"
+                        />
                         <div className="space-y-0.5">
-                            <Label htmlFor="int-raw" className="cursor-pointer">Raw forwarding</Label>
-                            <p className="text-xs text-muted-foreground">Abaikan interval — teruskan <strong>setiap</strong> data yang masuk langsung ke platform.</p>
+                            <Label htmlFor="int-raw" className="cursor-pointer">
+                                Raw forwarding
+                            </Label>
+                            <p className="text-xs text-muted-foreground">
+                                Abaikan interval — teruskan{' '}
+                                <strong>setiap</strong> data yang masuk langsung
+                                ke platform.
+                            </p>
                         </div>
                     </div>
 
                     <div className="space-y-1.5">
-                        <Label htmlFor="int-interval" className="flex items-center gap-1.5">
-                            <Timer className="size-3.5 text-blue-500" /> Interval Kirim
+                        <Label
+                            htmlFor="int-interval"
+                            className="flex items-center gap-1.5"
+                        >
+                            <Timer className="size-3.5 text-blue-500" />{' '}
+                            Interval Kirim
                         </Label>
                         <div className="flex items-center gap-2">
-                            <input id="int-interval" type="number" min={1} max={1440} value={form.interval_minutes}
+                            <input
+                                id="int-interval"
+                                type="number"
+                                min={1}
+                                max={1440}
+                                value={form.interval_minutes}
                                 disabled={form.raw_forward}
-                                onChange={e => setForm(f => ({ ...f, interval_minutes: parseInt(e.target.value) || 1 }))}
-                                className="flex h-9 w-32 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed" />
-                            <span className="text-sm text-muted-foreground">{form.raw_forward ? 'diabaikan (raw aktif)' : 'menit'}</span>
+                                onChange={(e) =>
+                                    setForm((f) => ({
+                                        ...f,
+                                        interval_minutes:
+                                            parseInt(e.target.value) || 1,
+                                    }))
+                                }
+                                className="flex h-9 w-32 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                            />
+                            <span className="text-sm text-muted-foreground">
+                                {form.raw_forward
+                                    ? 'diabaikan (raw aktif)'
+                                    : 'menit'}
+                            </span>
                         </div>
                     </div>
                 </div>
 
                 <DialogFooter>
-                    <Button variant="outline" onClick={onClose} disabled={saving}>Batal</Button>
-                    <Button onClick={handleSubmit} disabled={saving || !form.name || !form.endpoint_url} className="gap-2">
-                        {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                        {saving ? 'Menyimpan...' : isEdit ? 'Simpan Perubahan' : 'Tambah Platform'}
+                    <Button
+                        variant="outline"
+                        onClick={onClose}
+                        disabled={saving}
+                    >
+                        Batal
+                    </Button>
+                    <Button
+                        onClick={handleSubmit}
+                        disabled={saving || !form.name || !form.endpoint_url}
+                        className="gap-2"
+                    >
+                        {saving ? (
+                            <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                            <Save className="size-4" />
+                        )}
+                        {saving
+                            ? 'Menyimpan...'
+                            : isEdit
+                              ? 'Simpan Perubahan'
+                              : 'Tambah Platform'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -2992,7 +5114,11 @@ function IntegrationFormModal({ open, onClose, loggerId, integration }: {
 // =============================================================================
 // Integration Row (single dynamic platform)
 // =============================================================================
-function IntegrationRow({ integration, loggerId, disabled }: {
+function IntegrationRow({
+    integration,
+    loggerId,
+    disabled,
+}: {
     integration: Integration;
     loggerId: string;
     disabled: boolean;
@@ -3004,13 +5130,19 @@ function IntegrationRow({ integration, loggerId, disabled }: {
     const handleToggle = async () => {
         setToggling(true);
         try {
-            await fetch(`/loggers/${loggerId}/integrations/${integration.id}/toggle`, {
-                method: 'PATCH',
-                headers: {
-                    'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '',
-                    'Content-Type': 'application/json',
+            await fetch(
+                `/loggers/${loggerId}/integrations/${integration.id}/toggle`,
+                {
+                    method: 'PATCH',
+                    headers: {
+                        'X-CSRF-TOKEN':
+                            document.querySelector<HTMLMetaElement>(
+                                'meta[name="csrf-token"]',
+                            )?.content ?? '',
+                        'Content-Type': 'application/json',
+                    },
                 },
-            });
+            );
             router.reload({ only: ['logger'] });
         } finally {
             setToggling(false);
@@ -3019,62 +5151,125 @@ function IntegrationRow({ integration, loggerId, disabled }: {
 
     const handleDelete = () => {
         router.delete(`/loggers/${loggerId}/integrations/${integration.id}`, {
-            preserveScroll: true, onFinish: () => setDeleteOpen(false),
+            preserveScroll: true,
+            onFinish: () => setDeleteOpen(false),
         });
     };
 
     const statusBadge = () => {
-        if (!integration.lastForwardedAt) return <span className="text-xs text-muted-foreground">Belum pernah</span>;
-        if (integration.lastStatus === 'error') return (
-            <span className="inline-flex items-center gap-1 text-xs text-red-500 cursor-help" title={integration.lastError ?? ''}>
-                <AlertCircle className="size-3" /> Error
+        if (!integration.lastForwardedAt)
+            return (
+                <span className="text-xs text-muted-foreground">
+                    Belum pernah
+                </span>
+            );
+        if (integration.lastStatus === 'error')
+            return (
+                <span
+                    className="inline-flex cursor-help items-center gap-1 text-xs text-red-500"
+                    title={integration.lastError ?? ''}
+                >
+                    <AlertCircle className="size-3" /> Error
+                </span>
+            );
+        return (
+            <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
+                <CheckCircle2 className="size-3" /> OK
             </span>
         );
-        return <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="size-3" /> OK</span>;
     };
 
     return (
         <>
-            <div className="rounded-lg border overflow-hidden">
+            <div className="overflow-hidden rounded-lg border">
                 <div className="flex items-center gap-3 p-3">
-                    <div className="flex size-10 items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-950 shrink-0">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-950">
                         <Globe className="size-5 text-violet-600" />
                     </div>
-                    <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold truncate">{integration.name}</p>
-                        <p className="text-xs text-muted-foreground truncate font-mono">{integration.endpointUrl}</p>
+                    <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold">
+                            {integration.name}
+                        </p>
+                        <p className="truncate font-mono text-xs text-muted-foreground">
+                            {integration.endpointUrl}
+                        </p>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex shrink-0 items-center gap-2">
                         {statusBadge()}
                         {!disabled && (
                             <>
-                                <Button variant="ghost" size="icon" className="size-7" onClick={() => setEditOpen(true)}>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-7"
+                                    onClick={() => setEditOpen(true)}
+                                >
                                     <Pencil className="size-3.5" />
                                 </Button>
-                                <Button variant="ghost" size="icon" className="size-7 text-red-500 hover:text-red-600" onClick={() => setDeleteOpen(true)}>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-7 text-red-500 hover:text-red-600"
+                                    onClick={() => setDeleteOpen(true)}
+                                >
                                     <Trash2 className="size-3.5" />
                                 </Button>
                             </>
                         )}
-                        <ToggleSwitch checked={integration.isEnabled} onChange={handleToggle} disabled={disabled || toggling} />
+                        <ToggleSwitch
+                            checked={integration.isEnabled}
+                            onChange={handleToggle}
+                            disabled={disabled || toggling}
+                        />
                     </div>
                 </div>
                 {integration.isEnabled && (
                     <div className="border-t bg-muted/20 px-3 py-2">
                         <dl className="grid grid-cols-3 gap-x-4 text-xs">
-                            <div><dt className="text-muted-foreground flex items-center gap-1"><ShieldCheck className="size-3" /> Auth</dt><dd className="font-medium">{AUTH_TYPE_LABELS[integration.authType] ?? integration.authType}</dd></div>
-                            <div><dt className="text-muted-foreground flex items-center gap-1"><Timer className="size-3" /> Interval</dt><dd className="font-medium">{integration.rawForward ? 'Raw (semua data)' : `${integration.intervalMinutes} menit`}</dd></div>
-                            <div><dt className="text-muted-foreground flex items-center gap-1"><Clock className="size-3" /> Terakhir kirim</dt><dd className="font-medium">{integration.lastForwardedAt ?? '—'}</dd></div>
+                            <div>
+                                <dt className="flex items-center gap-1 text-muted-foreground">
+                                    <ShieldCheck className="size-3" /> Auth
+                                </dt>
+                                <dd className="font-medium">
+                                    {AUTH_TYPE_LABELS[integration.authType] ??
+                                        integration.authType}
+                                </dd>
+                            </div>
+                            <div>
+                                <dt className="flex items-center gap-1 text-muted-foreground">
+                                    <Timer className="size-3" /> Interval
+                                </dt>
+                                <dd className="font-medium">
+                                    {integration.rawForward
+                                        ? 'Raw (semua data)'
+                                        : `${integration.intervalMinutes} menit`}
+                                </dd>
+                            </div>
+                            <div>
+                                <dt className="flex items-center gap-1 text-muted-foreground">
+                                    <Clock className="size-3" /> Terakhir kirim
+                                </dt>
+                                <dd className="font-medium">
+                                    {integration.lastForwardedAt ?? '—'}
+                                </dd>
+                            </div>
                         </dl>
-                        {integration.lastStatus === 'error' && integration.lastError && (
-                            <p className="mt-1.5 rounded bg-red-50 dark:bg-red-950/30 px-2 py-1 text-xs text-red-600 font-mono break-all">{integration.lastError}</p>
-                        )}
+                        {integration.lastStatus === 'error' &&
+                            integration.lastError && (
+                                <p className="mt-1.5 rounded bg-red-50 px-2 py-1 font-mono text-xs break-all text-red-600 dark:bg-red-950/30">
+                                    {integration.lastError}
+                                </p>
+                            )}
                     </div>
                 )}
             </div>
 
             <IntegrationFormModal
-                key={editOpen ? `edit-${integration.id}-open` : `edit-${integration.id}-closed`}
+                key={
+                    editOpen
+                        ? `edit-${integration.id}-open`
+                        : `edit-${integration.id}-closed`
+                }
                 open={editOpen}
                 onClose={() => setEditOpen(false)}
                 loggerId={loggerId}
@@ -3085,11 +5280,19 @@ function IntegrationRow({ integration, loggerId, disabled }: {
                 <AlertDialogContent>
                     <AlertDialogHeader>
                         <AlertDialogTitle>Hapus Integrasi</AlertDialogTitle>
-                        <AlertDialogDescription>Platform <strong>{integration.name}</strong> akan dihapus dan tidak akan menerima data lagi.</AlertDialogDescription>
+                        <AlertDialogDescription>
+                            Platform <strong>{integration.name}</strong> akan
+                            dihapus dan tidak akan menerima data lagi.
+                        </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>Batal</AlertDialogCancel>
-                        <AlertDialogAction variant="destructive" onClick={handleDelete}>Hapus</AlertDialogAction>
+                        <AlertDialogAction
+                            variant="destructive"
+                            onClick={handleDelete}
+                        >
+                            Hapus
+                        </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -3100,7 +5303,15 @@ function IntegrationRow({ integration, loggerId, disabled }: {
 // =============================================================================
 // PlatformIntegrationCard (main)
 // =============================================================================
-function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, ministesyInterval, ministesyRawForward, disabled, integrations }: {
+function PlatformIntegrationCard({
+    loggerId,
+    ministesyEnabled,
+    ministesyKey,
+    ministesyInterval,
+    ministesyRawForward,
+    disabled,
+    integrations,
+}: {
     loggerId: string;
     ministesyEnabled: boolean;
     ministesyKey: string | null;
@@ -3128,56 +5339,83 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
         setSaving(true);
         router.put(`/loggers/${loggerId}/platform`, data, {
             preserveScroll: true,
-            onSuccess: () => { setSaved(true); setEditingStesy(false); setTimeout(() => setSaved(false), 2000); },
+            onSuccess: () => {
+                setSaved(true);
+                setEditingStesy(false);
+                setTimeout(() => setSaved(false), 2000);
+            },
             onFinish: () => setSaving(false),
         });
     };
 
-    const maskedKey = ministesyKey ? ministesyKey.slice(0, 4) + '••••••••' + ministesyKey.slice(-4) : '—';
+    const maskedKey = ministesyKey
+        ? ministesyKey.slice(0, 4) + '••••••••' + ministesyKey.slice(-4)
+        : '—';
 
     return (
         <Card>
             <CardHeader>
                 <div className="flex items-center justify-between">
                     <CardTitle className="flex items-center gap-2">
-                        <Link2 className="size-5" /> {t('loggerDetail.platform_integration')}
+                        <Link2 className="size-5" />{' '}
+                        {t('loggerDetail.platform_integration')}
                     </CardTitle>
                     {!disabled && (
-                        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setAddOpen(true)}>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1.5"
+                            onClick={() => setAddOpen(true)}
+                        >
                             <Plus className="size-4" /> Tambah Platform
                         </Button>
                     )}
                 </div>
             </CardHeader>
             <CardContent className="space-y-3">
-
                 {/* ── Mini STESY (hardcoded) ── */}
-                <div className="rounded-lg border overflow-hidden">
+                <div className="overflow-hidden rounded-lg border">
                     <div className="flex items-center gap-3 p-3">
-                        <div className="flex size-10 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950 shrink-0">
+                        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950">
                             <Radio className="size-5 text-blue-600" />
                         </div>
                         <div className="flex-1">
                             <p className="text-sm font-semibold">Mini STESY</p>
-                            <p className="text-xs text-muted-foreground">{t('loggerDetail.telemetry_relay')}</p>
+                            <p className="text-xs text-muted-foreground">
+                                {t('loggerDetail.telemetry_relay')}
+                            </p>
                         </div>
-                        {!editingStesy && stesyValues.ministesy_enabled && !disabled && (
-                            <Button variant="ghost" size="icon" onClick={() => setEditingStesy(true)} className="size-8">
-                                <Pencil className="size-4" />
-                            </Button>
-                        )}
+                        {!editingStesy &&
+                            stesyValues.ministesy_enabled &&
+                            !disabled && (
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => setEditingStesy(true)}
+                                    className="size-8"
+                                >
+                                    <Pencil className="size-4" />
+                                </Button>
+                            )}
                         <ToggleSwitch
                             checked={stesyValues.ministesy_enabled}
                             disabled={disabled}
                             onChange={() => {
-                                const newEnabled = !stesyValues.ministesy_enabled;
+                                const newEnabled =
+                                    !stesyValues.ministesy_enabled;
                                 if (!newEnabled && ministesyEnabled) {
                                     setShowDisableDialog(true);
                                 } else if (newEnabled && !ministesyEnabled) {
-                                    setStesyValues(v => ({ ...v, ministesy_enabled: true }));
+                                    setStesyValues((v) => ({
+                                        ...v,
+                                        ministesy_enabled: true,
+                                    }));
                                     setEditingStesy(true);
                                 } else {
-                                    const nv = { ...stesyValues, ministesy_enabled: newEnabled };
+                                    const nv = {
+                                        ...stesyValues,
+                                        ministesy_enabled: newEnabled,
+                                    };
                                     setStesyValues(nv);
                                     doSaveStesy(nv);
                                 }
@@ -3186,59 +5424,181 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                     </div>
 
                     {stesyValues.ministesy_enabled && (
-                        <div className="border-t bg-muted/30 p-3 space-y-3">
+                        <div className="space-y-3 border-t bg-muted/30 p-3">
                             {!editingStesy ? (
                                 <>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                                        <dt className="text-muted-foreground flex items-center gap-1.5"><Key className="size-3.5 text-violet-500" /> {t('loggerDetail.encryption_key')}</dt>
-                                        <dd className="font-mono text-xs">{maskedKey}</dd>
-                                        <dt className="text-muted-foreground flex items-center gap-1.5"><Timer className="size-3.5 text-blue-500" /> {t('loggerDetail.interval_send')}</dt>
-                                        <dd className="font-medium">{ministesyRawForward ? 'Raw (semua data)' : `${ministesyInterval} ${t('loggerDetail.minutes')}`}</dd>
+                                        <dt className="flex items-center gap-1.5 text-muted-foreground">
+                                            <Key className="size-3.5 text-violet-500" />{' '}
+                                            {t('loggerDetail.encryption_key')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {maskedKey}
+                                        </dd>
+                                        <dt className="flex items-center gap-1.5 text-muted-foreground">
+                                            <Timer className="size-3.5 text-blue-500" />{' '}
+                                            {t('loggerDetail.interval_send')}
+                                        </dt>
+                                        <dd className="font-medium">
+                                            {ministesyRawForward
+                                                ? 'Raw (semua data)'
+                                                : `${ministesyInterval} ${t('loggerDetail.minutes')}`}
+                                        </dd>
                                     </dl>
-                                    {saved && <span className="flex items-center gap-1 text-sm text-emerald-600"><CheckCircle2 className="size-4" /> {t('loggerDetail.saved')}</span>}
+                                    {saved && (
+                                        <span className="flex items-center gap-1 text-sm text-emerald-600">
+                                            <CheckCircle2 className="size-4" />{' '}
+                                            {t('loggerDetail.saved')}
+                                        </span>
+                                    )}
                                 </>
                             ) : (
                                 <>
                                     <div className="grid gap-3 sm:grid-cols-2">
                                         <div className="space-y-1.5">
-                                            <label className="text-sm font-medium flex items-center gap-1.5"><Key className="size-4 text-violet-500" />{t('loggerDetail.encryption_key')}</label>
+                                            <label className="flex items-center gap-1.5 text-sm font-medium">
+                                                <Key className="size-4 text-violet-500" />
+                                                {t(
+                                                    'loggerDetail.encryption_key',
+                                                )}
+                                            </label>
                                             <div className="relative">
-                                                <input type={showKey ? 'text' : 'password'} value={stesyValues.ministesy_key}
-                                                    onChange={(e) => setStesyValues(v => ({ ...v, ministesy_key: e.target.value }))}
-                                                    placeholder={t('loggerDetail.enter_encryption_key')}
-                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 pr-9 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-                                                <button type="button" onClick={() => setShowKey(s => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                                                    {showKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                                                <input
+                                                    type={
+                                                        showKey
+                                                            ? 'text'
+                                                            : 'password'
+                                                    }
+                                                    value={
+                                                        stesyValues.ministesy_key
+                                                    }
+                                                    onChange={(e) =>
+                                                        setStesyValues((v) => ({
+                                                            ...v,
+                                                            ministesy_key:
+                                                                e.target.value,
+                                                        }))
+                                                    }
+                                                    placeholder={t(
+                                                        'loggerDetail.enter_encryption_key',
+                                                    )}
+                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 pr-9 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setShowKey((s) => !s)
+                                                    }
+                                                    className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                                >
+                                                    {showKey ? (
+                                                        <EyeOff className="size-4" />
+                                                    ) : (
+                                                        <Eye className="size-4" />
+                                                    )}
                                                 </button>
                                             </div>
                                         </div>
                                         <div className="space-y-1.5">
-                                            <label className="text-sm font-medium flex items-center gap-1.5"><Timer className="size-4 text-blue-500" />{t('loggerDetail.interval_send')}</label>
+                                            <label className="flex items-center gap-1.5 text-sm font-medium">
+                                                <Timer className="size-4 text-blue-500" />
+                                                {t(
+                                                    'loggerDetail.interval_send',
+                                                )}
+                                            </label>
                                             <div className="flex items-center gap-2">
-                                                <input type="number" min={1} max={1440} value={stesyValues.ministesy_interval}
-                                                    disabled={stesyValues.ministesy_raw_forward}
-                                                    onChange={(e) => setStesyValues(v => ({ ...v, ministesy_interval: parseInt(e.target.value) || 1 }))}
-                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed" />
-                                                <span className="text-sm text-muted-foreground whitespace-nowrap">{t('loggerDetail.minutes')}</span>
+                                                <input
+                                                    type="number"
+                                                    min={1}
+                                                    max={1440}
+                                                    value={
+                                                        stesyValues.ministesy_interval
+                                                    }
+                                                    disabled={
+                                                        stesyValues.ministesy_raw_forward
+                                                    }
+                                                    onChange={(e) =>
+                                                        setStesyValues((v) => ({
+                                                            ...v,
+                                                            ministesy_interval:
+                                                                parseInt(
+                                                                    e.target
+                                                                        .value,
+                                                                ) || 1,
+                                                        }))
+                                                    }
+                                                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                                                />
+                                                <span className="text-sm whitespace-nowrap text-muted-foreground">
+                                                    {t('loggerDetail.minutes')}
+                                                </span>
                                             </div>
                                         </div>
                                     </div>
-                                    <label htmlFor="stesy-raw" className="flex items-start gap-2.5 rounded-lg border bg-background p-3 cursor-pointer">
-                                        <input id="stesy-raw" type="checkbox" checked={stesyValues.ministesy_raw_forward}
-                                            onChange={(e) => setStesyValues(v => ({ ...v, ministesy_raw_forward: e.target.checked }))}
-                                            className="mt-0.5 size-4 shrink-0 rounded border-input accent-blue-600" />
+                                    <label
+                                        htmlFor="stesy-raw"
+                                        className="flex cursor-pointer items-start gap-2.5 rounded-lg border bg-background p-3"
+                                    >
+                                        <input
+                                            id="stesy-raw"
+                                            type="checkbox"
+                                            checked={
+                                                stesyValues.ministesy_raw_forward
+                                            }
+                                            onChange={(e) =>
+                                                setStesyValues((v) => ({
+                                                    ...v,
+                                                    ministesy_raw_forward:
+                                                        e.target.checked,
+                                                }))
+                                            }
+                                            className="mt-0.5 size-4 shrink-0 rounded border-input accent-blue-600"
+                                        />
                                         <div className="space-y-0.5">
-                                            <span className="text-sm font-medium">Raw forwarding</span>
-                                            <p className="text-xs text-muted-foreground">Abaikan interval — teruskan setiap data yang masuk langsung ke Mini STESY.</p>
+                                            <span className="text-sm font-medium">
+                                                Raw forwarding
+                                            </span>
+                                            <p className="text-xs text-muted-foreground">
+                                                Abaikan interval — teruskan
+                                                setiap data yang masuk langsung
+                                                ke Mini STESY.
+                                            </p>
                                         </div>
                                     </label>
                                     <div className="flex items-center gap-2">
-                                        <Button onClick={() => setShowSaveDialog(true)} disabled={saving} size="sm" className="gap-2">
-                                            <Save className="size-4" /> {saving ? t('loggerDetail.saving_dots') : t('common.save')}
+                                        <Button
+                                            onClick={() =>
+                                                setShowSaveDialog(true)
+                                            }
+                                            disabled={saving}
+                                            size="sm"
+                                            className="gap-2"
+                                        >
+                                            <Save className="size-4" />{' '}
+                                            {saving
+                                                ? t('loggerDetail.saving_dots')
+                                                : t('common.save')}
                                         </Button>
-                                        <Button onClick={() => { setStesyValues({ ministesy_enabled: ministesyEnabled, ministesy_key: ministesyKey || '', ministesy_interval: ministesyInterval, ministesy_raw_forward: ministesyRawForward }); setEditingStesy(false); }}
-                                            variant="outline" size="sm" className="gap-2">
-                                            <XCircle className="size-4" /> {t('common.cancel')}
+                                        <Button
+                                            onClick={() => {
+                                                setStesyValues({
+                                                    ministesy_enabled:
+                                                        ministesyEnabled,
+                                                    ministesy_key:
+                                                        ministesyKey || '',
+                                                    ministesy_interval:
+                                                        ministesyInterval,
+                                                    ministesy_raw_forward:
+                                                        ministesyRawForward,
+                                                });
+                                                setEditingStesy(false);
+                                            }}
+                                            variant="outline"
+                                            size="sm"
+                                            className="gap-2"
+                                        >
+                                            <XCircle className="size-4" />{' '}
+                                            {t('common.cancel')}
                                         </Button>
                                     </div>
                                 </>
@@ -3248,15 +5608,27 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                 </div>
 
                 {/* ── Dynamic integrations ── */}
-                {integrations.map(intg => (
-                    <IntegrationRow key={intg.id} integration={intg} loggerId={loggerId} disabled={disabled} />
+                {integrations.map((intg) => (
+                    <IntegrationRow
+                        key={intg.id}
+                        integration={intg}
+                        loggerId={loggerId}
+                        disabled={disabled}
+                    />
                 ))}
 
                 {integrations.length === 0 && !disabled && (
-                    <div className="rounded-lg border border-dashed flex flex-col items-center justify-center py-8 text-center gap-2">
+                    <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-8 text-center">
                         <Globe className="size-8 text-muted-foreground/40" />
-                        <p className="text-sm text-muted-foreground">Belum ada platform tambahan.</p>
-                        <Button size="sm" variant="outline" className="gap-1.5 mt-1" onClick={() => setAddOpen(true)}>
+                        <p className="text-sm text-muted-foreground">
+                            Belum ada platform tambahan.
+                        </p>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="mt-1 gap-1.5"
+                            onClick={() => setAddOpen(true)}
+                        >
                             <Plus className="size-4" /> Tambah Platform
                         </Button>
                     </div>
@@ -3270,15 +5642,35 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
                 loggerId={loggerId}
             />
 
-            <AlertDialog open={showDisableDialog} onOpenChange={setShowDisableDialog}>
+            <AlertDialog
+                open={showDisableDialog}
+                onOpenChange={setShowDisableDialog}
+            >
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>{t('loggerDetail.disable_ministesy')}</AlertDialogTitle>
-                        <AlertDialogDescription>{t('loggerDetail.disable_ministesy_desc')}</AlertDialogDescription>
+                        <AlertDialogTitle>
+                            {t('loggerDetail.disable_ministesy')}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {t('loggerDetail.disable_ministesy_desc')}
+                        </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                        <AlertDialogAction variant="destructive" onClick={() => { const nv = { ...stesyValues, ministesy_enabled: false }; setStesyValues(nv); setShowDisableDialog(false); doSaveStesy(nv); }}>
+                        <AlertDialogCancel>
+                            {t('common.cancel')}
+                        </AlertDialogCancel>
+                        <AlertDialogAction
+                            variant="destructive"
+                            onClick={() => {
+                                const nv = {
+                                    ...stesyValues,
+                                    ministesy_enabled: false,
+                                };
+                                setStesyValues(nv);
+                                setShowDisableDialog(false);
+                                doSaveStesy(nv);
+                            }}
+                        >
                             {t('loggerDetail.disable')}
                         </AlertDialogAction>
                     </AlertDialogFooter>
@@ -3288,1594 +5680,28 @@ function PlatformIntegrationCard({ loggerId, ministesyEnabled, ministesyKey, min
             <AlertDialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>{t('loggerDetail.save_configuration')}</AlertDialogTitle>
-                        <AlertDialogDescription>{t('loggerDetail.save_config_desc')}</AlertDialogDescription>
+                        <AlertDialogTitle>
+                            {t('loggerDetail.save_configuration')}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {t('loggerDetail.save_config_desc')}
+                        </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                        <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => { setShowSaveDialog(false); doSaveStesy(stesyValues); }}>{t('common.save')}</AlertDialogAction>
+                        <AlertDialogCancel>
+                            {t('common.cancel')}
+                        </AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={() => {
+                                setShowSaveDialog(false);
+                                doSaveStesy(stesyValues);
+                            }}
+                        >
+                            {t('common.save')}
+                        </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
-        </Card>
-    );
-}
-
-// =============================================================================
-// FTP Configuration Card
-// =============================================================================
-type FtpPhase = 'idle' | 'setting' | 'set_ok' | 'testing' | 'test_ok' | 'success' | 'error';
-
-function FtpConfigCard({ deviceIdentifier, disabled, initialHost, initialPort, initialUser }: {
-    deviceIdentifier: string;
-    disabled?: boolean;
-    initialHost?: string | null;
-    initialPort?: number;
-    initialUser?: string | null;
-}) {
-    const { t } = useTranslation();
-    const [ftpHost, setFtpHost] = useState(initialHost || '');
-    const [ftpPort, setFtpPort] = useState(initialPort || 21);
-    const [ftpUser, setFtpUser] = useState(initialUser || '');
-    const [ftpPass, setFtpPass] = useState('');
-    const [showPass, setShowPass] = useState(false);
-    const [editing, setEditing] = useState(false);
-    const [configured, setConfigured] = useState(!!initialHost);
-
-    // Stepper dialog
-    const [dialogOpen, setDialogOpen] = useState(false);
-    const [phase, setPhase] = useState<FtpPhase>('idle');
-    const [errorMsg, setErrorMsg] = useState('');
-    const [errorStep, setErrorStep] = useState<'set' | 'test'>('set');
-    const [elapsed, setElapsed] = useState(0);
-    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-    // File browser
-    const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
-    const [months, setMonths] = useState<string[]>([]);
-    const [files, setFiles] = useState<string[]>([]);
-    const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
-    const [browseView, setBrowseView] = useState<'months' | 'files'>('months');
-    const [loadingFiles, setLoadingFiles] = useState(false);
-    const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
-
-    function startTimer() {
-        const start = Date.now();
-        setElapsed(0);
-        stopTimer();
-        timerRef.current = setInterval(() => {
-            setElapsed(Math.floor((Date.now() - start) / 1000));
-        }, 1000);
-    }
-
-    function stopTimer() {
-        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    }
-
-    function formatElapsed(seconds: number) {
-        const m = Math.floor(seconds / 60);
-        const s = seconds % 60;
-        return m > 0 ? `${m}m ${s}s` : `${s}s`;
-    }
-
-    // Step 1: Kirim — SET FTP credentials
-    async function handleSet() {
-        if (!ftpHost || !ftpUser || !ftpPass) return;
-
-        setPhase('setting');
-        setErrorMsg('');
-        setDialogOpen(true);
-        startTimer();
-
-        try {
-            const res = await apiFetch('/api/mqtt/ftp/set', {
-                id_logger: deviceIdentifier,
-                host: ftpHost,
-                port: ftpPort,
-                username: ftpUser,
-                password: ftpPass,
-            });
-            const data = await res.json();
-            stopTimer();
-
-            if (data.success) {
-                setPhase('set_ok');
-            } else {
-                setErrorMsg(data.message || 'Gagal mengirim konfigurasi FTP');
-                setErrorStep('set');
-                setPhase('error');
-            }
-        } catch {
-            stopTimer();
-            setErrorMsg('Network error — tidak dapat terhubung ke server');
-            setErrorStep('set');
-            setPhase('error');
-        }
-    }
-
-    // Step 2: Test Koneksi — TES FTP
-    async function handleTest() {
-        setPhase('testing');
-        startTimer();
-
-        try {
-            const res = await apiFetch('/api/mqtt/ftp/test', {
-                id_logger: deviceIdentifier,
-            });
-            const data = await res.json();
-            stopTimer();
-
-            if (data.success) {
-                setPhase('test_ok');
-            } else {
-                setErrorMsg(data.message || 'FTP test gagal');
-                setErrorStep('test');
-                setPhase('error');
-            }
-        } catch {
-            stopTimer();
-            setErrorMsg('Network error — tidak dapat terhubung ke server');
-            setErrorStep('test');
-            setPhase('error');
-        }
-    }
-
-    // Step 3: Simpan — confirm and close
-    function handleSave() {
-        setPhase('success');
-        setEditing(false);
-        setConfigured(true);
-    }
-
-    function handleRetry() {
-        if (errorStep === 'set') {
-            handleSet();
-        } else {
-            handleTest();
-        }
-    }
-
-    function handleDialogClose() {
-        stopTimer();
-        setDialogOpen(false);
-        setPhase('idle');
-    }
-
-    // File browser — load months
-    async function handleBrowseFiles() {
-        setLoadingFiles(true);
-        setFileBrowserOpen(true);
-        setMonths([]);
-        setFiles([]);
-        setSelectedMonth(null);
-        setBrowseView('months');
-
-        try {
-            const res = await apiFetch('/api/mqtt/ftp/read', { id_logger: deviceIdentifier });
-            const data = await res.json();
-
-            if (data.success && Array.isArray(data.months)) {
-                setMonths(data.months);
-            } else {
-                setMonths([]);
-            }
-        } catch {
-            setMonths([]);
-        } finally {
-            setLoadingFiles(false);
-        }
-    }
-
-    // File browser — load files for a selected month
-    async function handleSelectMonth(monthStr: string) {
-        setSelectedMonth(monthStr);
-        setBrowseView('files');
-        setLoadingFiles(true);
-        setFiles([]);
-
-        // Parse "2026-03" → year=2026, month=3
-        const [yearStr, monthNum] = monthStr.split('-');
-        const year = parseInt(yearStr);
-        const month = parseInt(monthNum);
-
-        try {
-            const res = await apiFetch('/api/mqtt/ftp/read', {
-                id_logger: deviceIdentifier,
-                year,
-                month,
-            });
-            const data = await res.json();
-
-            if (data.success && Array.isArray(data.files)) {
-                setFiles(data.files);
-            } else {
-                setFiles([]);
-            }
-        } catch {
-            setFiles([]);
-        } finally {
-            setLoadingFiles(false);
-        }
-    }
-
-    function handleBackToMonths() {
-        setBrowseView('months');
-        setSelectedMonth(null);
-        setFiles([]);
-    }
-
-    function formatMonth(monthStr: string) {
-        const [yearStr, monthNum] = monthStr.split('-');
-        const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
-        return `${monthNames[parseInt(monthNum) - 1]} ${yearStr}`;
-    }
-
-    async function handleGetFile(filename: string) {
-        setDownloadingFile(filename);
-        try {
-            // Step 1: Tell logger to upload file to FTP server
-            const getRes = await apiFetch('/api/mqtt/ftp/get', {
-                id_logger: deviceIdentifier,
-                filename,
-            });
-            const getData = await getRes.json();
-
-            if (!getData.success) {
-                alert(`Gagal: ${getData.message || 'Logger tidak merespons'}`);
-                return;
-            }
-
-            // Step 2: Download from FTP server to browser
-            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.action = '/api/mqtt/ftp/download';
-            form.style.display = 'none';
-
-            const fields = { id_logger: deviceIdentifier, filename, _token: csrfToken };
-            for (const [key, value] of Object.entries(fields)) {
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = key;
-                input.value = value;
-                form.appendChild(input);
-            }
-
-            document.body.appendChild(form);
-            form.submit();
-            document.body.removeChild(form);
-        } catch {
-            alert('Network error — tidak dapat terhubung ke server');
-        } finally {
-            setDownloadingFile(null);
-        }
-    }
-
-    const hasCredentials = ftpHost && ftpUser && ftpPass;
-
-    return (
-        <Card>
-            <CardHeader>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <CardTitle className="flex items-center gap-2"><Upload className="size-5" /> Konfigurasi FTP</CardTitle>
-                        <CardDescription className="mt-1">Atur pengiriman data logger ke server FTP</CardDescription>
-                    </div>
-                    <div className="flex items-center gap-1">
-                        {!editing && (
-                            <Button variant="ghost" size="icon" onClick={() => setEditing(true)} className="size-8" title="Edit konfigurasi FTP">
-                                <Pencil className="size-4" />
-                            </Button>
-                        )}
-                    </div>
-                </div>
-            </CardHeader>
-            <CardContent>
-                {!editing ? (
-                    configured ? (
-                        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
-                            <div className="flex items-start justify-between gap-2 mb-3">
-                                <div className="flex items-center gap-2">
-                                    <CheckCircle2 className="size-4 text-emerald-500" />
-                                    <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">FTP Terkonfigurasi</span>
-                                </div>
-                                <div className="flex items-center gap-1">
-                                    {!disabled && (
-                                        <Button variant="ghost" size="icon" className="size-7" onClick={handleBrowseFiles} title="Browse Files">
-                                            <HardDrive className="size-3.5" />
-                                        </Button>
-                                    )}
-                                    <Button variant="ghost" size="icon" className="size-7" onClick={() => setEditing(true)} title="Edit Konfigurasi">
-                                        <Pencil className="size-3.5" />
-                                    </Button>
-                                </div>
-                            </div>
-                            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                                <dt className="text-muted-foreground">Host</dt>
-                                <dd className="font-mono text-xs">{ftpHost}:{ftpPort}</dd>
-                                <dt className="text-muted-foreground">Username</dt>
-                                <dd className="font-mono text-xs">{ftpUser}</dd>
-                            </dl>
-                        </div>
-                    ) : (
-                        <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
-                            <Upload className="mx-auto size-8 text-muted-foreground/40" />
-                            <p className="mt-2 text-sm text-muted-foreground">Konfigurasi FTP belum diatur</p>
-                            <Button variant="outline" size="sm" className="mt-3 gap-1.5" onClick={() => setEditing(true)} disabled={disabled}>
-                                <Settings className="size-4" /> Konfigurasi FTP
-                            </Button>
-                        </div>
-                    )
-                ) : (
-                    <div className="space-y-4">
-                        <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Network className="size-4 text-blue-500" /> Host FTP
-                                </label>
-                                <input
-                                    type="text"
-                                    value={ftpHost}
-                                    onChange={(e) => setFtpHost(e.target.value)}
-                                    placeholder="103.82.241.100"
-                                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Plug className="size-4 text-amber-500" /> Port
-                                </label>
-                                <input
-                                    type="number"
-                                    min={1}
-                                    max={65535}
-                                    value={ftpPort}
-                                    onChange={(e) => setFtpPort(parseInt(e.target.value) || 21)}
-                                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                />
-                            </div>
-                        </div>
-                        <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Key className="size-4 text-emerald-500" /> Username
-                                </label>
-                                <input
-                                    type="text"
-                                    value={ftpUser}
-                                    onChange={(e) => setFtpUser(e.target.value)}
-                                    placeholder="logger_30069"
-                                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <Key className="size-4 text-rose-500" /> Password
-                                </label>
-                                <div className="relative">
-                                    <input
-                                        type={showPass ? 'text' : 'password'}
-                                        value={ftpPass}
-                                        onChange={(e) => setFtpPass(e.target.value)}
-                                        placeholder="••••••••"
-                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 pr-9 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowPass(!showPass)}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                                    >
-                                        {showPass ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <Button
-                                onClick={handleSet}
-                                disabled={!hasCredentials || disabled}
-                                size="sm"
-                                className="gap-2"
-                                title={disabled ? 'Device offline — tidak bisa mengirim' : ''}
-                            >
-                                <Upload className="size-4" /> Kirim ke Device
-                            </Button>
-                            <Button onClick={() => setEditing(false)} variant="outline" size="sm" className="gap-2">
-                                <XCircle className="size-4" /> {t('common.cancel')}
-                            </Button>
-                            <span className="text-[10px] text-muted-foreground ml-auto">
-                                {disabled ? '⚠️ Device offline' : 'via perangkat'}
-                            </span>
-                        </div>
-                    </div>
-                )}
-            </CardContent>
-
-            {/* ══════ FTP Stepper Dialog ══════ */}
-            <Dialog open={dialogOpen} onOpenChange={(v) => { if (!v && phase !== 'setting' && phase !== 'testing') handleDialogClose(); }}>
-                <DialogContent className="sm:max-w-md" onInteractOutside={(e) => { if (phase === 'setting' || phase === 'testing') e.preventDefault(); }}>
-
-                    {/* ─── Phase: Setting (sending SET) ─── */}
-                    {phase === 'setting' && (
-                        <div className="flex flex-col items-center gap-6 py-8">
-                            <div className="relative">
-                                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-amber-500/10">
-                                    <Loader2 className="size-10 animate-spin text-amber-500" />
-                                </div>
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">Mengirim Konfigurasi FTP...</h3>
-                                <p className="mt-1 text-sm text-muted-foreground">Mengirim kredensial FTP ke device...</p>
-                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(elapsed)}</p>
-                            </div>
-                            <div className="w-full max-w-xs space-y-2">
-                                <div className="flex items-center gap-3 text-sm text-foreground">
-                                    <Loader2 className="size-4 animate-spin text-amber-500 shrink-0" />
-                                    <span>FTP SET — Kirim kredensial</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
-                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
-                                    <span>FTP TES — Tes koneksi upload</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
-                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
-                                    <span>Simpan konfigurasi</span>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ─── Phase: SET OK → prompt user to Test ─── */}
-                    {phase === 'set_ok' && (
-                        <div className="flex flex-col items-center gap-6 py-8">
-                            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-300">
-                                <CheckCircle2 className="size-10 text-emerald-500" />
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">Kredensial FTP Terkirim!</h3>
-                                <p className="mt-1 text-sm text-muted-foreground">
-                                    Konfigurasi berhasil dikirim ke device dalam <strong>{formatElapsed(elapsed)}</strong>.
-                                    <br />Lanjutkan dengan tes koneksi untuk memastikan FTP berfungsi.
-                                </p>
-                            </div>
-                            <div className="w-full max-w-xs space-y-2">
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                                    <span>FTP SET — Kirim kredensial</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-foreground font-medium">
-                                    <div className="size-4 rounded-full border-2 border-blue-500 shrink-0" />
-                                    <span>FTP TES — Tes koneksi upload</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
-                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
-                                    <span>Simpan konfigurasi</span>
-                                </div>
-                            </div>
-                            <DialogFooter className="gap-2 sm:gap-0">
-                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
-                                <Button onClick={handleTest} className="gap-1.5 bg-blue-600 hover:bg-blue-700">
-                                    <Radio className="size-4" /> Test Koneksi
-                                </Button>
-                            </DialogFooter>
-                        </div>
-                    )}
-
-                    {/* ─── Phase: Testing (sending TES) ─── */}
-                    {phase === 'testing' && (
-                        <div className="flex flex-col items-center gap-6 py-8">
-                            <div className="relative">
-                                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-blue-500/10 animate-pulse">
-                                    <Upload className="size-10 text-blue-500 animate-pulse" />
-                                </div>
-                                <div className="absolute inset-0 rounded-full border-2 border-blue-500/30 animate-ping" />
-                                <div className="absolute -inset-3 rounded-full border border-blue-500/10 animate-ping" style={{ animationDelay: '0.5s' }} />
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">Menguji Koneksi FTP...</h3>
-                                <p className="mt-1 text-sm text-muted-foreground">Logger sedang tes upload ke server FTP...</p>
-                                <p className="mt-3 font-mono text-2xl font-bold tabular-nums text-muted-foreground">{formatElapsed(elapsed)}</p>
-                            </div>
-                            <div className="w-full max-w-xs space-y-2">
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                                    <span>FTP SET — Kirim kredensial</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-foreground">
-                                    <Loader2 className="size-4 animate-spin text-blue-500 shrink-0" />
-                                    <span>FTP TES — Tes koneksi upload</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
-                                    <div className="size-4 rounded-full border-2 border-muted shrink-0" />
-                                    <span>Simpan konfigurasi</span>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ─── Phase: TES OK → prompt user to Save ─── */}
-                    {phase === 'test_ok' && (
-                        <div className="flex flex-col items-center gap-6 py-8">
-                            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-300">
-                                <CheckCircle2 className="size-10 text-emerald-500" />
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">Koneksi FTP Berhasil!</h3>
-                                <p className="mt-1 text-sm text-muted-foreground">
-                                    Logger berhasil terhubung ke <strong>{ftpHost}:{ftpPort}</strong> dalam <strong>{formatElapsed(elapsed)}</strong>.
-                                    <br />Simpan konfigurasi ini?
-                                </p>
-                            </div>
-                            <div className="w-full max-w-xs space-y-2">
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                                    <span>FTP SET — Kirim kredensial</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                                    <span>FTP TES — Tes koneksi upload</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-foreground font-medium">
-                                    <div className="size-4 rounded-full border-2 border-emerald-500 shrink-0" />
-                                    <span>Simpan konfigurasi</span>
-                                </div>
-                            </div>
-                            <DialogFooter className="gap-2 sm:gap-0">
-                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
-                                <Button onClick={handleSave} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
-                                    <Save className="size-4" /> Simpan
-                                </Button>
-                            </DialogFooter>
-                        </div>
-                    )}
-
-                    {/* ─── Phase: Success (saved) ─── */}
-                    {phase === 'success' && (
-                        <div className="flex flex-col items-center gap-4 py-8">
-                            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 animate-in zoom-in duration-500">
-                                <CheckCircle2 className="size-8 text-emerald-500" />
-                            </div>
-                            <div className="text-center">
-                                <h3 className="text-lg font-semibold">FTP Berhasil Disimpan!</h3>
-                                <p className="mt-1 text-sm text-muted-foreground">
-                                    Konfigurasi FTP ke <strong>{ftpHost}:{ftpPort}</strong> telah tersimpan
-                                </p>
-                            </div>
-                            <div className="w-full max-w-xs space-y-2">
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                                    <span>FTP SET — Kirim kredensial</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                                    <span>FTP TES — Tes koneksi upload</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                                    <span>Simpan konfigurasi</span>
-                                </div>
-                            </div>
-                            <DialogFooter>
-                                <Button onClick={handleDialogClose} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">Done</Button>
-                            </DialogFooter>
-                        </div>
-                    )}
-
-                    {/* ─── Phase: Error ─── */}
-                    {phase === 'error' && (
-                        <>
-                            <div className="flex flex-col items-center gap-4 py-8">
-                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 animate-in zoom-in duration-500">
-                                    <XCircle className="size-8 text-red-500" />
-                                </div>
-                                <div className="text-center">
-                                    <h3 className="text-lg font-semibold">
-                                        {errorStep === 'set' ? 'Gagal Mengirim Konfigurasi' : 'Tes Koneksi FTP Gagal'}
-                                    </h3>
-                                    <p className="mt-1 text-sm text-muted-foreground">{errorMsg}</p>
-                                </div>
-                                <div className="w-full max-w-xs space-y-2">
-                                    <div className={`flex items-center gap-3 text-sm ${errorStep === 'set' ? 'text-red-500' : 'text-muted-foreground'}`}>
-                                        {errorStep === 'set'
-                                            ? <XCircle className="size-4 text-red-500 shrink-0" />
-                                            : <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />}
-                                        <span>FTP SET — Kirim kredensial</span>
-                                    </div>
-                                    <div className={`flex items-center gap-3 text-sm ${errorStep === 'test' ? 'text-red-500' : 'text-muted-foreground/50'}`}>
-                                        {errorStep === 'test'
-                                            ? <XCircle className="size-4 text-red-500 shrink-0" />
-                                            : <div className="size-4 rounded-full border-2 border-muted shrink-0" />}
-                                        <span>FTP TES — Tes koneksi upload</span>
-                                    </div>
-                                    <div className="flex items-center gap-3 text-sm text-muted-foreground/50">
-                                        <div className="size-4 rounded-full border-2 border-muted shrink-0" />
-                                        <span>Simpan konfigurasi</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <DialogFooter>
-                                <Button variant="outline" onClick={handleDialogClose}>{t('common.cancel')}</Button>
-                                <Button onClick={handleRetry} className="gap-1.5">
-                                    <RefreshCw className="size-4" /> Coba Lagi
-                                </Button>
-                            </DialogFooter>
-                        </>
-                    )}
-                </DialogContent>
-            </Dialog>
-
-            {/* ══════ FTP File Browser Dialog ══════ */}
-            <Dialog open={fileBrowserOpen} onOpenChange={setFileBrowserOpen}>
-                <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
-                    <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2">
-                            <HardDrive className="size-5" /> FTP File Browser
-                        </DialogTitle>
-                        <DialogDescription>
-                            {browseView === 'months'
-                                ? 'Pilih bulan untuk melihat daftar file'
-                                : `File CSV — ${selectedMonth ? formatMonth(selectedMonth) : ''}`
-                            }
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="py-2">
-                        {loadingFiles ? (
-                            <div className="flex flex-col items-center gap-3 py-8">
-                                <Loader2 className="size-8 animate-spin text-muted-foreground" />
-                                <p className="text-sm text-muted-foreground">
-                                    {browseView === 'months' ? 'Memuat daftar bulan...' : 'Memuat daftar file...'}
-                                </p>
-                            </div>
-                        ) : browseView === 'months' ? (
-                            /* ─── Months View ─── */
-                            months.length === 0 ? (
-                                <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
-                                    <HardDrive className="mx-auto size-8 text-muted-foreground/40" />
-                                    <p className="mt-2 text-sm text-muted-foreground">Tidak ada data ditemukan</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-1">
-                                    <div className="px-3 py-1.5 text-xs text-muted-foreground font-medium">
-                                        {months.length} bulan tersedia
-                                    </div>
-                                    <div className="max-h-[50vh] overflow-y-auto space-y-0.5">
-                                        {months.map((month) => (
-                                            <button
-                                                key={month}
-                                                onClick={() => handleSelectMonth(month)}
-                                                className="flex w-full items-center justify-between rounded-md border px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors text-left"
-                                            >
-                                                <div className="flex items-center gap-2.5">
-                                                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
-                                                        <Clock className="size-4 text-blue-500" />
-                                                    </div>
-                                                    <span className="font-medium">{formatMonth(month)}</span>
-                                                </div>
-                                                <ChevronRight className="size-4 text-muted-foreground" />
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )
-                        ) : (
-                            /* ─── Files View ─── */
-                            <>
-                                <button
-                                    onClick={handleBackToMonths}
-                                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors mb-2"
-                                >
-                                    <ArrowLeft className="size-4" />
-                                    <span>Kembali ke daftar bulan</span>
-                                </button>
-                                {files.length === 0 ? (
-                                    <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
-                                        <HardDrive className="mx-auto size-8 text-muted-foreground/40" />
-                                        <p className="mt-2 text-sm text-muted-foreground">Tidak ada file ditemukan</p>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-1">
-                                        <div className="px-3 py-1.5 text-xs text-muted-foreground font-medium">
-                                            {files.length} file ditemukan
-                                        </div>
-                                        <div className="max-h-[50vh] overflow-y-auto space-y-0.5">
-                                            {files.map((file) => (
-                                                <div key={file} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-muted/50 transition-colors">
-                                                    <div className="flex items-center gap-2 min-w-0">
-                                                        <Database className="size-4 text-blue-500 shrink-0" />
-                                                        <span className="truncate font-mono text-xs">{file}</span>
-                                                    </div>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        className="size-7 shrink-0"
-                                                        disabled={downloadingFile === file}
-                                                        onClick={() => handleGetFile(file)}
-                                                        title={`Download ${file}`}
-                                                    >
-                                                        {downloadingFile === file
-                                                            ? <Loader2 className="size-3.5 animate-spin" />
-                                                            : <Download className="size-3.5" />}
-                                                    </Button>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </>
-                        )}
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setFileBrowserOpen(false)}>Tutup</Button>
-                        {!loadingFiles && (
-                            <Button variant="outline" onClick={browseView === 'months' ? handleBrowseFiles : () => selectedMonth && handleSelectMonth(selectedMonth)} className="gap-1.5">
-                                <RefreshCw className="size-4" /> Refresh
-                            </Button>
-                        )}
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-        </Card>
-    );
-}
-
-// =============================================================================
-// System Logs Card (FTP black-box recorder — READLOGS list + in-app colored viewer)
-// =============================================================================
-
-// Shared matcher for a standard syslog line: "[HH:MM:SS] [LEVEL] [MODULE] message".
-const SYSLOG_LINE_RE = /^\[(\d{2}:\d{2}:\d{2})\]\s*\[([A-Za-z ]+?)\]\s*\[([^\]]*)\]\s*(.*)$/;
-
-interface LogSummary {
-    totalLines: number;
-    firstTime: string | null;
-    lastTime: string | null;
-    errors: number;
-    warnings: number;
-    cfg: number;
-    reboots: number;
-    netOffline: number;
-    ftpUploads: number;
-    topErrorModules: { module: string; count: number }[];
-    // Timestamps of notable events so the summary can show "when", not just "how many".
-    netOfflineTimes: string[];
-    rebootTimes: string[];
-    lastFtpUploadTime: string | null;
-    firstErrorTime: string | null;
-    lastErrorTime: string | null;
-}
-
-// Derive an at-a-glance health summary from a syslog file's text (frontend only — no backend).
-function summarizeSyslog(content: string): LogSummary {
-    const lines = content.replace(/\r\n/g, '\n').split('\n');
-    let totalLines = 0;
-    let errors = 0;
-    let warnings = 0;
-    let cfg = 0;
-    let reboots = 0;
-    let netOffline = 0;
-    let ftpUploads = 0;
-    let firstTime: string | null = null;
-    let lastTime: string | null = null;
-    let lastFtpUploadTime: string | null = null;
-    let firstErrorTime: string | null = null;
-    let lastErrorTime: string | null = null;
-    const netOfflineTimes: string[] = [];
-    const rebootTimes: string[] = [];
-    const errorByModule: Record<string, number> = {};
-
-    for (const raw of lines) {
-        const line = raw.trim();
-        if (!line) continue;
-        totalLines++;
-        const m = line.match(SYSLOG_LINE_RE);
-        if (!m) continue;
-        const [, time, levelRaw, modRaw, msg] = m;
-        const level = levelRaw.trim().toUpperCase();
-        const mod = modRaw.trim();
-        if (firstTime === null) firstTime = time;
-        lastTime = time;
-        if (level === 'ERROR') {
-            errors++;
-            errorByModule[mod] = (errorByModule[mod] || 0) + 1;
-            if (firstErrorTime === null) firstErrorTime = time;
-            lastErrorTime = time;
-        } else if (level === 'WARN') {
-            warnings++;
-        } else if (level === 'CFG') {
-            cfg++;
-        }
-        if (/reboot/i.test(msg)) { reboots++; rebootTimes.push(time); }
-        if (mod === 'NET' && /offline/i.test(msg)) { netOffline++; netOfflineTimes.push(time); }
-        if (/upload ok/i.test(msg)) { ftpUploads++; lastFtpUploadTime = time; }
-    }
-
-    const topErrorModules = Object.entries(errorByModule)
-        .map(([module, count]) => ({ module, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 3);
-
-    return {
-        totalLines, firstTime, lastTime, errors, warnings, cfg, reboots, netOffline, ftpUploads, topErrorModules,
-        netOfflineTimes, rebootTimes, lastFtpUploadTime, firstErrorTime, lastErrorTime,
-    };
-}
-
-function LogStatTile({ label, value, tone = 'default' }: {
-    label: string;
-    value: string | number;
-    tone?: 'default' | 'error' | 'warn' | 'ok';
-}) {
-    const toneClass =
-        tone === 'error' ? 'text-red-600 dark:text-red-400'
-            : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
-                : tone === 'ok' ? 'text-emerald-600 dark:text-emerald-400'
-                    : 'text-foreground';
-    return (
-        <div className="rounded-lg border bg-background px-3 py-2">
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
-            <p className={`mt-0.5 truncate font-mono text-sm font-semibold ${toneClass}`}>{value}</p>
-        </div>
-    );
-}
-
-// Join a list of timestamps for display, capping the count so the line stays readable.
-function formatTimeList(times: string[], max = 8): string {
-    if (times.length <= max) return times.join(', ');
-    return `${times.slice(0, max).join(', ')} … (+${times.length - max} lagi)`;
-}
-
-// Insight/health panel rendered above the raw log viewer.
-function SyslogSummary({ summary }: { summary: LogSummary }) {
-    const maxErr = summary.topErrorModules[0]?.count ?? 1;
-    const topFault = summary.topErrorModules[0];
-
-    // Plain-language verdict so the user gets the gist without reading every line.
-    const status: 'error' | 'warn' | 'ok' =
-        summary.errors > 0 ? 'error'
-            : (summary.netOffline > 0 || summary.reboots > 0 || summary.warnings > 0) ? 'warn'
-                : 'ok';
-
-    const verdictParts: string[] = [];
-    if (summary.errors > 0) verdictParts.push(`${summary.errors} error${topFault ? ` (mayoritas ${topFault.module}, ${topFault.count}×)` : ''}`);
-    if (summary.warnings > 0) verdictParts.push(`${summary.warnings} warning`);
-    if (summary.netOffline > 0) verdictParts.push(`jaringan terputus ${summary.netOffline}×`);
-    if (summary.reboots > 0) verdictParts.push(`reboot ${summary.reboots}×`);
-
-    const verdictText = status === 'ok'
-        ? 'Tidak ada error terdeteksi — perangkat berjalan normal.'
-        : `Terdeteksi ${verdictParts.join(', ')}.`;
-
-    const verdict = status === 'error'
-        ? { box: 'border-red-500/20 bg-red-500/5', text: 'text-red-600 dark:text-red-400', Icon: ShieldAlert }
-        : status === 'warn'
-            ? { box: 'border-amber-500/20 bg-amber-500/5', text: 'text-amber-600 dark:text-amber-500', Icon: AlertTriangle }
-            : { box: 'border-emerald-500/20 bg-emerald-500/5', text: 'text-emerald-600 dark:text-emerald-400', Icon: ShieldCheck };
-    const VerdictIcon = verdict.Icon;
-
-    const hasEvents = summary.netOfflineTimes.length > 0 || summary.rebootTimes.length > 0
-        || summary.lastFtpUploadTime !== null || summary.firstErrorTime !== null;
-
-    return (
-        <div className="mb-3 space-y-3">
-            {/* Plain-language health verdict */}
-            <div className={`flex items-start gap-2.5 rounded-lg border p-3 ${verdict.box}`}>
-                <VerdictIcon className={`mt-0.5 size-4 shrink-0 ${verdict.text}`} />
-                <div className="min-w-0">
-                    <p className={`text-sm font-medium ${verdict.text}`}>{verdictText}</p>
-                    {summary.firstTime && (
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                            Rentang {summary.firstTime}–{summary.lastTime} · {summary.totalLines} baris
-                        </p>
-                    )}
-                </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <LogStatTile label="Baris" value={summary.totalLines} />
-                <LogStatTile label="Rentang" value={`${summary.firstTime ?? '—'}–${summary.lastTime ?? '—'}`} />
-                <LogStatTile label="Error" value={summary.errors} tone={summary.errors > 0 ? 'error' : 'default'} />
-                <LogStatTile label="Warning" value={summary.warnings} tone={summary.warnings > 0 ? 'warn' : 'default'} />
-                <LogStatTile label="Reboot" value={summary.reboots} />
-                <LogStatTile label="Putus jaringan" value={summary.netOffline} tone={summary.netOffline > 0 ? 'warn' : 'default'} />
-                <LogStatTile label="Upload FTP" value={summary.ftpUploads} tone={summary.ftpUploads > 0 ? 'ok' : 'default'} />
-                <LogStatTile label="Perintah CFG" value={summary.cfg} />
-            </div>
-
-            {/* Key events with timestamps — answers "kapan", not just "berapa kali". */}
-            {hasEvents && (
-                <div className="rounded-lg border bg-background p-3">
-                    <p className="mb-2 text-xs font-medium text-muted-foreground">Kejadian penting</p>
-                    <ul className="space-y-1.5 text-xs">
-                        {summary.netOfflineTimes.length > 0 && (
-                            <li className="flex items-start gap-2">
-                                <WifiOff className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-                                <span>
-                                    <span className="font-medium">Jaringan terputus {summary.netOfflineTimes.length}×</span> — {formatTimeList(summary.netOfflineTimes)}
-                                </span>
-                            </li>
-                        )}
-                        {summary.rebootTimes.length > 0 && (
-                            <li className="flex items-start gap-2">
-                                <Power className="mt-0.5 size-3.5 shrink-0 text-violet-500" />
-                                <span>
-                                    <span className="font-medium">Reboot {summary.rebootTimes.length}×</span> — {formatTimeList(summary.rebootTimes)}
-                                </span>
-                            </li>
-                        )}
-                        {summary.firstErrorTime && (
-                            <li className="flex items-start gap-2">
-                                <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-red-500" />
-                                <span>
-                                    <span className="font-medium">Error pertama {summary.firstErrorTime}</span>, terakhir {summary.lastErrorTime}
-                                </span>
-                            </li>
-                        )}
-                        {summary.lastFtpUploadTime && (
-                            <li className="flex items-start gap-2">
-                                <Upload className="mt-0.5 size-3.5 shrink-0 text-emerald-500" />
-                                <span>
-                                    <span className="font-medium">Upload FTP terakhir {summary.lastFtpUploadTime}</span> ({summary.ftpUploads}× total)
-                                </span>
-                            </li>
-                        )}
-                    </ul>
-                </div>
-            )}
-
-            {summary.topErrorModules.length > 0 && (
-                <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
-                    <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-red-600 dark:text-red-400">
-                        <AlertCircle className="size-3.5" /> Fault terbanyak
-                    </p>
-                    <div className="space-y-1.5">
-                        {summary.topErrorModules.map((f) => (
-                            <div key={f.module} className="flex items-center gap-2">
-                                <span className="w-28 shrink-0 truncate font-mono text-xs">{f.module}</span>
-                                <div className="h-2 flex-1 overflow-hidden rounded-full bg-red-500/10">
-                                    <div className="h-full rounded-full bg-red-500/60" style={{ width: `${(f.count / maxErr) * 100}%` }} />
-                                </div>
-                                <span className="w-12 shrink-0 text-right font-mono text-xs text-muted-foreground">{f.count}×</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-}
-
-// Render one syslog line: "[HH:MM:SS] [LEVEL] [MODULE] message" with per-level coloring.
-// Non-standard lines (e.g. "[SYSLOG] Daily flush summary: …") fall back to plain text.
-function SyslogLine({ line }: { line: string }) {
-    const m = line.match(SYSLOG_LINE_RE);
-    if (!m) {
-        return <div className="whitespace-pre-wrap text-muted-foreground">{line || ' '}</div>;
-    }
-    const [, time, levelRaw, mod, msg] = m;
-    const level = levelRaw.trim().toUpperCase();
-    const levelColor =
-        level === 'ERROR' ? 'text-red-500'
-            : level === 'WARN' ? 'text-amber-500'
-                : level === 'CFG' ? 'text-violet-500'
-                    : level === 'INFO' ? 'text-emerald-600 dark:text-emerald-400'
-                        : 'text-muted-foreground';
-    return (
-        <div className="flex gap-2 whitespace-pre-wrap">
-            <span className="shrink-0 text-muted-foreground">[{time}]</span>
-            <span className={`shrink-0 font-medium ${levelColor}`}>[{level}]</span>
-            <span className="shrink-0 text-sky-600 dark:text-sky-400">[{mod}]</span>
-            <span className={level === 'ERROR' ? 'text-red-500/90' : 'text-foreground'}>{msg}</span>
-        </div>
-    );
-}
-
-// SD Card → USB copy. Mirrors the FTP file browser's month → day drill-down: LISTMONTH lists
-// months, LISTDAY lists that month's date-files. "Copy semua ke USB" (COPY_ALL) lives in the
-// month view; each day-file has its own copy action (COPY src). Both stream live progress over
-// EventSource (/api/mqtt/usb/stream) until DONE/ERR.
-function UsbCopyCard({ deviceIdentifier, disabled }: {
-    deviceIdentifier: string;
-    disabled: boolean;
-}) {
-    const [open, setOpen] = useState(false);
-    const [months, setMonths] = useState<string[]>([]);
-    const [files, setFiles] = useState<string[]>([]);
-    const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
-    const [browseView, setBrowseView] = useState<'months' | 'files'>('months');
-    const [loading, setLoading] = useState(false);
-    const [listError, setListError] = useState<string | null>(null);
-
-    const [copying, setCopying] = useState(false);
-    const [copyTarget, setCopyTarget] = useState<string | null>(null); // 'all' or a filename
-    const [percent, setPercent] = useState(0);
-    const [copied, setCopied] = useState<{ file: string; size?: string }[]>([]);
-    const [copyError, setCopyError] = useState<string | null>(null);
-    const [doneMsg, setDoneMsg] = useState<string | null>(null);
-    const esRef = useRef<EventSource | null>(null);
-
-    function closeStream() {
-        if (esRef.current) {
-            esRef.current.close();
-            esRef.current = null;
-        }
-    }
-
-    function formatMonth(monthStr: string) {
-        const [yearStr, monthNum] = monthStr.split('-');
-        const monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-        return `${monthNames[parseInt(monthNum) - 1]} ${yearStr}`;
-    }
-
-    // LISTMONTH — months that have data on the SD card ({"USB":{"months":["2026-06",...]}}).
-    async function loadMonths() {
-        setLoading(true);
-        setListError(null);
-        setMonths([]);
-        setFiles([]);
-        setSelectedMonth(null);
-        setBrowseView('months');
-        try {
-            const res = await apiFetch('/api/mqtt/protocol/command', {
-                id_logger: deviceIdentifier,
-                module: 'USB',
-                payload: { USB: { cmd: 'LISTMONTH' } },
-            });
-            const data = await res.json();
-            if (!data.success) {
-                setListError(data.message || 'Perangkat tidak merespons (LISTMONTH).');
-                return;
-            }
-            const raw = data?.data?.USB?.months;
-            const list: string[] = Array.isArray(raw) ? raw.filter((m: unknown): m is string => typeof m === 'string') : [];
-            list.sort((a, b) => a.localeCompare(b));
-            setMonths(list);
-        } catch {
-            setListError('Network error — tidak dapat terhubung ke server.');
-        } finally {
-            setLoading(false);
-        }
-    }
-
-    // LISTDAY — date-files within one month ({"USB":{"files":["2026-06-17.csv",...]}}).
-    async function selectMonth(monthStr: string) {
-        setSelectedMonth(monthStr);
-        setBrowseView('files');
-        setLoading(true);
-        setListError(null);
-        setFiles([]);
-        const [yearStr, monthNum] = monthStr.split('-');
-        try {
-            const res = await apiFetch('/api/mqtt/protocol/command', {
-                id_logger: deviceIdentifier,
-                module: 'USB',
-                payload: { USB: { cmd: 'LISTDAY', y: parseInt(yearStr), m: parseInt(monthNum) } },
-            });
-            const data = await res.json();
-            if (!data.success) {
-                setListError(data.message || 'Perangkat tidak merespons (LISTDAY).');
-                return;
-            }
-            const raw = data?.data?.USB?.files;
-            const list: string[] = Array.isArray(raw) ? raw.filter((f: unknown): f is string => typeof f === 'string') : [];
-            list.sort((a, b) => a.localeCompare(b));
-            setFiles(list);
-        } catch {
-            setListError('Network error — tidak dapat terhubung ke server.');
-        } finally {
-            setLoading(false);
-        }
-    }
-
-    function backToMonths() {
-        setBrowseView('months');
-        setSelectedMonth(null);
-        setFiles([]);
-        setListError(null);
-    }
-
-    function openBrowser() {
-        setOpen(true);
-        setCopying(false);
-        setCopyTarget(null);
-        setPercent(0);
-        setCopied([]);
-        setCopyError(null);
-        setDoneMsg(null);
-        closeStream();
-        loadMonths();
-    }
-
-    // COPY (single date-file via `src`) or COPY_ALL (src omitted) — follow the live progress stream.
-    function startCopy(src: string | null, label: string) {
-        if (copying) return;
-        setCopying(true);
-        setCopyTarget(label);
-        setPercent(0);
-        setCopied([]);
-        setCopyError(null);
-        setDoneMsg(null);
-        closeStream();
-
-        const params = new URLSearchParams({ id_logger: deviceIdentifier });
-        if (src) params.set('src', src);
-        const es = new EventSource(`/api/mqtt/usb/stream?${params.toString()}`);
-        esRef.current = es;
-        let finished = false;
-
-        es.addEventListener('progress', (e) => {
-            try { setPercent(JSON.parse((e as MessageEvent).data).percent ?? 0); } catch { /* ignore */ }
-        });
-        es.addEventListener('file_ok', (e) => {
-            try {
-                const d = JSON.parse((e as MessageEvent).data);
-                if (d.file) setCopied((prev) => [...prev, { file: d.file, size: d.size }]);
-            } catch { /* ignore */ }
-        });
-        es.addEventListener('done', (e) => {
-            finished = true;
-            try {
-                const d = JSON.parse((e as MessageEvent).data);
-                setDoneMsg(d.file ? `Selesai menyalin ${d.file} ke USB.` : 'Semua file selesai disalin ke USB.');
-            } catch { setDoneMsg('Copy selesai.'); }
-            setPercent(100);
-            setCopying(false);
-            closeStream();
-        });
-        es.addEventListener('failed', (e) => {
-            finished = true;
-            let msg = 'Copy gagal';
-            try { msg = JSON.parse((e as MessageEvent).data).message || msg; } catch { /* ignore */ }
-            setCopyError(msg);
-            setCopying(false);
-            closeStream();
-        });
-        es.onerror = () => {
-            if (finished) return; // normal close after a terminal event
-            finished = true;
-            setCopyError('Koneksi ke server terputus saat copy.');
-            setCopying(false);
-            closeStream();
-        };
-    }
-
-    // Abort any in-flight copy stream on unmount.
-    useEffect(() => () => closeStream(), []);
-
-    return (
-        <Card>
-            <CardHeader>
-                <CardTitle className="flex items-center gap-2"><HardDrive className="size-5" /> SD Card → USB</CardTitle>
-                <CardDescription className="mt-1">Salin data harian dari SD card ke USB flashdisk</CardDescription>
-            </CardHeader>
-            <CardContent>
-                <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-4">
-                    <div className="mb-3 flex items-center gap-2">
-                        <Copy className="size-4 text-violet-500" />
-                        <span className="text-sm font-medium">Copy ke USB Flashdisk</span>
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5"
-                        onClick={openBrowser}
-                        disabled={disabled}
-                        title={disabled ? 'Device offline — tidak bisa mengirim' : ''}
-                    >
-                        <HardDrive className="size-4" /> Pilih & Copy File
-                    </Button>
-                </div>
-            </CardContent>
-
-            {/* ══════ SD → USB copy dialog (month → day, mirrors the FTP browser) ══════ */}
-            <Dialog open={open} onOpenChange={(o) => { if (!o) closeStream(); setOpen(o); }}>
-                <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
-                    <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2"><HardDrive className="size-5" /> SD Card → USB</DialogTitle>
-                        <DialogDescription>
-                            {browseView === 'months'
-                                ? 'Pilih bulan, atau salin semua data ke USB flashdisk'
-                                : `File CSV — ${selectedMonth ? formatMonth(selectedMonth) : ''}`}
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="py-2">
-                        {loading ? (
-                            <div className="flex flex-col items-center gap-3 py-8">
-                                <Loader2 className="size-8 animate-spin text-muted-foreground" />
-                                <p className="text-sm text-muted-foreground">
-                                    {browseView === 'months' ? 'Memuat daftar bulan (LISTMONTH)...' : 'Memuat daftar file (LISTDAY)...'}
-                                </p>
-                            </div>
-                        ) : listError ? (
-                            <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
-                                <AlertCircle className="mx-auto size-8 text-red-500/60" />
-                                <p className="mt-2 text-sm text-red-600 dark:text-red-400">{listError}</p>
-                            </div>
-                        ) : browseView === 'months' ? (
-                            /* ─── Months View (with Copy semua) ─── */
-                            <div className="space-y-1">
-                                <button
-                                    onClick={() => startCopy(null, 'all')}
-                                    disabled={copying}
-                                    className="flex w-full items-center justify-between rounded-md border border-violet-500/30 bg-violet-500/5 px-3 py-2.5 text-sm transition-colors hover:bg-violet-500/10 disabled:opacity-50 text-left"
-                                >
-                                    <div className="flex items-center gap-2.5">
-                                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/10">
-                                            <Copy className="size-4 text-violet-500" />
-                                        </div>
-                                        <span className="font-medium">Copy semua ke USB</span>
-                                    </div>
-                                    {copying && copyTarget === 'all'
-                                        ? <Loader2 className="size-4 animate-spin text-violet-500" />
-                                        : <span className="text-xs text-muted-foreground">semua bulan</span>}
-                                </button>
-
-                                {months.length === 0 ? (
-                                    <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
-                                        <HardDrive className="mx-auto size-8 text-muted-foreground/40" />
-                                        <p className="mt-2 text-sm text-muted-foreground">Tidak ada data ditemukan</p>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">{months.length} bulan tersedia</div>
-                                        <div className="max-h-[45vh] space-y-0.5 overflow-y-auto">
-                                            {months.map((month) => (
-                                                <button
-                                                    key={month}
-                                                    onClick={() => selectMonth(month)}
-                                                    disabled={copying}
-                                                    className="flex w-full items-center justify-between rounded-md border px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/50 disabled:opacity-50"
-                                                >
-                                                    <div className="flex items-center gap-2.5">
-                                                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
-                                                            <Clock className="size-4 text-blue-500" />
-                                                        </div>
-                                                        <span className="font-medium">{formatMonth(month)}</span>
-                                                    </div>
-                                                    <ChevronRight className="size-4 text-muted-foreground" />
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </>
-                                )}
-                            </div>
-                        ) : (
-                            /* ─── Files View (per-date copy) ─── */
-                            <>
-                                <button
-                                    onClick={backToMonths}
-                                    disabled={copying}
-                                    className="mb-2 flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                                >
-                                    <ArrowLeft className="size-4" />
-                                    <span>Kembali ke daftar bulan</span>
-                                </button>
-                                {files.length === 0 ? (
-                                    <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
-                                        <FileText className="mx-auto size-8 text-muted-foreground/40" />
-                                        <p className="mt-2 text-sm text-muted-foreground">Tidak ada file ditemukan</p>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-1">
-                                        <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">{files.length} file ditemukan</div>
-                                        <div className="max-h-[45vh] space-y-0.5 overflow-y-auto">
-                                            {files.map((file) => {
-                                                const done = copied.some((c) => c.file === file);
-                                                const busy = copying && copyTarget === file;
-                                                return (
-                                                    <div key={file} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted/50">
-                                                        <div className="flex min-w-0 items-center gap-2">
-                                                            <Database className="size-4 shrink-0 text-violet-500" />
-                                                            <span className="truncate font-mono text-xs">{file.replace(/\.csv$/i, '')}</span>
-                                                            {done && <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />}
-                                                        </div>
-                                                        <Button
-                                                            variant="ghost"
-                                                            size="icon"
-                                                            className="size-7 shrink-0"
-                                                            disabled={copying}
-                                                            onClick={() => startCopy(file, file)}
-                                                            title={`Copy ${file} ke USB`}
-                                                        >
-                                                            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Copy className="size-3.5" />}
-                                                        </Button>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                )}
-                            </>
-                        )}
-
-                        {(copying || doneMsg || copyError) && (
-                            <div className="mt-3 space-y-2 rounded-md border p-3">
-                                <div className="flex items-center justify-between text-xs">
-                                    <span className="text-muted-foreground">
-                                        {copying
-                                            ? `Menyalin ${copyTarget === 'all' ? 'semua file' : (copyTarget ?? '')}…`
-                                            : copyError ? 'Gagal' : 'Selesai'}
-                                    </span>
-                                    <span className="font-mono">{percent}%</span>
-                                </div>
-                                <Progress value={percent} className="h-2 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-200" />
-                                {copyTarget === 'all' && copied.length > 0 && (
-                                    <p className="text-xs text-muted-foreground">{copied.length} file tersalin</p>
-                                )}
-                                {doneMsg && <p className="text-xs text-emerald-600">{doneMsg}</p>}
-                                {copyError && <p className="text-xs text-red-600">{copyError}</p>}
-                            </div>
-                        )}
-                    </div>
-
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => { closeStream(); setOpen(false); }}>Tutup</Button>
-                        {!loading && (
-                            <Button
-                                variant="outline"
-                                disabled={copying}
-                                onClick={browseView === 'months' ? loadMonths : () => selectedMonth && selectMonth(selectedMonth)}
-                                className="gap-1.5"
-                            >
-                                <RefreshCw className="size-4" /> Refresh
-                            </Button>
-                        )}
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-        </Card>
-    );
-}
-
-function SystemLogsCard({ deviceIdentifier, disabled, ftpConfigured }: {
-    deviceIdentifier: string;
-    disabled: boolean;
-    ftpConfigured: boolean;
-}) {
-    const [open, setOpen] = useState(false);
-    const [view, setView] = useState<'list' | 'viewer'>('list');
-    const [files, setFiles] = useState<string[]>([]);
-    const [loadingList, setLoadingList] = useState(false);
-    const [listError, setListError] = useState<string | null>(null);
-
-    const [selectedFile, setSelectedFile] = useState<string | null>(null);
-    const [content, setContent] = useState<string | null>(null);
-    const [loadingContent, setLoadingContent] = useState(false);
-    const [contentError, setContentError] = useState<string | null>(null);
-
-    // READLOGS — list device-local syslog files (an MQTT round-trip, no FTP needed).
-    async function loadList() {
-        setLoadingList(true);
-        setListError(null);
-        setFiles([]);
-        try {
-            const res = await apiFetch('/api/mqtt/protocol/command', {
-                id_logger: deviceIdentifier,
-                module: 'FTP',
-                payload: { FTP: { cmd: 'READLOGS' } },
-            });
-            const data = await res.json();
-            if (!data.success) {
-                setListError(data.message || 'Perangkat tidak merespons (READLOGS).');
-                return;
-            }
-            const raw = data?.data?.FTP?.files;
-            const list: string[] = Array.isArray(raw) ? raw.filter((f: unknown): f is string => typeof f === 'string') : [];
-            // Oldest first (ascending) — filenames are YYYYMMDD.txt so a lexicographic sort works.
-            list.sort((a, b) => a.localeCompare(b));
-            setFiles(list);
-        } catch {
-            setListError('Network error — tidak dapat terhubung ke server.');
-        } finally {
-            setLoadingList(false);
-        }
-    }
-
-    function openBrowser() {
-        setOpen(true);
-        setView('list');
-        setSelectedFile(null);
-        setContent(null);
-        setContentError(null);
-        loadList();
-    }
-
-    // Open one file. The /logview endpoint runs GETLOG (device → FTP upload, waiting for the
-    // final OK) then reads the uploaded file's text back from FTP — one round-trip from the UI.
-    async function openFile(file: string) {
-        setSelectedFile(file);
-        setView('viewer');
-        setContent(null);
-        setContentError(null);
-        setLoadingContent(true);
-        try {
-            const viewRes = await apiFetch('/api/mqtt/ftp/logview', {
-                id_logger: deviceIdentifier,
-                filename: file,
-            });
-            const viewData = await viewRes.json();
-            if (!viewData.success) {
-                setContentError(viewData.message || 'Gagal mengambil isi file dari perangkat/FTP.');
-                return;
-            }
-            setContent(typeof viewData.content === 'string' ? viewData.content : '');
-        } catch {
-            setContentError('Network error — tidak dapat terhubung ke server.');
-        } finally {
-            setLoadingContent(false);
-        }
-    }
-
-    function backToList() {
-        setView('list');
-        setSelectedFile(null);
-        setContent(null);
-        setContentError(null);
-    }
-
-    // Save the already-loaded log text to a local .txt file (no extra round-trip).
-    function downloadLog() {
-        if (content === null || !selectedFile) return;
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = selectedFile;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-    }
-
-    const lines = content !== null ? content.replace(/\r\n/g, '\n').split('\n') : [];
-    const summary = useMemo(() => (content !== null ? summarizeSyslog(content) : null), [content]);
-
-    return (
-        <Card>
-            <CardHeader>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <CardTitle className="flex items-center gap-2"><ScrollText className="size-5" /> System Logs</CardTitle>
-                        <CardDescription className="mt-1">Black-box recorder — log sistem harian dari perangkat</CardDescription>
-                    </div>
-                </div>
-            </CardHeader>
-            <CardContent>
-                <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
-                    <div className="mb-3 flex items-center gap-2">
-                        <ScrollText className="size-4 text-blue-500" />
-                        <span className="text-sm font-medium">Log Sistem Harian</span>
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5"
-                        onClick={openBrowser}
-                        disabled={disabled || !ftpConfigured}
-                        title={
-                            disabled ? 'Device offline — tidak bisa mengirim'
-                                : !ftpConfigured ? 'Konfigurasi FTP diperlukan terlebih dahulu'
-                                    : ''
-                        }
-                    >
-                        <HardDrive className="size-4" /> Lihat Log Sistem
-                    </Button>
-                </div>
-            </CardContent>
-
-            {/* ══════ System Logs Browser / Viewer Dialog ══════ */}
-            <Dialog open={open} onOpenChange={setOpen}>
-                <DialogContent className={`flex max-h-[85vh] flex-col overflow-hidden ${view === 'list' ? 'sm:max-w-lg' : 'sm:max-w-3xl'}`}>
-                    <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2">
-                            <ScrollText className="size-5" /> System Logs
-                        </DialogTitle>
-                        <DialogDescription>
-                            {view === 'list'
-                                ? 'Daftar file log sistem di perangkat'
-                                : `syslog_${selectedFile ?? ''}`}
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className={`min-h-0 flex-1 py-2 ${view === 'list' ? 'overflow-y-auto' : 'flex flex-col overflow-hidden'}`}>
-                        {view === 'list' ? (
-                            loadingList ? (
-                                <div className="flex flex-col items-center gap-3 py-8">
-                                    <Loader2 className="size-8 animate-spin text-muted-foreground" />
-                                    <p className="text-sm text-muted-foreground">Memuat daftar log (READLOGS)...</p>
-                                </div>
-                            ) : listError ? (
-                                <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
-                                    <AlertCircle className="mx-auto size-8 text-red-500/60" />
-                                    <p className="mt-2 text-sm text-red-600 dark:text-red-400">{listError}</p>
-                                </div>
-                            ) : files.length === 0 ? (
-                                <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
-                                    <ScrollText className="mx-auto size-8 text-muted-foreground/40" />
-                                    <p className="mt-2 text-sm text-muted-foreground">Tidak ada file log ditemukan</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-1">
-                                    <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">{files.length} file log tersedia</div>
-                                    <div className="space-y-0.5">
-                                        {files.map((file) => (
-                                            <button
-                                                key={file}
-                                                onClick={() => openFile(file)}
-                                                className="flex w-full items-center justify-between rounded-md border px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/50"
-                                            >
-                                                <div className="flex min-w-0 items-center gap-2.5">
-                                                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
-                                                        <FileText className="size-4 text-blue-500" />
-                                                    </div>
-                                                    <span className="truncate font-mono text-xs">{file.replace(/\.txt$/i, '')}</span>
-                                                </div>
-                                                <Download className="size-4 shrink-0 text-muted-foreground" />
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )
-                        ) : (
-                            /* ─── Viewer ─── */
-                            <>
-                                <button
-                                    onClick={backToList}
-                                    className="mb-2 flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-                                >
-                                    <ArrowLeft className="size-4" />
-                                    <span>Kembali ke daftar file</span>
-                                </button>
-                                {loadingContent ? (
-                                    <div className="flex flex-col items-center gap-3 py-10">
-                                        <Loader2 className="size-8 animate-spin text-muted-foreground" />
-                                        <p className="text-sm text-muted-foreground">Mengupload (GETLOG) &amp; membaca isi log...</p>
-                                    </div>
-                                ) : contentError ? (
-                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
-                                        <AlertCircle className="mx-auto size-8 text-red-500/60" />
-                                        <p className="mt-2 text-sm text-red-600 dark:text-red-400">{contentError}</p>
-                                    </div>
-                                ) : (
-                                    <>
-                                        {summary && (
-                                            <div className="shrink-0">
-                                                <SyslogSummary summary={summary} />
-                                            </div>
-                                        )}
-                                        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-muted/30">
-                                            <div className="flex-1 overflow-auto p-3 font-mono text-[11px] leading-relaxed">
-                                                {lines.map((line, i) => (
-                                                    <SyslogLine key={i} line={line} />
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </>
-                                )}
-                            </>
-                        )}
-                    </div>
-
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setOpen(false)}>Tutup</Button>
-                        {view === 'list' && !loadingList && (
-                            <Button variant="outline" className="gap-1.5" onClick={loadList}>
-                                <RefreshCw className="size-4" /> Refresh
-                            </Button>
-                        )}
-                        {view === 'viewer' && !loadingContent && content !== null && selectedFile && (
-                            <Button variant="outline" className="gap-1.5" onClick={downloadLog}>
-                                <Download className="size-4" /> Unduh
-                            </Button>
-                        )}
-                        {view === 'viewer' && !loadingContent && selectedFile && (
-                            <Button variant="outline" className="gap-1.5" onClick={() => openFile(selectedFile)}>
-                                <RefreshCw className="size-4" /> Muat ulang
-                            </Button>
-                        )}
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
         </Card>
     );
 }
@@ -4885,16 +5711,26 @@ function SystemLogsCard({ deviceIdentifier, disabled, ftpConfigured }: {
 // =============================================================================
 type SetModePhase = 'idle' | 'sending' | 'success' | 'error';
 
-function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disabled?: boolean }) {
+function SetModeCard({
+    logger,
+    disabled = false,
+}: {
+    logger: LoggerDetail;
+    disabled?: boolean;
+}) {
     const allowedModes = configuratorModes(logger.availableModes);
-    const initialMode = allowedModes.some((mode) => mode.slug === logger.loggerMode) ? logger.loggerMode || '' : '';
+    const initialMode = allowedModes.some(
+        (mode) => mode.slug === logger.loggerMode,
+    )
+        ? logger.loggerMode || ''
+        : '';
     const [selectedMode, setSelectedMode] = useState<string>(initialMode);
     const [phase, setPhase] = useState<SetModePhase>('idle');
     const [message, setMessage] = useState('');
     const [confirmOpen, setConfirmOpen] = useState(false);
 
-    const activeMode = allowedModes.find(m => m.slug === logger.loggerMode);
-    const selectedModeInfo = allowedModes.find(m => m.slug === selectedMode);
+    const activeMode = allowedModes.find((m) => m.slug === logger.loggerMode);
+    const selectedModeInfo = allowedModes.find((m) => m.slug === selectedMode);
     const isChanged = selectedMode !== initialMode;
 
     // Group modes by group
@@ -4917,7 +5753,9 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
             const data = await res.json();
             if (data.success) {
                 setPhase('success');
-                setMessage(data.message || `Mode berhasil diubah ke ${selectedMode}`);
+                setMessage(
+                    data.message || `Mode berhasil diubah ke ${selectedMode}`,
+                );
                 setTimeout(() => router.reload(), 1500);
             } else {
                 setPhase('error');
@@ -4954,10 +5792,13 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
                     <Radio className="size-5" /> Set Mode Logger
                 </CardTitle>
                 <CardDescription>
-                    {activeMode
-                        ? <>Mode aktif: <strong>{activeMode.label}</strong></>
-                        : 'Belum ada mode yang diset'
-                    }
+                    {activeMode ? (
+                        <>
+                            Mode aktif: <strong>{activeMode.label}</strong>
+                        </>
+                    ) : (
+                        'Belum ada mode yang diset'
+                    )}
                 </CardDescription>
             </CardHeader>
             <CardContent>
@@ -4969,8 +5810,12 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
                                 <Radio className="size-4 text-emerald-500" />
                             </div>
                             <div>
-                                <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{activeMode.label}</p>
-                                <p className="font-mono text-[10px] text-muted-foreground">{activeMode.slug}</p>
+                                <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                                    {activeMode.label}
+                                </p>
+                                <p className="font-mono text-[10px] text-muted-foreground">
+                                    {activeMode.slug}
+                                </p>
                             </div>
                         </div>
                     )}
@@ -4979,9 +5824,11 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
                     <div className="space-y-3">
                         {Object.entries(grouped).map(([group, modes]) => (
                             <div key={group}>
-                                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{group}</p>
+                                <p className="mb-1.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                    {group}
+                                </p>
                                 <div className="space-y-1">
-                                    {modes.map(m => (
+                                    {modes.map((m) => (
                                         <label
                                             key={m.slug}
                                             className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-all ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${
@@ -4994,23 +5841,39 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
                                                 type="radio"
                                                 name="logger_mode"
                                                 value={m.slug}
-                                                checked={selectedMode === m.slug}
-                                                onChange={() => setSelectedMode(m.slug)}
+                                                checked={
+                                                    selectedMode === m.slug
+                                                }
+                                                onChange={() =>
+                                                    setSelectedMode(m.slug)
+                                                }
                                                 disabled={disabled}
                                                 className="sr-only"
                                             />
-                                            <div className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
-                                                selectedMode === m.slug ? 'border-primary' : 'border-muted-foreground/30'
-                                            }`}>
+                                            <div
+                                                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+                                                    selectedMode === m.slug
+                                                        ? 'border-primary'
+                                                        : 'border-muted-foreground/30'
+                                                }`}
+                                            >
                                                 {selectedMode === m.slug && (
                                                     <div className="h-2 w-2 rounded-full bg-primary" />
                                                 )}
                                             </div>
                                             <div className="flex-1">
-                                                <p className="text-sm font-medium">{m.label}</p>
-                                                {m.description && <p className="text-[11px] text-muted-foreground line-clamp-1">{m.description}</p>}
+                                                <p className="text-sm font-medium">
+                                                    {m.label}
+                                                </p>
+                                                {m.description && (
+                                                    <p className="line-clamp-1 text-[11px] text-muted-foreground">
+                                                        {m.description}
+                                                    </p>
+                                                )}
                                             </div>
-                                            <span className="font-mono text-[10px] text-muted-foreground">{m.slug}</span>
+                                            <span className="font-mono text-[10px] text-muted-foreground">
+                                                {m.slug}
+                                            </span>
                                         </label>
                                     ))}
                                 </div>
@@ -5021,7 +5884,8 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
                     {/* Action button */}
                     {phase === 'sending' ? (
                         <Button disabled className="gap-2">
-                            <Loader2 className="size-4 animate-spin" /> Mengirim ke perangkat...
+                            <Loader2 className="size-4 animate-spin" /> Mengirim
+                            ke perangkat...
                         </Button>
                     ) : phase === 'success' ? (
                         <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
@@ -5043,11 +5907,18 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
                     ) : (
                         <Button
                             className="gap-2"
-                            disabled={disabled || !isChanged || !logger.deviceIdentifier || logger.status === 'offline'}
+                            disabled={
+                                disabled ||
+                                !isChanged ||
+                                !logger.deviceIdentifier ||
+                                logger.status === 'offline'
+                            }
                             onClick={() => setConfirmOpen(true)}
                         >
                             <Radio className="size-4" />
-                            {isChanged ? `Set Mode ke ${selectedModeInfo?.label || selectedMode}` : 'Pilih mode baru'}
+                            {isChanged
+                                ? `Set Mode ke ${selectedModeInfo?.label || selectedMode}`
+                                : 'Pilih mode baru'}
                         </Button>
                     )}
                 </div>
@@ -5059,13 +5930,22 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
                     <AlertDialogHeader>
                         <AlertDialogTitle>Konfirmasi Set Mode</AlertDialogTitle>
                         <AlertDialogDescription>
-                            Ubah mode logger dari <strong>{activeMode?.label || '—'}</strong> ke <strong>{selectedModeInfo?.label || selectedMode}</strong>?
-                            Perintah akan dikirim ke perangkat.
+                            Ubah mode logger dari{' '}
+                            <strong>{activeMode?.label || '—'}</strong> ke{' '}
+                            <strong>
+                                {selectedModeInfo?.label || selectedMode}
+                            </strong>
+                            ? Perintah akan dikirim ke perangkat.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel>Batal</AlertDialogCancel>
-                        <AlertDialogAction onClick={handleSetMode} disabled={disabled}>Ya, Set Mode</AlertDialogAction>
+                        <AlertDialogAction
+                            onClick={handleSetMode}
+                            disabled={disabled}
+                        >
+                            Ya, Set Mode
+                        </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
@@ -5078,9 +5958,19 @@ function SetModeCard({ logger, disabled = false }: { logger: LoggerDetail; disab
 // =============================================================================
 type CalibPhase = 'idle' | 'sending' | 'success' | 'error';
 
-function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; disabled?: boolean }) {
-    const activeMode = logger.availableModes.find(m => m.slug === logger.loggerMode);
-    const fields = activeMode?.hasCalibration ? activeMode.calibrationFields ?? [] : [];
+function CalibrationCard({
+    logger,
+    disabled = false,
+}: {
+    logger: LoggerDetail;
+    disabled?: boolean;
+}) {
+    const activeMode = logger.availableModes.find(
+        (m) => m.slug === logger.loggerMode,
+    );
+    const fields = activeMode?.hasCalibration
+        ? (activeMode.calibrationFields ?? [])
+        : [];
     // ARR's "calibration" is really just source + sensor-type selection, so it uses setting-style
     // labels ("ARR Sensor" / "Apply Setting") instead of the calibration wording other modes use.
     const isArr = logger.loggerMode === 'ARR';
@@ -5093,18 +5983,25 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
 
     const [phase, setPhase] = useState<CalibPhase>('idle');
     const [message, setMessage] = useState('');
-    const [responseData, setResponseData] = useState<Record<string, number> | null>(null);
+    const [responseData, setResponseData] = useState<Record<
+        string,
+        number
+    > | null>(null);
     const [formValues, setFormValues] = useState<Record<string, string>>(() => {
         const initial: Record<string, string> = {};
         for (const f of fields) {
             const savedValue = logger.calibrationData?.[f.key]?.toString();
-            initial[f.key] = savedValue || (f.type === 'select' && f.options?.length === 1 ? f.options[0].value : '');
+            initial[f.key] =
+                savedValue ||
+                (f.type === 'select' && f.options?.length === 1
+                    ? f.options[0].value
+                    : '');
         }
         return initial;
     });
 
     function updateField(key: string, value: string) {
-        setFormValues(prev => ({ ...prev, [key]: value }));
+        setFormValues((prev) => ({ ...prev, [key]: value }));
     }
 
     // A 'sensor-source' field picks a REAL device sensor (like MAP_DATA), never a virtual/profile
@@ -5114,8 +6011,14 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
     // device query. The sync button next to Sumber Data triggers a cache-first read (fetches only
     // on a cache miss). The list falls back to DB sensors until then.
     const [liveSourceNames, setLiveSourceNames] = useState<string[]>(() => {
-        const cached = logger.deviceIdentifier ? getCachedSensorNames(logger.deviceIdentifier) : null;
-        return cached ? cached.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)) : [];
+        const cached = logger.deviceIdentifier
+            ? getCachedSensorNames(logger.deviceIdentifier)
+            : null;
+        return cached
+            ? cached
+                  .map((s) => s.nama)
+                  .filter((n) => n && !isVirtualSourceName(n))
+            : [];
     });
     const [sourceLoading, setSourceLoading] = useState(false);
 
@@ -5125,7 +6028,12 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
         if (!deviceId) return;
         return subscribeDeviceCache(() => {
             const cached = getCachedSensorNames(deviceId);
-            if (cached) setLiveSourceNames(cached.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)));
+            if (cached)
+                setLiveSourceNames(
+                    cached
+                        .map((s) => s.nama)
+                        .filter((n) => n && !isVirtualSourceName(n)),
+                );
         });
     }, [logger.deviceIdentifier]);
 
@@ -5135,9 +6043,16 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
         setSourceLoading(true);
         try {
             // Cache-first — reuses names already read elsewhere; only hits the device on a miss.
-            const names = await fetchSensorNames(logger.deviceIdentifier, false);
+            const names = await fetchSensorNames(
+                logger.deviceIdentifier,
+                false,
+            );
             if (names) {
-                setLiveSourceNames(names.map(s => s.nama).filter(n => n && !isVirtualSourceName(n)));
+                setLiveSourceNames(
+                    names
+                        .map((s) => s.nama)
+                        .filter((n) => n && !isVirtualSourceName(n)),
+                );
             }
         } catch {
             /* ignore — the dropdown still shows the DB sensors + saved value */
@@ -5146,28 +6061,45 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
         }
     }
 
-    const sourceNames = Array.from(new Set([
-        ...logger.sensors.map(s => s.name).filter(n => n && !isVirtualSourceName(n)),
-        ...liveSourceNames,
-    ]));
+    const sourceNames = Array.from(
+        new Set([
+            ...logger.sensors
+                .map((s) => s.name)
+                .filter((n) => n && !isVirtualSourceName(n)),
+            ...liveSourceNames,
+        ]),
+    );
 
     // Read the device's current settings ({"AWLR_TD":{"cmd":"GET"}}) and fill the form. The full
     // response (incl. sensor_awal) is shown in the box below. NOT automatic — the user pulls it
     // via the card's Sync button so entering the mode sends no GET.
-    const [deviceCalib, setDeviceCalib] = useState<Record<string, number | string> | null>(null);
+    const [deviceCalib, setDeviceCalib] = useState<Record<
+        string,
+        number | string
+    > | null>(null);
     const [calibLoading, setCalibLoading] = useState(false);
 
     async function loadDeviceCalib() {
         if (disabled) return;
-        if (!logger.deviceIdentifier || logger.status === 'offline' || calibLoading) return;
+        if (
+            !logger.deviceIdentifier ||
+            logger.status === 'offline' ||
+            calibLoading
+        )
+            return;
         setCalibLoading(true);
         try {
-            const r = await apiFetch('/api/mqtt/calibration/get', { id_logger: logger.deviceIdentifier });
-            const data: { success: boolean; data?: Record<string, number | string> } = await r.json();
+            const r = await apiFetch('/api/mqtt/calibration/get', {
+                id_logger: logger.deviceIdentifier,
+            });
+            const data: {
+                success: boolean;
+                data?: Record<string, number | string>;
+            } = await r.json();
             if (data.success && data.data) {
                 const dd = data.data;
                 setDeviceCalib(dd);
-                setFormValues(prev => {
+                setFormValues((prev) => {
                     const next = { ...prev };
                     for (const [k, v] of Object.entries(dd)) {
                         if (k in prev) next[k] = String(v); // prev holds exactly the field keys
@@ -5182,9 +6114,10 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
         }
     }
 
-    const allFilled = fields.every(f => {
+    const allFilled = fields.every((f) => {
         const val = formValues[f.key];
-        if (f.type === 'select' || f.type === 'sensor-source') return val !== '';
+        if (f.type === 'select' || f.type === 'sensor-source')
+            return val !== '';
         return val !== '' && !isNaN(parseFloat(val));
     });
 
@@ -5202,7 +6135,10 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
                 id_logger: logger.deviceIdentifier!,
             };
             for (const f of fields) {
-                body[f.key] = f.type === 'number' ? parseFloat(formValues[f.key]) : formValues[f.key];
+                body[f.key] =
+                    f.type === 'number'
+                        ? parseFloat(formValues[f.key])
+                        : formValues[f.key];
             }
 
             const res = await apiFetch('/api/mqtt/calibration/set', body);
@@ -5228,25 +6164,42 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
                 <div className="flex items-start justify-between gap-3">
                     <div>
                         <CardTitle className="flex items-center gap-2">
-                            <SlidersHorizontal className="size-5" /> {isArr ? 'ARR Sensor' : isAwlrUs ? `${activeMode.label} Sensor` : isGnss ? 'GNSS Channel' : `Kalibrasi ${activeMode.label}`}
+                            <SlidersHorizontal className="size-5" />{' '}
+                            {isArr
+                                ? 'ARR Sensor'
+                                : isAwlrUs
+                                  ? `${activeMode.label} Sensor`
+                                  : isGnss
+                                    ? 'GNSS Channel'
+                                    : `Kalibrasi ${activeMode.label}`}
                         </CardTitle>
                         <CardDescription>
-                            {isGnss
-                                ? 'Channel RS232 untuk receiver GNSS'
-                                : logger.calibratedAt
-                                    ? <>Terakhir kalibrasi: {logger.calibratedAt}</>
-                                    : 'Belum pernah dikalibrasi'
-                            }
+                            {isGnss ? (
+                                'Channel RS232 untuk receiver GNSS'
+                            ) : logger.calibratedAt ? (
+                                <>Terakhir kalibrasi: {logger.calibratedAt}</>
+                            ) : (
+                                'Belum pernah dikalibrasi'
+                            )}
                         </CardDescription>
                     </div>
                     <Button
                         size="sm"
                         variant="outline"
                         className="gap-1.5"
-                        disabled={disabled || !logger.deviceIdentifier || logger.status === 'offline' || calibLoading || phase === 'sending'}
+                        disabled={
+                            disabled ||
+                            !logger.deviceIdentifier ||
+                            logger.status === 'offline' ||
+                            calibLoading ||
+                            phase === 'sending'
+                        }
                         onClick={loadDeviceCalib}
                     >
-                        <RefreshCw className={`size-4 ${calibLoading ? 'animate-spin' : ''}`} /> Sync
+                        <RefreshCw
+                            className={`size-4 ${calibLoading ? 'animate-spin' : ''}`}
+                        />{' '}
+                        Sync
                     </Button>
                 </div>
             </CardHeader>
@@ -5254,25 +6207,39 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
                 <div className="grid gap-4">
                     {calibLoading && !deviceCalib && (
                         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                            <Loader2 className="size-3.5 animate-spin" /> Memuat setting dari perangkat…
+                            <Loader2 className="size-3.5 animate-spin" /> Memuat
+                            setting dari perangkat…
                         </p>
                     )}
 
                     {/* Current settings — live from the device (GET), falling back to the last saved data. */}
                     {(() => {
                         const calib = deviceCalib ?? logger.calibrationData;
-                        if (!calib || Object.keys(calib).length === 0) return null;
+                        if (!calib || Object.keys(calib).length === 0)
+                            return null;
                         return (
                             <div className="rounded-lg border bg-muted/30 p-3">
-                                <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Data Kalibrasi Terakhir</p>
+                                <p className="mb-2 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                                    Data Kalibrasi Terakhir
+                                </p>
                                 <div className="grid grid-cols-2 gap-2">
                                     {Object.entries(calib).map(([key, val]) => {
-                                        const fieldDef = fields.find(f => f.key === key);
+                                        const fieldDef = fields.find(
+                                            (f) => f.key === key,
+                                        );
                                         return (
-                                            <div key={key} className="rounded-md bg-background px-3 py-1.5">
-                                                <p className="text-[10px] text-muted-foreground">{fieldDef?.label || key}</p>
+                                            <div
+                                                key={key}
+                                                className="rounded-md bg-background px-3 py-1.5"
+                                            >
+                                                <p className="text-[10px] text-muted-foreground">
+                                                    {fieldDef?.label || key}
+                                                </p>
                                                 <p className="font-mono text-sm font-medium">
-                                                    {val} <span className="text-xs text-muted-foreground">{fieldDef?.unit || ''}</span>
+                                                    {val}{' '}
+                                                    <span className="text-xs text-muted-foreground">
+                                                        {fieldDef?.unit || ''}
+                                                    </span>
                                                 </p>
                                             </div>
                                         );
@@ -5284,29 +6251,67 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
 
                     {/* Calibration form */}
                     <div className="space-y-3">
-                        {fields.map(f => (
+                        {fields.map((f) => (
                             <div key={f.key} className="grid gap-1.5">
-                                <Label htmlFor={`calib_${f.key}`} className="text-sm">
-                                    {f.label} {f.unit && <span className="text-xs text-muted-foreground">({f.unit})</span>}
+                                <Label
+                                    htmlFor={`calib_${f.key}`}
+                                    className="text-sm"
+                                >
+                                    {f.label}{' '}
+                                    {f.unit && (
+                                        <span className="text-xs text-muted-foreground">
+                                            ({f.unit})
+                                        </span>
+                                    )}
                                 </Label>
                                 {f.type === 'sensor-source' ? (
                                     <div className="flex items-center gap-2">
                                         <Select
                                             value={formValues[f.key]}
-                                            onValueChange={(v) => updateField(f.key, v)}
-                                            disabled={disabled || phase === 'sending'}
+                                            onValueChange={(v) =>
+                                                updateField(f.key, v)
+                                            }
+                                            disabled={
+                                                disabled || phase === 'sending'
+                                            }
                                         >
-                                            <SelectTrigger id={`calib_${f.key}`} className="flex-1">
-                                                <SelectValue placeholder={sourceLoading ? 'Memuat sensor…' : 'Pilih sumber sensor'} />
+                                            <SelectTrigger
+                                                id={`calib_${f.key}`}
+                                                className="flex-1"
+                                            >
+                                                <SelectValue
+                                                    placeholder={
+                                                        sourceLoading
+                                                            ? 'Memuat sensor…'
+                                                            : 'Pilih sumber sensor'
+                                                    }
+                                                />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {sourceNames.map(n => (
-                                                    <SelectItem key={n} value={n}>{n}</SelectItem>
+                                                {sourceNames.map((n) => (
+                                                    <SelectItem
+                                                        key={n}
+                                                        value={n}
+                                                    >
+                                                        {n}
+                                                    </SelectItem>
                                                 ))}
                                                 {/* Keep a saved source selectable even if the device no longer reports it. */}
-                                                {formValues[f.key] && !sourceNames.includes(formValues[f.key]) && (
-                                                    <SelectItem value={formValues[f.key]}>{formValues[f.key]} (tidak terdaftar)</SelectItem>
-                                                )}
+                                                {formValues[f.key] &&
+                                                    !sourceNames.includes(
+                                                        formValues[f.key],
+                                                    ) && (
+                                                        <SelectItem
+                                                            value={
+                                                                formValues[
+                                                                    f.key
+                                                                ]
+                                                            }
+                                                        >
+                                                            {formValues[f.key]}{' '}
+                                                            (tidak terdaftar)
+                                                        </SelectItem>
+                                                    )}
                                             </SelectContent>
                                         </Select>
                                         {/* Pull live sensor names from the device on demand (GET_NAME). */}
@@ -5316,27 +6321,51 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
                                             size="icon"
                                             className="shrink-0"
                                             title="Ambil nama sensor dari perangkat"
-                                            disabled={disabled || sourceLoading || !logger.deviceIdentifier || logger.status === 'offline' || phase === 'sending'}
+                                            disabled={
+                                                disabled ||
+                                                sourceLoading ||
+                                                !logger.deviceIdentifier ||
+                                                logger.status === 'offline' ||
+                                                phase === 'sending'
+                                            }
                                             onClick={loadSourceNames}
                                         >
-                                            <RefreshCw className={`size-4 ${sourceLoading ? 'animate-spin' : ''}`} />
+                                            <RefreshCw
+                                                className={`size-4 ${sourceLoading ? 'animate-spin' : ''}`}
+                                            />
                                         </Button>
                                     </div>
                                 ) : f.type === 'select' && f.options ? (
                                     <Select
                                         value={formValues[f.key]}
-                                        onValueChange={(v) => updateField(f.key, v)}
-                                        disabled={disabled || phase === 'sending'}
+                                        onValueChange={(v) =>
+                                            updateField(f.key, v)
+                                        }
+                                        disabled={
+                                            disabled || phase === 'sending'
+                                        }
                                     >
                                         <SelectTrigger id={`calib_${f.key}`}>
-                                            <SelectValue placeholder={`Pilih ${f.label.toLowerCase()}`} />
+                                            <SelectValue
+                                                placeholder={`Pilih ${f.label.toLowerCase()}`}
+                                            />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {(isGnss && f.key === 'ch' && !gnssSupportsCh2
-                                                ? f.options.filter(opt => opt.value !== '2')
+                                            {(isGnss &&
+                                            f.key === 'ch' &&
+                                            !gnssSupportsCh2
+                                                ? f.options.filter(
+                                                      (opt) =>
+                                                          opt.value !== '2',
+                                                  )
                                                 : f.options
-                                            ).map(opt => (
-                                                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                                            ).map((opt) => (
+                                                <SelectItem
+                                                    key={opt.value}
+                                                    value={opt.value}
+                                                >
+                                                    {opt.label}
+                                                </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
@@ -5347,9 +6376,13 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
                                         min={f.min ?? 0}
                                         step={f.step ?? 0.01}
                                         value={formValues[f.key]}
-                                        onChange={(e) => updateField(f.key, e.target.value)}
+                                        onChange={(e) =>
+                                            updateField(f.key, e.target.value)
+                                        }
                                         placeholder={`Masukkan ${f.label.toLowerCase()}`}
-                                        disabled={disabled || phase === 'sending'}
+                                        disabled={
+                                            disabled || phase === 'sending'
+                                        }
                                     />
                                 )}
                             </div>
@@ -5359,28 +6392,46 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
                     {/* Action / Result */}
                     {phase === 'sending' ? (
                         <Button disabled className="gap-2">
-                            <Loader2 className="size-4 animate-spin" /> Mengirim kalibrasi...
+                            <Loader2 className="size-4 animate-spin" /> Mengirim
+                            kalibrasi...
                         </Button>
                     ) : phase === 'success' ? (
                         <div className="space-y-3">
                             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
-                                <CheckCircle2 className="size-4 shrink-0" /> {message}
+                                <CheckCircle2 className="size-4 shrink-0" />{' '}
+                                {message}
                             </div>
                             {responseData && (
                                 <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
-                                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Response dari Perangkat</p>
+                                    <p className="mb-2 text-[10px] font-semibold tracking-wider text-emerald-600 uppercase dark:text-emerald-400">
+                                        Response dari Perangkat
+                                    </p>
                                     <div className="grid grid-cols-2 gap-2">
-                                        {Object.entries(responseData).map(([key, val]) => {
-                                            const fieldDef = fields.find(f => f.key === key);
-                                            return (
-                                                <div key={key} className="rounded-md bg-background/50 px-3 py-1.5">
-                                                    <p className="text-[10px] text-muted-foreground">{fieldDef?.label || key}</p>
-                                                    <p className="font-mono text-sm font-bold text-emerald-700 dark:text-emerald-400">
-                                                        {val} <span className="text-xs font-normal">{fieldDef?.unit || ''}</span>
-                                                    </p>
-                                                </div>
-                                            );
-                                        })}
+                                        {Object.entries(responseData).map(
+                                            ([key, val]) => {
+                                                const fieldDef = fields.find(
+                                                    (f) => f.key === key,
+                                                );
+                                                return (
+                                                    <div
+                                                        key={key}
+                                                        className="rounded-md bg-background/50 px-3 py-1.5"
+                                                    >
+                                                        <p className="text-[10px] text-muted-foreground">
+                                                            {fieldDef?.label ||
+                                                                key}
+                                                        </p>
+                                                        <p className="font-mono text-sm font-bold text-emerald-700 dark:text-emerald-400">
+                                                            {val}{' '}
+                                                            <span className="text-xs font-normal">
+                                                                {fieldDef?.unit ||
+                                                                    ''}
+                                                            </span>
+                                                        </p>
+                                                    </div>
+                                                );
+                                            },
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -5388,25 +6439,41 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
                     ) : phase === 'error' ? (
                         <div className="space-y-2">
                             <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-700 dark:text-red-400">
-                                <AlertCircle className="mt-0.5 size-4 shrink-0" /> {message}
+                                <AlertCircle className="mt-0.5 size-4 shrink-0" />{' '}
+                                {message}
                             </div>
-                            <Button variant="outline" className="gap-2" onClick={() => setPhase('idle')}>
+                            <Button
+                                variant="outline"
+                                className="gap-2"
+                                onClick={() => setPhase('idle')}
+                            >
                                 Coba Lagi
                             </Button>
                         </div>
                     ) : (
                         <Button
                             className="gap-2"
-                            disabled={disabled || !allFilled || !logger.deviceIdentifier || logger.status === 'offline'}
+                            disabled={
+                                disabled ||
+                                !allFilled ||
+                                !logger.deviceIdentifier ||
+                                logger.status === 'offline'
+                            }
                             onClick={handleCalibrate}
                         >
-                            <SlidersHorizontal className="size-4" /> {isArr ? 'Apply Setting' : isGnss ? 'Set Channel' : 'Kirim Kalibrasi'}
+                            <SlidersHorizontal className="size-4" />{' '}
+                            {isArr
+                                ? 'Apply Setting'
+                                : isGnss
+                                  ? 'Set Channel'
+                                  : 'Kirim Kalibrasi'}
                         </Button>
                     )}
 
                     {logger.status === 'offline' && (
                         <p className="flex items-center gap-1.5 text-xs text-amber-600">
-                            <AlertCircle className="size-3.5" /> Perangkat offline — kalibrasi tidak dapat dilakukan
+                            <AlertCircle className="size-3.5" /> Perangkat
+                            offline — kalibrasi tidak dapat dilakukan
                         </p>
                     )}
                 </div>
@@ -5421,50 +6488,64 @@ function CalibrationCard({ logger, disabled = false }: { logger: LoggerDetail; d
 function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
     const [open, setOpen] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [notification, setNotification] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [notification, setNotification] = useState<{
+        type: 'success' | 'error';
+        text: string;
+    } | null>(null);
 
     function handleAssign(projectId: number | null) {
         setSaving(true);
         setNotification(null);
         const targetName = projectId
-            ? logger.availableProjects.find(p => p.id === projectId)?.name || 'project'
+            ? logger.availableProjects.find((p) => p.id === projectId)?.name ||
+              'project'
             : null;
 
-        router.put(`/loggers/${logger.id}/project`, { project_id: projectId }, {
-            preserveScroll: true,
-            onSuccess: () => {
-                setNotification({
-                    type: 'success',
-                    text: targetName
-                        ? `Berhasil assign ke ${targetName}`
-                        : 'Berhasil dihapus dari project',
-                });
-                setTimeout(() => setNotification(null), 3000);
+        router.put(
+            `/loggers/${logger.id}/project`,
+            { project_id: projectId },
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    setNotification({
+                        type: 'success',
+                        text: targetName
+                            ? `Berhasil assign ke ${targetName}`
+                            : 'Berhasil dihapus dari project',
+                    });
+                    setTimeout(() => setNotification(null), 3000);
+                },
+                onError: () => {
+                    setNotification({
+                        type: 'error',
+                        text: 'Gagal mengubah project',
+                    });
+                    setTimeout(() => setNotification(null), 4000);
+                },
+                onFinish: () => {
+                    setSaving(false);
+                    setOpen(false);
+                },
             },
-            onError: () => {
-                setNotification({ type: 'error', text: 'Gagal mengubah project' });
-                setTimeout(() => setNotification(null), 4000);
-            },
-            onFinish: () => {
-                setSaving(false);
-                setOpen(false);
-            },
-        });
+        );
     }
 
     return (
         <div className="relative">
             {/* Notification toast */}
             {notification && (
-                <div className={`absolute right-0 top-full z-[60] mt-1 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs shadow-lg animate-in fade-in slide-in-from-top-2 duration-200 ${
-                    notification.type === 'success'
-                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-                        : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'
-                }`}>
-                    {notification.type === 'success'
-                        ? <CheckCircle2 className="size-3.5 shrink-0" />
-                        : <XCircle className="size-3.5 shrink-0" />
-                    }
+                <div
+                    className={`absolute top-full right-0 z-[60] mt-1 flex animate-in items-center gap-2 rounded-lg border px-3 py-2 text-xs shadow-lg duration-200 fade-in slide-in-from-top-2 ${
+                        notification.type === 'success'
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                            : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'
+                    }`}
+                >
+                    {notification.type === 'success' ? (
+                        <CheckCircle2 className="size-3.5 shrink-0" />
+                    ) : (
+                        <XCircle className="size-3.5 shrink-0" />
+                    )}
                     {notification.text}
                 </div>
             )}
@@ -5475,19 +6556,24 @@ function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
                 onClick={() => setOpen(!open)}
                 disabled={saving}
             >
-                {saving ? <Loader2 className="size-4 animate-spin" /> : <FolderKanban className="size-4" />}
+                {saving ? (
+                    <Loader2 className="size-4 animate-spin" />
+                ) : (
+                    <FolderKanban className="size-4" />
+                )}
                 {logger.projectName || 'Assign Project'}
                 <ChevronDown className="size-3 text-muted-foreground" />
             </Button>
             {open && !notification && (
-                <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border bg-popover p-1 shadow-lg animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="absolute top-full right-0 z-50 mt-1 w-56 animate-in rounded-lg border bg-popover p-1 shadow-lg duration-150 fade-in slide-in-from-top-2">
                     {logger.projectId && (
                         <>
                             <button
-                                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs hover:bg-muted transition-colors text-red-500"
+                                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs text-red-500 transition-colors hover:bg-muted"
                                 onClick={() => handleAssign(null)}
                             >
-                                <XCircle className="size-3.5" /> Hapus dari Project
+                                <XCircle className="size-3.5" /> Hapus dari
+                                Project
                             </button>
                             <div className="my-1 h-px bg-border" />
                         </>
@@ -5495,23 +6581,37 @@ function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
                     {logger.availableProjects.length === 0 ? (
                         <p className="px-3 py-4 text-center text-xs text-muted-foreground">
                             Belum ada project.{' '}
-                            <Link href="/projects" className="text-primary underline">Buat project</Link>
+                            <Link
+                                href="/projects"
+                                className="text-primary underline"
+                            >
+                                Buat project
+                            </Link>
                         </p>
                     ) : (
-                        logger.availableProjects.map(p => (
+                        logger.availableProjects.map((p) => (
                             <button
                                 key={p.id}
                                 className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs transition-colors ${
                                     logger.projectId === p.id
-                                        ? 'bg-primary/10 text-primary font-medium'
+                                        ? 'bg-primary/10 font-medium text-primary'
                                         : 'hover:bg-muted'
                                 }`}
                                 onClick={() => handleAssign(p.id)}
                             >
-                                <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                                <span
+                                    className="h-3 w-3 shrink-0 rounded-full"
+                                    style={{ backgroundColor: p.color }}
+                                />
                                 <span className="truncate">{p.name}</span>
-                                {p.code && <span className="ml-auto font-mono text-[10px] text-muted-foreground">{p.code}</span>}
-                                {logger.projectId === p.id && <Check className="ml-auto size-3.5 text-primary" />}
+                                {p.code && (
+                                    <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                                        {p.code}
+                                    </span>
+                                )}
+                                {logger.projectId === p.id && (
+                                    <Check className="ml-auto size-3.5 text-primary" />
+                                )}
                             </button>
                         ))
                     )}
@@ -5526,7 +6626,15 @@ function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
 // =============================================================================
 type WizardPhase = 'select' | 'sending' | 'success' | 'error';
 
-function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; open: boolean; onClose: () => void }) {
+function QuickSetupWizard({
+    logger,
+    open,
+    onClose,
+}: {
+    logger: LoggerDetail;
+    open: boolean;
+    onClose: () => void;
+}) {
     const [selectedMode, setSelectedMode] = useState<string>('');
     const [phase, setPhase] = useState<WizardPhase>('select');
     const [message, setMessage] = useState('');
@@ -5539,7 +6647,7 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
         grouped[m.group].push(m);
     }
 
-    const selectedModeInfo = allowedModes.find(m => m.slug === selectedMode);
+    const selectedModeInfo = allowedModes.find((m) => m.slug === selectedMode);
 
     async function handleSetMode() {
         if (!selectedMode) return;
@@ -5553,7 +6661,10 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
             const data = await res.json();
             if (data.success) {
                 setPhase('success');
-                setMessage(data.message || `Mode berhasil diubah ke ${selectedModeInfo?.label || selectedMode}`);
+                setMessage(
+                    data.message ||
+                        `Mode berhasil diubah ke ${selectedModeInfo?.label || selectedMode}`,
+                );
                 setTimeout(() => router.reload(), 1500);
             } else {
                 setPhase('error');
@@ -5576,33 +6687,45 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
     }
 
     return (
-        <Dialog open={open} onOpenChange={(v) => { if (!v) handleSkip(); }}>
-            <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col p-0">
+        <Dialog
+            open={open}
+            onOpenChange={(v) => {
+                if (!v) handleSkip();
+            }}
+        >
+            <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden p-0 sm:max-w-lg">
                 {/* Header */}
                 <div className="bg-gradient-to-br from-primary/10 via-primary/5 to-transparent px-6 pt-6 pb-4">
-                    <div className="flex items-center gap-3 mb-2">
+                    <div className="mb-2 flex items-center gap-3">
                         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/20">
                             <Settings className="size-5 text-primary" />
                         </div>
                         <div>
-                            <DialogTitle className="text-lg">Quick Setup</DialogTitle>
-                            <DialogDescription className="text-xs">{logger.name}</DialogDescription>
+                            <DialogTitle className="text-lg">
+                                Quick Setup
+                            </DialogTitle>
+                            <DialogDescription className="text-xs">
+                                {logger.name}
+                            </DialogDescription>
                         </div>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                        Logger ini belum dikonfigurasi. Pilih mode operasi untuk memulai.
+                        Logger ini belum dikonfigurasi. Pilih mode operasi untuk
+                        memulai.
                     </p>
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+                <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
                     {phase === 'select' && (
                         <div className="space-y-4">
                             {Object.entries(grouped).map(([group, modes]) => (
                                 <div key={group}>
-                                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{group}</p>
+                                    <p className="mb-2 text-[10px] font-semibold tracking-widest text-muted-foreground uppercase">
+                                        {group}
+                                    </p>
                                     <div className="space-y-1.5">
-                                        {modes.map(m => (
+                                        {modes.map((m) => (
                                             <label
                                                 key={m.slug}
                                                 className={`flex cursor-pointer items-start gap-3 rounded-xl border-2 px-4 py-3 transition-all ${
@@ -5615,27 +6738,45 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
                                                     type="radio"
                                                     name="wizard_mode"
                                                     value={m.slug}
-                                                    checked={selectedMode === m.slug}
-                                                    onChange={() => setSelectedMode(m.slug)}
+                                                    checked={
+                                                        selectedMode === m.slug
+                                                    }
+                                                    onChange={() =>
+                                                        setSelectedMode(m.slug)
+                                                    }
                                                     className="sr-only"
                                                 />
-                                                <div className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
-                                                    selectedMode === m.slug ? 'border-primary bg-primary' : 'border-muted-foreground/30'
-                                                }`}>
-                                                    {selectedMode === m.slug && (
+                                                <div
+                                                    className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+                                                        selectedMode === m.slug
+                                                            ? 'border-primary bg-primary'
+                                                            : 'border-muted-foreground/30'
+                                                    }`}
+                                                >
+                                                    {selectedMode ===
+                                                        m.slug && (
                                                         <Check className="size-3 text-primary-foreground" />
                                                     )}
                                                 </div>
-                                                <div className="flex-1 min-w-0">
+                                                <div className="min-w-0 flex-1">
                                                     <div className="flex items-center gap-2">
-                                                        <p className="text-sm font-semibold">{m.label}</p>
-                                                        <span className="font-mono text-[10px] text-muted-foreground">{m.slug}</span>
+                                                        <p className="text-sm font-semibold">
+                                                            {m.label}
+                                                        </p>
+                                                        <span className="font-mono text-[10px] text-muted-foreground">
+                                                            {m.slug}
+                                                        </span>
                                                     </div>
                                                     {m.description && (
-                                                        <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{m.description}</p>
+                                                        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                                                            {m.description}
+                                                        </p>
                                                     )}
                                                     {m.hasCalibration && (
-                                                        <Badge variant="secondary" className="mt-1.5 gap-1 text-[10px]">
+                                                        <Badge
+                                                            variant="secondary"
+                                                            className="mt-1.5 gap-1 text-[10px]"
+                                                        >
                                                             <SlidersHorizontal className="size-3" />
                                                             Memerlukan kalibrasi
                                                         </Badge>
@@ -5647,7 +6788,7 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
                                 </div>
                             ))}
 
-                            <div className="flex items-start gap-2 rounded-lg bg-blue-500/5 border border-blue-500/20 px-3 py-2">
+                            <div className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2">
                                 <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-blue-500" />
                                 <p className="text-[11px] text-blue-700 dark:text-blue-400">
                                     Mode bisa diubah kapan saja di tab Mode.
@@ -5657,30 +6798,45 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
                     )}
 
                     {phase === 'sending' && (
-                        <div className="flex flex-col items-center justify-center py-12 gap-3">
+                        <div className="flex flex-col items-center justify-center gap-3 py-12">
                             <Loader2 className="size-8 animate-spin text-primary" />
-                            <p className="text-sm text-muted-foreground">Mengirim ke perangkat...</p>
-                            <p className="font-mono text-xs text-muted-foreground">{selectedModeInfo?.label || selectedMode}</p>
+                            <p className="text-sm text-muted-foreground">
+                                Mengirim ke perangkat...
+                            </p>
+                            <p className="font-mono text-xs text-muted-foreground">
+                                {selectedModeInfo?.label || selectedMode}
+                            </p>
                         </div>
                     )}
 
                     {phase === 'success' && (
-                        <div className="flex flex-col items-center justify-center py-12 gap-3">
+                        <div className="flex flex-col items-center justify-center gap-3 py-12">
                             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
                                 <CheckCircle2 className="size-7 text-emerald-500" />
                             </div>
-                            <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{message}</p>
-                            <p className="text-xs text-muted-foreground">Halaman akan diperbarui...</p>
+                            <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                                {message}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                                Halaman akan diperbarui...
+                            </p>
                         </div>
                     )}
 
                     {phase === 'error' && (
-                        <div className="flex flex-col items-center justify-center py-12 gap-3">
+                        <div className="flex flex-col items-center justify-center gap-3 py-12">
                             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10">
                                 <XCircle className="size-7 text-red-500" />
                             </div>
-                            <p className="text-sm font-medium text-red-700 dark:text-red-400">{message}</p>
-                            <Button variant="outline" size="sm" className="mt-2 gap-1.5" onClick={handleRetry}>
+                            <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                                {message}
+                            </p>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="mt-2 gap-1.5"
+                                onClick={handleRetry}
+                            >
                                 <RefreshCw className="size-3.5" /> Coba Lagi
                             </Button>
                         </div>
@@ -5689,13 +6845,20 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
 
                 {/* Footer */}
                 {phase === 'select' && (
-                    <div className="border-t px-6 py-4 flex items-center justify-between">
-                        <Button variant="ghost" size="sm" onClick={handleSkip} className="text-muted-foreground">
+                    <div className="flex items-center justify-between border-t px-6 py-4">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleSkip}
+                            className="text-muted-foreground"
+                        >
                             Lewati untuk sekarang
                         </Button>
                         <Button
                             className="gap-2"
-                            disabled={!selectedMode || logger.status === 'offline'}
+                            disabled={
+                                !selectedMode || logger.status === 'offline'
+                            }
                             onClick={handleSetMode}
                         >
                             Set Mode <ChevronRight className="size-4" />
@@ -5711,130 +6874,514 @@ function QuickSetupWizard({ logger, open, onClose }: { logger: LoggerDetail; ope
 // Health Diagnostics Card
 // =============================================================================
 
-const CATEGORY_CONFIG: Record<string, { icon: typeof Battery; color: string; bg: string }> = {
-    power:        { icon: Battery,       color: 'text-amber-500',   bg: 'bg-amber-500/10' },
-    connectivity: { icon: Signal,        color: 'text-blue-500',    bg: 'bg-blue-500/10' },
-    environment:  { icon: Thermometer,   color: 'text-red-500',     bg: 'bg-red-500/10' },
-    device:       { icon: Settings,      color: 'text-violet-500',  bg: 'bg-violet-500/10' },
+const CATEGORY_CONFIG: Record<
+    string,
+    { icon: typeof Battery; color: string; bg: string }
+> = {
+    power: { icon: Battery, color: 'text-amber-500', bg: 'bg-amber-500/10' },
+    connectivity: {
+        icon: Signal,
+        color: 'text-blue-500',
+        bg: 'bg-blue-500/10',
+    },
+    environment: {
+        icon: Thermometer,
+        color: 'text-red-500',
+        bg: 'bg-red-500/10',
+    },
+    device: {
+        icon: Settings,
+        color: 'text-violet-500',
+        bg: 'bg-violet-500/10',
+    },
 };
 
-function HealthDiagnosticsCard({ diagnostics }: { diagnostics: DiagnosticsResult }) {
-    const allChecks = Object.values(diagnostics.categories).flatMap(c => c.checks);
-    const failedChecks = allChecks.filter(c => !c.passed);
+function InternalSensorsPanel({ logger }: { logger: LoggerDetail }) {
+    const { t } = useTranslation();
+
+    return (
+        <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-3">
+                <div className="flex items-center gap-3 rounded-lg border p-4">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10">
+                        <Battery className="size-5 text-amber-500" />
+                    </div>
+                    <div>
+                        <p className="text-xs text-muted-foreground">
+                            {t('loggerDetail.battery')}
+                        </p>
+                        <p className="font-mono text-lg font-bold">
+                            {logger.battery ? `${logger.battery}` : '—'}
+                            {logger.battery && (
+                                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                    V
+                                </span>
+                            )}
+                        </p>
+                    </div>
+                </div>
+                <div className="flex items-center gap-3 rounded-lg border p-4">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
+                        <Thermometer className="size-5 text-red-500" />
+                    </div>
+                    <div>
+                        <p className="text-xs text-muted-foreground">
+                            {t('loggerDetail.temperature')}
+                        </p>
+                        <p className="font-mono text-lg font-bold">
+                            {logger.temperature
+                                ? `${logger.temperature}`
+                                : '—'}
+                            {logger.temperature && (
+                                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                    °C
+                                </span>
+                            )}
+                        </p>
+                    </div>
+                </div>
+                <div className="flex items-center gap-3 rounded-lg border p-4">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-500/10">
+                        <Droplets className="size-5 text-blue-500" />
+                    </div>
+                    <div>
+                        <p className="text-xs text-muted-foreground">
+                            {t('loggerDetail.humidity')}
+                        </p>
+                        <p className="font-mono text-lg font-bold">
+                            {logger.humidity ? `${logger.humidity}` : '—'}
+                            {logger.humidity && (
+                                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                    %
+                                </span>
+                            )}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            {logger.lastConnected && (
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Clock className="size-3" />
+                    Last updated: {logger.lastConnected}
+                </p>
+            )}
+        </div>
+    );
+}
+
+function LoggerConditionCard({
+    dataHealth,
+    diagnostics,
+    logger,
+}: {
+    dataHealth: DataHealthSummary;
+    diagnostics: DiagnosticsResult;
+    logger: LoggerDetail;
+}) {
+    const { t } = useTranslation();
+    const [healthView, setHealthView] = useState<
+        'data' | 'forwarding' | 'internal' | 'diagnostics'
+    >('internal');
+    const forwardingFailed = dataHealth.forwarding?.failed ?? 0;
+    const forwardingPending = dataHealth.forwarding?.neverAttempted ?? 0;
+    const hasForwarding = dataHealth.forwarding !== null;
+    const hasMissingLoggerData = dataHealth.missing > 0;
+    const dataStatus =
+        hasMissingLoggerData
+            ? dataHealth.status === 'critical'
+                ? 'critical'
+                : 'warning'
+            : 'healthy';
+    const forwardingStatus = !hasForwarding
+        ? 'healthy'
+        : forwardingFailed > 0 || forwardingPending > 0
+          ? 'warning'
+          : 'healthy';
+    const currentStatus =
+        healthView === 'data'
+            ? dataStatus
+            : healthView === 'forwarding'
+              ? forwardingStatus
+              : healthView === 'diagnostics'
+                ? diagnostics.status
+                : 'healthy';
+    const hasProblem = currentStatus !== 'healthy';
+    const statusLabel =
+        currentStatus === 'healthy'
+            ? t('loggerDetail.logger_condition_status_normal')
+            : currentStatus === 'critical'
+              ? t('loggerDetail.logger_condition_status_critical')
+              : t('loggerDetail.logger_condition_status_warning');
+    const tone =
+        currentStatus === 'healthy'
+            ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+            : currentStatus === 'critical'
+              ? 'border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-400'
+              : 'border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400';
+    const activeSummary =
+        healthView === 'data'
+            ? dataHealth.missing > 0
+                ? t('loggerDetail.logger_condition_missing_summary', {
+                      count: dataHealth.missing,
+                  })
+                : t('loggerDetail.logger_condition_data_complete')
+            : !hasForwarding
+              ? t('loggerDetail.logger_condition_no_forwarding')
+              : forwardingFailed > 0
+                ? t('loggerDetail.logger_condition_forwarding_failed', {
+                      count: forwardingFailed,
+                  })
+                : forwardingPending > 0
+                  ? t('loggerDetail.logger_condition_forwarding_pending', {
+                        count: forwardingPending,
+                    })
+                  : t('loggerDetail.logger_condition_forwarding_normal');
+    const activeDescription =
+        healthView === 'data'
+            ? t('loggerDetail.logger_condition_data_desc', {
+                  present: dataHealth.present,
+                  expected: dataHealth.expected,
+                  completeness: dataHealth.completeness.toFixed(2),
+              })
+            : hasForwarding
+              ? t('loggerDetail.logger_condition_forwarding_desc', {
+                    ok: dataHealth.forwarding?.ok ?? 0,
+                    due: dataHealth.forwarding?.due ?? 0,
+                    targets: dataHealth.forwarding?.targets ?? 0,
+                })
+              : t('loggerDetail.logger_condition_forwarding_empty_desc');
 
     return (
         <Card>
-            <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2">
-                    <HeartPulse className="size-5" /> Diagnosa Kesehatan
-                </CardTitle>
-                <CardDescription>
-                    {diagnostics.passedChecks}/{diagnostics.totalChecks} pengecekan lulus
-                </CardDescription>
+            <CardHeader>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                        <CardTitle className="flex items-center gap-2">
+                            <HeartPulse className="size-5" />{' '}
+                            {t('loggerDetail.logger_condition')}
+                        </CardTitle>
+                        <CardDescription className="mt-1">
+                            {t('loggerDetail.logger_condition_desc')}
+                        </CardDescription>
+                    </div>
+                    <Badge variant="outline" className={tone}>
+                        {statusLabel}
+                    </Badge>
+                </div>
             </CardHeader>
-            <CardContent>
-                <div className="grid gap-4">
-                    {/* Status Banner */}
-                    <div className={`flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${
-                        diagnostics.status === 'healthy'
-                            ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-                            : diagnostics.status === 'warning'
-                              ? 'border border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400'
-                              : 'border border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-400'
-                    }`}>
-                        {diagnostics.status === 'healthy' ? (
-                            <><CheckCircle2 className="size-4" /> No abnormality detected.</>
-                        ) : diagnostics.status === 'warning' ? (
-                            <><AlertTriangle className="size-4" /> {diagnostics.failedChecks} issue{diagnostics.failedChecks > 1 ? 's' : ''} detected</>
+            <CardContent className="space-y-3">
+                <Tabs
+                    value={healthView}
+                    onValueChange={(value) =>
+                        setHealthView(
+                            value as
+                                | 'data'
+                                | 'forwarding'
+                                | 'internal'
+                                | 'diagnostics',
+                        )
+                    }
+                >
+                    <TabsList className="h-8 w-fit">
+                        <TabsTrigger value="internal">
+                            {t('loggerDetail.logger_condition_tab_internal')}
+                        </TabsTrigger>
+                        <div className="relative">
+                            <TabsTrigger value="data">
+                                {t('loggerDetail.logger_condition_tab_data')}
+                            </TabsTrigger>
+                            {hasMissingLoggerData && (
+                                <span
+                                    className="absolute top-1 right-1 size-1.5 animate-pulse rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]"
+                                    aria-label={t(
+                                        'loggerDetail.logger_condition_missing_summary',
+                                        { count: dataHealth.missing },
+                                    )}
+                                    title={t(
+                                        'loggerDetail.logger_condition_missing_summary',
+                                        { count: dataHealth.missing },
+                                    )}
+                                />
+                            )}
+                        </div>
+                        <TabsTrigger value="forwarding">Forwarding</TabsTrigger>
+                        <TabsTrigger value="diagnostics">
+                            {t('loggerDetail.logger_condition_tab_diagnostics')}
+                        </TabsTrigger>
+                    </TabsList>
+                </Tabs>
+
+                {(healthView === 'data' || healthView === 'forwarding') && (
+                    <div className={`rounded-lg border px-4 py-3 ${tone}`}>
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                        {hasProblem ? (
+                            <AlertTriangle className="size-4" />
                         ) : (
-                            <><ShieldAlert className="size-4" /> {diagnostics.criticalCount} critical issue{diagnostics.criticalCount > 1 ? 's' : ''} found!</>
+                            <CheckCircle2 className="size-4" />
+                        )}
+                        {activeSummary}
+                    </div>
+                    <p className="mt-1 text-xs">{activeDescription}</p>
+                    {healthView === 'data' && dataHealth.missing > 0 && (
+                        <div className="mt-3 space-y-2">
+                            <p className="text-xs font-medium text-muted-foreground uppercase">
+                                {t('loggerDetail.logger_condition_missing_times')}
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                                {dataHealth.missingWindows.map((window) => (
+                                    <span
+                                        key={`${window.start}-${window.end}`}
+                                        className="inline-flex items-center gap-1 rounded-md border bg-background/70 px-2 py-1 font-mono text-xs"
+                                    >
+                                        {window.start === window.end
+                                            ? window.start
+                                            : `${window.start}-${window.end}`}
+                                        <span className="font-sans text-[10px] text-muted-foreground">
+                                            {t('loggerDetail.minutes_count', {
+                                                count: window.count,
+                                            })}
+                                        </span>
+                                    </span>
+                                ))}
+                                {dataHealth.missingWindowCount >
+                                    dataHealth.missingWindows.length && (
+                                    <span className="inline-flex items-center rounded-md border bg-background/70 px-2 py-1 text-xs text-muted-foreground">
+                                        +
+                                        {dataHealth.missingWindowCount -
+                                            dataHealth.missingWindows.length}{' '}
+                                        {t('loggerDetail.logger_condition_more_gaps')}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                    </div>
+                )}
+                {(healthView === 'data' || healthView === 'forwarding') && (
+                    <div className="flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                    <span>
+                        {healthView === 'data'
+                            ? t('loggerDetail.logger_condition_audit_date', {
+                                  date: dataHealth.date,
+                              })
+                            : hasForwarding
+                              ? t(
+                                    'loggerDetail.logger_condition_forwarding_unforwarded',
+                                    { count: forwardingPending },
+                                )
+                              : t('loggerDetail.logger_condition_forwarding_inactive')}
+                    </span>
+                    <span className="hidden" aria-hidden="true">
+                        {hasForwarding
+                            ? `${dataHealth.forwarding?.targets ?? 0} target aktif · ${dataHealth.forwarding?.ok ?? 0}/${dataHealth.forwarding?.due ?? 0} forwarding OK`
+                            : 'Belum ada target forwarding aktif.'}
+                    </span>
+                        <Button asChild variant="outline" size="sm">
+                            <Link href={dataHealth.auditUrl}>
+                                <Link2 className="size-3.5" />{' '}
+                                {t('loggerDetail.logger_condition_view_audit')}
+                            </Link>
+                        </Button>
+                    </div>
+                )}
+
+                {healthView === 'internal' && (
+                    <InternalSensorsPanel logger={logger} />
+                )}
+
+                {healthView === 'diagnostics' && (
+                    <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <p className="text-sm font-medium">
+                                    {t('loggerDetail.diagnostics_title')}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                    {t('loggerDetail.diagnostics_passed', {
+                                        passed: diagnostics.passedChecks,
+                                        total: diagnostics.totalChecks,
+                                    })}
+                                </p>
+                            </div>
+                            <Badge variant="outline" className={tone}>
+                                {statusLabel}
+                            </Badge>
+                        </div>
+                        <HealthDiagnosticsPanel diagnostics={diagnostics} />
+                    </div>
+                )}
+            </CardContent>
+        </Card>
+    );
+}
+
+function HealthDiagnosticsPanel({
+    diagnostics,
+}: {
+    diagnostics: DiagnosticsResult;
+}) {
+    const allChecks = Object.values(diagnostics.categories).flatMap(
+        (c) => c.checks,
+    );
+    const failedChecks = allChecks.filter((c) => !c.passed);
+
+    return (
+        <div className="grid gap-4">
+                    {/* Status Banner */}
+                    <div
+                        className={`flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${
+                            diagnostics.status === 'healthy'
+                                ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                                : diagnostics.status === 'warning'
+                                  ? 'border border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                                  : 'border border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-400'
+                        }`}
+                    >
+                        {diagnostics.status === 'healthy' ? (
+                            <>
+                                <CheckCircle2 className="size-4" /> No
+                                abnormality detected.
+                            </>
+                        ) : diagnostics.status === 'warning' ? (
+                            <>
+                                <AlertTriangle className="size-4" />{' '}
+                                {diagnostics.failedChecks} issue
+                                {diagnostics.failedChecks > 1 ? 's' : ''}{' '}
+                                detected
+                            </>
+                        ) : (
+                            <>
+                                <ShieldAlert className="size-4" />{' '}
+                                {diagnostics.criticalCount} critical issue
+                                {diagnostics.criticalCount > 1 ? 's' : ''}{' '}
+                                found!
+                            </>
                         )}
                     </div>
 
                     {/* Category Grid */}
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                        {Object.entries(diagnostics.categories).map(([catKey, category]) => {
-                            const config = CATEGORY_CONFIG[catKey] || CATEGORY_CONFIG.device;
-                            const Icon = config.icon;
-                            const catFails = category.checks.filter(c => !c.passed).length;
+                        {Object.entries(diagnostics.categories).map(
+                            ([catKey, category]) => {
+                                const config =
+                                    CATEGORY_CONFIG[catKey] ||
+                                    CATEGORY_CONFIG.device;
+                                const Icon = config.icon;
+                                const catFails = category.checks.filter(
+                                    (c) => !c.passed,
+                                ).length;
 
-                            return (
-                                <div key={catKey} className="rounded-lg border">
-                                    {/* Category Header */}
-                                    <div className="flex items-center gap-2 border-b px-3 py-2.5">
-                                        <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${config.bg}`}>
-                                            <Icon className={`size-3.5 ${config.color}`} />
-                                        </div>
-                                        <span className="text-sm font-semibold">{category.label}</span>
-                                        {catFails > 0 && (
-                                            <Badge variant="outline" className="ml-auto text-[10px] border-red-500/30 text-red-500 bg-red-500/5">
-                                                {catFails}
-                                            </Badge>
-                                        )}
-                                    </div>
-
-                                    {/* Check Items */}
-                                    <div className="divide-y">
-                                        {category.checks.map(check => (
+                                return (
+                                    <div
+                                        key={catKey}
+                                        className="rounded-lg border"
+                                    >
+                                        {/* Category Header */}
+                                        <div className="flex items-center gap-2 border-b px-3 py-2.5">
                                             <div
-                                                key={check.key}
-                                                className={`flex items-center justify-between px-3 py-2 text-sm transition-colors ${
-                                                    !check.passed ? 'bg-red-500/[0.03]' : ''
-                                                }`}
-                                                title={check.message || `${check.value} (threshold: ${check.threshold})`}
+                                                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${config.bg}`}
                                             >
-                                                <span className={`${!check.passed ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
-                                                    {check.label}
-                                                </span>
-                                                <div className="flex items-center gap-1.5">
-                                                    <span className="font-mono text-[10px] text-muted-foreground">
-                                                        {check.value}
-                                                    </span>
-                                                    {check.passed ? (
-                                                        <Check className="size-4 text-emerald-500" />
-                                                    ) : check.severity === 'critical' ? (
-                                                        <XCircle className="size-4 text-red-500" />
-                                                    ) : (
-                                                        <AlertCircle className="size-4 text-amber-500" />
-                                                    )}
-                                                </div>
+                                                <Icon
+                                                    className={`size-3.5 ${config.color}`}
+                                                />
                                             </div>
-                                        ))}
+                                            <span className="text-sm font-semibold">
+                                                {category.label}
+                                            </span>
+                                            {catFails > 0 && (
+                                                <Badge
+                                                    variant="outline"
+                                                    className="ml-auto border-red-500/30 bg-red-500/5 text-[10px] text-red-500"
+                                                >
+                                                    {catFails}
+                                                </Badge>
+                                            )}
+                                        </div>
+
+                                        {/* Check Items */}
+                                        <div className="divide-y">
+                                            {category.checks.map((check) => (
+                                                <div
+                                                    key={check.key}
+                                                    className={`flex items-center justify-between px-3 py-2 text-sm transition-colors ${
+                                                        !check.passed
+                                                            ? 'bg-red-500/[0.03]'
+                                                            : ''
+                                                    }`}
+                                                    title={
+                                                        check.message ||
+                                                        `${check.value} (threshold: ${check.threshold})`
+                                                    }
+                                                >
+                                                    <span
+                                                        className={`${!check.passed ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
+                                                    >
+                                                        {check.label}
+                                                    </span>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className="font-mono text-[10px] text-muted-foreground">
+                                                            {check.value}
+                                                        </span>
+                                                        {check.passed ? (
+                                                            <Check className="size-4 text-emerald-500" />
+                                                        ) : check.severity ===
+                                                          'critical' ? (
+                                                            <XCircle className="size-4 text-red-500" />
+                                                        ) : (
+                                                            <AlertCircle className="size-4 text-amber-500" />
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
-                                </div>
-                            );
-                        })}
+                                );
+                            },
+                        )}
                     </div>
 
                     {/* Failed Checks Detail */}
                     {failedChecks.length > 0 && (
                         <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                            <p className="mb-2 text-[10px] font-semibold tracking-wider text-amber-600 uppercase dark:text-amber-400">
                                 Rekomendasi
                             </p>
                             <ul className="space-y-1.5">
-                                {failedChecks.map(check => (
-                                    <li key={check.key} className="flex items-start gap-2 text-xs">
+                                {failedChecks.map((check) => (
+                                    <li
+                                        key={check.key}
+                                        className="flex items-start gap-2 text-xs"
+                                    >
                                         {check.severity === 'critical' ? (
                                             <XCircle className="mt-0.5 size-3 shrink-0 text-red-500" />
                                         ) : (
                                             <AlertCircle className="mt-0.5 size-3 shrink-0 text-amber-500" />
                                         )}
-                                        <span className={check.severity === 'critical' ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}>
-                                            <strong>{check.label}</strong>: {check.message || `Nilai ${check.value} di luar threshold ${check.threshold}`}
+                                        <span
+                                            className={
+                                                check.severity === 'critical'
+                                                    ? 'text-red-700 dark:text-red-400'
+                                                    : 'text-amber-700 dark:text-amber-400'
+                                            }
+                                        >
+                                            <strong>{check.label}</strong>:{' '}
+                                            {check.message ||
+                                                `Nilai ${check.value} di luar threshold ${check.threshold}`}
                                         </span>
                                     </li>
                                 ))}
                             </ul>
                         </div>
                     )}
-                </div>
-            </CardContent>
-        </Card>
+        </div>
     );
 }
 
-export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
+export default function LoggerShow({
+    logger,
+    diagnostics,
+    dataHealth,
+}: LoggerShowProps) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const { t } = useTranslation();
     const readOnly = !logger.canManage;
@@ -5842,16 +7389,109 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
     // Sync buttons on the Mode tab's Module / I/O cards read the device on demand (no auto-GET).
     const modulePanelRef = useRef<ProtocolPanelHandle>(null);
     const ioPanelRef = useRef<ProtocolPanelHandle>(null);
+    const {
+        connected: dongleConnected,
+        connect: connectDongle,
+        sendCommandUntil: sendDongleCommandUntil,
+    } = useLoggerSerial();
+    const [dongleEnabled, setDongleEnabled] = useState(false);
+    const [dongleBusy, setDongleBusy] = useState(false);
+    const [dongleError, setDongleError] = useState<string | null>(null);
+    const dongleButtonLabel = dongleBusy
+        ? 'Menghubungkan...'
+        : dongleEnabled
+          ? 'Serial ON'
+          : 'Serial OFF';
 
     // Firmware OTA lives at the page level (not inside the System tab) so the live download/install
     // progress popup keeps running when the user switches tabs within this logger. It resets only
     // when deviceIdentifier changes — i.e. when navigating to a different logger.
-    const firmwareOta = useFirmwareOta(readOnly ? null : logger.deviceIdentifier);
+    const firmwareOta = useFirmwareOta(
+        readOnly ? null : logger.deviceIdentifier,
+    );
 
     // Surface the logger's spontaneous EWS/GCM pushes as top-right toasts (formatted, never raw MQTT).
     // Only an online logger can push events, so we skip the SSE entirely when offline — that avoids
     // holding a PHP worker open for a device that will never send anything.
-    useModuleEventToasts(logger.status !== 'offline' ? logger.deviceIdentifier : null);
+    useModuleEventToasts(
+        logger.status !== 'offline' ? logger.deviceIdentifier : null,
+    );
+
+    useEffect(() => {
+        if (dongleEnabled && !dongleConnected) {
+            setDongleEnabled(false);
+        }
+    }, [dongleConnected, dongleEnabled]);
+
+    const serialProtocolCommand = useCallback(
+        async (
+            module: string,
+            payload: ProtocolCommandPayload,
+        ): Promise<ProtocolCommandResult> => {
+            const upperModule = module.toUpperCase();
+            const response = await sendDongleCommandUntil(
+                payload,
+                (message) => {
+                    if (
+                        upperModule === 'RTC' &&
+                        (Object.prototype.hasOwnProperty.call(
+                            message,
+                            'date',
+                        ) ||
+                            Object.prototype.hasOwnProperty.call(
+                                message,
+                                'time',
+                            ))
+                    ) {
+                        return true;
+                    }
+
+                    return Object.keys(message).some((key) =>
+                        serialProtocolKeyMatches(upperModule, key),
+                    );
+                },
+                upperModule === 'OTA' ? 330_000 : 12_000,
+            );
+
+            return serialProtocolResultFromMessage(upperModule, response);
+        },
+        [sendDongleCommandUntil],
+    );
+
+    async function handleDongleToggle() {
+        if (readOnly || dongleBusy) return;
+
+        if (dongleEnabled) {
+            setDongleEnabled(false);
+            setDongleError(null);
+            return;
+        }
+
+        if (!isWebSerialSupported()) {
+            setDongleError(
+                'Browser ini belum mendukung Web Serial. Pakai Chrome/Edge desktop.',
+            );
+            return;
+        }
+
+        setDongleBusy(true);
+        setDongleError(null);
+        try {
+            if (!dongleConnected) {
+                await connectDongle();
+            }
+            setDongleEnabled(true);
+        } catch (error) {
+            setDongleEnabled(false);
+            setDongleError(
+                error instanceof Error
+                    ? error.message
+                    : 'Gagal menghubungkan dongle serial.',
+            );
+        } finally {
+            setDongleBusy(false);
+        }
+    }
 
     // Quick Setup Wizard state
     const needsSetup = !logger.loggerMode && !readOnly;
@@ -5931,10 +7571,11 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                 className="h-7 gap-1.5 border-amber-500/30 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
                                 onClick={() => setWizardOpen(true)}
                             >
-                                <Settings className="size-3.5" /> Konfigurasi Sekarang
+                                <Settings className="size-3.5" /> Konfigurasi
+                                Sekarang
                             </Button>
                             <button
-                                className="text-amber-500/60 hover:text-amber-500 transition-colors"
+                                className="text-amber-500/60 transition-colors hover:text-amber-500"
                                 onClick={() => setSetupBannerDismissed(true)}
                             >
                                 <XCircle className="size-4" />
@@ -5944,7 +7585,10 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                 )}
 
                 {/* Back link */}
-                <Link href="/loggers" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors w-fit">
+                <Link
+                    href="/loggers"
+                    className="flex w-fit items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                >
                     <ArrowLeft className="size-4" />
                     {t('loggerDetail.back_to_loggers')}
                 </Link>
@@ -5954,21 +7598,42 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     <div className="flex items-start gap-4">
                         {logger.modelImage ? (
                             <div className="mt-1 flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-muted">
-                                <img src={logger.modelImage} alt={logger.model} className="h-full w-full object-contain" />
+                                <img
+                                    src={logger.modelImage}
+                                    alt={logger.model}
+                                    className="h-full w-full object-contain"
+                                />
                             </div>
                         ) : (
-                            <div className={`mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${logger.status === 'online' ? 'bg-emerald-500/10' :
-                                logger.status === 'warning' ? 'bg-amber-500/10' : 'bg-red-500/10'
-                                }`}>
-                                <Radio className={`size-6 ${logger.status === 'online' ? 'text-emerald-500' :
-                                    logger.status === 'warning' ? 'text-amber-500' : 'text-red-500'
-                                    }`} />
+                            <div
+                                className={`mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${
+                                    logger.status === 'online'
+                                        ? 'bg-emerald-500/10'
+                                        : logger.status === 'warning'
+                                          ? 'bg-amber-500/10'
+                                          : 'bg-red-500/10'
+                                }`}
+                            >
+                                <Radio
+                                    className={`size-6 ${
+                                        logger.status === 'online'
+                                            ? 'text-emerald-500'
+                                            : logger.status === 'warning'
+                                              ? 'text-amber-500'
+                                              : 'text-red-500'
+                                    }`}
+                                />
                             </div>
                         )}
                         <div>
                             <div className="flex items-center gap-3">
-                                <h1 className="text-xl font-bold">{logger.name}</h1>
-                                <Badge variant="outline" className={`capitalize ${getStatusBadgeClass(logger.status)}`}>
+                                <h1 className="text-xl font-bold">
+                                    {logger.name}
+                                </h1>
+                                <Badge
+                                    variant="outline"
+                                    className={`capitalize ${getStatusBadgeClass(logger.status)}`}
+                                >
                                     {logger.status}
                                 </Badge>
                             </div>
@@ -5989,42 +7654,103 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                         {logger.model}
                                     </span>
                                 )}
-                                {logger.firmwareVersion && <span className="font-mono text-xs">{logger.firmwareVersion}</span>}
+                                {logger.firmwareVersion && (
+                                    <span className="font-mono text-xs">
+                                        {logger.firmwareVersion}
+                                    </span>
+                                )}
                                 {logger.projectName && (
                                     <span className="flex items-center gap-1">
-                                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: logger.projectColor || '#6b7280' }} />
+                                        <span
+                                            className="h-2.5 w-2.5 rounded-full"
+                                            style={{
+                                                backgroundColor:
+                                                    logger.projectColor ||
+                                                    '#6b7280',
+                                            }}
+                                        />
                                         {logger.projectName}
                                     </span>
                                 )}
                                 {/* Sync status */}
-                                {(autoSyncing || logger.lastSyncStatus === 'syncing') ? (
+                                {autoSyncing ||
+                                logger.lastSyncStatus === 'syncing' ? (
                                     <span className="flex items-center gap-1 text-amber-500">
-                                        <Loader2 className="size-3 animate-spin" /> Syncing...
+                                        <Loader2 className="size-3 animate-spin" />{' '}
+                                        Syncing...
                                     </span>
-                                ) : logger.lastSyncStatus === 'success' && logger.lastSeen ? (
+                                ) : logger.lastSyncStatus === 'success' &&
+                                  logger.lastSeen ? (
                                     <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                                        <CheckCircle2 className="size-3" /> Synced {new Date(logger.lastSeen).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                                        <CheckCircle2 className="size-3" />{' '}
+                                        Synced{' '}
+                                        {new Date(
+                                            logger.lastSeen,
+                                        ).toLocaleTimeString('id-ID', {
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                        })}
                                     </span>
                                 ) : logger.lastSyncStatus === 'error' ? (
-                                    <span className="flex items-center gap-1 text-red-500" title={logger.lastSyncError || 'No response from device'}>
-                                        <XCircle className="size-3" /> Sync error
+                                    <span
+                                        className="flex items-center gap-1 text-red-500"
+                                        title={
+                                            logger.lastSyncError ||
+                                            'No response from device'
+                                        }
+                                    >
+                                        <XCircle className="size-3" /> Sync
+                                        error
                                     </span>
                                 ) : null}
                             </div>
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
+                        <div className="flex flex-col items-end gap-1">
+                            <Button
+                                variant={dongleEnabled ? 'default' : 'outline'}
+                                size="sm"
+                                className="gap-1.5"
+                                disabled={readOnly || dongleBusy}
+                                onClick={handleDongleToggle}
+                                title={
+                                    dongleEnabled
+                                        ? 'Command setting dikirim via serial dongle.'
+                                        : 'Command setting dikirim via MQTT.'
+                                }
+                            >
+                                {dongleBusy ? (
+                                    <Loader2 className="size-4 animate-spin" />
+                                ) : (
+                                    <Cable className="size-4" />
+                                )}
+                                {dongleButtonLabel}
+                            </Button>
+                            {dongleError && (
+                                <span className="max-w-48 text-right text-[10px] text-red-500">
+                                    {dongleError}
+                                </span>
+                            )}
+                        </div>
                         {readOnly ? (
                             <>
                                 {logger.deviceIdentifier ? (
                                     <SyncFromDeviceDialog
-                                        deviceIdentifier={logger.deviceIdentifier}
+                                        deviceIdentifier={
+                                            logger.deviceIdentifier
+                                        }
                                         loggerId={logger.id}
                                         label={t('loggerDetail.sync')}
                                         canApplySensorChanges={false}
                                     />
                                 ) : (
-                                    <Button variant="outline" size="sm" className="gap-1.5" disabled>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1.5"
+                                        disabled
+                                    >
                                         <RefreshCw className="size-4" />
                                         {t('loggerDetail.sync')}
                                     </Button>
@@ -6036,19 +7762,40 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         ) : (
                             <>
                                 {logger.deviceIdentifier && (
-                                    <SyncFromDeviceDialog deviceIdentifier={logger.deviceIdentifier} loggerId={logger.id} label={t('loggerDetail.sync')} />
+                                    <SyncFromDeviceDialog
+                                        deviceIdentifier={
+                                            logger.deviceIdentifier
+                                        }
+                                        loggerId={logger.id}
+                                        label={t('loggerDetail.sync')}
+                                    />
                                 )}
                                 {!logger.deviceIdentifier && (
-                                    <Button variant="outline" size="sm" className="gap-1.5" disabled>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1.5"
+                                        disabled
+                                    >
                                         <RefreshCw className="size-4" />
                                         {t('loggerDetail.sync')}
                                     </Button>
                                 )}
                                 <ProjectAssignDropdown logger={logger} />
                                 {logger.deviceIdentifier ? (
-                                    <RebootDialog deviceIdentifier={logger.deviceIdentifier} disabled={logger.status === 'offline'} />
+                                    <RebootDialog
+                                        deviceIdentifier={
+                                            logger.deviceIdentifier
+                                        }
+                                        disabled={logger.status === 'offline'}
+                                    />
                                 ) : (
-                                    <Button variant="destructive" size="sm" className="gap-1.5" disabled>
+                                    <Button
+                                        variant="destructive"
+                                        size="sm"
+                                        className="gap-1.5"
+                                        disabled
+                                    >
                                         <Power className="size-4" />
                                         {t('loggerDetail.reboot')}
                                     </Button>
@@ -6071,62 +7818,184 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
                 {/* Tabs */}
                 <Tabs defaultValue="overview" className="w-full">
-                    <TabsList className="w-full justify-start overflow-x-auto overflow-y-hidden h-auto">
-                        <TabsTrigger value="overview" className="gap-1.5 cursor-pointer"><Activity className="size-3.5" />{t('loggerDetail.tab_overview')}</TabsTrigger>
-                        <TabsTrigger value="sensors" className="gap-1.5 cursor-pointer"><Thermometer className="size-3.5" />{t('loggerDetail.tab_sensors')}</TabsTrigger>
-                        <TabsTrigger value="system" className="gap-1.5 cursor-pointer"><Cpu className="size-3.5" />{t('loggerDetail.tab_system')}</TabsTrigger>
-                        <TabsTrigger value="mode" className="gap-1.5 cursor-pointer"><Radio className="size-3.5" />Mode</TabsTrigger>
-                        <TabsTrigger value="logs" className="gap-1.5 cursor-pointer"><Terminal className="size-3.5" />{t('loggerDetail.tab_logs')}</TabsTrigger>
-                        <TabsTrigger value="api" className="gap-1.5 cursor-pointer"><Code2 className="size-3.5" />{t('loggerDetail.tab_api')}</TabsTrigger>
+                    <TabsList className="h-auto w-full justify-start overflow-x-auto overflow-y-hidden">
+                        <TabsTrigger
+                            value="overview"
+                            className="cursor-pointer gap-1.5"
+                        >
+                            <Activity className="size-3.5" />
+                            {t('loggerDetail.tab_overview')}
+                        </TabsTrigger>
+                        <TabsTrigger
+                            value="sensors"
+                            className="cursor-pointer gap-1.5"
+                        >
+                            <Thermometer className="size-3.5" />
+                            {t('loggerDetail.tab_sensors')}
+                        </TabsTrigger>
+                        <TabsTrigger
+                            value="system"
+                            className="cursor-pointer gap-1.5"
+                        >
+                            <Cpu className="size-3.5" />
+                            {t('loggerDetail.tab_system')}
+                        </TabsTrigger>
+                        <TabsTrigger
+                            value="mode"
+                            className="cursor-pointer gap-1.5"
+                        >
+                            <Radio className="size-3.5" />
+                            Mode
+                        </TabsTrigger>
+                        {/* <TabsTrigger
+                            value="logs"
+                            className="cursor-pointer gap-1.5"
+                        >
+                            <Terminal className="size-3.5" />
+                            {t('loggerDetail.tab_logs')}
+                        </TabsTrigger> */}
+                        {/* <TabsTrigger
+                            value="api"
+                            className="cursor-pointer gap-1.5"
+                        >
+                            <Code2 className="size-3.5" />
+                            {t('loggerDetail.tab_api')}
+                        </TabsTrigger> */}
                     </TabsList>
 
                     {/* ==================== OVERVIEW ==================== */}
                     <TabsContent value="overview" className="mt-6 space-y-4">
                         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                            <InfoCard icon={Wifi} label={t('loggerDetail.connection')} value={logger.connectionType.toUpperCase()} color="blue" />
-                            <InfoCard icon={Signal} label={t('loggerDetail.signal_strength')} value={`${logger.signalStrength}%`} color="emerald" />
-                            <InfoCard icon={Clock} label={t('loggerDetail.uptime')} value={formatUptime(logger.uptime)} color="violet" />
-                            <InfoCard icon={Activity} label={t('loggerDetail.active_sensors')} value={`${logger.sensors.filter(s => s.status === 'active').length}/${logger.sensors.length}`} color="amber" />
+                            <InfoCard
+                                icon={Wifi}
+                                label={t('loggerDetail.connection')}
+                                value={logger.connectionType.toUpperCase()}
+                                color="blue"
+                            />
+                            <InfoCard
+                                icon={Signal}
+                                label={t('loggerDetail.signal_strength')}
+                                value={`${logger.signalStrength}%`}
+                                color="emerald"
+                            />
+                            <InfoCard
+                                icon={Clock}
+                                label={t('loggerDetail.uptime')}
+                                value={formatUptime(logger.uptime)}
+                                color="violet"
+                            />
+                            <InfoCard
+                                icon={Activity}
+                                label={t('loggerDetail.active_sensors')}
+                                value={`${logger.sensors.filter((s) => s.status === 'active').length}/${logger.sensors.length}`}
+                                color="amber"
+                            />
                         </div>
 
                         <div className="grid gap-4 lg:grid-cols-2">
                             <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> {t('loggerDetail.device_info')}</CardTitle></CardHeader>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Cpu className="size-5" />{' '}
+                                        {t('loggerDetail.device_info')}
+                                    </CardTitle>
+                                </CardHeader>
                                 <CardContent>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">{t('loggerDetail.model')}</dt>
-                                        <dd className="font-medium">{logger.model || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.serial_number')}</dt>
-                                        <dd className="font-mono text-xs">{logger.serialNumber}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.firmware')}</dt>
-                                        <dd className="font-mono text-xs">{logger.firmwareVersion || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.ip_address')}</dt>
-                                        <dd className="font-mono text-xs">{logger.ipAddress || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.mac_address')}</dt>
-                                        <dd className="font-mono text-xs">{logger.macAddress || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.last_seen')}</dt>
-                                        <dd className="text-xs">{logger.lastSeen || '—'}</dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.model')}
+                                        </dt>
+                                        <dd className="font-medium">
+                                            {logger.model || '-'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.serial_number')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.serialNumber}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.firmware')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.firmwareVersion || '-'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.ip_address')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.ipAddress || '—'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.mac_address')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.macAddress || '—'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.last_seen')}
+                                        </dt>
+                                        <dd className="text-xs">
+                                            {logger.lastSeen || '—'}
+                                        </dd>
                                     </dl>
                                 </CardContent>
                             </Card>
                             <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><Network className="size-5" /> {t('loggerDetail.network_config')}</CardTitle></CardHeader>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Network className="size-5" />{' '}
+                                        {t('loggerDetail.network_config')}
+                                    </CardTitle>
+                                </CardHeader>
                                 <CardContent>
                                     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">{t('loggerDetail.connection_type')}</dt>
-                                        <dd className="font-medium uppercase">{logger.connectionType}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.ip_address')}</dt>
-                                        <dd className="font-mono text-xs">{logger.ipAddress || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.subnet_mask')}</dt>
-                                        <dd className="font-mono text-xs">{logger.subnet || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.gateway')}</dt>
-                                        <dd className="font-mono text-xs">{logger.gateway || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.dns_server')}</dt>
-                                        <dd className="font-mono text-xs">{logger.dns || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.mac_address')}</dt>
-                                        <dd className="font-mono text-xs">{logger.macAddress || '—'}</dd>
-                                        <dt className="text-muted-foreground">DHCP</dt>
-                                        <dd className="font-medium">{logger.dhcpMode !== null ? (logger.dhcpMode ? 'Enabled' : 'Disabled') : '—'}</dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.connection_type')}
+                                        </dt>
+                                        <dd className="font-medium uppercase">
+                                            {logger.connectionType}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.ip_address')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.ipAddress || '—'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.subnet_mask')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.subnet || '—'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.gateway')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.gateway || '—'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.dns_server')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.dns || '—'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.mac_address')}
+                                        </dt>
+                                        <dd className="font-mono text-xs">
+                                            {logger.macAddress || '—'}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            DHCP
+                                        </dt>
+                                        <dd className="font-medium">
+                                            {logger.dhcpMode !== null
+                                                ? logger.dhcpMode
+                                                    ? 'Enabled'
+                                                    : 'Disabled'
+                                                : '—'}
+                                        </dd>
                                     </dl>
                                 </CardContent>
                             </Card>
@@ -6134,21 +8003,43 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
                         <Card>
                             <CardHeader>
-                                <CardTitle>{t('loggerDetail.sensor_summary')}</CardTitle>
-                                <CardDescription>{t('loggerDetail.latest_readings')}</CardDescription>
+                                <CardTitle>
+                                    {t('loggerDetail.sensor_summary')}
+                                </CardTitle>
+                                <CardDescription>
+                                    {t('loggerDetail.latest_readings')}
+                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                                     {logger.sensors.map((sensor) => (
-                                        <div key={sensor.id} className="flex items-center gap-3 rounded-lg border p-3">
-                                            <div className={`h-2 w-2 rounded-full ${sensor.status === 'active' ? 'bg-emerald-500' : sensor.status === 'error' ? 'bg-red-500' : 'bg-gray-400'}`} />
+                                        <div
+                                            key={sensor.id}
+                                            className="flex items-center gap-3 rounded-lg border p-3"
+                                        >
+                                            <div
+                                                className={`h-2 w-2 rounded-full ${sensor.status === 'active' ? 'bg-emerald-500' : sensor.status === 'error' ? 'bg-red-500' : 'bg-gray-400'}`}
+                                            />
                                             <div className="min-w-0 flex-1">
-                                                <p className="text-xs text-muted-foreground">{sensor.name}</p>
-                                                <p className="font-mono text-sm font-semibold">{sensor.value} <span className="text-xs font-normal text-muted-foreground">{sensor.unit}</span></p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {sensor.name}
+                                                </p>
+                                                <p className="font-mono text-sm font-semibold">
+                                                    {sensor.value}{' '}
+                                                    <span className="text-xs font-normal text-muted-foreground">
+                                                        {sensor.unit}
+                                                    </span>
+                                                </p>
                                             </div>
                                         </div>
                                     ))}
-                                    {logger.sensors.length === 0 && <p className="text-sm text-muted-foreground col-span-full">{t('loggerDetail.no_sensors_configured')}</p>}
+                                    {logger.sensors.length === 0 && (
+                                        <p className="col-span-full text-sm text-muted-foreground">
+                                            {t(
+                                                'loggerDetail.no_sensors_configured',
+                                            )}
+                                        </p>
+                                    )}
                                 </div>
                             </CardContent>
                         </Card>
@@ -6168,24 +8059,164 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                         {/* Data Mapping — sensor order for telemetry/LCD/SD (MAP_DATA), minimal. */}
                         <Card>
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><ListOrdered className="size-5" /> Data Mapping</CardTitle>
+                                <CardTitle className="flex items-center gap-2">
+                                    <ListOrdered className="size-5" /> Data
+                                    Mapping
+                                </CardTitle>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel logger={protocolLogger} mapOnly readOnly={readOnly} />
+                                <ProtocolPanel
+                                    logger={protocolLogger}
+                                    mapOnly
+                                    readOnly={readOnly}
+                                    transportMode={
+                                        dongleEnabled ? 'serial' : 'mqtt'
+                                    }
+                                    commandTransport={
+                                        dongleEnabled
+                                            ? serialProtocolCommand
+                                            : undefined
+                                    }
+                                />
                             </CardContent>
                         </Card>
                     </TabsContent>
 
                     {/* ==================== SYSTEM ==================== */}
                     <TabsContent value="system" className="mt-6 space-y-4">
-                        {/* Health Diagnostics */}
-                        <HealthDiagnosticsCard diagnostics={diagnostics} />
+                        <div className="grid gap-4 lg:grid-cols-2">
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Cpu className="size-5" />{' '}
+                                        {t('loggerDetail.system_information')}
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                    <Tabs defaultValue="info">
+                                        <TabsList className="h-8 w-fit">
+                                            <TabsTrigger value="info">
+                                                Information
+                                            </TabsTrigger>
+                                            <TabsTrigger value="firmware">
+                                                {t('loggerDetail.firmware')}
+                                            </TabsTrigger>
+                                        </TabsList>
+                                        <TabsContent value="info" className="mt-4">
+                                            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                                                <dt className="text-muted-foreground">
+                                                    {t('loggerDetail.model')}
+                                                </dt>
+                                                <dd className="font-medium">
+                                                    {logger.model || '-'}
+                                                </dd>
+                                                <dt className="text-muted-foreground">
+                                                    {t('loggerDetail.serial_number')}
+                                                </dt>
+                                                <dd className="font-mono text-xs">
+                                                    {logger.serialNumber}
+                                                </dd>
+                                                <dt className="text-muted-foreground">
+                                                    {t('loggerDetail.device_id')}
+                                                </dt>
+                                                <dd className="font-mono text-xs">
+                                                    {logger.deviceIdentifier || '-'}
+                                                </dd>
+                                                <dt className="text-muted-foreground">
+                                                    {t('loggerDetail.firmware')}
+                                                </dt>
+                                                <dd className="font-mono text-xs">
+                                                    {logger.firmwareVersion || '-'}
+                                                </dd>
+                                                <dt className="text-muted-foreground">
+                                                    {t('loggerDetail.uptime')}
+                                                </dt>
+                                                <dd className="font-medium">
+                                                    {formatUptime(logger.uptime)}
+                                                </dd>
+                                                <dt className="text-muted-foreground">
+                                                    Reboot Counter
+                                                </dt>
+                                                <dd className="font-medium">
+                                                    {logger.rebootCounter ?? '-'}
+                                                </dd>
+                                                <dt className="text-muted-foreground">
+                                                    {t('loggerDetail.location')}
+                                                </dt>
+                                                <dd>{logger.location || '-'}</dd>
+                                            </dl>
+                                        </TabsContent>
+                                        <TabsContent
+                                            value="firmware"
+                                            className="mt-4"
+                                        >
+                                            <FirmwareCard
+                                                ota={firmwareOta}
+                                                currentVersion={
+                                                    logger.firmwareVersion
+                                                }
+                                                disabled={
+                                                    readOnly ||
+                                                    logger.status === 'offline'
+                                                }
+                                                embedded
+                                            />
+                                        </TabsContent>
+                                    </Tabs>
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Database className="size-5" />{' '}
+                                        {t('loggerDetail.storage_overview')}
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent className="space-y-5">
+                                    <ResourceBar
+                                        label={t('loggerDetail.disk_usage')}
+                                        value={logger.storageUsage}
+                                        max={logger.storageTotal}
+                                        unit="MB"
+                                    />
+                                    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.log_files')}
+                                        </dt>
+                                        <dd className="font-medium">
+                                            {logger.logFileCount.toLocaleString()}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.config_backups')}
+                                        </dt>
+                                        <dd className="font-medium">
+                                            {logger.configBackups}
+                                        </dd>
+                                        <dt className="text-muted-foreground">
+                                            {t('loggerDetail.last_backup')}
+                                        </dt>
+                                        <dd className="text-xs">
+                                            {logger.lastConfigBackup || '-'}
+                                        </dd>
+                                    </dl>
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        <LoggerConditionCard
+                            dataHealth={dataHealth}
+                            diagnostics={diagnostics}
+                            logger={logger}
+                        />
 
                         {/* Internal Sensors */}
+                        {logger.id === '__internal_sensor_moved__' && (
                         <Card>
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><Thermometer className="size-5" /> {t('loggerDetail.internal_sensors')}</CardTitle>
-
+                                <CardTitle className="flex items-center gap-2">
+                                    <Thermometer className="size-5" />{' '}
+                                    {t('loggerDetail.internal_sensors')}
+                                </CardTitle>
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3 sm:grid-cols-3">
@@ -6194,10 +8225,18 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                             <Battery className="size-5 text-amber-500" />
                                         </div>
                                         <div>
-                                            <p className="text-xs text-muted-foreground">{t('loggerDetail.battery')}</p>
-                                            <p className="text-lg font-bold font-mono">
-                                                {logger.battery ? `${logger.battery}` : '—'}
-                                                {logger.battery && <span className="text-xs font-normal text-muted-foreground ml-1">V</span>}
+                                            <p className="text-xs text-muted-foreground">
+                                                {t('loggerDetail.battery')}
+                                            </p>
+                                            <p className="font-mono text-lg font-bold">
+                                                {logger.battery
+                                                    ? `${logger.battery}`
+                                                    : '—'}
+                                                {logger.battery && (
+                                                    <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                                        V
+                                                    </span>
+                                                )}
                                             </p>
                                         </div>
                                     </div>
@@ -6206,10 +8245,18 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                             <Thermometer className="size-5 text-red-500" />
                                         </div>
                                         <div>
-                                            <p className="text-xs text-muted-foreground">{t('loggerDetail.temperature')}</p>
-                                            <p className="text-lg font-bold font-mono">
-                                                {logger.temperature ? `${logger.temperature}` : '—'}
-                                                {logger.temperature && <span className="text-xs font-normal text-muted-foreground ml-1">°C</span>}
+                                            <p className="text-xs text-muted-foreground">
+                                                {t('loggerDetail.temperature')}
+                                            </p>
+                                            <p className="font-mono text-lg font-bold">
+                                                {logger.temperature
+                                                    ? `${logger.temperature}`
+                                                    : '—'}
+                                                {logger.temperature && (
+                                                    <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                                        °C
+                                                    </span>
+                                                )}
                                             </p>
                                         </div>
                                     </div>
@@ -6218,94 +8265,89 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                                             <Droplets className="size-5 text-blue-500" />
                                         </div>
                                         <div>
-                                            <p className="text-xs text-muted-foreground">{t('loggerDetail.humidity')}</p>
-                                            <p className="text-lg font-bold font-mono">
-                                                {logger.humidity ? `${logger.humidity}` : '—'}
-                                                {logger.humidity && <span className="text-xs font-normal text-muted-foreground ml-1">%</span>}
+                                            <p className="text-xs text-muted-foreground">
+                                                {t('loggerDetail.humidity')}
+                                            </p>
+                                            <p className="font-mono text-lg font-bold">
+                                                {logger.humidity
+                                                    ? `${logger.humidity}`
+                                                    : '—'}
+                                                {logger.humidity && (
+                                                    <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                                        %
+                                                    </span>
+                                                )}
                                             </p>
                                         </div>
                                     </div>
                                 </div>
                                 {logger.lastConnected && (
-                                    <p className="mt-3 text-xs text-muted-foreground flex items-center gap-1">
+                                    <p className="mt-3 flex items-center gap-1 text-xs text-muted-foreground">
                                         <Clock className="size-3" />
                                         Last updated: {logger.lastConnected}
                                     </p>
                                 )}
                             </CardContent>
                         </Card>
+                        )}
 
                         {/* Power Rails — live INA219 readings per output rail (5V/12V/24V), captured
                             during the INFO sync (POWER READ). Only rails the device reports are shown.
                             BL11 (cellular) has no INA219 rails, so the card is hidden entirely. */}
-                        {inferBoardVariant(logger) !== 'BL11' && logger.power && (logger.power.out5 || logger.power.out12 || logger.power.out24) && (
-                            <Card>
-                                <CardHeader>
-                                    <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Power Rails</CardTitle>
-                                </CardHeader>
-                                <CardContent>
-                                    <div className="grid gap-3 sm:grid-cols-3">
-                                        {logger.power.out5 && <PowerRailCard label="5V" color="emerald" reading={logger.power.out5} />}
-                                        {logger.power.out12 && <PowerRailCard label="12V" color="blue" reading={logger.power.out12} />}
-                                        {logger.power.out24 && <PowerRailCard label="24V" color="violet" reading={logger.power.out24} />}
-                                    </div>
-                                    {logger.powerReadAt && (
-                                        <p className="mt-3 text-xs text-muted-foreground flex items-center gap-1">
-                                            <Clock className="size-3" />
-                                            Last updated: {logger.powerReadAt}
-                                        </p>
-                                    )}
-                                </CardContent>
-                            </Card>
-                        )}
+                        {inferBoardVariant(logger) !== 'BL11' &&
+                            logger.power &&
+                            (logger.power.out5 ||
+                                logger.power.out12 ||
+                                logger.power.out24) && (
+                                <Card>
+                                    <CardHeader>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Zap className="size-5" /> Power
+                                            Rails
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="grid gap-3 sm:grid-cols-3">
+                                            {logger.power.out5 && (
+                                                <PowerRailCard
+                                                    label="5V"
+                                                    color="emerald"
+                                                    reading={logger.power.out5}
+                                                />
+                                            )}
+                                            {logger.power.out12 && (
+                                                <PowerRailCard
+                                                    label="12V"
+                                                    color="blue"
+                                                    reading={logger.power.out12}
+                                                />
+                                            )}
+                                            {logger.power.out24 && (
+                                                <PowerRailCard
+                                                    label="24V"
+                                                    color="violet"
+                                                    reading={logger.power.out24}
+                                                />
+                                            )}
+                                        </div>
+                                        {logger.powerReadAt && (
+                                            <p className="mt-3 flex items-center gap-1 text-xs text-muted-foreground">
+                                                <Clock className="size-3" />
+                                                Last updated:{' '}
+                                                {logger.powerReadAt}
+                                            </p>
+                                        )}
+                                    </CardContent>
+                                </Card>
+                            )}
 
-                        <div className="grid gap-4 lg:grid-cols-2">
-                            <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> {t('loggerDetail.system_information')}</CardTitle></CardHeader>
-                                <CardContent>
-                                    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">{t('loggerDetail.model')}</dt>
-                                        <dd className="font-medium">{logger.model || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.serial_number')}</dt>
-                                        <dd className="font-mono text-xs">{logger.serialNumber}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.device_id')}</dt>
-                                        <dd className="font-mono text-xs">{logger.deviceIdentifier || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.firmware')}</dt>
-                                        <dd className="font-mono text-xs">{logger.firmwareVersion || '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.uptime')}</dt>
-                                        <dd className="font-medium">{formatUptime(logger.uptime)}</dd>
-                                        <dt className="text-muted-foreground">Reboot Counter</dt>
-                                        <dd className="font-medium">{logger.rebootCounter ?? '—'}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.location')}</dt>
-                                        <dd>{logger.location || '—'}</dd>
-                                    </dl>
-                                </CardContent>
-                            </Card>
-                            <Card>
-                                <CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-5" /> {t('loggerDetail.storage_overview')}</CardTitle></CardHeader>
-                                <CardContent className="space-y-5">
-                                    <ResourceBar label={t('loggerDetail.disk_usage')} value={logger.storageUsage} max={logger.storageTotal} unit="MB" />
-                                    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                                        <dt className="text-muted-foreground">{t('loggerDetail.log_files')}</dt>
-                                        <dd className="font-medium">{logger.logFileCount.toLocaleString()}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.config_backups')}</dt>
-                                        <dd className="font-medium">{logger.configBackups}</dd>
-                                        <dt className="text-muted-foreground">{t('loggerDetail.last_backup')}</dt>
-                                        <dd className="text-xs">{logger.lastConfigBackup || '—'}</dd>
-                                    </dl>
-                                </CardContent>
-                            </Card>
-                        </div>
-                        <FirmwareCard
-                            ota={firmwareOta}
-                            currentVersion={logger.firmwareVersion}
-                            disabled={readOnly || logger.status === 'offline'}
-                        />
+                        {/* Device Configuration card hidden by request.
                         <DeviceConfigCard
                             intervalRead={logger.intervalRead}
                             intervalSend={logger.intervalSend}
                             maxReset={logger.maxReset}
                         />
+                        */}
                         <PlatformIntegrationCard
                             loggerId={logger.id}
                             ministesyEnabled={logger.ministesyEnabled}
@@ -6316,13 +8358,26 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             integrations={logger.integrations ?? []}
                         />
                         {logger.deviceIdentifier && (
-                            <FtpConfigCard
-                                deviceIdentifier={logger.deviceIdentifier}
-                                disabled={readOnly || logger.status === 'offline'}
-                                initialHost={logger.ftpHost}
-                                initialPort={logger.ftpPort}
-                                initialUser={logger.ftpUser}
-                            />
+                            <div className="grid gap-4 lg:grid-cols-2">
+                                <FtpConfigCard
+                                    deviceIdentifier={logger.deviceIdentifier}
+                                    disabled={
+                                        readOnly || logger.status === 'offline'
+                                    }
+                                    initialHost={logger.ftpHost}
+                                    initialPort={logger.ftpPort}
+                                    initialUser={logger.ftpUser}
+                                />
+                                {/* SD Card → USB copy — popup file picker + live progress. */}
+                                <UsbCopyCard
+                                    deviceIdentifier={logger.deviceIdentifier}
+                                    disabled={
+                                        readOnly || logger.status === 'offline'
+                                    }
+                                />
+                                {/* FTP System Logs (READLOGS / GETLOG black-box recorder) — styled like the
+                                    Konfigurasi FTP card, with an in-app browser + colored log viewer. */}
+                            </div>
                         )}
                     </TabsContent>
 
@@ -6330,28 +8385,74 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     <TabsContent value="mode" className="mt-6 space-y-4">
                         <div className="grid gap-4 lg:grid-cols-2">
                             <SetModeCard logger={logger} disabled={readOnly} />
-                            <CalibrationCard key={logger.loggerMode || 'no-mode'} logger={logger} disabled={readOnly} />
+                            <CalibrationCard
+                                key={logger.loggerMode || 'no-mode'}
+                                logger={logger}
+                                disabled={readOnly}
+                            />
                         </div>
                         <Card>
                             <CardHeader>
                                 <div className="flex items-start justify-between gap-3">
                                     <div>
-                                        <CardTitle className="flex items-center gap-2"><Cpu className="size-5" /> Module</CardTitle>
-                                        <CardDescription>EWS (Early Warning System) &amp; GCM</CardDescription>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Cpu className="size-5" /> Module
+                                        </CardTitle>
+                                        <CardDescription>
+                                            EWS (Early Warning System) &amp; GCM
+                                        </CardDescription>
                                     </div>
                                     <Button
                                         size="sm"
                                         variant="outline"
                                         className="gap-1.5"
-                                        disabled={readOnly || !logger.deviceIdentifier || logger.status === 'offline'}
-                                        onClick={() => modulePanelRef.current?.sync()}
+                                        disabled={
+                                            readOnly ||
+                                            !logger.deviceIdentifier ||
+                                            (!dongleEnabled &&
+                                                logger.status === 'offline')
+                                        }
+                                        onClick={() =>
+                                            modulePanelRef.current?.sync()
+                                        }
                                     >
                                         <RefreshCw className="size-4" /> Sync
                                     </Button>
                                 </div>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel ref={modulePanelRef} logger={protocolLogger} tabs={MODULE_PROTOCOL_TABS} manualSync readOnly={readOnly} />
+                                <ProtocolPanel
+                                    ref={modulePanelRef}
+                                    logger={protocolLogger}
+                                    tabs={MODULE_PROTOCOL_TABS}
+                                    extraTabs={
+                                        logger.remoteDevice
+                                            ? [
+                                                  {
+                                                      value: 'module-ai',
+                                                      label: 'Modul AI',
+                                                      content: (
+                                                          <ModuleAiCard
+                                                              device={
+                                                                  logger.remoteDevice
+                                                              }
+                                                          />
+                                                      ),
+                                                  },
+                                              ]
+                                            : []
+                                    }
+                                    manualSync
+                                    readOnly={readOnly}
+                                    transportMode={
+                                        dongleEnabled ? 'serial' : 'mqtt'
+                                    }
+                                    commandTransport={
+                                        dongleEnabled
+                                            ? serialProtocolCommand
+                                            : undefined
+                                    }
+                                />
                             </CardContent>
                         </Card>
 
@@ -6361,80 +8462,135 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                             <CardHeader>
                                 <div className="flex items-start justify-between gap-3">
                                     <div>
-                                        <CardTitle className="flex items-center gap-2"><Zap className="size-5" /> Device Configuration</CardTitle>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Zap className="size-5" /> Device
+                                            Configuration
+                                        </CardTitle>
                                     </div>
                                     <Button
                                         size="sm"
                                         variant="outline"
                                         className="gap-1.5"
-                                        disabled={readOnly || !logger.deviceIdentifier || logger.status === 'offline'}
-                                        onClick={() => ioPanelRef.current?.sync()}
+                                        disabled={
+                                            readOnly ||
+                                            !logger.deviceIdentifier ||
+                                            (!dongleEnabled &&
+                                                logger.status === 'offline')
+                                        }
+                                        onClick={() =>
+                                            ioPanelRef.current?.sync()
+                                        }
                                     >
                                         <RefreshCw className="size-4" /> Sync
                                     </Button>
                                 </div>
                             </CardHeader>
                             <CardContent>
-                                <ProtocolPanel ref={ioPanelRef} logger={protocolLogger} ioRow manualSync readOnly={readOnly} />
+                                <ProtocolPanel
+                                    ref={ioPanelRef}
+                                    logger={protocolLogger}
+                                    ioRow
+                                    manualSync
+                                    readOnly={readOnly}
+                                    transportMode={
+                                        dongleEnabled ? 'serial' : 'mqtt'
+                                    }
+                                    commandTransport={
+                                        dongleEnabled
+                                            ? serialProtocolCommand
+                                            : undefined
+                                    }
+                                />
                             </CardContent>
                         </Card>
                     </TabsContent>
 
-                    {/* Advanced Settings removed: NET/RTC → Mode, POWER/POWER_CAL → System, FTP → Logs. */}
+                    {/* Advanced Settings removed: NET/RTC → Mode, POWER/POWER_CAL + FTP tools → System. */}
 
                     {/* ==================== LOGS ==================== */}
                     <TabsContent value="logs" className="mt-6 space-y-4">
-                        {/* SD Card → USB copy — sits above System Logs; popup file picker + live progress. */}
-                        {logger.deviceIdentifier && (
-                            <UsbCopyCard
-                                deviceIdentifier={logger.deviceIdentifier}
-                                disabled={readOnly || logger.status === 'offline'}
-                            />
-                        )}
-                        {/* FTP System Logs (READLOGS / GETLOG black-box recorder) — styled like the
-                            Konfigurasi FTP card, with an in-app browser + colored log viewer. */}
-                        {logger.deviceIdentifier && (
-                            <SystemLogsCard
-                                deviceIdentifier={logger.deviceIdentifier}
-                                disabled={logger.status === 'offline'}
-                                ftpConfigured={Boolean(logger.ftpHost && logger.ftpUser)}
-                            />
-                        )}
                         <Card>
                             <CardHeader>
-                                <CardTitle className="flex items-center gap-2"><Terminal className="size-5" /> {t('loggerDetail.activity_logs')}</CardTitle>
-                                <CardDescription>{t('loggerDetail.log_entries', { count: logger.activityLogs.length })}</CardDescription>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Terminal className="size-5" />{' '}
+                                    {t('loggerDetail.activity_logs')}
+                                </CardTitle>
+                                <CardDescription>
+                                    {t('loggerDetail.log_entries', {
+                                        count: logger.activityLogs.length,
+                                    })}
+                                </CardDescription>
                             </CardHeader>
                             <Separator />
                             <CardContent className="p-0">
                                 <Table>
                                     <TableHeader>
                                         <TableRow>
-                                            <TableHead className="w-[180px]">{t('loggerDetail.timestamp')}</TableHead>
-                                            <TableHead>{t('loggerDetail.level')}</TableHead>
-                                            <TableHead>{t('loggerDetail.action')}</TableHead>
-                                            <TableHead>{t('loggerDetail.status')}</TableHead>
-                                            <TableHead className="hidden md:table-cell">{t('loggerDetail.message')}</TableHead>
+                                            <TableHead className="w-[180px]">
+                                                {t('loggerDetail.timestamp')}
+                                            </TableHead>
+                                            <TableHead>
+                                                {t('loggerDetail.level')}
+                                            </TableHead>
+                                            <TableHead>
+                                                {t('loggerDetail.action')}
+                                            </TableHead>
+                                            <TableHead>
+                                                {t('loggerDetail.status')}
+                                            </TableHead>
+                                            <TableHead className="hidden md:table-cell">
+                                                {t('loggerDetail.message')}
+                                            </TableHead>
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
                                         {logger.activityLogs.map((log) => (
                                             <TableRow key={log.id}>
-                                                <TableCell className="font-mono text-xs text-muted-foreground">{log.timestamp}</TableCell>
-                                                <TableCell>
-                                                    <span className={`text-xs font-medium uppercase ${getLogLevelColor(log.level)}`}>{log.level}</span>
+                                                <TableCell className="font-mono text-xs text-muted-foreground">
+                                                    {log.timestamp}
                                                 </TableCell>
-                                                <TableCell className="font-medium">{log.action}</TableCell>
                                                 <TableCell>
-                                                    <Badge variant={log.status === 'success' ? 'default' : log.status === 'failed' ? 'destructive' : 'secondary'} className="text-xs">
+                                                    <span
+                                                        className={`text-xs font-medium uppercase ${getLogLevelColor(log.level)}`}
+                                                    >
+                                                        {log.level}
+                                                    </span>
+                                                </TableCell>
+                                                <TableCell className="font-medium">
+                                                    {log.action}
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Badge
+                                                        variant={
+                                                            log.status ===
+                                                            'success'
+                                                                ? 'default'
+                                                                : log.status ===
+                                                                    'failed'
+                                                                  ? 'destructive'
+                                                                  : 'secondary'
+                                                        }
+                                                        className="text-xs"
+                                                    >
                                                         {log.status}
                                                     </Badge>
                                                 </TableCell>
-                                                <TableCell className="hidden max-w-[300px] truncate text-sm text-muted-foreground md:table-cell">{log.message}</TableCell>
+                                                <TableCell className="hidden max-w-[300px] truncate text-sm text-muted-foreground md:table-cell">
+                                                    {log.message}
+                                                </TableCell>
                                             </TableRow>
                                         ))}
                                         {logger.activityLogs.length === 0 && (
-                                            <TableRow><TableCell colSpan={5} className="py-12 text-center text-muted-foreground">{t('loggerDetail.no_logs_found')}</TableCell></TableRow>
+                                            <TableRow>
+                                                <TableCell
+                                                    colSpan={5}
+                                                    className="py-12 text-center text-muted-foreground"
+                                                >
+                                                    {t(
+                                                        'loggerDetail.no_logs_found',
+                                                    )}
+                                                </TableCell>
+                                            </TableRow>
                                         )}
                                     </TableBody>
                                 </Table>
@@ -6444,25 +8600,40 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
                     {/* ==================== API ==================== */}
                     <TabsContent value="api" className="mt-6 space-y-4">
-                        <ApiDocumentation loggerId={logger.id} loggerName={logger.name} />
+                        <ApiDocumentation
+                            loggerId={logger.id}
+                            loggerName={logger.name}
+                        />
                     </TabsContent>
                 </Tabs>
 
                 {/* Delete Dialog */}
-                <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+                <AlertDialog
+                    open={showDeleteDialog}
+                    onOpenChange={setShowDeleteDialog}
+                >
                     <AlertDialogContent>
                         <AlertDialogHeader>
-                            <AlertDialogTitle>{t('loggerDetail.delete_logger')}</AlertDialogTitle>
+                            <AlertDialogTitle>
+                                {t('loggerDetail.delete_logger')}
+                            </AlertDialogTitle>
                             <AlertDialogDescription>
-                                Are you sure you want to delete <strong>{logger.name}</strong> ({logger.serialNumber})?
-                                This will also delete all associated sensors and activity logs. This action cannot be undone.
+                                Are you sure you want to delete{' '}
+                                <strong>{logger.name}</strong> (
+                                {logger.serialNumber})? This will also delete
+                                all associated sensors and activity logs. This
+                                action cannot be undone.
                             </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                            <AlertDialogCancel>
+                                {t('common.cancel')}
+                            </AlertDialogCancel>
                             <AlertDialogAction
                                 className="bg-red-600 hover:bg-red-700"
-                                onClick={() => router.delete(`/loggers/${logger.id}`)}
+                                onClick={() =>
+                                    router.delete(`/loggers/${logger.id}`)
+                                }
                                 disabled={readOnly}
                             >
                                 {t('loggerDetail.delete_logger')}
@@ -6475,7 +8646,7 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
                     survives tab switches within this logger. */}
                 <FirmwareOtaPopup ota={firmwareOta} />
             </div>
-        </AppLayout >
+        </AppLayout>
     );
 }
 
@@ -6485,13 +8656,22 @@ export default function LoggerShow({ logger, diagnostics }: LoggerShowProps) {
 
 // One power-rail card (e.g. "5V") showing tegangan / arus / daya, styled like the
 // internal-sensor tiles. Missing readings render as "—".
-function PowerRailCard({ label, color, reading }: { label: string; color: string; reading: PowerRailReading }) {
+function PowerRailCard({
+    label,
+    color,
+    reading,
+}: {
+    label: string;
+    color: string;
+    reading: PowerRailReading;
+}) {
     const colorMap: Record<string, string> = {
         emerald: 'bg-emerald-500/10 text-emerald-500',
         blue: 'bg-blue-500/10 text-blue-500',
         violet: 'bg-violet-500/10 text-violet-500',
     };
-    const fmt = (n: number | null) => (n === null || n === undefined ? '—' : n.toFixed(3));
+    const fmt = (n: number | null) =>
+        n === null || n === undefined ? '—' : n.toFixed(3);
     const rows: [string, number | null, string][] = [
         ['Tegangan', reading.v, 'V'],
         ['Arus', reading.a, 'A'],
@@ -6500,18 +8680,25 @@ function PowerRailCard({ label, color, reading }: { label: string; color: string
     return (
         <div className="rounded-lg border p-4">
             <div className="mb-3 flex items-center gap-2">
-                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${colorMap[color] || ''}`}>
+                <div
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${colorMap[color] || ''}`}
+                >
                     <Zap className="size-4" />
                 </div>
                 <p className="text-sm font-semibold">{label}</p>
             </div>
             <dl className="space-y-1.5 text-sm">
                 {rows.map(([dtLabel, value, unit]) => (
-                    <div key={dtLabel} className="flex items-center justify-between">
+                    <div
+                        key={dtLabel}
+                        className="flex items-center justify-between"
+                    >
                         <dt className="text-muted-foreground">{dtLabel}</dt>
                         <dd className="font-mono font-medium">
                             {fmt(value)}
-                            <span className="ml-1 text-xs font-normal text-muted-foreground">{unit}</span>
+                            <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                {unit}
+                            </span>
                         </dd>
                     </div>
                 ))}
@@ -6520,7 +8707,17 @@ function PowerRailCard({ label, color, reading }: { label: string; color: string
     );
 }
 
-function InfoCard({ icon: Icon, label, value, color }: { icon: React.ComponentType<{ className?: string }>; label: string; value: string; color: string }) {
+function InfoCard({
+    icon: Icon,
+    label,
+    value,
+    color,
+}: {
+    icon: React.ComponentType<{ className?: string }>;
+    label: string;
+    value: string;
+    color: string;
+}) {
     const colorMap: Record<string, string> = {
         blue: 'bg-blue-500/10 text-blue-500',
         emerald: 'bg-emerald-500/10 text-emerald-500',
@@ -6531,7 +8728,9 @@ function InfoCard({ icon: Icon, label, value, color }: { icon: React.ComponentTy
     return (
         <Card className="h-full">
             <CardContent className="flex h-full items-center gap-4">
-                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${colorMap[color] || ''}`}>
+                <div
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${colorMap[color] || ''}`}
+                >
                     <Icon className="size-5" />
                 </div>
                 <div className="min-w-0">
@@ -6543,355 +8742,37 @@ function InfoCard({ icon: Icon, label, value, color }: { icon: React.ComponentTy
     );
 }
 
-function ResourceBar({ label, value, max, unit }: { label: string; value: number; max: number; unit: string }) {
+function ResourceBar({
+    label,
+    value,
+    max,
+    unit,
+}: {
+    label: string;
+    value: number;
+    max: number;
+    unit: string;
+}) {
     const pct = max > 0 ? (value / max) * 100 : 0;
-    const barColor = pct > 80 ? '[&>div]:bg-red-500' : pct > 60 ? '[&>div]:bg-amber-500' : '[&>div]:bg-emerald-500';
+    const barColor =
+        pct > 80
+            ? '[&>div]:bg-red-500'
+            : pct > 60
+              ? '[&>div]:bg-amber-500'
+              : '[&>div]:bg-emerald-500';
 
     return (
         <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
                 <span>{label}</span>
-                <span className="font-mono text-xs font-medium">{value} / {max} {unit} <span className="text-muted-foreground">({pct.toFixed(0)}%)</span></span>
+                <span className="font-mono text-xs font-medium">
+                    {value} / {max} {unit}{' '}
+                    <span className="text-muted-foreground">
+                        ({pct.toFixed(0)}%)
+                    </span>
+                </span>
             </div>
             <Progress value={pct} className={`h-2 ${barColor}`} />
-        </div>
-    );
-}
-
-// =============================================================================
-// API Documentation Component
-// =============================================================================
-
-interface ApiEndpoint {
-    method: 'GET' | 'POST';
-    path: string;
-    title: string;
-    description: string;
-    params?: { name: string; type: string; required: boolean; description: string }[];
-    requestBody?: string;
-    responseExample: string;
-}
-
-function ApiDocumentation({ loggerId, loggerName }: { loggerId: string; loggerName: string }) {
-    const [expandedEndpoint, setExpandedEndpoint] = useState<number | null>(null);
-    const [copiedUrl, setCopiedUrl] = useState(false);
-
-    const baseUrl = typeof window !== 'undefined' ? `${window.location.origin}/api/v1` : '/api/v1';
-
-    const endpoints: ApiEndpoint[] = [
-        {
-            method: 'GET',
-            path: `/loggers/${loggerId}`,
-            title: 'Get Logger Details',
-            description: `Retrieve complete device information for "${loggerName}" including status, location, firmware, and GPS coordinates.`,
-            responseExample: JSON.stringify({
-                success: true,
-                data: {
-                    id: loggerId,
-                    name: loggerName,
-                    serial_number: 'BLC-2024-XXXXX',
-                    status: 'online',
-                    connection_type: '4g-lte',
-                    firmware_version: 'v3.2.1',
-                    battery: '13.2',
-                    signal_strength: 85,
-                    gps: { lat: '-6.6301', lng: '106.8517', alt: '250' },
-                    last_seen_at: '2026-03-11T01:00:00+07:00',
-                },
-            }, null, 2),
-        },
-        {
-            method: 'GET',
-            path: `/loggers/${loggerId}/sensors`,
-            title: 'Get Sensor Readings',
-            description: 'Retrieve all sensor channel readings including current values, units, status, and min/max ranges.',
-            responseExample: JSON.stringify({
-                success: true,
-                data: {
-                    logger_id: loggerId,
-                    logger_name: loggerName,
-                    sensors: [
-                        {
-                            id: 1,
-                            name: 'Water Level',
-                            type: 'water-level',
-                            value: 2.45,
-                            unit: 'm',
-                            status: 'active',
-                            min_value: 0,
-                            max_value: 10,
-                            last_reading_at: '2026-03-11T01:00:00+07:00',
-                        },
-                    ],
-                },
-            }, null, 2),
-        },
-        {
-            method: 'GET',
-            path: `/loggers/${loggerId}/logs`,
-            title: 'Get Activity Logs',
-            description: 'Retrieve activity log entries for this logger. Supports pagination via limit parameter.',
-            params: [
-                { name: 'limit', type: 'integer', required: false, description: 'Number of log entries (default: 50, max: 100)' },
-            ],
-            responseExample: JSON.stringify({
-                success: true,
-                data: [
-                    {
-                        id: 1,
-                        action: 'Config Sync',
-                        status: 'success',
-                        level: 'info',
-                        message: 'Configuration synced successfully',
-                        created_at: '2026-03-11T01:00:00+07:00',
-                    },
-                ],
-            }, null, 2),
-        },
-        {
-            method: 'POST',
-            path: `/loggers/${loggerId}/command`,
-            title: 'Send Command',
-            description: 'Send a remote command to the logger device. Available commands: reboot, sync_config, backup_config, request_info.',
-            params: [
-                { name: 'command', type: 'string', required: true, description: 'Command to execute: reboot | sync_config | backup_config | request_info' },
-                { name: 'params', type: 'object', required: false, description: 'Optional parameters for the command' },
-            ],
-            requestBody: JSON.stringify({
-                command: 'sync_config',
-                params: {},
-            }, null, 2),
-            responseExample: JSON.stringify({
-                success: true,
-                data: {
-                    logger_id: loggerId,
-                    command: 'sync_config',
-                    status: 'queued',
-                    message: `Command 'sync_config' has been queued for ${loggerName}.`,
-                },
-            }, null, 2),
-        },
-        {
-            method: 'POST',
-            path: `/loggers/${loggerId}/sensors/data`,
-            title: 'Push Sensor Data',
-            description: 'Push new sensor readings to the logger. Each reading must specify the sensor type and value.',
-            params: [
-                { name: 'readings', type: 'array', required: true, description: 'Array of sensor readings' },
-                { name: 'readings[].sensor_type', type: 'string', required: true, description: 'Sensor type identifier (e.g. water-level, temperature)' },
-                { name: 'readings[].value', type: 'number', required: true, description: 'Sensor reading value' },
-                { name: 'readings[].timestamp', type: 'datetime', required: false, description: 'Reading timestamp (ISO 8601, defaults to now)' },
-            ],
-            requestBody: JSON.stringify({
-                readings: [
-                    { sensor_type: 'water-level', value: 2.45 },
-                    { sensor_type: 'temperature', value: 28.3, timestamp: '2026-03-11T01:00:00+07:00' },
-                ],
-            }, null, 2),
-            responseExample: JSON.stringify({
-                success: true,
-                data: {
-                    logger_id: loggerId,
-                    results: [
-                        { sensor_type: 'water-level', value: 2.45, status: 'updated' },
-                        { sensor_type: 'temperature', value: 28.3, status: 'updated' },
-                    ],
-                },
-            }, null, 2),
-        },
-    ];
-
-    function copyToClipboard(text: string) {
-        navigator.clipboard.writeText(text);
-        setCopiedUrl(true);
-        setTimeout(() => setCopiedUrl(false), 2000);
-    }
-
-    function toggleEndpoint(index: number) {
-        setExpandedEndpoint(expandedEndpoint === index ? null : index);
-    }
-
-    return (
-        <div className="flex flex-col gap-4">
-            {/* Base URL Card */}
-            <Card>
-                <CardContent className="flex items-center justify-between gap-4 py-4">
-                    <div className="min-w-0">
-                        <p className="text-sm font-medium text-muted-foreground">Base URL</p>
-                        <code className="text-sm font-semibold break-all">{baseUrl}</code>
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="shrink-0 gap-1.5"
-                        onClick={() => copyToClipboard(baseUrl)}
-                    >
-                        <Copy className="size-3.5" />
-                        {copiedUrl ? 'Copied!' : 'Copy'}
-                    </Button>
-                </CardContent>
-            </Card>
-
-            {/* Endpoints */}
-            <Card>
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                        <Code2 className="size-5" />
-                        API Endpoints
-                    </CardTitle>
-                    <CardDescription>
-                        {endpoints.length} endpoints available for this logger
-                    </CardDescription>
-                </CardHeader>
-                <Separator />
-                <CardContent className="p-0">
-                    {endpoints.map((endpoint, idx) => (
-                        <div key={idx} className={idx > 0 ? 'border-t' : ''}>
-                            {/* Endpoint Header */}
-                            <button
-                                onClick={() => toggleEndpoint(idx)}
-                                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/50"
-                            >
-                                {expandedEndpoint === idx
-                                    ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
-                                    : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                                }
-                                <span className={`shrink-0 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wide ${endpoint.method === 'GET'
-                                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                                    : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                                    }`}>
-                                    {endpoint.method}
-                                </span>
-                                <code className="text-sm font-medium">{endpoint.path}</code>
-                                <span className="ml-auto text-xs text-muted-foreground">{endpoint.title}</span>
-                            </button>
-
-                            {/* Expanded Details */}
-                            {expandedEndpoint === idx && (
-                                <div className="border-t bg-muted/30 px-6 py-5">
-                                    <div className="flex flex-col gap-5">
-                                        {/* Description */}
-                                        <p className="text-sm text-muted-foreground">{endpoint.description}</p>
-
-                                        {/* Full URL */}
-                                        <div>
-                                            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">URL</p>
-                                            <div className="flex items-center gap-2">
-                                                <code className="flex-1 rounded-md border bg-background px-3 py-2 text-sm break-all">
-                                                    {baseUrl}{endpoint.path}
-                                                </code>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={() => copyToClipboard(`${baseUrl}${endpoint.path}`)}
-                                                >
-                                                    <Copy className="size-3.5" />
-                                                </Button>
-                                            </div>
-                                        </div>
-
-                                        {/* Parameters */}
-                                        {endpoint.params && endpoint.params.length > 0 && (
-                                            <div>
-                                                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Parameters</p>
-                                                <div className="rounded-md border overflow-hidden">
-                                                    <Table>
-                                                        <TableHeader>
-                                                            <TableRow>
-                                                                <TableHead className="text-xs">Name</TableHead>
-                                                                <TableHead className="text-xs">Type</TableHead>
-                                                                <TableHead className="text-xs">Required</TableHead>
-                                                                <TableHead className="text-xs">Description</TableHead>
-                                                            </TableRow>
-                                                        </TableHeader>
-                                                        <TableBody>
-                                                            {endpoint.params.map((param, pIdx) => (
-                                                                <TableRow key={pIdx}>
-                                                                    <TableCell className="font-mono text-xs font-medium">{param.name}</TableCell>
-                                                                    <TableCell>
-                                                                        <Badge variant="outline" className="text-[10px]">{param.type}</Badge>
-                                                                    </TableCell>
-                                                                    <TableCell>
-                                                                        {param.required
-                                                                            ? <Badge variant="default" className="text-[10px] bg-red-500/80">Required</Badge>
-                                                                            : <Badge variant="secondary" className="text-[10px]">Optional</Badge>
-                                                                        }
-                                                                    </TableCell>
-                                                                    <TableCell className="text-xs text-muted-foreground">{param.description}</TableCell>
-                                                                </TableRow>
-                                                            ))}
-                                                        </TableBody>
-                                                    </Table>
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {/* Request Body */}
-                                        {endpoint.requestBody && (
-                                            <div>
-                                                <div className="mb-1.5 flex items-center justify-between">
-                                                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Request Body</p>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="sm"
-                                                        className="h-6 text-xs gap-1"
-                                                        onClick={() => copyToClipboard(endpoint.requestBody!)}
-                                                    >
-                                                        <Copy className="size-3" /> Copy
-                                                    </Button>
-                                                </div>
-                                                <pre className="overflow-x-auto rounded-md border bg-zinc-950 p-4 text-xs text-emerald-400">
-                                                    <code>{endpoint.requestBody}</code>
-                                                </pre>
-                                            </div>
-                                        )}
-
-                                        {/* Response Example */}
-                                        <div>
-                                            <div className="mb-1.5 flex items-center justify-between">
-                                                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Response Example</p>
-                                                <Badge variant="default" className="text-[10px] gap-1 bg-emerald-500/80">
-                                                    <CheckCircle2 className="size-2.5" /> 200 OK
-                                                </Badge>
-                                            </div>
-                                            <pre className="overflow-x-auto rounded-md border bg-zinc-950 p-4 text-xs text-emerald-400">
-                                                <code>{endpoint.responseExample}</code>
-                                            </pre>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    ))}
-                </CardContent>
-            </Card>
-
-            {/* Usage Notes */}
-            <Card>
-                <CardHeader>
-                    <CardTitle className="text-sm">Integration Notes</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <ul className="space-y-2 text-sm text-muted-foreground">
-                        <li className="flex items-start gap-2">
-                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
-                            <span><strong className="text-foreground">GET</strong> endpoints are read-only and safe to call at any frequency.</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
-                            <span><strong className="text-foreground">POST</strong> endpoints modify data or send commands. Use the <code className="rounded bg-muted px-1 text-xs">Content-Type: application/json</code> header.</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
-                            <span>All responses follow the format <code className="rounded bg-muted px-1 text-xs">{'{ "success": true, "data": {...} }'}</code>.</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" />
-                            <span>Timestamps are in <strong className="text-foreground">ISO 8601</strong> format with timezone offset.</span>
-                        </li>
-                    </ul>
-                </CardContent>
-            </Card>
         </div>
     );
 }

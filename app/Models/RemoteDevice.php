@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class RemoteDevice extends Model
 {
@@ -23,6 +24,11 @@ class RemoteDevice extends Model
             'web_enabled' => 'boolean',
             'web_port' => 'integer',
         ];
+    }
+
+    public function loggers(): HasMany
+    {
+        return $this->hasMany(Logger::class);
     }
 
     public function ensureWebSlug(): void

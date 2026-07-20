@@ -10,10 +10,13 @@ use App\Models\Project;
 use App\Models\MqttLogger;
 use App\Models\ProductionDevice;
 use App\Models\Sensor;
+use App\Services\DataAuditService;
+use App\Services\ForwardingAuditService;
 use App\Services\IdHasher;
+use App\Services\LoggerHealthService;
 use App\Services\MqttService;
 use App\Services\SshService;
-use App\Services\LoggerHealthService;
+use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -76,7 +79,11 @@ class LoggerController extends Controller
         ]);
     }
 
-    public function show(string $hash): Response
+    public function show(
+        string $hash,
+        DataAuditService $audits,
+        ForwardingAuditService $forwarding
+    ): Response
     {
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
@@ -84,13 +91,91 @@ class LoggerController extends Controller
         $query = Logger::with([
             'externalSensors',
             'integrations',
+            'remoteDevice',
             'activityLogs' => fn($q) => $q->latest('created_at')->limit(20),
         ])->visibleTo(auth()->user());
         $logger = $query->findOrFail($id);
+        $canViewCloudSsh = auth()->user()->hasPermission('cloudssh.view');
         $deviceModel = $logger->model
             ? DeviceModel::where('name', $logger->model)->first()
             : null;
         $allowedConfiguratorModes = ['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS'];
+
+        $today = Carbon::today();
+        $presentMinutes = $audits->presentMinutes($logger, $today);
+        $expected = $audits->expectedFor($today);
+        $present = $presentMinutes->count();
+        $missingMinutes = $audits->missingMinutes($logger, $today, $presentMinutes);
+        $missing = $missingMinutes->count();
+        $missingWindows = [];
+        $rangeStart = null;
+        $rangeEnd = null;
+        $rangeCount = 0;
+        foreach ($missingMinutes as $minute) {
+            if ($rangeStart === null) {
+                $rangeStart = $minute->copy();
+                $rangeEnd = $minute->copy();
+                $rangeCount = 1;
+                continue;
+            }
+
+            if ($rangeEnd->copy()->addMinute()->equalTo($minute)) {
+                $rangeEnd = $minute->copy();
+                $rangeCount++;
+                continue;
+            }
+
+            $missingWindows[] = [
+                'start' => $rangeStart->format('H:i'),
+                'end' => $rangeEnd->format('H:i'),
+                'count' => $rangeCount,
+            ];
+            $rangeStart = $minute->copy();
+            $rangeEnd = $minute->copy();
+            $rangeCount = 1;
+        }
+        if ($rangeStart !== null) {
+            $missingWindows[] = [
+                'start' => $rangeStart->format('H:i'),
+                'end' => $rangeEnd->format('H:i'),
+                'count' => $rangeCount,
+            ];
+        }
+        $enabledIntegrations = $logger->integrations
+            ->where('is_enabled', true)
+            ->values();
+        $forwardingAudits = collect($forwarding->integrationAudit(
+            $logger,
+            $today,
+            $presentMinutes,
+            $enabledIntegrations,
+        ));
+        $forwardingDue = (int) $forwardingAudits->sum('due');
+        $forwardingOk = (int) $forwardingAudits->sum('forwarded_ok');
+        $forwardingFailed = (int) $forwardingAudits->sum('failed');
+        $forwardingNeverAttempted = (int) $forwardingAudits->sum('never_attempted');
+        $dataHealthStatus = ($expected > 0 && $present === 0)
+            ? 'critical'
+            : (($missing > 0 || $forwardingFailed > 0 || $forwardingNeverAttempted > 0) ? 'warning' : 'healthy');
+        $dataHealth = [
+            'date' => $today->toDateString(),
+            'expected' => $expected,
+            'present' => $present,
+            'missing' => $missing,
+            'missingWindows' => array_slice($missingWindows, 0, 5),
+            'missingWindowCount' => count($missingWindows),
+            'completeness' => $expected > 0 ? round($present / $expected * 100, 2) : 100.0,
+            'status' => $dataHealthStatus,
+            'auditUrl' => route('data-audit.show', ['id' => $logger->id, 'date' => $today->toDateString()], false),
+            'forwarding' => $forwardingAudits->isEmpty() ? null : [
+                'due' => $forwardingDue,
+                'ok' => $forwardingOk,
+                'failed' => $forwardingFailed,
+                'neverAttempted' => $forwardingNeverAttempted,
+                'targets' => $forwardingAudits->count(),
+                'completeness' => $forwardingDue > 0 ? round($forwardingOk / $forwardingDue * 100, 2) : 100.0,
+            ],
+        ];
 
         $loggerData = [
             'id' => IdHasher::encode($logger->id),
@@ -219,6 +304,18 @@ class LoggerController extends Controller
             'projectId'   => $logger->project_id,
             'projectName' => $logger->project?->name,
             'projectColor' => $logger->project?->color,
+            'remoteDevice' => $canViewCloudSsh && $logger->remoteDevice
+                ? [
+                    'id' => $logger->remoteDevice->id,
+                    'name' => $logger->remoteDevice->name,
+                    'webEnabled' => (bool) $logger->remoteDevice->web_enabled,
+                    'webUrl' => $logger->remoteDevice->web_slug
+                        ? 'https://'.$logger->remoteDevice->web_slug.'.'.config('cloud-web.base_domain')
+                        : null,
+                    'canSshConnect' => auth()->user()->hasPermission('cloudssh.connect'),
+                    'canWebConnect' => auth()->user()->hasPermission('cloudweb.connect'),
+                ]
+                : null,
             'availableProjects' => Project::where('user_id', auth()->id())
                 ->orderBy('name')->get()
                 ->map(fn($p) => [
@@ -235,6 +332,7 @@ class LoggerController extends Controller
         return Inertia::render('loggers/show', [
             'logger'      => $loggerData,
             'diagnostics' => $diagnostics,
+            'dataHealth'  => $dataHealth,
         ]);
     }
 

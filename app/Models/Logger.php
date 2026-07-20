@@ -2,8 +2,8 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -14,6 +14,7 @@ class Logger extends Model
     use HasFactory;
 
     public const ACCESS_VIEW = 'view';
+
     public const ACCESS_MANAGE = 'manage';
 
     /**
@@ -25,6 +26,7 @@ class Logger extends Model
     protected $fillable = [
         'user_id',
         'project_id',
+        'remote_device_id',
         'name',
         'serial_number',
         'location',
@@ -198,6 +200,11 @@ class Logger extends Model
     public function project(): BelongsTo
     {
         return $this->belongsTo(Project::class);
+    }
+
+    public function remoteDevice(): BelongsTo
+    {
+        return $this->belongsTo(RemoteDevice::class);
     }
 
     public function deviceModel(): BelongsTo

@@ -34,6 +34,10 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
+import {
+    isLoggerSelectionDisabled,
+    updateLoggerSelection,
+} from '@/pages/cloud-ssh/logger-selection';
 import type { BreadcrumbItem } from '@/types';
 
 interface RemoteDeviceItem {
@@ -47,7 +51,16 @@ interface RemoteDeviceItem {
     webSlug: string | null;
     webPort: number;
     webUrl: string | null;
+    loggerIds: number[];
     createdAt: string | null;
+}
+
+interface LoggerChoice {
+    id: number;
+    name: string;
+    serialNumber: string;
+    remoteDeviceId: number | null;
+    remoteDeviceName: string | null;
 }
 
 interface DeviceFormData {
@@ -58,6 +71,7 @@ interface DeviceFormData {
     description: string;
     web_enabled: boolean;
     web_port: number;
+    logger_ids: number[];
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -72,12 +86,15 @@ const emptyForm: DeviceFormData = {
     description: '',
     web_enabled: false,
     web_port: 80,
+    logger_ids: [],
 };
 
 export default function CloudSshIndex({
     devices,
+    availableLoggers,
 }: {
     devices: RemoteDeviceItem[];
+    availableLoggers: LoggerChoice[];
 }) {
     const { auth, flash } = usePage<{
         auth: { permissions?: string[] };
@@ -133,6 +150,7 @@ export default function CloudSshIndex({
             description: device.description ?? '',
             web_enabled: device.webEnabled,
             web_port: device.webPort,
+            logger_ids: device.loggerIds,
         });
         setEditTarget(device);
     }
@@ -290,10 +308,10 @@ export default function CloudSshIndex({
                             <Label htmlFor={`${prefix}-web-enabled`}>
                                 Aktifkan akses web
                             </Label>
-                            <p className="text-xs text-muted-foreground">
+                            {/* <p className="text-xs text-muted-foreground">
                                 Teruskan HTTP perangkat melalui alamat Cloud
                                 Web.
-                            </p>
+                            </p> */}
                         </div>
                         <Checkbox
                             id={`${prefix}-web-enabled`}
@@ -336,12 +354,88 @@ export default function CloudSshIndex({
                                 value={webUrl ?? ''}
                                 placeholder="Dibuat otomatis setelah perangkat disimpan"
                             />
-                            <p className="text-xs text-muted-foreground">
+                            {/* <p className="text-xs text-muted-foreground">
                                 Nama subdomain dikelola otomatis oleh server.
-                            </p>
+                            </p> */}
                         </div>
                     </div>
                 </div>
+            </div>
+        );
+    }
+
+    function renderLoggerPicker(
+        form: typeof createForm,
+        prefix: string,
+        currentDeviceId: number | null = null,
+    ) {
+        return (
+            <div className="grid gap-2">
+                <div className="max-h-[52vh] overflow-y-auto rounded-md border">
+                    {availableLoggers.length === 0 ? (
+                        <p className="px-3 py-4 text-sm text-muted-foreground">
+                            Belum ada Logger tersedia.
+                        </p>
+                    ) : (
+                        availableLoggers.map((logger) => {
+                            const disabled = isLoggerSelectionDisabled(
+                                logger,
+                                currentDeviceId,
+                            );
+
+                            return (
+                                <label
+                                    key={logger.id}
+                                    htmlFor={`${prefix}-logger-${logger.id}`}
+                                    className={`flex items-start gap-3 border-b px-3 py-2.5 last:border-b-0 ${
+                                        disabled
+                                            ? 'cursor-not-allowed bg-muted/40 text-muted-foreground'
+                                            : 'cursor-pointer hover:bg-muted/30'
+                                    }`}
+                                >
+                                    <Checkbox
+                                        id={`${prefix}-logger-${logger.id}`}
+                                        className="mt-0.5"
+                                        checked={form.data.logger_ids.includes(
+                                            logger.id,
+                                        )}
+                                        disabled={disabled}
+                                        onCheckedChange={(checked) =>
+                                            form.setData(
+                                                'logger_ids',
+                                                updateLoggerSelection(
+                                                    form.data.logger_ids,
+                                                    logger.id,
+                                                    checked === true,
+                                                ),
+                                            )
+                                        }
+                                    />
+                                    <span className="min-w-0">
+                                        <span className="block truncate text-sm font-medium">
+                                            {logger.name}
+                                        </span>
+                                        <span className="block truncate text-xs text-muted-foreground">
+                                            {logger.serialNumber}
+                                        </span>
+                                        {disabled &&
+                                            logger.remoteDeviceName && (
+                                                <span className="block text-xs text-amber-600 dark:text-amber-400">
+                                                    Terhubung ke:{' '}
+                                                    {logger.remoteDeviceName}
+                                                </span>
+                                            )}
+                                    </span>
+                                </label>
+                            );
+                        })
+                    )}
+                </div>
+                {form.errors.logger_ids && (
+                    <p className="text-sm text-destructive">
+                        {form.errors.logger_ids}
+                    </p>
+                )}
             </div>
         );
     }
@@ -494,16 +588,24 @@ export default function CloudSshIndex({
             </div>
 
             <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-                <DialogContent className="max-h-[90vh] overflow-y-auto">
+                <DialogContent className="max-h-[90vh] overflow-hidden sm:max-w-5xl">
                     <DialogHeader>
                         <DialogTitle>Tambah Perangkat</DialogTitle>
-                        <DialogDescription>
+                        {/* <DialogDescription>
                             Perangkat harus terjangkau dari server (mis. IP
                             WireGuard 10.8.0.x).
-                        </DialogDescription>
+                        </DialogDescription> */}
                     </DialogHeader>
-                    <form onSubmit={submitCreate}>
-                        {renderFormFields(createForm, 'create')}
+                    <form onSubmit={submitCreate} className="grid gap-4">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                            <div className="grid gap-4">
+                                {renderFormFields(createForm, 'create')}
+                            </div>
+                            <div className="grid content-start gap-2 self-start rounded-lg border bg-muted/20 p-4">
+                                <Label>Project Logger</Label>
+                                {renderLoggerPicker(createForm, 'create')}
+                            </div>
+                        </div>
                         <DialogFooter className="mt-4">
                             <Button
                                 type="button"
@@ -527,19 +629,31 @@ export default function CloudSshIndex({
                 open={editTarget !== null}
                 onOpenChange={(open) => !open && setEditTarget(null)}
             >
-                <DialogContent className="max-h-[90vh] overflow-y-auto">
+                <DialogContent className="max-h-[90vh] overflow-hidden sm:max-w-5xl">
                     <DialogHeader>
                         <DialogTitle>Edit Perangkat</DialogTitle>
                         <DialogDescription>
                             Perbarui detail koneksi perangkat.
                         </DialogDescription>
                     </DialogHeader>
-                    <form onSubmit={submitEdit}>
-                        {renderFormFields(
-                            editForm,
-                            'edit',
-                            editTarget?.webUrl ?? null,
-                        )}
+                    <form onSubmit={submitEdit} className="grid gap-4">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                            <div className="grid gap-4">
+                                {renderFormFields(
+                                    editForm,
+                                    'edit',
+                                    editTarget?.webUrl ?? null,
+                                )}
+                            </div>
+                            <div className="grid content-start gap-2 self-start rounded-lg border bg-muted/20 p-4">
+                                <Label>Project Logger</Label>
+                                {renderLoggerPicker(
+                                    editForm,
+                                    'edit',
+                                    editTarget?.id ?? null,
+                                )}
+                            </div>
+                        </div>
                         <DialogFooter className="mt-4">
                             <Button
                                 type="button"
