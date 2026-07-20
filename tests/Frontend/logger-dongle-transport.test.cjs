@@ -21,6 +21,14 @@ const modeProfileWizardSource = readFileSync(
     ),
     'utf8',
 );
+const sensorControllerSource = readFileSync(
+    path.resolve(__dirname, '../../app/Http/Controllers/SensorController.php'),
+    'utf8',
+);
+const routesSource = readFileSync(
+    path.resolve(__dirname, '../../routes/web.php'),
+    'utf8',
+);
 
 test('logger detail exposes a Dongle toggle that switches protocol transport to serial', () => {
     assert.match(showSource, /useLoggerSerial/);
@@ -36,7 +44,6 @@ test('logger detail exposes a Dongle toggle that switches protocol transport to 
     assert.doesNotMatch(showSource, /Dongle ON/);
     assert.doesNotMatch(showSource, /Dongle OFF/);
     assert.doesNotMatch(showSource, /hidden max-w-40 text-right/);
-    assert.doesNotMatch(showSource, /via Serial/);
     assert.match(showSource, /serialProtocolCommand/);
     assert.match(
         showSource,
@@ -59,7 +66,17 @@ test('logger detail exposes a Dongle toggle that switches protocol transport to 
     assert.match(showSource, /api\/serial\/system\/set-mode\/import/);
     assert.match(showSource, /api\/serial\/calibration\/import/);
     assert.match(showSource, /api\/serial\/sensors\/ctrl\/import/);
+    assert.match(showSource, /api\/serial\/sensors\/confirm/);
+    assert.match(showSource, /serialSensorSetPayloadFromForm/);
+    assert.match(showSource, /serialRs485DeviceSetPayload/);
+    assert.match(showSource, /serialRs232DeviceSetPayload/);
+    assert.match(showSource, /serialSensorDeletePayload/);
+    assert.match(showSource, /_device_synced: 'serial'/);
     assert.match(showSource, /commandTransport\('CAL', payload\)/);
+    assert.match(showSource, /subscribe: subscribeDongle/);
+    assert.match(showSource, /applySerialTelemetry/);
+    assert.match(showSource, /ina_input/);
+    assert.match(showSource, /liveLogger/);
 });
 
 test('protocol panel routes generic commands through the selected transport', () => {
@@ -80,4 +97,13 @@ test('mode profile wizard applies guided setup through serial transport when ena
     assert.match(modeProfileWizardSource, /api\/serial\/mode-profile\/import/);
     assert.match(modeProfileWizardSource, /api\/serial\/system\/set-mode\/import/);
     assert.match(modeProfileWizardSource, /api\/serial\/calibration\/import/);
+});
+
+test('manual sensor set and delete skip backend MQTT after serial ACK', () => {
+    assert.match(routesSource, /api\/serial\/sensors\/confirm/);
+    assert.match(sensorControllerSource, /deviceAlreadySynced/);
+    assert.match(sensorControllerSource, /_device_synced/);
+    assert.match(sensorControllerSource, /skipDevicePush/);
+    assert.match(sensorControllerSource, /sendMqttSet/);
+    assert.match(sensorControllerSource, /sendMqttDel/);
 });

@@ -715,6 +715,239 @@ const emptyRs485Form = () => ({
     params: [{ ...BLANK_RS485_PARAM }] as Rs485Param[],
 });
 
+type SensorFormState = typeof EMPTY_FORM;
+
+function serialSensorSetPayloadFromForm(
+    form: SensorFormState,
+): ProtocolCommandPayload {
+    const connType = form.connection_type.toLowerCase();
+    const name = form.name || 'Unknown';
+    const unit = form.unit || '';
+
+    if (connType === 'analog') {
+        return {
+            SENSORS: {
+                cmd: 'SET',
+                type: 'ANALOG',
+                ch: Number(form.channel || 1),
+                mode: Number(form.analog_mode ?? 1),
+                s: [
+                    [
+                        name,
+                        Number(form.min_value || 0),
+                        Number(form.max_value || 100),
+                        unit,
+                    ],
+                ],
+            },
+        };
+    }
+
+    if (connType === 'digital') {
+        const mode = Number(form.digital_mode ?? form.analog_mode ?? 0);
+        return {
+            SENSORS: {
+                cmd: 'SET',
+                type: 'DIGITAL',
+                ch: Number(form.channel || 1),
+                mode,
+                s:
+                    mode === 1 || mode === 2
+                        ? [
+                              name,
+                              Number(form.pulse_submode ?? 0),
+                              Number(form.scale_factor || 1),
+                              unit,
+                              Number(form.timeout_sec ?? 5),
+                          ]
+                        : mode === 3
+                          ? [
+                                name,
+                                Number(form.default_state ?? 0),
+                                Number(form.failsafe ?? 0),
+                            ]
+                          : [
+                                name,
+                                form.label_high || 'HIGH',
+                                form.label_low || 'LOW',
+                                Number(form.debounce_ms ?? 50),
+                                form.invert_logic ? 1 : 0,
+                            ],
+            },
+        };
+    }
+
+    if (connType === 'rs232') {
+        return {
+            SENSORS: {
+                cmd: 'SET',
+                type: 'RS232',
+                p: Number(form.port || 1),
+                s: [[name, Number(form.scale_factor || 1), unit]],
+            },
+        };
+    }
+
+    return {
+        SENSORS: {
+            cmd: 'SET',
+            type: 'RS485',
+            d: [
+                {
+                    cfg: [
+                        Number(form.modbus_slave_id || 1),
+                        form.device_name || '',
+                        Number(form.function_code || 3),
+                        Number(form.register_address || 0),
+                        Number(form.baudrate || 9600),
+                        form.serial_format || '8N1',
+                    ],
+                    s: [
+                        [
+                            name,
+                            Number(form.scale_factor || 1),
+                            unit,
+                            Number(form.register_address || 0),
+                            Number(form.reg_count || 1),
+                            form.fast_poll ? 1 : 0,
+                        ],
+                    ],
+                },
+            ],
+        },
+    };
+}
+
+function serialRs485DeviceSetPayload(
+    form: ReturnType<typeof emptyRs485Form>,
+): ProtocolCommandPayload {
+    return {
+        SENSORS: {
+            cmd: 'SET',
+            type: 'RS485',
+            d: [
+                {
+                    cfg: [
+                        Number(form.modbus_slave_id || 1),
+                        form.device_name || '',
+                        Number(form.function_code || 3),
+                        0,
+                        Number(form.baudrate || 9600),
+                        form.serial_format || '8N1',
+                    ],
+                    s: form.params.map((param) => [
+                        param.name || 'Unknown',
+                        Number(param.scale_factor || 1),
+                        param.unit || '',
+                        Number(param.register_address || 0),
+                        Number(param.reg_count || 1),
+                        param.fast_poll ? 1 : 0,
+                    ]),
+                },
+            ],
+        },
+    };
+}
+
+function serialRs232DeviceSetPayload(
+    form: SensorFormState,
+    sensors: SensorItem[],
+    editingSensorId?: number,
+): ProtocolCommandPayload {
+    const port = Number(form.port || 1);
+    const existing = sensors
+        .filter(
+            (sensor) =>
+                sensor.connectionType === 'rs232' &&
+                sensor.port === port &&
+                sensor.id !== editingSensorId,
+        )
+        .map((sensor) => [
+            sensor.name || 'Unknown',
+            Number(sensor.scaleFactor ?? 1),
+            sensor.unit || '',
+        ]);
+
+    return {
+        SENSORS: {
+            cmd: 'SET',
+            type: 'RS232',
+            p: port,
+            s: [
+                ...existing,
+                [
+                    form.name || 'Unknown',
+                    Number(form.scale_factor || 1),
+                    form.unit || '',
+                ],
+            ],
+        },
+    };
+}
+
+function serialSensorDeletePayload(
+    connectionType: string,
+    identifier: number,
+): ProtocolCommandPayload {
+    const type = connectionType.toUpperCase();
+    const key = connectionType === 'rs485' ? 'id' : connectionType === 'rs232' ? 'p' : 'ch';
+    return {
+        SENSORS: {
+            cmd: 'DEL',
+            type,
+            [key]: identifier,
+        },
+    };
+}
+
+function serialGroupedSetPayloadFromSensors(
+    connectionType: 'rs485' | 'rs232',
+    members: SensorItem[],
+): ProtocolCommandPayload {
+    const head = members[0];
+    if (connectionType === 'rs232') {
+        return {
+            SENSORS: {
+                cmd: 'SET',
+                type: 'RS232',
+                p: Number(head.port || 1),
+                s: members.map((sensor) => [
+                    sensor.name || 'Unknown',
+                    Number(sensor.scaleFactor ?? 1),
+                    sensor.unit || '',
+                ]),
+            },
+        };
+    }
+
+    return {
+        SENSORS: {
+            cmd: 'SET',
+            type: 'RS485',
+            d: [
+                {
+                    cfg: [
+                        Number(head.modbusSlaveId || 1),
+                        head.deviceName || '',
+                        Number(head.functionCode || 3),
+                        Number(head.registerAddress || 0),
+                        Number(head.baudrate || 9600),
+                        head.serialFormat || '8N1',
+                    ],
+                    s: members.map((sensor) => [
+                        sensor.name || 'Unknown',
+                        Number(sensor.scaleFactor ?? 1),
+                        sensor.unit || '',
+                        Number(sensor.registerAddress || 0),
+                        Number(sensor.regCount ?? sensor.quantity ?? 1),
+                        sensor.fastPoll ? 1 : 0,
+                    ]),
+                },
+            ],
+        },
+    };
+}
+
 function configuratorModes(modes: LoggerModeOption[]): LoggerModeOption[] {
     return modes.filter((mode) => CONFIGURATOR_MODES.has(mode.slug));
 }
@@ -1074,6 +1307,174 @@ function mapSlotsFromSerialData(
     }
 
     return slots;
+}
+
+type LiveSensorValue = {
+    value: number;
+    status?: SensorItem['status'];
+};
+
+type LiveLoggerOverlay = {
+    temperature?: string | null;
+    humidity?: string | null;
+    battery?: string | null;
+    power?: PowerRails | null;
+    powerReadAt?: string | null;
+    lastConnected?: string | null;
+    sensorValues: Record<number, LiveSensorValue>;
+};
+
+const SERIAL_TELEMETRY_META_KEYS = new Set([
+    'date',
+    'time',
+    'slave_id',
+    'internal',
+    'ina_input',
+]);
+
+function serialTelemetryTimestamp(message: JsonRecord): string | null {
+    const date = typeof message.date === 'string' ? message.date : null;
+    const time = typeof message.time === 'string' ? message.time : null;
+    if (date && time) return `${date} ${time}`;
+    return time ?? date;
+}
+
+function serialNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+}
+
+function normalizeTelemetryName(name: string): string {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function telemetryNameVariants(name: string): string[] {
+    const normalized = normalizeTelemetryName(name);
+    const variants = new Set([normalized]);
+    const expand = (mapper: (value: string) => string | null) => {
+        for (const value of Array.from(variants)) {
+            const next = mapper(value);
+            if (next && next !== value) variants.add(next);
+        }
+    };
+
+    expand((value) =>
+        value.startsWith('rainfall') ? `rain${value.slice('rainfall'.length)}` : null,
+    );
+    expand((value) =>
+        value.startsWith('rain') && !value.startsWith('rainfall')
+            ? `rainfall${value.slice('rain'.length)}`
+            : null,
+    );
+    expand((value) =>
+        value.includes('minute') ? value.replaceAll('minute', 'min') : null,
+    );
+    expand((value) =>
+        value.includes('min') ? value.replaceAll('min', 'minute') : null,
+    );
+    expand((value) =>
+        value.includes('hour') ? value.replaceAll('hour', 'hou') : null,
+    );
+    expand((value) =>
+        value.includes('hou') ? value.replaceAll('hou', 'hour') : null,
+    );
+    expand((value) =>
+        value.includes('temperature') ? value.replaceAll('temperature', 'temp') : null,
+    );
+    expand((value) =>
+        value.includes('temp') ? value.replaceAll('temp', 'temperature') : null,
+    );
+    expand((value) =>
+        value.includes('humidity') ? value.replaceAll('humidity', 'humi') : null,
+    );
+    expand((value) =>
+        value.includes('humi') ? value.replaceAll('humi', 'humidity') : null,
+    );
+
+    return Array.from(variants);
+}
+
+function applySerialTelemetry(
+    baseLogger: LoggerDetail,
+    previous: LiveLoggerOverlay,
+    message: JsonRecord,
+): LiveLoggerOverlay {
+    const next: LiveLoggerOverlay = {
+        ...previous,
+        sensorValues: { ...previous.sensorValues },
+    };
+    const timestamp = serialTelemetryTimestamp(message);
+    if (timestamp) {
+        next.lastConnected = timestamp;
+    }
+
+    const temp = serialNumber(message.temp);
+    const humi = serialNumber(message.humi);
+    if (typeof message.internal === 'string' || temp !== null || humi !== null) {
+        if (temp !== null) next.temperature = temp.toFixed(1);
+        if (humi !== null) next.humidity = humi.toFixed(1);
+    }
+
+    const inaInput = asRecord(message.ina_input);
+    if (inaInput) {
+        const voltage = serialNumber(inaInput.V);
+        const currentMa = serialNumber(inaInput.mA);
+        if (voltage !== null) next.battery = voltage.toFixed(2);
+        next.power = {
+            ...(previous.power ?? baseLogger.power ?? {}),
+            bat: {
+                v: voltage,
+                a: currentMa !== null ? currentMa / 1000 : null,
+                w:
+                    voltage !== null && currentMa !== null
+                        ? (voltage * currentMa) / 1000
+                        : null,
+            },
+        };
+        if (timestamp) next.powerReadAt = timestamp;
+    }
+
+    const rawSlaveId = serialNumber(message.slave_id);
+    const slaveId = rawSlaveId !== null ? Math.trunc(rawSlaveId) : null;
+    const sensorsByName = new Map<string, SensorItem[]>();
+    for (const sensor of baseLogger.sensors) {
+        for (const key of telemetryNameVariants(sensor.name)) {
+            const existing = sensorsByName.get(key) ?? [];
+            existing.push(sensor);
+            sensorsByName.set(key, existing);
+        }
+    }
+
+    for (const [key, value] of Object.entries(message)) {
+        if (SERIAL_TELEMETRY_META_KEYS.has(key)) continue;
+        const numericValue = serialNumber(value);
+        if (numericValue === null) continue;
+
+        const candidates = Array.from(
+            new Set(
+                telemetryNameVariants(key).flatMap(
+                    (variant) => sensorsByName.get(variant) ?? [],
+                ),
+            ),
+        );
+        const matched =
+            slaveId === null
+                ? candidates
+                : candidates.filter((sensor) => sensor.modbusSlaveId === slaveId);
+        const targetSensors = matched.length > 0 ? matched : candidates;
+        for (const sensor of targetSensors) {
+            next.sensorValues[sensor.id] = {
+                value: numericValue,
+                status: 'active',
+            };
+        }
+    }
+
+    return next;
 }
 
 function SyncFromDeviceDialog({
@@ -1472,10 +1873,15 @@ function SyncFromDeviceDialog({
         setPhase('applying');
 
         try {
-            const res = await apiFetch('/api/mqtt/sensors/confirm', {
+            const res = await apiFetch(
+                transportMode === 'serial'
+                    ? '/api/serial/sensors/confirm'
+                    : '/api/mqtt/sensors/confirm',
+                {
                 logger_id: loggerId,
                 diff,
-            });
+                },
+            );
             const data = await res.json();
             if (data.success) {
                 setApplyResult(data.changes_applied || []);
@@ -1489,7 +1895,7 @@ function SyncFromDeviceDialog({
             setErrorMessage('Network error while applying changes');
             setPhase('error');
         }
-    }, [canApplySensorChanges, diff, loggerId]);
+    }, [canApplySensorChanges, diff, loggerId, transportMode]);
 
     function handleOpen() {
         reset();
@@ -2649,10 +3055,59 @@ function SensorCrudPanel({
         setDialogOpen(true);
     };
 
-    const submitRs485 = () => {
+    const submitRs485 = async () => {
         if (readOnly || hasInvalidRs485ParameterName) return;
         setProcessing(true);
         setErrors({});
+        const serialSynced =
+            transportMode === 'serial' && commandTransport && deviceIdentifier;
+
+        if (serialSynced) {
+            try {
+                const setResult = await commandTransport(
+                    'SENSORS',
+                    serialRs485DeviceSetPayload(rs485Form),
+                );
+                if (!setResult.success) {
+                    setErrors({
+                        mqtt:
+                            setResult.message ||
+                            'Gagal set sensor via Serial.',
+                    });
+                    setProcessing(false);
+                    return;
+                }
+
+                if (
+                    editingDeviceSlave != null &&
+                    editingDeviceSlave !== rs485Form.modbus_slave_id
+                ) {
+                    const delResult = await commandTransport(
+                        'SENSORS',
+                        serialSensorDeletePayload('rs485', editingDeviceSlave),
+                    );
+                    if (!delResult.success) {
+                        setErrors({
+                            mqtt:
+                                delResult.message ||
+                                'Sensor baru tersimpan, tetapi slave lama gagal dihapus via Serial.',
+                        });
+                        setProcessing(false);
+                        return;
+                    }
+                }
+            } catch (error) {
+                setErrors({
+                    mqtt:
+                        error instanceof Error
+                            ? error.message
+                            : 'Gagal set sensor via Serial.',
+                });
+                setProcessing(false);
+                return;
+            }
+        }
+
         const body = {
             modbus_slave_id: rs485Form.modbus_slave_id,
             device_name: rs485Form.device_name,
@@ -2669,6 +3124,7 @@ function SensorCrudPanel({
                 reg_count: p.reg_count,
                 fast_poll: p.fast_poll,
             })),
+            ...(serialSynced ? { _device_synced: 'serial' } : {}),
         };
         const url =
             editingDeviceSlave != null
@@ -2745,11 +3201,11 @@ function SensorCrudPanel({
         }));
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         if (readOnly) return;
         // RS485 uses the unified device + parameters endpoint.
         if (form.connection_type === 'rs485') {
-            submitRs485();
+            await submitRs485();
             return;
         }
 
@@ -2769,24 +3225,167 @@ function SensorCrudPanel({
             ? { ...form, type: guessSensorType(form.name, form.unit) }
             : form;
 
-        router[method](url, payload, {
-            preserveScroll: true,
-            onSuccess: () => {
-                setDialogOpen(false);
-                setEditingSensor(null);
-                setForm(EMPTY_FORM);
+        const serialSynced =
+            transportMode === 'serial' &&
+            commandTransport &&
+            deviceIdentifier &&
+            payload.connection_type;
+
+        if (serialSynced) {
+            try {
+                const commandPayload =
+                    payload.connection_type === 'rs232'
+                        ? serialRs232DeviceSetPayload(
+                              payload,
+                              sensors,
+                              editingSensor?.id,
+                          )
+                        : serialSensorSetPayloadFromForm(payload);
+                const result = await commandTransport(
+                    'SENSORS',
+                    commandPayload,
+                );
+                if (!result.success) {
+                    setErrors({
+                        mqtt: result.message || 'Gagal set sensor via Serial.',
+                    });
+                    setProcessing(false);
+                    return;
+                }
+
+                if (
+                    editingSensor?.connectionType === 'rs232' &&
+                    editingSensor.port != null &&
+                    editingSensor.port !== payload.port
+                ) {
+                    const oldRemaining = sensors.filter(
+                        (sensor) =>
+                            sensor.connectionType === 'rs232' &&
+                            sensor.port === editingSensor.port &&
+                            sensor.id !== editingSensor.id,
+                    );
+                    const oldPayload =
+                        oldRemaining.length > 0
+                            ? serialGroupedSetPayloadFromSensors(
+                                  'rs232',
+                                  oldRemaining,
+                              )
+                            : serialSensorDeletePayload(
+                                  'rs232',
+                                  editingSensor.port,
+                              );
+                    const oldResult = await commandTransport(
+                        'SENSORS',
+                        oldPayload,
+                    );
+                    if (!oldResult.success) {
+                        setErrors({
+                            mqtt:
+                                oldResult.message ||
+                                'Port RS232 lama gagal diperbarui via Serial.',
+                        });
+                        setProcessing(false);
+                        return;
+                    }
+                }
+            } catch (error) {
+                setErrors({
+                    mqtt:
+                        error instanceof Error
+                            ? error.message
+                            : 'Gagal set sensor via Serial.',
+                });
+                setProcessing(false);
+                return;
+            }
+        }
+
+        router[method](
+            url,
+            {
+                ...payload,
+                ...(serialSynced ? { _device_synced: 'serial' } : {}),
             },
-            onError: (errs) => setErrors(errs as Record<string, string>),
-            onFinish: () => setProcessing(false),
-        });
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    setDialogOpen(false);
+                    setEditingSensor(null);
+                    setForm(EMPTY_FORM);
+                },
+                onError: (errs) => setErrors(errs as Record<string, string>),
+                onFinish: () => setProcessing(false),
+            },
+        );
     };
 
-    const handleDelete = () => {
+    const handleDelete = async () => {
         if (readOnly) return;
         if (!deletingSensor) return;
         setProcessing(true);
+        const serialSynced =
+            transportMode === 'serial' &&
+            commandTransport &&
+            deviceIdentifier &&
+            deletingSensor.connectionType;
+
+        if (serialSynced) {
+            try {
+                const connType = deletingSensor.connectionType!;
+                const groupId =
+                    connType === 'rs485'
+                        ? deletingSensor.modbusSlaveId
+                        : connType === 'rs232'
+                          ? deletingSensor.port
+                          : deletingSensor.channel;
+
+                if (groupId != null) {
+                    const remaining =
+                        connType === 'rs485' || connType === 'rs232'
+                            ? sensors.filter((sensor) => {
+                                  if (sensor.id === deletingSensor.id)
+                                      return false;
+                                  if (sensor.connectionType !== connType)
+                                      return false;
+                                  return connType === 'rs485'
+                                      ? sensor.modbusSlaveId === groupId
+                                      : sensor.port === groupId;
+                              })
+                            : [];
+                    const payload =
+                        (connType === 'rs485' || connType === 'rs232') &&
+                        remaining.length > 0
+                            ? serialGroupedSetPayloadFromSensors(
+                                  connType,
+                                  remaining,
+                              )
+                            : serialSensorDeletePayload(connType, groupId);
+                    const result = await commandTransport('SENSORS', payload);
+                    if (!result.success) {
+                        setErrors({
+                            mqtt:
+                                result.message ||
+                                'Gagal hapus sensor via Serial.',
+                        });
+                        setProcessing(false);
+                        return;
+                    }
+                }
+            } catch (error) {
+                setErrors({
+                    mqtt:
+                        error instanceof Error
+                            ? error.message
+                            : 'Gagal hapus sensor via Serial.',
+                });
+                setProcessing(false);
+                return;
+            }
+        }
+
         router.delete(`/loggers/${loggerId}/sensors/${deletingSensor.id}`, {
             preserveScroll: true,
+            data: serialSynced ? { _device_synced: 'serial' } : undefined,
             onSuccess: () => {
                 setDeleteDialogOpen(false);
                 setDeletingSensor(null);
@@ -2796,21 +3395,54 @@ function SensorCrudPanel({
     };
 
     // Delete an entire RS485 slave / RS232 port (the whole device + all its params).
-    const deleteDevice = (group: SensorGroup) => {
+    const deleteDevice = async (group: SensorGroup) => {
         if (readOnly) return;
         const head = group.members[0];
         const connType = head.connectionType;
         const groupId = connType === 'rs485' ? head.modbusSlaveId : head.port;
         if (!connType || groupId == null) return;
         const label = `${group.deviceLabel}${group.locator ? ` · ${group.locator}` : ''}`;
+        if (
+            !window.confirm(
+                `Hapus seluruh device "${label}" beserta ${group.members.length} parameter-nya?`,
+            )
+        ) {
+            return;
+        }
+
+        const serialSynced =
+            transportMode === 'serial' && commandTransport && deviceIdentifier;
+
+        if (serialSynced) {
+            try {
+                const result = await commandTransport(
+                    'SENSORS',
+                    serialSensorDeletePayload(connType, groupId),
+                );
+                if (!result.success) {
+                    setErrors({
+                        mqtt:
+                            result.message ||
+                            'Gagal hapus device via Serial.',
+                    });
+                    return;
+                }
+            } catch (error) {
+                setErrors({
+                    mqtt:
+                        error instanceof Error
+                            ? error.message
+                            : 'Gagal hapus device via Serial.',
+                });
+                return;
+            }
+        }
+
         router.delete(
             `/loggers/${loggerId}/sensor-devices/${connType}/${groupId}`,
             {
                 preserveScroll: true,
-                onBefore: () =>
-                    window.confirm(
-                        `Hapus seluruh device "${label}" beserta ${group.members.length} parameter-nya?`,
-                    ),
+                data: serialSynced ? { _device_synced: 'serial' } : undefined,
             },
         );
     };
@@ -5957,25 +6589,25 @@ function SetModeCard({
             const data =
                 transportMode === 'serial' && commandTransport
                     ? await commandTransport('SYSTEM', {
-                          SYSTEM: { cmd: 'SET_MODE', mode: selectedMode },
-                      }).then(async (result) => {
-                          if (result.success) {
-                              const persist = await apiFetch(
-                                  '/api/serial/system/set-mode/import',
-                                  {
-                                      id_logger: logger.deviceIdentifier!,
-                                      mode: selectedMode,
-                                      response: result.data ?? null,
-                                  },
-                              );
-                              return persist.json();
-                          }
-                          return result;
-                      })
-                    : await apiFetch('/api/mqtt/system/set-mode', {
-                          id_logger: logger.deviceIdentifier!,
-                          mode: selectedMode,
-                      }).then((res) => res.json());
+                            SYSTEM: { cmd: 'SET_MODE', mode: selectedMode },
+                        }).then(async (result) => {
+                            if (result.success) {
+                                const persist = await apiFetch(
+                                    '/api/serial/system/set-mode/import',
+                                    {
+                                        id_logger: logger.deviceIdentifier!,
+                                        mode: selectedMode,
+                                        response: result.data ?? null,
+                                    },
+                                );
+                                return persist.json();
+                            }
+                            return result;
+                        })
+                        : await apiFetch('/api/mqtt/system/set-mode', {
+                            id_logger: logger.deviceIdentifier!,
+                            mode: selectedMode,
+                        }).then((res) => res.json());
             if (data.success) {
                 setPhase('success');
                 setMessage(
@@ -7526,10 +8158,14 @@ export default function LoggerShow({
         connect: connectDongle,
         disconnect: disconnectDongle,
         sendCommandUntil: sendDongleCommandUntil,
+        subscribe: subscribeDongle,
     } = useLoggerSerial();
     const [dongleEnabled, setDongleEnabled] = useState(false);
     const [dongleBusy, setDongleBusy] = useState(false);
     const [dongleError, setDongleError] = useState<string | null>(null);
+    const [liveOverlay, setLiveOverlay] = useState<LiveLoggerOverlay>({
+        sensorValues: {},
+    });
     const dongleButtonLabel = dongleBusy
         ? dongleEnabled
             ? 'Memutuskan...'
@@ -7557,6 +8193,19 @@ export default function LoggerShow({
             setDongleEnabled(false);
         }
     }, [dongleConnected, dongleEnabled]);
+
+    useEffect(() => {
+        setLiveOverlay({ sensorValues: {} });
+    }, [logger.id]);
+
+    useEffect(() => {
+        if (!dongleConnected) return;
+        return subscribeDongle((message) => {
+            setLiveOverlay((previous) =>
+                applySerialTelemetry(logger, previous, message),
+            );
+        });
+    }, [dongleConnected, logger, subscribeDongle]);
 
     const serialProtocolCommand = useCallback(
         async (
@@ -7658,19 +8307,39 @@ export default function LoggerShow({
         { title: logger.name, href: `/loggers/${logger.id}` },
     ];
 
+    const liveLogger: LoggerDetail = {
+        ...logger,
+        temperature: liveOverlay.temperature ?? logger.temperature,
+        humidity: liveOverlay.humidity ?? logger.humidity,
+        battery: liveOverlay.battery ?? logger.battery,
+        power: liveOverlay.power ?? logger.power,
+        powerReadAt: liveOverlay.powerReadAt ?? logger.powerReadAt,
+        lastConnected: liveOverlay.lastConnected ?? logger.lastConnected,
+        sensors: logger.sensors.map((sensor) => {
+            const liveValue = liveOverlay.sensorValues[sensor.id];
+            return liveValue
+                ? {
+                      ...sensor,
+                      value: liveValue.value,
+                      status: liveValue.status ?? sensor.status,
+                  }
+                : sensor;
+        }),
+    };
+
     // Shape the existing logger data for the embedded Advanced Settings (Protocol) panel.
     const protocolLogger: ProtocolLogger = {
-        id: logger.id,
-        name: logger.name,
-        serialNumber: logger.serialNumber,
-        status: logger.status,
-        deviceIdentifier: logger.deviceIdentifier,
-        model: logger.model,
-        connectionType: logger.connectionType,
-        loggerMode: logger.loggerMode,
-        channelCount: logger.channelCount,
-        firmwareVersion: logger.firmwareVersion,
-        sensors: logger.sensors.map((s) => ({
+        id: liveLogger.id,
+        name: liveLogger.name,
+        serialNumber: liveLogger.serialNumber,
+        status: liveLogger.status,
+        deviceIdentifier: liveLogger.deviceIdentifier,
+        model: liveLogger.model,
+        connectionType: liveLogger.connectionType,
+        loggerMode: liveLogger.loggerMode,
+        channelCount: liveLogger.channelCount,
+        firmwareVersion: liveLogger.firmwareVersion,
+        sensors: liveLogger.sensors.map((s) => ({
             id: s.id,
             name: s.name,
             type: s.type,
@@ -8069,7 +8738,7 @@ export default function LoggerShow({
                             <InfoCard
                                 icon={Activity}
                                 label={t('loggerDetail.active_sensors')}
-                                value={`${logger.sensors.filter((s) => s.status === 'active').length}/${logger.sensors.length}`}
+                                value={`${liveLogger.sensors.filter((s) => s.status === 'active').length}/${liveLogger.sensors.length}`}
                                 color="amber"
                             />
                         </div>
@@ -8194,7 +8863,7 @@ export default function LoggerShow({
                             </CardHeader>
                             <CardContent>
                                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                                    {logger.sensors.map((sensor) => (
+                                    {liveLogger.sensors.map((sensor) => (
                                         <div
                                             key={sensor.id}
                                             className="flex items-center gap-3 rounded-lg border p-3"
@@ -8215,7 +8884,7 @@ export default function LoggerShow({
                                             </div>
                                         </div>
                                     ))}
-                                    {logger.sensors.length === 0 && (
+                                    {liveLogger.sensors.length === 0 && (
                                         <p className="col-span-full text-sm text-muted-foreground">
                                             {t(
                                                 'loggerDetail.no_sensors_configured',
@@ -8231,7 +8900,7 @@ export default function LoggerShow({
                     <TabsContent value="sensors" className="mt-6 space-y-4">
                         <SensorCrudPanel
                             loggerId={logger.id}
-                            sensors={logger.sensors}
+                            sensors={liveLogger.sensors}
                             deviceIdentifier={logger.deviceIdentifier}
                             analogChannelMax={maxAnalogChannel(logger)}
                             digitalChannelMax={maxDigitalChannel(logger)}
@@ -8394,7 +9063,7 @@ export default function LoggerShow({
                         <LoggerConditionCard
                             dataHealth={dataHealth}
                             diagnostics={diagnostics}
-                            logger={logger}
+                            logger={liveLogger}
                         />
 
                         {/* Internal Sensors */}

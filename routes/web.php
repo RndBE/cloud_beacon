@@ -135,6 +135,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.serial.info.import');
     Route::post('api/serial/sensors/preview', [MqttController::class, 'previewSensorsFromSerial'])
         ->name('api.serial.sensors.preview');
+    Route::post('api/serial/sensors/confirm', [MqttController::class, 'confirmSensorSync'])
+        ->name('api.serial.sensors.confirm');
     Route::post('api/serial/sensors/ctrl/import', [MqttController::class, 'importSensorCtrlFromSerial'])
         ->name('api.serial.sensors.ctrl.import');
     Route::post('api/serial/system/set-mode/import', [MqttController::class, 'importSetModeFromSerial'])
