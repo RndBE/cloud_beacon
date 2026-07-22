@@ -2011,6 +2011,7 @@ export function SystemLogsCard({
 
     const lines =
         content !== null ? content.replace(/\r\n/g, '\n').split('\n') : [];
+        const hasLogText = content !== null && content.trim().length > 0;
     const summary = useMemo(
         () => (content !== null ? summarizeSyslog(content) : null),
         [content],
@@ -2184,10 +2185,7 @@ export function SystemLogsCard({
                                 {loadingContent ? (
                                     <div className="flex flex-col items-center gap-3 py-10">
                                         <Loader2 className="size-8 animate-spin text-muted-foreground" />
-                                        <p className="text-sm text-muted-foreground">
-                                            Mengupload (GETLOG) &amp; membaca
-                                            isi log...
-                                        </p>
+                                        <p className="text-sm text-muted-foreground">Mengupload (GETLOG) &amp; membaca isi log... maksimal 5 menit</p>
                                     </div>
                                 ) : contentError ? (
                                     <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
@@ -2195,6 +2193,12 @@ export function SystemLogsCard({
                                         <p className="mt-2 text-sm text-red-600 dark:text-red-400">
                                             {contentError}
                                         </p>
+                                    </div>
+                                ) : !hasLogText ? (
+                                    <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
+                                        <FileText className="mx-auto size-8 text-muted-foreground/40" />
+                                        <p className="mt-2 text-sm font-medium">File log kosong</p>
+                                        <p className="mt-1 text-xs text-muted-foreground">Upload berhasil, tapi file dari FTP tidak berisi baris log.</p>
                                     </div>
                                 ) : (
                                     <>

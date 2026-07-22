@@ -7,5 +7,5 @@ return [
     'password' => env('MQTT_PASSWORD', 'b34c0n'),
     'client_id_prefix' => env('MQTT_CLIENT_PREFIX', 'cloud_beacon_'),
     'timeout'     => (int) env('MQTT_TIMEOUT', 15),      // seconds to wait for regular MQTT response
-    'ftp_timeout' => (int) env('MQTT_FTP_TIMEOUT', 120), // seconds to wait for FTP (upload can be slow)
+    'ftp_timeout' => (int) env('MQTT_FTP_TIMEOUT', 300), // seconds to wait for FTP (upload can be slow)
 ];
