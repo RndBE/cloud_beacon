@@ -90,7 +90,7 @@ class LoggerController extends Controller
         $deviceModel = $logger->model
             ? DeviceModel::where('name', $logger->model)->first()
             : null;
-        $allowedConfiguratorModes = ['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS'];
+        $allowedConfiguratorModes = ['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS'];
 
         $loggerData = [
             'id' => IdHasher::encode($logger->id),
@@ -200,7 +200,9 @@ class LoggerController extends Controller
                 'lastError' => $i->last_error,
             ]),
             'loggerMode' => $logger->logger_mode,
-            'calibrationData' => $logger->calibration_data,
+            'calibrationData' => $logger->calibration_data === null
+                ? null
+                : MqttService::normalizeCalibrationData($logger->logger_mode ?? '', $logger->calibration_data),
             'calibratedAt' => $logger->calibrated_at?->format('Y-m-d H:i:s'),
             'availableModes' => \App\Models\LoggerMode::whereIn('slug', $allowedConfiguratorModes)
                 ->orderBy('group')

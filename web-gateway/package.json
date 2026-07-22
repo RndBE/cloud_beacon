@@ -1,0 +1,17 @@
+{
+    "name": "cloud-beacon-web-gateway",
+    "private": true,
+    "version": "1.0.0",
+    "type": "module",
+    "main": "src/server.js",
+    "scripts": {
+        "start": "node src/server.js",
+        "test": "node --test"
+    },
+    "dependencies": {
+        "http-proxy": "^1.18.1"
+    },
+    "devDependencies": {
+        "ws": "^8.18.0"
+    }
+}

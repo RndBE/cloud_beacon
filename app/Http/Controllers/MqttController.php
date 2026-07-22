@@ -1309,6 +1309,8 @@ class MqttController extends Controller
             return response()->json(['success' => false, 'message' => 'Mode ' . $logger->logger_mode . ' tidak memiliki fitur kalibrasi.'], 400);
         }
 
+        $request->merge(MqttService::normalizeCalibrationData($logger->logger_mode, $request->all()));
+
         // Dynamic validation based on mode's calibration_fields
         $calibrationFields = $modeConfig->calibration_fields ?? [];
         $validationRules = [];
@@ -1343,12 +1345,17 @@ class MqttController extends Controller
             };
         }
 
-        $mqtt   = new MqttService();
+        $mqtt   = app(MqttService::class);
         $result = $mqtt->sendCalibrationSet($idLogger, $logger->logger_mode, $params);
 
         if ($result['success']) {
+            $responseData = MqttService::normalizeCalibrationData($logger->logger_mode, $result['data'] ?? []);
+            if (isset($result['data'])) {
+                $result['data'] = $responseData;
+            }
+
             // Merge response data (including sensor_rekam) with input params
-            $calibrationData = array_merge($params, $result['data'] ?? []);
+            $calibrationData = array_merge($params, $responseData);
 
             $logger->update([
                 'calibration_data' => $calibrationData,
@@ -1401,7 +1408,10 @@ class MqttController extends Controller
             return response()->json(['success' => false, 'message' => 'Mode ' . $logger->logger_mode . ' tidak memiliki kalibrasi.'], 400);
         }
 
-        $result = (new MqttService())->sendCalibrationGet($idLogger, $logger->logger_mode);
+        $result = app(MqttService::class)->sendCalibrationGet($idLogger, $logger->logger_mode);
+        if ($result['success'] && isset($result['data']) && is_array($result['data'])) {
+            $result['data'] = MqttService::normalizeCalibrationData($logger->logger_mode, $result['data']);
+        }
 
         return response()->json($result);
     }

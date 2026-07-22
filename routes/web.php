@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\CloudWebSessionController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceModelController;
 use App\Http\Controllers\ForwardingLogController;
@@ -20,6 +21,7 @@ Route::get('/', function () {
     if (auth()->check()) {
         return redirect()->route('dashboard');
     }
+
     return redirect()->route('login');
 })->name('home');
 
@@ -173,7 +175,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // TEMPORARY: Compare GET vs GET_ALL sensor formats
     Route::get('api/mqtt/sensors/compare/{id_logger}', function (string $id_logger) {
-        $mqtt = new \App\Services\MqttService();
+        $mqtt = new \App\Services\MqttService;
 
         // Call GET first
         $getResult = $mqtt->requestSensorsGet($id_logger);
@@ -297,6 +299,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('cloud-ssh/{device}/session', [\App\Http\Controllers\CloudSshSessionController::class, 'store'])
         ->middleware('permission:cloudssh.connect')
         ->name('cloud-ssh.session');
+    Route::post('cloud-web/{device}/session', [CloudWebSessionController::class, 'store'])
+        ->middleware(['permission:cloudweb.connect', 'throttle:10,1'])
+        ->name('cloud-web.session');
 
     // Platform Integration CRUD (nested under logger)
     Route::post('loggers/{id}/integrations', [IntegrationController::class, 'store'])
@@ -336,4 +341,4 @@ Route::prefix('api/v1')->group(function () {
         ->name('api.v1.production.lookup');
 });
 
-require __DIR__ . '/settings.php';
+require __DIR__.'/settings.php';

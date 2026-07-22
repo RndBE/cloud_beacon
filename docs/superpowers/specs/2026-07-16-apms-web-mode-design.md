@@ -46,7 +46,7 @@ The calibration field definitions, in display and payload order, will be:
 | `arr_sensor` | Select with only `RK400-04` | Required and exactly `RK400-04` | string |
 | `soil_source` | Sensor-source picker | Required device sensor name, maximum 255 characters | string |
 
-All three source pickers reuse the sensor names returned by the existing `SENSORS GET_NAME` flow. The single `arr_sensor` option is selected by default in the existing generic select UI.
+All three source pickers reuse the sensor names returned by the existing `SENSORS GET_NAME` flow. The generic form initializer will select the single `arr_sensor` option by default when no saved value exists.
 
 ## Data and Deployment
 

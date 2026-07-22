@@ -76,6 +76,13 @@ class User extends Authenticatable
             ->withTimestamps();
     }
 
+    public function assignedProjects(): BelongsToMany
+    {
+        return $this->belongsToMany(Project::class, 'project_user')
+            ->withPivot('access_level', 'logger_scope')
+            ->withTimestamps();
+    }
+
     public function reportedMaintenanceTickets(): HasMany
     {
         return $this->hasMany(MaintenanceTicket::class, 'reported_by');

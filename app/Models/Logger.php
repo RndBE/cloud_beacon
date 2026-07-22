@@ -144,7 +144,10 @@ class Logger extends Model
 
         return $query->where(function (Builder $query) use ($user) {
             $query->where('user_id', $user->id)
-                ->orWhereHas('assignedUsers', fn (Builder $assignment) => $assignment->where('users.id', $user->id));
+                ->orWhereHas('assignedUsers', fn (Builder $assignment) => $assignment->where('users.id', $user->id))
+                ->orWhereHas('project.assignedUsers', fn (Builder $assignment) => $assignment
+                    ->where('users.id', $user->id)
+                    ->where('project_user.logger_scope', Project::LOGGER_SCOPE_ALL));
         });
     }
 
@@ -158,7 +161,11 @@ class Logger extends Model
             $query->where('user_id', $user->id)
                 ->orWhereHas('assignedUsers', fn (Builder $assignment) => $assignment
                     ->where('users.id', $user->id)
-                    ->where('logger_user.access_level', self::ACCESS_MANAGE));
+                    ->where('logger_user.access_level', self::ACCESS_MANAGE))
+                ->orWhereHas('project.assignedUsers', fn (Builder $assignment) => $assignment
+                    ->where('users.id', $user->id)
+                    ->where('project_user.access_level', self::ACCESS_MANAGE)
+                    ->where('project_user.logger_scope', Project::LOGGER_SCOPE_ALL));
         });
     }
 
@@ -171,7 +178,13 @@ class Logger extends Model
         return $this->assignedUsers()
             ->where('users.id', $user->id)
             ->wherePivot('access_level', self::ACCESS_MANAGE)
-            ->exists();
+            ->exists()
+            || $this->project()
+                ->whereHas('assignedUsers', fn (Builder $assignment) => $assignment
+                    ->where('users.id', $user->id)
+                    ->where('project_user.access_level', self::ACCESS_MANAGE)
+                    ->where('project_user.logger_scope', Project::LOGGER_SCOPE_ALL))
+                ->exists();
     }
 
     /**

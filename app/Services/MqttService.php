@@ -298,9 +298,24 @@ class MqttService
         return match ($normalized) {
             'DEF' => 'DEFAULT',
             // Active modes per spec §3.14 / §3.4. WEATHER kept only for legacy stored values.
-            'DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'WEATHER' => $normalized,
+            'DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS', 'WEATHER' => $normalized,
             default => null,
         };
+    }
+
+    public static function normalizeCalibrationData(string $modeSlug, array $data): array
+    {
+        $sensorKey = match (strtoupper(trim($modeSlug))) {
+            'APMS' => 'arr_sensor',
+            'ARR' => 'sensor',
+            default => null,
+        };
+
+        if ($sensorKey !== null && ($data[$sensorKey] ?? null) === 'RK400-04') {
+            $data[$sensorKey] = 'TB-400-04';
+        }
+
+        return $data;
     }
 
     /**
@@ -1564,6 +1579,7 @@ class MqttService
                             // Extract all response fields (sumur, muka_air, sensor_rekam, etc.)
                             $responseData = $data[$modeSlug];
                             unset($responseData['status']);
+                            $responseData = self::normalizeCalibrationData($modeSlug, $responseData);
                             $result = [
                                 'success' => true,
                                 'data' => $responseData,

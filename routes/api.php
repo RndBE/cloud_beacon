@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\CloudWebBridgeController;
 use App\Http\Controllers\Api\Mobile\AuthController;
 use App\Http\Controllers\Api\Mobile\ForwardingLogController;
 use App\Http\Controllers\Api\Mobile\HomeController;
@@ -12,6 +13,10 @@ use Illuminate\Support\Facades\Route;
 // Internal: ssh-bridge redeems one-time terminal session tokens (shared-secret header).
 Route::post('internal/cloud-ssh/validate', [\App\Http\Controllers\Api\CloudSshBridgeController::class, 'validateToken'])
     ->name('internal.cloud-ssh.validate');
+
+Route::post('internal/cloud-web/validate', [CloudWebBridgeController::class, 'validateToken'])
+    ->middleware('throttle:120,1')
+    ->name('internal.cloud-web.validate');
 
 Route::prefix('mobile/v1')->group(function () {
     Route::post('login', [AuthController::class, 'login'])->name('mobile.login');
