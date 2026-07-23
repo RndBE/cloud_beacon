@@ -9,6 +9,7 @@ use App\Services\IdHasher;
 use App\Services\MqttService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class MqttController extends Controller
@@ -1169,6 +1170,7 @@ class MqttController extends Controller
             'id_logger' => 'required|string',
             'year' => 'nullable|integer|min:2020|max:2099',
             'month' => 'nullable|integer|min:1|max:12',
+            'source' => 'nullable|in:all,logger,ftp',
         ]);
 
         $idLogger = $request->input('id_logger');
@@ -1180,38 +1182,201 @@ class MqttController extends Controller
 
         $year = $request->input('year') ? (int) $request->input('year') : null;
         $month = $request->input('month') ? (int) $request->input('month') : null;
+        $source = $request->input('source', 'logger');
+        $isFileList = $year !== null && $month !== null;
 
-        $mqtt = new MqttService();
-        $result = $mqtt->sendFtpRead($idLogger, $year, $month);
+        $sourceResults = [];
+        $sourceErrors = [];
 
-        if ($result === null) {
+        if ($source === 'all' || $source === 'logger') {
+            $mqtt = new MqttService();
+            $result = $mqtt->sendFtpRead($idLogger, $year, $month);
+
+            if ($result === null) {
+                $sourceErrors['logger'] = 'Tidak ada respons dari perangkat. Device mungkin offline.';
+            } elseif (isset($result['_error'])) {
+                $sourceErrors['logger'] = $result['_error'];
+            } else {
+                $sourceResults['logger'] = $result;
+            }
+        }
+
+        if ($source === 'all' || $source === 'ftp') {
+            try {
+                $sourceResults['ftp'] = $isFileList
+                    ? $this->listFtpCsvFiles($logger, $year, $month)
+                    : $this->listFtpCsvMonths($logger);
+            } catch (\Throwable $e) {
+                $sourceErrors['ftp'] = $e->getMessage();
+            }
+        }
+
+        if ($source !== 'all' && isset($sourceErrors[$source])) {
             return response()->json([
                 'success' => false,
-                'message' => 'Tidak ada respons dari perangkat. Device mungkin offline.',
+                'message' => $sourceErrors[$source],
             ]);
         }
 
-        if (isset($result['_error'])) {
+        if ($source === 'all' && empty($sourceResults)) {
             return response()->json([
                 'success' => false,
-                'message' => $result['_error'],
+                'message' => implode(' | ', $sourceErrors) ?: 'Tidak ada data ditemukan.',
+                'source_errors' => $sourceErrors,
             ]);
         }
 
-        // Return months or files depending on mode
-        if ($year !== null && $month !== null) {
+        [$items, $sourceMap] = $this->mergeFtpBrowserItems($sourceResults);
+
+        if ($isFileList) {
             return response()->json([
                 'success' => true,
-                'files' => $result,
-                'count' => count($result),
+                'files' => $items,
+                'file_sources' => $sourceMap,
+                'source_errors' => $sourceErrors,
+                'source' => $source,
+                'count' => count($items),
             ]);
         }
 
         return response()->json([
             'success' => true,
-            'months' => $result,
-            'count' => count($result),
+            'months' => $items,
+            'month_sources' => $sourceMap,
+            'source_errors' => $sourceErrors,
+            'source' => $source,
+            'count' => count($items),
         ]);
+    }
+
+    /**
+     * @param  array<string, array<int, string>>  $itemsBySource
+     * @return array{0: array<int, string>, 1: array<string, array<int, string>>}
+     */
+    private function mergeFtpBrowserItems(array $itemsBySource): array
+    {
+        $sourceMap = [];
+
+        foreach ($itemsBySource as $source => $items) {
+            foreach ($items as $item) {
+                $name = basename((string) $item);
+                if ($name === '') {
+                    continue;
+                }
+
+                $sourceMap[$name] ??= [];
+                if (! in_array($source, $sourceMap[$name], true)) {
+                    $sourceMap[$name][] = $source;
+                }
+            }
+        }
+
+        $items = array_keys($sourceMap);
+        rsort($items, SORT_NATURAL);
+
+        return [$items, $sourceMap];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function listFtpCsvMonths(Logger $logger): array
+    {
+        return $this->withFtpConnection($logger, function ($ftp): array {
+            $months = [];
+
+            foreach ($this->ftpList($ftp, '.') as $entry) {
+                $name = basename($entry);
+
+                if (preg_match('/^\d{4}-\d{2}$/', $name)) {
+                    $months[$name] = true;
+                    continue;
+                }
+
+                if (preg_match('/^(\d{4}-\d{2})-\d{2}\.csv$/', $name, $match)) {
+                    $months[$match[1]] = true;
+                }
+            }
+
+            $items = array_keys($months);
+            rsort($items, SORT_NATURAL);
+
+            return $items;
+        });
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function listFtpCsvFiles(Logger $logger, int $year, int $month): array
+    {
+        $yearMonth = sprintf('%04d-%02d', $year, $month);
+
+        return $this->withFtpConnection($logger, function ($ftp) use ($yearMonth): array {
+            $files = [];
+
+            foreach (['.', $yearMonth] as $directory) {
+                foreach ($this->ftpList($ftp, $directory) as $entry) {
+                    $name = basename($entry);
+
+                    if (
+                        preg_match('/^\d{4}-\d{2}-\d{2}\.csv$/', $name)
+                        && str_starts_with($name, $yearMonth.'-')
+                    ) {
+                        $files[$name] = true;
+                    }
+                }
+            }
+
+            $items = array_keys($files);
+            rsort($items, SORT_NATURAL);
+
+            return $items;
+        });
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function ftpList($ftp, string $directory): array
+    {
+        $items = @ftp_nlist($ftp, $directory);
+
+        return is_array($items) ? $items : [];
+    }
+
+    /**
+     * @template T
+     * @param callable(resource): T $callback
+     * @return T
+     */
+    private function withFtpConnection(Logger $logger, callable $callback)
+    {
+        if (! function_exists('ftp_connect')) {
+            throw new RuntimeException('PHP FTP extension belum aktif.');
+        }
+
+        if (! $logger->ftp_host || ! $logger->ftp_user || ! $logger->ftp_pass) {
+            throw new RuntimeException('FTP belum dikonfigurasi.');
+        }
+
+        $ftp = @ftp_connect($logger->ftp_host, $logger->ftp_port ?? 21, 10);
+        if (! $ftp) {
+            throw new RuntimeException('Gagal terhubung ke FTP server.');
+        }
+
+        try {
+            $login = @ftp_login($ftp, $logger->ftp_user, $logger->ftp_pass);
+            if (! $login) {
+                throw new RuntimeException('Login FTP gagal.');
+            }
+
+            ftp_pasv($ftp, true);
+
+            return $callback($ftp);
+        } finally {
+            ftp_close($ftp);
+        }
     }
 
     /**

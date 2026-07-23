@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
     Card,
@@ -60,6 +61,9 @@ type FtpPhase =
     | 'test_ok'
     | 'success'
     | 'error';
+type FtpBrowserSource = 'all' | 'ftp' | 'logger';
+type FtpBrowserSourceMap = Partial<Record<string, FtpBrowserSource[]>>;
+type FtpLatestSource = 'all' | 'ftp' | 'logger' | 'none';
 
 export function FtpConfigCard({
     deviceIdentifier,
@@ -95,6 +99,13 @@ export function FtpConfigCard({
     const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
     const [months, setMonths] = useState<string[]>([]);
     const [files, setFiles] = useState<string[]>([]);
+    const [browserSource, setBrowserSource] =
+        useState<FtpBrowserSource>('all');
+    const [monthSources, setMonthSources] = useState<FtpBrowserSourceMap>({});
+    const [fileSources, setFileSources] = useState<FtpBrowserSourceMap>({});
+    const [sourceErrors, setSourceErrors] = useState<Record<string, string>>(
+        {},
+    );
     const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
     const [browseView, setBrowseView] = useState<'months' | 'files'>('months');
     const [loadingFiles, setLoadingFiles] = useState(false);
@@ -206,38 +217,55 @@ export function FtpConfigCard({
     }
 
     // File browser — load months
-    async function handleBrowseFiles() {
+    async function handleBrowseFiles(source: FtpBrowserSource = browserSource) {
         setLoadingFiles(true);
         setFileBrowserOpen(true);
         setMonths([]);
         setFiles([]);
+        setMonthSources({});
+        setFileSources({});
+        setSourceErrors({});
         setSelectedMonth(null);
         setBrowseView('months');
 
         try {
             const res = await apiFetch('/api/mqtt/ftp/read', {
                 id_logger: deviceIdentifier,
+                source,
             });
             const data = await res.json();
 
             if (data.success && Array.isArray(data.months)) {
                 setMonths(data.months);
+                setMonthSources(data.month_sources || {});
+                setSourceErrors(data.source_errors || {});
             } else {
                 setMonths([]);
+                setSourceErrors(
+                    data.message ? { [source]: data.message } : {},
+                );
             }
         } catch {
             setMonths([]);
+            setSourceErrors({
+                [source]: 'Network error - tidak dapat terhubung ke server',
+            });
         } finally {
             setLoadingFiles(false);
         }
     }
 
     // File browser — load files for a selected month
-    async function handleSelectMonth(monthStr: string) {
+    async function handleSelectMonth(
+        monthStr: string,
+        source: FtpBrowserSource = browserSource,
+    ) {
         setSelectedMonth(monthStr);
         setBrowseView('files');
         setLoadingFiles(true);
         setFiles([]);
+        setFileSources({});
+        setSourceErrors({});
 
         // Parse "2026-03" → year=2026, month=3
         const [yearStr, monthNum] = monthStr.split('-');
@@ -249,16 +277,25 @@ export function FtpConfigCard({
                 id_logger: deviceIdentifier,
                 year,
                 month,
+                source,
             });
             const data = await res.json();
 
             if (data.success && Array.isArray(data.files)) {
                 setFiles(data.files);
+                setFileSources(data.file_sources || {});
+                setSourceErrors(data.source_errors || {});
             } else {
                 setFiles([]);
+                setSourceErrors(
+                    data.message ? { [source]: data.message } : {},
+                );
             }
         } catch {
             setFiles([]);
+            setSourceErrors({
+                [source]: 'Network error - tidak dapat terhubung ke server',
+            });
         } finally {
             setLoadingFiles(false);
         }
@@ -268,6 +305,7 @@ export function FtpConfigCard({
         setBrowseView('months');
         setSelectedMonth(null);
         setFiles([]);
+        setFileSources({});
     }
 
     function formatMonth(monthStr: string) {
@@ -292,19 +330,28 @@ export function FtpConfigCard({
     async function handleGetFile(filename: string) {
         setDownloadingFile(filename);
         try {
-            // Step 1: Tell logger to upload file to FTP server
-            const getRes = await apiFetch('/api/mqtt/ftp/get', {
-                id_logger: deviceIdentifier,
-                filename,
-            });
-            const getData = await getRes.json();
+            const sources = fileSources[filename] || [browserSource];
+            const needsLoggerUpload =
+                browserSource === 'logger' ||
+                (browserSource === 'all' &&
+                    sources.includes('logger') &&
+                    !sources.includes('ftp'));
 
-            if (!getData.success) {
-                alert(`Gagal: ${getData.message || 'Logger tidak merespons'}`);
-                return;
+            if (needsLoggerUpload) {
+                const getRes = await apiFetch('/api/mqtt/ftp/get', {
+                    id_logger: deviceIdentifier,
+                    filename,
+                });
+                const getData = await getRes.json();
+
+                if (!getData.success) {
+                    alert(
+                        `Gagal: ${getData.message || 'Logger tidak merespons'}`,
+                    );
+                    return;
+                }
             }
 
-            // Step 2: Download from FTP server to browser
             const csrfToken =
                 document
                     .querySelector('meta[name="csrf-token"]')
@@ -335,6 +382,105 @@ export function FtpConfigCard({
         } finally {
             setDownloadingFile(null);
         }
+    }
+
+    function handleSourceChange(source: FtpBrowserSource) {
+        setBrowserSource(source);
+        handleBrowseFiles(source);
+    }
+
+    function sourceLabel(source: FtpBrowserSource | FtpLatestSource) {
+        if (source === 'ftp') return 'FTP';
+        if (source === 'logger') return 'Logger';
+        if (source === 'none') return '-';
+        return 'Semua';
+    }
+
+    function renderSourceBadges(sources?: FtpBrowserSource[]) {
+        if (!sources || sources.length === 0) return null;
+
+        return (
+            <div className="flex shrink-0 items-center gap-1">
+                {sources.map((source) => (
+                    <Badge
+                        key={source}
+                        variant={source === 'ftp' ? 'secondary' : 'outline'}
+                        className="h-4 rounded px-1.5 text-[10px]"
+                    >
+                        {sourceLabel(source)}
+                    </Badge>
+                ))}
+            </div>
+        );
+    }
+
+    function sourceFiles(source: 'ftp' | 'logger') {
+        return files.filter((file) => fileSources[file]?.includes(source));
+    }
+
+    function latestFile(fileList: string[]) {
+        return fileList.reduce<string | null>(
+            (latest, file) => (latest === null || file > latest ? file : latest),
+            null,
+        );
+    }
+
+    const ftpFiles = sourceFiles('ftp');
+    const loggerFiles = sourceFiles('logger');
+    const latestFtpFile = latestFile(ftpFiles);
+    const latestLoggerFile = latestFile(loggerFiles);
+    const latestSource: FtpLatestSource =
+        browserSource !== 'all'
+            ? browserSource
+            : latestFtpFile && latestLoggerFile
+              ? latestFtpFile === latestLoggerFile
+                  ? 'all'
+                  : latestFtpFile > latestLoggerFile
+                    ? 'ftp'
+                    : 'logger'
+              : latestFtpFile
+                ? 'ftp'
+                : latestLoggerFile
+                  ? 'logger'
+                  : 'none';
+    const visibleFiles =
+        latestSource === 'ftp'
+            ? ftpFiles
+            : latestSource === 'logger'
+              ? loggerFiles
+              : files;
+
+    function renderFileRow(file: string, sourceHint?: FtpBrowserSource) {
+        return (
+            <div
+                key={`${sourceHint || 'file'}-${file}`}
+                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted/50"
+            >
+                <div className="flex min-w-0 items-center gap-2">
+                    <Database className="size-4 shrink-0 text-blue-500" />
+                    <span className="truncate font-mono text-xs">{file}</span>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                    {renderSourceBadges(
+                        sourceHint ? [sourceHint] : fileSources[file],
+                    )}
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0"
+                        disabled={downloadingFile === file}
+                        onClick={() => handleGetFile(file)}
+                        title={`Download ${file}`}
+                    >
+                        {downloadingFile === file ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                            <Download className="size-3.5" />
+                        )}
+                    </Button>
+                </div>
+            </div>
+        );
     }
 
     const hasCredentials = ftpHost && ftpUser && ftpPass;
@@ -388,7 +534,7 @@ export function FtpConfigCard({
                                         variant="ghost"
                                         size="icon"
                                         className="size-8"
-                                        onClick={handleBrowseFiles}
+                                        onClick={() => handleBrowseFiles()}
                                         disabled={disabled}
                                         title="FTP File Browser"
                                     >
@@ -870,6 +1016,46 @@ export function FtpConfigCard({
                             <dd className="font-mono">{ftpUser}</dd>
                         </dl>
                     </div>
+                    <div className="flex flex-wrap items-center gap-1 rounded-md border bg-background p-1">
+                        {(['all', 'ftp', 'logger'] as FtpBrowserSource[]).map(
+                            (source) => (
+                                <Button
+                                    key={source}
+                                    type="button"
+                                    variant={
+                                        browserSource === source
+                                            ? 'default'
+                                            : 'ghost'
+                                    }
+                                    size="sm"
+                                    className="h-7 flex-1 px-2 text-xs"
+                                    disabled={loadingFiles}
+                                    onClick={() => handleSourceChange(source)}
+                                >
+                                    {sourceLabel(source)}
+                                </Button>
+                            ),
+                        )}
+                    </div>
+                    {Object.keys(sourceErrors).length > 0 && (
+                        <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                            <div className="flex items-start gap-2">
+                                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                                <div className="space-y-0.5">
+                                    {Object.entries(sourceErrors).map(
+                                        ([source, message]) => (
+                                            <p key={source}>
+                                                {sourceLabel(
+                                                    source as FtpBrowserSource,
+                                                )}
+                                                : {message}
+                                            </p>
+                                        ),
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
                     <div className="py-2">
                         {loadingFiles ? (
                             <div className="flex flex-col items-center gap-3 py-8">
@@ -911,7 +1097,12 @@ export function FtpConfigCard({
                                                         {formatMonth(month)}
                                                     </span>
                                                 </div>
-                                                <ChevronRight className="size-4 text-muted-foreground" />
+                                                <div className="flex items-center gap-2">
+                                                    {renderSourceBadges(
+                                                        monthSources[month],
+                                                    )}
+                                                    <ChevronRight className="size-4 text-muted-foreground" />
+                                                </div>
                                             </button>
                                         ))}
                                     </div>
@@ -927,52 +1118,59 @@ export function FtpConfigCard({
                                     <ArrowLeft className="size-4" />
                                     <span>Kembali ke daftar bulan</span>
                                 </button>
-                                {files.length === 0 ? (
+                                {visibleFiles.length === 0 ? (
                                     <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
                                         <HardDrive className="mx-auto size-8 text-muted-foreground/40" />
                                         <p className="mt-2 text-sm text-muted-foreground">
                                             Tidak ada file ditemukan
                                         </p>
                                     </div>
+                                ) : latestSource === 'all' ? (
+                                    <div className="space-y-2">
+                                        <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                                            Data terbaru sama di FTP dan Logger
+                                        </div>
+                                        <div className="grid gap-2 sm:grid-cols-2">
+                                            <div className="space-y-1">
+                                                <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                                                    FTP
+                                                </div>
+                                                <div className="max-h-[50vh] space-y-0.5 overflow-y-auto">
+                                                    {ftpFiles.map((file) =>
+                                                        renderFileRow(
+                                                            file,
+                                                            'ftp',
+                                                        ),
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <div className="space-y-1">
+                                                <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                                                    Logger
+                                                </div>
+                                                <div className="max-h-[50vh] space-y-0.5 overflow-y-auto">
+                                                    {loggerFiles.map((file) =>
+                                                        renderFileRow(
+                                                            file,
+                                                            'logger',
+                                                        ),
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 ) : (
                                     <div className="space-y-1">
                                         <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
-                                            {files.length} file ditemukan
+                                            {visibleFiles.length} file{' '}
+                                            {browserSource === 'all'
+                                                ? `terbaru di ${sourceLabel(latestSource)}`
+                                                : 'ditemukan'}
                                         </div>
                                         <div className="max-h-[50vh] space-y-0.5 overflow-y-auto">
-                                            {files.map((file) => (
-                                                <div
-                                                    key={file}
-                                                    className="flex items-center justify-between rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted/50"
-                                                >
-                                                    <div className="flex min-w-0 items-center gap-2">
-                                                        <Database className="size-4 shrink-0 text-blue-500" />
-                                                        <span className="truncate font-mono text-xs">
-                                                            {file}
-                                                        </span>
-                                                    </div>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        className="size-7 shrink-0"
-                                                        disabled={
-                                                            downloadingFile ===
-                                                            file
-                                                        }
-                                                        onClick={() =>
-                                                            handleGetFile(file)
-                                                        }
-                                                        title={`Download ${file}`}
-                                                    >
-                                                        {downloadingFile ===
-                                                        file ? (
-                                                            <Loader2 className="size-3.5 animate-spin" />
-                                                        ) : (
-                                                            <Download className="size-3.5" />
-                                                        )}
-                                                    </Button>
-                                                </div>
-                                            ))}
+                                            {visibleFiles.map((file) =>
+                                                renderFileRow(file),
+                                            )}
                                         </div>
                                     </div>
                                 )}
@@ -991,7 +1189,7 @@ export function FtpConfigCard({
                                 variant="outline"
                                 onClick={
                                     browseView === 'months'
-                                        ? handleBrowseFiles
+                                        ? () => handleBrowseFiles()
                                         : () =>
                                               selectedMonth &&
                                               handleSelectMonth(selectedMonth)
