@@ -8678,6 +8678,13 @@ export default function LoggerShow({
                             {t('loggerDetail.tab_overview')}
                         </TabsTrigger>
                         <TabsTrigger
+                            value="mode"
+                            className="cursor-pointer gap-1.5"
+                        >
+                            <Radio className="size-3.5" />
+                            Mode
+                        </TabsTrigger>
+                        <TabsTrigger
                             value="sensors"
                             className="cursor-pointer gap-1.5"
                         >
@@ -8690,13 +8697,6 @@ export default function LoggerShow({
                         >
                             <Cpu className="size-3.5" />
                             {t('loggerDetail.tab_system')}
-                        </TabsTrigger>
-                        <TabsTrigger
-                            value="mode"
-                            className="cursor-pointer gap-1.5"
-                        >
-                            <Radio className="size-3.5" />
-                            Mode
                         </TabsTrigger>
                         {/* <TabsTrigger
                             value="logs"
