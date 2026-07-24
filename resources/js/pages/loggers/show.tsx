@@ -8285,6 +8285,16 @@ export default function LoggerShow({
         }
     }
 
+    function handleTransportSelect(mode: 'mqtt' | 'serial') {
+        if (mode === 'serial' && !dongleEnabled) {
+            void handleDongleToggle();
+        }
+
+        if (mode === 'mqtt' && dongleEnabled) {
+            void handleDongleToggle();
+        }
+    }
+
     // Quick Setup Wizard state
     const needsSetup = !logger.loggerMode && !readOnly;
     const [wizardOpen, setWizardOpen] = useState(() => {
@@ -8525,18 +8535,23 @@ export default function LoggerShow({
                     <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1 sm:mx-0 sm:pb-0">
                         <div className="flex w-max flex-nowrap items-start gap-2 sm:ml-auto">
                             <div className="relative flex shrink-0 items-center rounded-lg border bg-background p-0.5">
+                                <span
+                                    className={`absolute top-0.5 bottom-0.5 left-0.5 w-7 rounded-md bg-primary transition-transform duration-200 ${
+                                        dongleEnabled
+                                            ? 'translate-x-7'
+                                            : 'translate-x-0'
+                                    }`}
+                                />
                                 <Button
                                     variant="ghost"
                                     size="icon-sm"
-                                    className={`size-7 rounded-md ${
+                                    className={`relative z-10 size-7 rounded-md hover:bg-transparent ${
                                         !dongleEnabled
-                                            ? 'bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground'
+                                            ? 'text-primary-foreground hover:text-primary-foreground'
                                             : 'text-muted-foreground'
                                     }`}
                                     disabled={readOnly || dongleBusy}
-                                    onClick={() => {
-                                        if (dongleEnabled) handleDongleToggle();
-                                    }}
+                                    onClick={() => handleTransportSelect('mqtt')}
                                     aria-label="Gunakan MQTT"
                                     aria-pressed={!dongleEnabled}
                                     title="Gunakan MQTT untuk setup logger"
@@ -8546,16 +8561,15 @@ export default function LoggerShow({
                                 <Button
                                     variant="ghost"
                                     size="icon-sm"
-                                    className={`size-7 rounded-md ${
+                                    className={`relative z-10 size-7 rounded-md hover:bg-transparent ${
                                         dongleEnabled
-                                            ? 'bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground'
+                                            ? 'text-primary-foreground hover:text-primary-foreground'
                                             : 'text-muted-foreground'
                                     }`}
                                     disabled={readOnly || dongleBusy}
-                                    onClick={() => {
-                                        if (!dongleEnabled)
-                                            handleDongleToggle();
-                                    }}
+                                    onClick={() =>
+                                        handleTransportSelect('serial')
+                                    }
                                     aria-label="Gunakan Serial"
                                     aria-pressed={dongleEnabled}
                                     title="Gunakan serial dongle untuk setup logger"
