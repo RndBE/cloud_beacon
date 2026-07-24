@@ -8238,26 +8238,29 @@ export default function LoggerShow({
         [sendDongleCommandUntil],
     );
 
-    async function handleDongleToggle() {
+    async function enableMqttTransport() {
         if (readOnly || dongleBusy) return;
+        if (!dongleEnabled) return;
 
-        if (dongleEnabled) {
-            setDongleBusy(true);
-            setDongleError(null);
-            try {
-                setDongleEnabled(false);
-                await disconnectDongle();
-            } catch (error) {
-                setDongleError(
-                    error instanceof Error
-                        ? error.message
-                        : 'Gagal memutuskan dongle serial.',
-                );
-            } finally {
-                setDongleBusy(false);
-            }
-            return;
+        setDongleBusy(true);
+        setDongleError(null);
+        try {
+            setDongleEnabled(false);
+            await disconnectDongle();
+        } catch (error) {
+            setDongleError(
+                error instanceof Error
+                    ? error.message
+                    : 'Gagal memutuskan dongle serial.',
+            );
+        } finally {
+            setDongleBusy(false);
         }
+    }
+
+    async function enableSerialTransport() {
+        if (readOnly || dongleBusy) return;
+        if (dongleEnabled) return;
 
         if (!isWebSerialSupported()) {
             setDongleError(
@@ -8266,12 +8269,13 @@ export default function LoggerShow({
             return;
         }
 
-        setDongleBusy(true);
         setDongleError(null);
+        const connectPromise = dongleConnected
+            ? Promise.resolve()
+            : connectDongle();
+        setDongleBusy(true);
         try {
-            if (!dongleConnected) {
-                await connectDongle();
-            }
+            await connectPromise;
             setDongleEnabled(true);
         } catch (error) {
             setDongleEnabled(false);
@@ -8282,16 +8286,6 @@ export default function LoggerShow({
             );
         } finally {
             setDongleBusy(false);
-        }
-    }
-
-    function handleTransportSelect(mode: 'mqtt' | 'serial') {
-        if (mode === 'serial' && !dongleEnabled) {
-            void handleDongleToggle();
-        }
-
-        if (mode === 'mqtt' && dongleEnabled) {
-            void handleDongleToggle();
         }
     }
 
@@ -8536,7 +8530,7 @@ export default function LoggerShow({
                         <div className="flex w-max flex-nowrap items-start gap-2 sm:ml-auto">
                             <div className="relative flex shrink-0 items-center rounded-lg border bg-background p-0.5">
                                 <span
-                                    className={`absolute top-0.5 bottom-0.5 left-0.5 w-7 rounded-md bg-primary transition-transform duration-200 ${
+                                    className={`pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-7 rounded-md bg-primary transition-transform duration-200 ${
                                         dongleEnabled
                                             ? 'translate-x-7'
                                             : 'translate-x-0'
@@ -8551,7 +8545,9 @@ export default function LoggerShow({
                                             : 'text-muted-foreground'
                                     }`}
                                     disabled={readOnly || dongleBusy}
-                                    onClick={() => handleTransportSelect('mqtt')}
+                                    onClick={() => {
+                                        void enableMqttTransport();
+                                    }}
                                     aria-label="Gunakan MQTT"
                                     aria-pressed={!dongleEnabled}
                                     title="Gunakan MQTT untuk setup logger"
@@ -8568,7 +8564,7 @@ export default function LoggerShow({
                                     }`}
                                     disabled={readOnly || dongleBusy}
                                     onClick={() =>
-                                        handleTransportSelect('serial')
+                                        void enableSerialTransport()
                                     }
                                     aria-label="Gunakan Serial"
                                     aria-pressed={dongleEnabled}
