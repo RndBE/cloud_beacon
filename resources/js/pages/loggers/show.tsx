@@ -2531,16 +2531,16 @@ function RebootDialog({
         <>
             <Button
                 variant="destructive"
-                size="sm"
-                className="gap-1.5"
+                size="icon-sm"
                 disabled={disabled}
+                aria-label={t('loggerDetail.reboot')}
+                title={t('loggerDetail.reboot')}
                 onClick={() => {
                     reset();
                     setOpen(true);
                 }}
             >
                 <Power className="size-4" />
-                {t('loggerDetail.reboot')}
             </Button>
             <Dialog
                 open={open}
@@ -8166,14 +8166,6 @@ export default function LoggerShow({
     const [liveOverlay, setLiveOverlay] = useState<LiveLoggerOverlay>({
         sensorValues: {},
     });
-    const dongleButtonLabel = dongleBusy
-        ? dongleEnabled
-            ? 'Memutuskan...'
-            : 'Menghubungkan...'
-        : dongleEnabled
-          ? 'Serial ON'
-          : 'Serial OFF';
-
     // Firmware OTA lives at the page level (not inside the System tab) so the live download/install
     // progress popup keeps running when the user switches tabs within this logger. It resets only
     // when deviceIdentifier changes — i.e. when navigating to a different logger.
@@ -8419,7 +8411,7 @@ export default function LoggerShow({
 
                 {/* Device Header */}
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="flex items-start gap-4">
+                    <div className="flex min-w-0 flex-1 items-start gap-4">
                         {logger.modelImage ? (
                             <div className="mt-1 flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-muted">
                                 <img
@@ -8449,7 +8441,7 @@ export default function LoggerShow({
                                 />
                             </div>
                         )}
-                        <div>
+                        <div className="min-w-0">
                             <div className="flex items-center gap-3">
                                 <h1 className="text-xl font-bold">
                                     {logger.name}
@@ -8530,138 +8522,175 @@ export default function LoggerShow({
                             </div>
                         </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                        <div className="flex flex-col items-end gap-1">
-                            <Button
-                                variant={dongleEnabled ? 'default' : 'outline'}
-                                size="sm"
-                                className="gap-1.5"
-                                disabled={readOnly || dongleBusy}
-                                onClick={handleDongleToggle}
-                                title={
-                                    dongleEnabled
-                                        ? 'Command setting dikirim via serial dongle.'
-                                        : 'Command setting dikirim via MQTT.'
-                                }
-                            >
-                                {dongleBusy ? (
-                                    <Loader2 className="size-4 animate-spin" />
-                                ) : (
-                                    <Cable className="size-4" />
+                    <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1 sm:mx-0 sm:pb-0">
+                        <div className="flex w-max flex-nowrap items-start gap-2 sm:ml-auto">
+                            <div className="relative flex shrink-0 items-center rounded-lg border bg-background p-0.5">
+                                <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className={`size-7 rounded-md ${
+                                        !dongleEnabled
+                                            ? 'bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground'
+                                            : 'text-muted-foreground'
+                                    }`}
+                                    disabled={readOnly || dongleBusy}
+                                    onClick={() => {
+                                        if (dongleEnabled) handleDongleToggle();
+                                    }}
+                                    aria-label="Gunakan MQTT"
+                                    aria-pressed={!dongleEnabled}
+                                    title="Gunakan MQTT untuk setup logger"
+                                >
+                                    <Wifi className="size-4" />
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className={`size-7 rounded-md ${
+                                        dongleEnabled
+                                            ? 'bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground'
+                                            : 'text-muted-foreground'
+                                    }`}
+                                    disabled={readOnly || dongleBusy}
+                                    onClick={() => {
+                                        if (!dongleEnabled)
+                                            handleDongleToggle();
+                                    }}
+                                    aria-label="Gunakan Serial"
+                                    aria-pressed={dongleEnabled}
+                                    title="Gunakan serial dongle untuk setup logger"
+                                >
+                                    {dongleBusy ? (
+                                        <Loader2 className="size-4 animate-spin" />
+                                    ) : (
+                                        <Cable className="size-4" />
+                                    )}
+                                </Button>
+                                {dongleError && (
+                                    <span className="absolute top-full right-0 mt-1 max-w-56 text-right text-[10px] whitespace-normal text-red-500">
+                                        {dongleError}
+                                    </span>
                                 )}
-                                {dongleButtonLabel}
-                            </Button>
-                            {dongleError && (
-                                <span className="max-w-48 text-right text-[10px] text-red-500">
-                                    {dongleError}
-                                </span>
+                            </div>
+                            {readOnly ? (
+                                <>
+                                    {logger.deviceIdentifier ? (
+                                        <SyncFromDeviceDialog
+                                            deviceIdentifier={
+                                                logger.deviceIdentifier
+                                            }
+                                            loggerId={logger.id}
+                                            label={t('loggerDetail.sync')}
+                                            canApplySensorChanges={false}
+                                            transportMode={
+                                                dongleEnabled
+                                                    ? 'serial'
+                                                    : 'mqtt'
+                                            }
+                                            commandTransport={
+                                                dongleEnabled
+                                                    ? serialProtocolCommand
+                                                    : undefined
+                                            }
+                                        />
+                                    ) : (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="gap-1.5 whitespace-nowrap"
+                                            disabled
+                                        >
+                                            <RefreshCw className="size-4" />
+                                            {t('loggerDetail.sync')}
+                                        </Button>
+                                    )}
+                                    <Badge
+                                        variant="outline"
+                                        className="h-9 px-3"
+                                    >
+                                        Read-only
+                                    </Badge>
+                                </>
+                            ) : (
+                                <>
+                                    {logger.deviceIdentifier && (
+                                        <SyncFromDeviceDialog
+                                            deviceIdentifier={
+                                                logger.deviceIdentifier
+                                            }
+                                            loggerId={logger.id}
+                                            label={t('loggerDetail.sync')}
+                                            transportMode={
+                                                dongleEnabled
+                                                    ? 'serial'
+                                                    : 'mqtt'
+                                            }
+                                            commandTransport={
+                                                dongleEnabled
+                                                    ? serialProtocolCommand
+                                                    : undefined
+                                            }
+                                        />
+                                    )}
+                                    {!logger.deviceIdentifier && (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="gap-1.5 whitespace-nowrap"
+                                            disabled
+                                        >
+                                            <RefreshCw className="size-4" />
+                                            {t('loggerDetail.sync')}
+                                        </Button>
+                                    )}
+                                    <ProjectAssignDropdown logger={logger} />
+                                    {logger.deviceIdentifier ? (
+                                        <RebootDialog
+                                            deviceIdentifier={
+                                                logger.deviceIdentifier
+                                            }
+                                            disabled={
+                                                !dongleEnabled &&
+                                                logger.status === 'offline'
+                                            }
+                                            transportMode={
+                                                dongleEnabled
+                                                    ? 'serial'
+                                                    : 'mqtt'
+                                            }
+                                            commandTransport={
+                                                dongleEnabled
+                                                    ? serialProtocolCommand
+                                                    : undefined
+                                            }
+                                        />
+                                    ) : (
+                                        <Button
+                                            variant="destructive"
+                                            size="icon-sm"
+                                            disabled
+                                            aria-label={t(
+                                                'loggerDetail.reboot',
+                                            )}
+                                            title={t('loggerDetail.reboot')}
+                                        >
+                                            <Power className="size-4" />
+                                        </Button>
+                                    )}
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1.5 whitespace-nowrap border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                                        onClick={() =>
+                                            setShowDeleteDialog(true)
+                                        }
+                                    >
+                                        <Trash2 className="size-4" />
+                                        {t('common.delete')}
+                                    </Button>
+                                </>
                             )}
                         </div>
-                        {readOnly ? (
-                            <>
-                                {logger.deviceIdentifier ? (
-                                    <SyncFromDeviceDialog
-                                        deviceIdentifier={
-                                            logger.deviceIdentifier
-                                        }
-                                        loggerId={logger.id}
-                                        label={t('loggerDetail.sync')}
-                                        canApplySensorChanges={false}
-                                        transportMode={
-                                            dongleEnabled ? 'serial' : 'mqtt'
-                                        }
-                                        commandTransport={
-                                            dongleEnabled
-                                                ? serialProtocolCommand
-                                                : undefined
-                                        }
-                                    />
-                                ) : (
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="gap-1.5"
-                                        disabled
-                                    >
-                                        <RefreshCw className="size-4" />
-                                        {t('loggerDetail.sync')}
-                                    </Button>
-                                )}
-                                <Badge variant="outline" className="h-9 px-3">
-                                    Read-only
-                                </Badge>
-                            </>
-                        ) : (
-                            <>
-                                {logger.deviceIdentifier && (
-                                    <SyncFromDeviceDialog
-                                        deviceIdentifier={
-                                            logger.deviceIdentifier
-                                        }
-                                        loggerId={logger.id}
-                                        label={t('loggerDetail.sync')}
-                                        transportMode={
-                                            dongleEnabled ? 'serial' : 'mqtt'
-                                        }
-                                        commandTransport={
-                                            dongleEnabled
-                                                ? serialProtocolCommand
-                                                : undefined
-                                        }
-                                    />
-                                )}
-                                {!logger.deviceIdentifier && (
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="gap-1.5"
-                                        disabled
-                                    >
-                                        <RefreshCw className="size-4" />
-                                        {t('loggerDetail.sync')}
-                                    </Button>
-                                )}
-                                <ProjectAssignDropdown logger={logger} />
-                                {logger.deviceIdentifier ? (
-                                    <RebootDialog
-                                        deviceIdentifier={
-                                            logger.deviceIdentifier
-                                        }
-                                        disabled={
-                                            !dongleEnabled &&
-                                            logger.status === 'offline'
-                                        }
-                                        transportMode={
-                                            dongleEnabled ? 'serial' : 'mqtt'
-                                        }
-                                        commandTransport={
-                                            dongleEnabled
-                                                ? serialProtocolCommand
-                                                : undefined
-                                        }
-                                    />
-                                ) : (
-                                    <Button
-                                        variant="destructive"
-                                        size="sm"
-                                        className="gap-1.5"
-                                        disabled
-                                    >
-                                        <Power className="size-4" />
-                                        {t('loggerDetail.reboot')}
-                                    </Button>
-                                )}
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="gap-1.5 border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-600"
-                                    onClick={() => setShowDeleteDialog(true)}
-                                >
-                                    <Trash2 className="size-4" />
-                                    {t('common.delete')}
-                                </Button>
-                            </>
-                        )}
                     </div>
                 </div>
 
