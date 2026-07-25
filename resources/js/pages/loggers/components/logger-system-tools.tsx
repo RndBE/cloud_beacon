@@ -5,6 +5,7 @@ import {
     CheckCircle2,
     ChevronRight,
     Clock,
+    Cloud,
     Copy,
     Database,
     Download,
@@ -1233,6 +1234,20 @@ interface LogSummary {
     lastErrorTime: string | null;
 }
 
+type LogSource = 'ftp' | 'logger';
+
+type LogSourceContent = {
+    source: LogSource;
+    label: string;
+    content: string;
+    summary: LogSummary;
+};
+
+type LogViewerMode =
+    | { type: 'empty' }
+    | { type: 'single'; source: LogSourceContent; reason: string }
+    | { type: 'split'; ftp: LogSourceContent; logger: LogSourceContent };
+
 // Derive an at-a-glance health summary from a syslog file's text (frontend only — no backend).
 function summarizeSyslog(content: string): LogSummary {
     const lines = content.replace(/\r\n/g, '\n').split('\n');
@@ -1308,6 +1323,73 @@ function summarizeSyslog(content: string): LogSummary {
         lastFtpUploadTime,
         firstErrorTime,
         lastErrorTime,
+    };
+}
+
+function normalizeSyslogContent(content: string): string {
+    return content.replace(/\r\n/g, '\n').trim();
+}
+
+function compareSyslogFreshness(
+    ftp: LogSourceContent | null,
+    logger: LogSourceContent | null,
+): LogViewerMode {
+    if (!ftp && !logger) return { type: 'empty' };
+    if (ftp && !logger) {
+        return {
+            type: 'single',
+            source: ftp,
+            reason: 'Menampilkan salinan FTP sambil menunggu versi logger.',
+        };
+    }
+    if (!ftp && logger) {
+        return {
+            type: 'single',
+            source: logger,
+            reason: 'Hanya versi logger yang tersedia.',
+        };
+    }
+
+    const ftpContent = normalizeSyslogContent(ftp!.content);
+    const loggerContent = normalizeSyslogContent(logger!.content);
+    if (ftpContent === loggerContent) {
+        return { type: 'split', ftp: ftp!, logger: logger! };
+    }
+
+    const ftpLast = ftp!.summary.lastTime;
+    const loggerLast = logger!.summary.lastTime;
+    if (ftpLast && loggerLast && ftpLast !== loggerLast) {
+        return ftpLast > loggerLast
+            ? {
+                  type: 'single',
+                  source: ftp!,
+                  reason: `FTP lebih baru (${ftpLast}) dari logger (${loggerLast}).`,
+              }
+            : {
+                  type: 'single',
+                  source: logger!,
+                  reason: `Logger lebih baru (${loggerLast}) dari FTP (${ftpLast}).`,
+              };
+    }
+
+    if (ftp!.summary.totalLines !== logger!.summary.totalLines) {
+        return ftp!.summary.totalLines > logger!.summary.totalLines
+            ? {
+                  type: 'single',
+                  source: ftp!,
+                  reason: `FTP punya lebih banyak baris (${ftp!.summary.totalLines}) daripada logger (${logger!.summary.totalLines}).`,
+              }
+            : {
+                  type: 'single',
+                  source: logger!,
+                  reason: `Logger punya lebih banyak baris (${logger!.summary.totalLines}) daripada FTP (${ftp!.summary.totalLines}).`,
+              };
+    }
+
+    return {
+        type: 'single',
+        source: logger!,
+        reason: 'Isi berbeda; versi logger dipakai sebagai hasil refresh terbaru.',
     };
 }
 
@@ -1586,6 +1668,49 @@ function SyslogLine({ line }: { line: string }) {
             >
                 {msg}
             </span>
+        </div>
+    );
+}
+
+function LogSourcePanel({
+    source,
+    compact = false,
+}: {
+    source: LogSourceContent;
+    compact?: boolean;
+}) {
+    const lines = source.content.replace(/\r\n/g, '\n').split('\n');
+
+    return (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-muted/30">
+            <div className="flex shrink-0 items-center justify-between border-b bg-background px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                    {source.source === 'logger' ? (
+                        <HardDrive className="size-4 text-emerald-500" />
+                    ) : (
+                        <Cloud className="size-4 text-sky-500" />
+                    )}
+                    <span className="truncate text-xs font-medium">
+                        {source.label}
+                    </span>
+                </div>
+                <span className="font-mono text-[10px] text-muted-foreground">
+                    {source.summary.totalLines} baris
+                </span>
+            </div>
+            {!compact && (
+                <div className="shrink-0 border-b bg-background/70 px-3 py-2">
+                    <p className="font-mono text-[10px] text-muted-foreground">
+                        {source.summary.firstTime ?? '--:--:--'}-
+                        {source.summary.lastTime ?? '--:--:--'}
+                    </p>
+                </div>
+            )}
+            <div className="flex-1 overflow-auto p-3 font-mono text-[11px] leading-relaxed">
+                {lines.map((line, i) => (
+                    <SyslogLine key={i} line={line} />
+                ))}
+            </div>
         </div>
     );
 }
@@ -2110,9 +2235,15 @@ export function SystemLogsCard({
     const [listError, setListError] = useState<string | null>(null);
 
     const [selectedFile, setSelectedFile] = useState<string | null>(null);
-    const [content, setContent] = useState<string | null>(null);
-    const [loadingContent, setLoadingContent] = useState(false);
-    const [contentError, setContentError] = useState<string | null>(null);
+    const [ftpContent, setFtpContent] = useState<LogSourceContent | null>(null);
+    const [loggerContent, setLoggerContent] =
+        useState<LogSourceContent | null>(null);
+    const [loadingFtpContent, setLoadingFtpContent] = useState(false);
+    const [loadingLoggerContent, setLoadingLoggerContent] = useState(false);
+    const [ftpContentError, setFtpContentError] = useState<string | null>(null);
+    const [loggerContentError, setLoggerContentError] = useState<string | null>(
+        null,
+    );
 
     // READLOGS — list device-local syslog files (an MQTT round-trip, no FTP needed).
     async function loadList() {
@@ -2150,8 +2281,10 @@ export function SystemLogsCard({
         setOpen(true);
         setView('list');
         setSelectedFile(null);
-        setContent(null);
-        setContentError(null);
+        setFtpContent(null);
+        setLoggerContent(null);
+        setFtpContentError(null);
+        setLoggerContentError(null);
         loadList();
     }
 
@@ -2160,59 +2293,122 @@ export function SystemLogsCard({
     async function openFile(file: string) {
         setSelectedFile(file);
         setView('viewer');
-        setContent(null);
-        setContentError(null);
-        setLoadingContent(true);
+        setFtpContent(null);
+        setLoggerContent(null);
+        setFtpContentError(null);
+        setLoggerContentError(null);
+        setLoadingFtpContent(true);
+        setLoadingLoggerContent(false);
+
+        const makeSource = (
+            source: LogSource,
+            data: { content?: unknown },
+        ): LogSourceContent => {
+            const text = typeof data.content === 'string' ? data.content : '';
+            return {
+                source,
+                label: source === 'ftp' ? 'FTP' : 'Logger',
+                content: text,
+                summary: summarizeSyslog(text),
+            };
+        };
         try {
-            const viewRes = await apiFetch('/api/mqtt/ftp/logview', {
+            const ftpRes = await apiFetch('/api/mqtt/ftp/logcontent', {
                 id_logger: deviceIdentifier,
                 filename: file,
             });
-            const viewData = await viewRes.json();
-            if (!viewData.success) {
-                setContentError(
-                    viewData.message ||
-                        'Gagal mengambil isi file dari perangkat/FTP.',
+            const ftpData = await ftpRes.json();
+            if (ftpData.success) {
+                setFtpContent(makeSource('ftp', ftpData));
+            } else {
+                setFtpContentError(
+                    ftpData.message || 'Salinan FTP belum tersedia.',
                 );
-                return;
             }
-            setContent(
-                typeof viewData.content === 'string' ? viewData.content : '',
-            );
         } catch {
-            setContentError('Network error — tidak dapat terhubung ke server.');
+            setFtpContentError('Network error - tidak dapat membaca FTP.');
         } finally {
-            setLoadingContent(false);
+            setLoadingFtpContent(false);
+        }
+
+        setLoadingLoggerContent(true);
+        try {
+            const loggerRes = await apiFetch('/api/mqtt/ftp/logview', {
+                id_logger: deviceIdentifier,
+                filename: file,
+            });
+            const loggerData = await loggerRes.json();
+            if (loggerData.success) {
+                setLoggerContent(makeSource('logger', loggerData));
+            } else {
+                setLoggerContentError(
+                    loggerData.message ||
+                        'Gagal mengambil versi terbaru dari logger.',
+                );
+            }
+        } catch {
+            setLoggerContentError(
+                'Network error - tidak dapat terhubung ke server.',
+            );
+        } finally {
+            setLoadingLoggerContent(false);
         }
     }
 
     function backToList() {
         setView('list');
         setSelectedFile(null);
-        setContent(null);
-        setContentError(null);
+        setFtpContent(null);
+        setLoggerContent(null);
+        setFtpContentError(null);
+        setLoggerContentError(null);
     }
 
-    // Save the already-loaded log text to a local .txt file (no extra round-trip).
+    // Save the chosen displayed log text to a local .txt file (no extra round-trip).
     function downloadLog() {
-        if (content === null || !selectedFile) return;
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        if (!downloadSource || !selectedFile) return;
+        const blob = new Blob([downloadSource.content], {
+            type: 'text/plain;charset=utf-8',
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = selectedFile;
+        a.download = `${downloadSource.source}_${selectedFile}`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
     }
 
-    const lines =
-        content !== null ? content.replace(/\r\n/g, '\n').split('\n') : [];
-        const hasLogText = content !== null && content.trim().length > 0;
+    const viewerMode = useMemo(
+        () => compareSyslogFreshness(ftpContent, loggerContent),
+        [ftpContent, loggerContent],
+    );
+    const downloadSource =
+        viewerMode.type === 'single'
+            ? viewerMode.source
+            : viewerMode.type === 'split'
+              ? viewerMode.logger
+              : null;
+    const loadingContent = loadingFtpContent || loadingLoggerContent;
+    const contentError =
+        !loadingContent && !ftpContent && !loggerContent
+            ? loggerContentError || ftpContentError
+            : null;
+    const hasLogText =
+        viewerMode.type !== 'empty' &&
+        (viewerMode.type === 'split'
+            ? viewerMode.ftp.content.trim().length > 0 ||
+              viewerMode.logger.content.trim().length > 0
+            : viewerMode.source.content.trim().length > 0);
     const summary = useMemo(
-        () => (content !== null ? summarizeSyslog(content) : null),
-        [content],
+        () =>
+            viewerMode.type === 'single'
+                ? viewerMode.source.summary
+                : viewerMode.type === 'split'
+                  ? viewerMode.logger.summary
+                  : null,
+        [viewerMode],
     );
 
     const triggerButton =
@@ -2380,16 +2576,27 @@ export function SystemLogsCard({
                                     <ArrowLeft className="size-4" />
                                     <span>Kembali ke daftar file</span>
                                 </button>
-                                {loadingContent ? (
-                                    <div className="flex flex-col items-center gap-3 py-10">
-                                        <Loader2 className="size-8 animate-spin text-muted-foreground" />
-                                        <p className="text-sm text-muted-foreground">Mengupload (GETLOG) &amp; membaca isi log... maksimal 5 menit</p>
+                                {loadingContent && (
+                                    <div className="mb-2 flex shrink-0 items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                                        <Loader2 className="size-3.5 animate-spin" />
+                                        {loadingFtpContent
+                                            ? 'Membaca salinan FTP...'
+                                            : 'Mengambil versi terbaru dari logger...'}
                                     </div>
-                                ) : contentError ? (
+                                )}
+                                {contentError ? (
                                     <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-6 text-center">
                                         <AlertCircle className="mx-auto size-8 text-red-500/60" />
                                         <p className="mt-2 text-sm text-red-600 dark:text-red-400">
                                             {contentError}
+                                        </p>
+                                    </div>
+                                ) : viewerMode.type === 'empty' &&
+                                  loadingContent ? (
+                                    <div className="flex flex-col items-center gap-3 py-10">
+                                        <Loader2 className="size-8 animate-spin text-muted-foreground" />
+                                        <p className="text-sm text-muted-foreground">
+                                            Menyiapkan viewer log...
                                         </p>
                                     </div>
                                 ) : !hasLogText ? (
@@ -2400,23 +2607,39 @@ export function SystemLogsCard({
                                     </div>
                                 ) : (
                                     <>
-                                        {summary && (
+                                        {viewerMode.type === 'single' && (
+                                            <div className="mb-2 shrink-0 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                                                {viewerMode.reason}
+                                            </div>
+                                        )}
+                                        {viewerMode.type === 'split' && (
+                                            <div className="mb-2 shrink-0 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
+                                                FTP dan logger sama-sama terbaru; dua salinan ditampilkan berdampingan.
+                                            </div>
+                                        )}
+                                        {summary && viewerMode.type !== 'split' && (
                                             <div className="shrink-0">
                                                 <SyslogSummary
                                                     summary={summary}
                                                 />
                                             </div>
                                         )}
-                                        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-muted/30">
-                                            <div className="flex-1 overflow-auto p-3 font-mono text-[11px] leading-relaxed">
-                                                {lines.map((line, i) => (
-                                                    <SyslogLine
-                                                        key={i}
-                                                        line={line}
-                                                    />
-                                                ))}
+                                        {viewerMode.type === 'split' ? (
+                                            <div className="grid min-h-0 flex-1 gap-3 md:grid-cols-2">
+                                                <LogSourcePanel
+                                                    source={viewerMode.logger}
+                                                    compact
+                                                />
+                                                <LogSourcePanel
+                                                    source={viewerMode.ftp}
+                                                    compact
+                                                />
                                             </div>
-                                        </div>
+                                        ) : viewerMode.type === 'single' ? (
+                                            <LogSourcePanel
+                                                source={viewerMode.source}
+                                            />
+                                        ) : null}
                                     </>
                                 )}
                             </>
@@ -2441,7 +2664,7 @@ export function SystemLogsCard({
                         )}
                         {view === 'viewer' &&
                             !loadingContent &&
-                            content !== null &&
+                            downloadSource &&
                             selectedFile && (
                                 <Button
                                     variant="outline"

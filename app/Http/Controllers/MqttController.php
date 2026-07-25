@@ -1380,6 +1380,56 @@ class MqttController extends Controller
     }
 
     /**
+     * @return array{filename: string, path: string|null, content: string}
+     */
+    private function readSyslogTextFromFtp(Logger $logger, string $filename): array
+    {
+        $rawName = basename($filename);
+        $prefixed = str_starts_with($rawName, 'syslog_') ? $rawName : 'syslog_'.$rawName;
+        $tempFile = tempnam(sys_get_temp_dir(), 'ftplog_');
+        @unlink($tempFile);
+
+        try {
+            return $this->withFtpConnection($logger, function ($ftp) use ($rawName, $prefixed, $tempFile): array {
+                $currentDir = ftp_pwd($ftp) ?: '.';
+                $names = array_unique([$prefixed, $rawName]);
+                $dirs = array_unique(['', rtrim($currentDir, '/').'/', 'logs/', 'syslog/', 'log/']);
+                $candidates = [];
+
+                foreach ($dirs as $dir) {
+                    foreach ($names as $name) {
+                        $candidates[] = $dir.$name;
+                    }
+                }
+
+                foreach ($candidates as $candidate) {
+                    ftp_pasv($ftp, true);
+                    @unlink($tempFile);
+
+                    if (
+                        @ftp_get($ftp, $tempFile, $candidate, FTP_ASCII)
+                        && file_exists($tempFile)
+                        && filesize($tempFile) > 0
+                    ) {
+                        $content = (string) file_get_contents($tempFile);
+                        @unlink($tempFile);
+
+                        return [
+                            'filename' => $prefixed,
+                            'path' => $candidate,
+                            'content' => $content,
+                        ];
+                    }
+                }
+
+                throw new RuntimeException("File log '{$prefixed}' tidak ditemukan di FTP.");
+            });
+        } finally {
+            @unlink($tempFile);
+        }
+    }
+
+    /**
      * Send FTP GET command to download a specific file from FTP.
      */
     public function getFtpFile(Request $request): JsonResponse
@@ -1671,6 +1721,43 @@ class MqttController extends Controller
             @unlink($tempFile);
             \Log::error("[FTP DOWNLOAD] Error: {$e->getMessage()}");
             return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Read the currently available system-log text from FTP without asking the logger to upload.
+     */
+    public function readFtpLogContent(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_logger' => 'required|string',
+            'filename' => 'required|string|max:255',
+        ]);
+
+        $logger = $this->resolveLogger($request->input('id_logger'));
+
+        if (!$logger) {
+            return response()->json(['success' => false, 'message' => 'Logger not found'], 404);
+        }
+
+        try {
+            $log = $this->readSyslogTextFromFtp($logger, $request->input('filename'));
+            \Log::info("[FTP LOGCONTENT] OK '{$log['filename']}' from '{$log['path']}' - ".strlen($log['content']).' bytes');
+
+            return response()->json([
+                'success' => true,
+                'filename' => $log['filename'],
+                'content' => $log['content'],
+                'source' => 'ftp',
+            ]);
+        } catch (\Throwable $e) {
+            \Log::warning("[FTP LOGCONTENT] {$e->getMessage()}");
+
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+                'source' => 'ftp',
+            ], 404);
         }
     }
 
