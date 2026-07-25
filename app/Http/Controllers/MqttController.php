@@ -1379,6 +1379,21 @@ class MqttController extends Controller
         }
     }
 
+    private function normalizeLogTextForJson(string $content): string
+    {
+        $content = str_replace("\0", '', $content);
+
+        if (! mb_check_encoding($content, 'UTF-8')) {
+            $content = mb_convert_encoding(
+                $content,
+                'UTF-8',
+                'UTF-8, Windows-1252, ISO-8859-1',
+            );
+        }
+
+        return preg_replace('/[^\P{C}\r\n\t]/u', '', $content) ?? '';
+    }
+
     /**
      * @return array{filename: string, path: string|null, content: string}
      */
@@ -1411,7 +1426,9 @@ class MqttController extends Controller
                         && file_exists($tempFile)
                         && filesize($tempFile) > 0
                     ) {
-                        $content = (string) file_get_contents($tempFile);
+                        $content = $this->normalizeLogTextForJson(
+                            (string) file_get_contents($tempFile),
+                        );
                         @unlink($tempFile);
 
                         return [
@@ -1852,7 +1869,9 @@ class MqttController extends Controller
                 ], 404);
             }
 
-            $content = (string) file_get_contents($tempFile);
+            $content = $this->normalizeLogTextForJson(
+                (string) file_get_contents($tempFile),
+            );
             @unlink($tempFile);
             \Log::info("[FTP LOGVIEW] ✅ '{$prefixed}' from '{$triedPath}' — " . strlen($content) . ' bytes');
 
