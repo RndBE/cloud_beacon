@@ -69,6 +69,21 @@ class ModeProfilePreviewService
             }
         }
 
+        $duplicateSlaveIds = collect($resolvedSensors)
+            ->groupBy('slave_id')
+            ->filter(fn (Collection $items) => $items->count() > 1);
+
+        if ($duplicateSlaveIds->isNotEmpty()) {
+            $messages = $duplicateSlaveIds
+                ->map(fn (Collection $items, int|string $slaveId) => 'Slave ID '.$slaveId.' dipakai oleh '.$items->pluck('role_label')->implode(', ').'.')
+                ->values()
+                ->all();
+
+            throw ValidationException::withMessages([
+                'selections' => 'Slave ID setiap sensor RS485 harus unik. '.implode(' ', $messages),
+            ]);
+        }
+
         return [
             'success' => true,
             'mode' => $profile['mode'],

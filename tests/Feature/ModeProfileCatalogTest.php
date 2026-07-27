@@ -67,6 +67,52 @@ it('provides the AWLR Transducer template and calibration metadata', function ()
         ]);
 });
 
+it('provides the complete AWR weather recorder templates', function () {
+    $catalog = app(ModeProfileCatalog::class);
+    $profile = $catalog->find('AWR');
+
+    expect($profile)->not->toBeNull()
+        ->and($profile['enabled'])->toBeTrue()
+        ->and(collect($profile['roles'])->pluck('role')->all())->toBe([
+            'rainfall',
+            'pyranometer',
+            'weather',
+            'wind',
+            'illuminance',
+        ]);
+
+    $rainfall = $catalog->template('AWR', 'rainfall', 'tb-400-04');
+    $pyranometer = $catalog->template('AWR', 'pyranometer', 'rk-200-03');
+    $weather = $catalog->template('AWR', 'weather', 'rk-330-01');
+    $wind = $catalog->template('AWR', 'wind', 'rk-120-01c');
+    $illuminance = $catalog->template('AWR', 'illuminance', 'rk-210-01');
+
+    expect($rainfall['device']['device_name'])->toBe('TB-400-04')
+        ->and(collect($rainfall['parameters'])->pluck('name')->all())->toBe([
+            'Rainfall_Day',
+            'Rainfall_Minute',
+            'Rainfall_hour',
+        ])
+        ->and($pyranometer['device']['device_name'])->toBe('Pyranometer')
+        ->and(collect($pyranometer['parameters'])->pluck('name')->all())->toBe(['Pyranometer'])
+        ->and($weather['device']['device_name'])->toBe('weather')
+        ->and(collect($weather['parameters'])->pluck('name')->all())->toBe([
+            'Temperature',
+            'Humidity',
+            'Pressure',
+        ])
+        ->and($wind['device']['device_name'])->toBe('wind')
+        ->and(collect($wind['parameters'])->pluck('name')->all())->toBe([
+            'w_speed',
+            'w_direction',
+        ])
+        ->and($illuminance['device']['device_name'])->toBe('illuminance')
+        ->and(collect($illuminance['parameters'])->pluck('name')->all())->toBe(['illuminance'])
+        ->and(collect($profile['roles'])->map(fn ($role) => $role['templates'][0]['user_inputs'][0]['default'])->all())->toBe([1, 2, 3, 4, 5])
+        ->and($profile['automatic_calibration'])->toBeNull()
+        ->and($profile['default_mapping'])->toBe([]);
+});
+
 it('keeps incomplete templates and profiles visible but disabled', function () {
     $catalog = app(ModeProfileCatalog::class);
 

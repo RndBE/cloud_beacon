@@ -206,7 +206,7 @@ type WizardPhase =
     | 'success'
     | 'error';
 
-const GUIDED_MODES = new Set(['ARR', 'AWLR_TD', 'AWLR_US', 'APMS']);
+const GUIDED_MODES = new Set(['ARR', 'AWR', 'AWLR_TD', 'AWLR_US', 'APMS']);
 
 function csrfToken(): string {
     return (
@@ -653,13 +653,10 @@ export function ModeProfileWizard({
                           }
                           return result;
                       })
-                    : await postJson<ApiResponse>(
-                          '/api/mqtt/system/set-mode',
-                          {
-                              id_logger: logger.deviceIdentifier,
-                              mode: selectedMode,
-                          },
-                      );
+                    : await postJson<ApiResponse>('/api/mqtt/system/set-mode', {
+                          id_logger: logger.deviceIdentifier,
+                          mode: selectedMode,
+                      });
 
             if (!data.success) {
                 setPhase('error');
@@ -724,13 +721,10 @@ export function ModeProfileWizard({
                           }
                           return result;
                       })
-                    : await postJson<ApiResponse>(
-                          '/api/mqtt/calibration/set',
-                          {
-                              id_logger: logger.deviceIdentifier,
-                              ...calibrationParams,
-                          },
-                      );
+                    : await postJson<ApiResponse>('/api/mqtt/calibration/set', {
+                          id_logger: logger.deviceIdentifier,
+                          ...calibrationParams,
+                      });
 
             if (!data.success) {
                 setCalibrationError(responseMessage(data, 'Kalibrasi gagal.'));
@@ -794,8 +788,8 @@ export function ModeProfileWizard({
                       ? 1
                       : 0
                   : profile
-                  ? 1
-                  : 0
+                    ? 1
+                    : 0
         : phase === 'direct' || phase === 'success'
           ? 1
           : 0;
@@ -1160,9 +1154,7 @@ export function ModeProfileWizard({
                     ) : shouldShowDirectButton ? (
                         <Button
                             className="h-10 w-full gap-2 rounded-xl"
-                            disabled={
-                                commandUnavailable || !directModeChanged
-                            }
+                            disabled={commandUnavailable || !directModeChanged}
                             onClick={setDirectMode}
                         >
                             {phase === 'direct' ? (

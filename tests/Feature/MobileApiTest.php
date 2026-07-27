@@ -357,7 +357,7 @@ test('mobile logger detail returns sensors integrations and activity logs', func
 
     expect(collect($response->json('data.availableModes'))->contains(
         fn ($mode) => $mode['slug'] === 'AWR'
-            && $mode['label'] === 'AWR (Automatic Water Recorder)'
+            && $mode['label'] === 'AWR (Automatic Weather Recorder)'
             && $mode['hasCalibration'] === false
     ))->toBeTrue();
 });

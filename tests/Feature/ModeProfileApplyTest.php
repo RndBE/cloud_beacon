@@ -38,6 +38,32 @@ function modeProfileApplyPayload(
     ];
 }
 
+function awrModeProfileApplyPayload(Logger $logger, array $slaveIds = [1, 2, 3, 4, 5]): array
+{
+    $roles = [
+        ['rainfall', 'tb-400-04'],
+        ['pyranometer', 'rk-200-03'],
+        ['weather', 'rk-330-01'],
+        ['wind', 'rk-120-01c'],
+        ['illuminance', 'rk-210-01'],
+    ];
+
+    return [
+        'id_logger' => $logger->device_identifier,
+        'mode' => 'AWR',
+        'selections' => array_map(
+            fn (array $role, int $index) => [
+                'role' => $role[0],
+                'template_id' => $role[1],
+                'inputs' => ['slave_id' => $slaveIds[$index]],
+            ],
+            $roles,
+            array_keys($roles),
+        ),
+        'confirmed_warnings' => [],
+    ];
+}
+
 function createExistingRs485Sensor(Logger $logger, array $attributes = []): Sensor
 {
     return Sensor::create([
@@ -296,4 +322,97 @@ it('applies AWLR Transducer and returns the calibration popup as the next step',
     expect($logger->fresh()->logger_mode)->toBe('AWLR_TD')
         ->and($waterLevel->modbus_slave_id)->toBe(2)
         ->and($waterLevel->quantity)->toBe(5);
+});
+
+it('applies AWR with all RS485 weather recorder templates', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-APPLY-1']);
+
+    $expectedPayloads = [
+        [
+            [1, 'TB-400-04', 3, 0, 9600, '8N1'],
+            [
+                ['Rainfall_Day', 0.1, 'mm', 0, 1, 0],
+                ['Rainfall_Min', 0.1, 'mm', 1, 1, 0],
+                ['Rainfall_hou', 0.1, 'mm', 2, 1, 0],
+            ],
+        ],
+        [
+            [2, 'Pyranometer', 3, 0, 9600, '8N1'],
+            [
+                ['Pyranometer', 1, 'w/m2', 0, 1, 0],
+            ],
+        ],
+        [
+            [3, 'weather', 3, 0, 9600, '8N1'],
+            [
+                ['Temperature', 0.1, 'C', 0, 1, 0],
+                ['Humidity', 0.1, '%RH', 1, 1, 0],
+                ['Pressure', 0.1, 'mbar', 2, 1, 0],
+            ],
+        ],
+        [
+            [4, 'wind', 3, 0, 9600, '8N1'],
+            [
+                ['w_speed', 0.1, 'm/s', 0, 1, 0],
+                ['w_direction', 0.1, 'deg', 1, 1, 0],
+            ],
+        ],
+        [
+            [5, 'illuminance', 3, 0, 9600, '8N1'],
+            [
+                ['illuminance', 0.1, 'lux', 0, 1, 0],
+            ],
+        ],
+    ];
+
+    $mqtt = Mockery::mock(MqttService::class);
+    $mqtt->shouldReceive('sendSystemSetMode')
+        ->once()->ordered()
+        ->with('AWR-APPLY-1', 'AWR')
+        ->andReturn(['success' => true]);
+
+    foreach ($expectedPayloads as [$cfg, $parameters]) {
+        $mqtt->shouldReceive('sendSensorSet')
+            ->once()->ordered()
+            ->withArgs(fn (string $id, array $payload) => $id === 'AWR-APPLY-1'
+                && $payload['SENSORS']['d'][0]['cfg'] === $cfg
+                && $payload['SENSORS']['d'][0]['s'] == $parameters)
+            ->andReturn(['success' => true]);
+    }
+
+    $mqtt->shouldNotReceive('sendCalibrationSet');
+    $mqtt->shouldNotReceive('sendProtocolCommand');
+    bindModeProfileMqttMock($mqtt);
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.mode-profile.apply'), awrModeProfileApplyPayload($logger))
+        ->assertOk()
+        ->assertJsonPath('success', true)
+        ->assertJsonPath('mode', 'AWR')
+        ->assertJsonPath('next_step', null);
+
+    expect($logger->fresh()->logger_mode)->toBe('AWR')
+        ->and($logger->sensors()->where('connection_type', 'rs485')->count())->toBe(10)
+        ->and($logger->sensors()->where('modbus_slave_id', 1)->orderBy('register_address')->pluck('name')->all())->toBe([
+            'Rainfall_Day',
+            'Rainfall_Min',
+            'Rainfall_hou',
+        ])
+        ->and($logger->sensors()->where('modbus_slave_id', 5)->value('name'))->toBe('illuminance');
+});
+
+it('rejects AWR setup when selected sensors reuse the same slave id', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-DUP-1']);
+
+    $mqtt = Mockery::mock(MqttService::class);
+    $mqtt->shouldNotReceive('sendSystemSetMode');
+    $mqtt->shouldNotReceive('sendSensorSet');
+    bindModeProfileMqttMock($mqtt);
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.mode-profile.apply'), awrModeProfileApplyPayload($logger, [1, 1, 3, 4, 5]))
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['selections']);
 });

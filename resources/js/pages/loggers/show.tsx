@@ -6625,7 +6625,13 @@ function SetModeCard({
         }
     }
 
-    const guidedModes = new Set(['ARR', 'AWLR_TD', 'AWLR_US', 'APMS']);
+    const guidedModes = new Set([
+        'ARR',
+        'AWR',
+        'AWLR_TD',
+        'AWLR_US',
+        'APMS',
+    ]);
     const supportsGuidedProfiles = allowedModes.some((mode) => guidedModes.has(mode.slug));
 
     if (supportsGuidedProfiles) {

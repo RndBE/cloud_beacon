@@ -69,11 +69,11 @@ class LoggerModeSeeder extends Seeder
             ],
             [
                 'slug'               => 'AWR',
-                'label'              => 'AWR (Automatic Water Recorder)',
+                'label'              => 'AWR (Automatic Weather Recorder)',
                 'group'              => 'AWR',
                 'has_calibration'    => false,
                 'calibration_fields' => null,
-                'description'        => 'Automatic Water Recorder - mode perekaman tinggi muka air tanpa template sensor otomatis.',
+                'description'        => 'Automatic Weather Recorder - profil logger cuaca dengan rain gauge, pyranometer, weather, wind, dan illuminance.',
             ],
             [
                 'slug'               => 'AWLR_US',

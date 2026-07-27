@@ -118,6 +118,108 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     'ARR.Status_Modbus',
                 ],
             ],
+            'AWR' => [
+                'mode' => 'AWR',
+                'label' => 'AWR (Automatic Weather Recorder)',
+                'description' => 'Siapkan logger cuaca dengan rain gauge, pyranometer, weather, wind, dan illuminance RS485.',
+                'enabled' => true,
+                'disabled_reason' => null,
+                'roles' => [
+                    [
+                        'role' => 'rainfall',
+                        'label' => 'Rain Gauge',
+                        'required' => true,
+                        'templates' => [
+                            $this->rs485Template(
+                                id: 'tb-400-04',
+                                name: 'TB-400-04',
+                                description: 'Sensor curah hujan Modbus RS485.',
+                                deviceName: 'TB-400-04',
+                                defaultSlaveId: 1,
+                                parameters: [
+                                    $this->u16Parameter('Rainfall_Day', 'mm', 0.1, 0),
+                                    $this->u16Parameter('Rainfall_Minute', 'mm', 0.1, 1),
+                                    $this->u16Parameter('Rainfall_hour', 'mm', 0.1, 2),
+                                ],
+                            ),
+                        ],
+                    ],
+                    [
+                        'role' => 'pyranometer',
+                        'label' => 'Pyranometer',
+                        'required' => true,
+                        'templates' => [
+                            $this->rs485Template(
+                                id: 'rk-200-03',
+                                name: 'RK-200-03',
+                                description: 'Sensor pyranometer Modbus RS485.',
+                                deviceName: 'Pyranometer',
+                                defaultSlaveId: 2,
+                                parameters: [
+                                    $this->u16Parameter('Pyranometer', 'w/m2', 1, 0),
+                                ],
+                            ),
+                        ],
+                    ],
+                    [
+                        'role' => 'weather',
+                        'label' => 'Weather',
+                        'required' => true,
+                        'templates' => [
+                            $this->rs485Template(
+                                id: 'rk-330-01',
+                                name: 'RK-330-01',
+                                description: 'Sensor temperature, humidity, dan pressure Modbus RS485.',
+                                deviceName: 'weather',
+                                defaultSlaveId: 3,
+                                parameters: [
+                                    $this->u16Parameter('Temperature', 'C', 0.1, 0),
+                                    $this->u16Parameter('Humidity', '%RH', 0.1, 1),
+                                    $this->u16Parameter('Pressure', 'mbar', 0.1, 2),
+                                ],
+                            ),
+                        ],
+                    ],
+                    [
+                        'role' => 'wind',
+                        'label' => 'Wind',
+                        'required' => true,
+                        'templates' => [
+                            $this->rs485Template(
+                                id: 'rk-120-01c',
+                                name: 'RK-120-01C',
+                                description: 'Sensor kecepatan dan arah angin Modbus RS485.',
+                                deviceName: 'wind',
+                                defaultSlaveId: 4,
+                                parameters: [
+                                    $this->u16Parameter('w_speed', 'm/s', 0.1, 0),
+                                    $this->u16Parameter('w_direction', 'deg', 0.1, 1),
+                                ],
+                            ),
+                        ],
+                    ],
+                    [
+                        'role' => 'illuminance',
+                        'label' => 'Illuminance',
+                        'required' => true,
+                        'templates' => [
+                            $this->rs485Template(
+                                id: 'rk-210-01',
+                                name: 'RK-210-01',
+                                description: 'Sensor illuminance Modbus RS485.',
+                                deviceName: 'illuminance',
+                                defaultSlaveId: 5,
+                                parameters: [
+                                    $this->u16Parameter('illuminance', 'lux', 0.1, 0),
+                                ],
+                            ),
+                        ],
+                    ],
+                ],
+                'automatic_calibration' => null,
+                'calibration' => null,
+                'default_mapping' => [],
+            ],
             'AWLR_TD' => [
                 'mode' => 'AWLR_TD',
                 'label' => 'AWLR Transducer',
@@ -242,7 +344,51 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
         ];
     }
 
-    private function slaveInput(): array
+    private function rs485Template(
+        string $id,
+        string $name,
+        string $description,
+        string $deviceName,
+        int $defaultSlaveId,
+        array $parameters,
+    ): array {
+        return [
+            'id' => $id,
+            'name' => $name,
+            'description' => $description,
+            'enabled' => true,
+            'disabled_reason' => null,
+            'connection_type' => 'rs485',
+            'user_inputs' => [$this->slaveInput($defaultSlaveId)],
+            'device' => [
+                'device_name' => $deviceName,
+                'function_code' => 3,
+                'register_address' => 0,
+                'baudrate' => 9600,
+                'serial_format' => '8N1',
+            ],
+            'parameters' => $parameters,
+        ];
+    }
+
+    private function u16Parameter(
+        string $name,
+        string $unit,
+        float|int $scaleFactor,
+        int $registerAddress,
+    ): array {
+        return [
+            'name' => $name,
+            'unit' => $unit,
+            'scale_factor' => $scaleFactor,
+            'register_address' => $registerAddress,
+            'reg_count' => 1,
+            'data_type_label' => 'Unsigned 16-bit',
+            'fast_poll' => false,
+        ];
+    }
+
+    private function slaveInput(int $default = 1): array
     {
         return [
             'key' => 'slave_id',
@@ -250,7 +396,7 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
             'type' => 'number',
             'min' => 1,
             'max' => 10,
-            'default' => 1,
+            'default' => $default,
             'required' => true,
         ];
     }
