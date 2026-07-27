@@ -68,6 +68,14 @@ class LoggerModeSeeder extends Seeder
                 'description'        => 'Profil GNSS — memancarkan posisi/satelit dari receiver NMEA RS232. Pilih channel RS232 (ch2 hanya untuk BL1100).',
             ],
             [
+                'slug'               => 'AWR',
+                'label'              => 'AWR (Automatic Water Recorder)',
+                'group'              => 'AWR',
+                'has_calibration'    => false,
+                'calibration_fields' => null,
+                'description'        => 'Automatic Water Recorder - mode perekaman tinggi muka air tanpa template sensor otomatis.',
+            ],
+            [
                 'slug'               => 'AWLR_US',
                 'label'              => 'AWLR Ultrasonik/Radar',
                 'group'              => 'AWLR',

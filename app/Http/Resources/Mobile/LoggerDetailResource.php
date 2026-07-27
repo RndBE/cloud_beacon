@@ -58,6 +58,7 @@ class LoggerDetailResource extends JsonResource
             'availableModes' => LoggerMode::whereIn('slug', [
                 'DEFAULT',
                 'WEATHER',
+                'AWR',
                 'AWLR_TD',
                 'AWLR_US',
             ])

@@ -99,7 +99,7 @@ class LoggerController extends Controller
         $deviceModel = $logger->model
             ? DeviceModel::where('name', $logger->model)->first()
             : null;
-        $allowedConfiguratorModes = ['DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS'];
+        $allowedConfiguratorModes = ['DEFAULT', 'AWR', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS'];
 
         $today = Carbon::today();
         $presentMinutes = $audits->presentMinutes($logger, $today);

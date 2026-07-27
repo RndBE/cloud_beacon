@@ -65,6 +65,17 @@ type FtpPhase =
 type FtpBrowserSource = 'all' | 'ftp' | 'logger';
 type FtpBrowserSourceMap = Partial<Record<string, FtpBrowserSource[]>>;
 type FtpLatestSource = 'all' | 'ftp' | 'logger' | 'none';
+type FtpBrowserErrors = Record<string, string>;
+type FtpMonthsCacheEntry = {
+    months: string[];
+    monthSources: FtpBrowserSourceMap;
+    sourceErrors: FtpBrowserErrors;
+};
+type FtpFilesCacheEntry = {
+    files: string[];
+    fileSources: FtpBrowserSourceMap;
+    sourceErrors: FtpBrowserErrors;
+};
 
 export function FtpConfigCard({
     deviceIdentifier,
@@ -100,17 +111,36 @@ export function FtpConfigCard({
     const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
     const [months, setMonths] = useState<string[]>([]);
     const [files, setFiles] = useState<string[]>([]);
-    const [browserSource, setBrowserSource] =
-        useState<FtpBrowserSource>('all');
+    const [browserSource, setBrowserSource] = useState<FtpBrowserSource>('all');
     const [monthSources, setMonthSources] = useState<FtpBrowserSourceMap>({});
     const [fileSources, setFileSources] = useState<FtpBrowserSourceMap>({});
-    const [sourceErrors, setSourceErrors] = useState<Record<string, string>>(
-        {},
-    );
+    const [sourceErrors, setSourceErrors] = useState<FtpBrowserErrors>({});
+    const [monthCache, setMonthCache] = useState<
+        Partial<Record<FtpBrowserSource, FtpMonthsCacheEntry>>
+    >({});
+    const [fileCache, setFileCache] = useState<
+        Record<string, FtpFilesCacheEntry>
+    >({});
     const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
     const [browseView, setBrowseView] = useState<'months' | 'files'>('months');
     const [loadingFiles, setLoadingFiles] = useState(false);
     const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
+    const browseRequestRef = useRef(0);
+
+    const fileCacheKey = (source: FtpBrowserSource, monthStr: string) =>
+        `${source}:${monthStr}`;
+
+    function applyMonthsEntry(entry: FtpMonthsCacheEntry) {
+        setMonths(entry.months);
+        setMonthSources(entry.monthSources);
+        setSourceErrors(entry.sourceErrors);
+    }
+
+    function applyFilesEntry(entry: FtpFilesCacheEntry) {
+        setFiles(entry.files);
+        setFileSources(entry.fileSources);
+        setSourceErrors(entry.sourceErrors);
+    }
 
     function startTimer() {
         const start = Date.now();
@@ -218,16 +248,30 @@ export function FtpConfigCard({
     }
 
     // File browser — load months
-    async function handleBrowseFiles(source: FtpBrowserSource = browserSource) {
-        setLoadingFiles(true);
+    async function handleBrowseFiles(
+        source: FtpBrowserSource = browserSource,
+        forceRefresh = false,
+    ) {
         setFileBrowserOpen(true);
+        setSelectedMonth(null);
+        setBrowseView('months');
+
+        const requestId = ++browseRequestRef.current;
+        const cached = monthCache[source];
+        if (cached && !forceRefresh) {
+            applyMonthsEntry(cached);
+            setFiles([]);
+            setFileSources({});
+            setLoadingFiles(false);
+            return;
+        }
+
+        setLoadingFiles(true);
         setMonths([]);
         setFiles([]);
         setMonthSources({});
         setFileSources({});
         setSourceErrors({});
-        setSelectedMonth(null);
-        setBrowseView('months');
 
         try {
             const res = await apiFetch('/api/mqtt/ftp/read', {
@@ -236,23 +280,33 @@ export function FtpConfigCard({
             });
             const data = await res.json();
 
+            if (browseRequestRef.current !== requestId) return;
+
             if (data.success && Array.isArray(data.months)) {
-                setMonths(data.months);
-                setMonthSources(data.month_sources || {});
-                setSourceErrors(data.source_errors || {});
+                const entry: FtpMonthsCacheEntry = {
+                    months: data.months,
+                    monthSources: data.month_sources || {},
+                    sourceErrors: data.source_errors || {},
+                };
+                applyMonthsEntry(entry);
+                setMonthCache((cache) => ({
+                    ...cache,
+                    [source]: entry,
+                }));
             } else {
                 setMonths([]);
-                setSourceErrors(
-                    data.message ? { [source]: data.message } : {},
-                );
+                setSourceErrors(data.message ? { [source]: data.message } : {});
             }
         } catch {
+            if (browseRequestRef.current !== requestId) return;
             setMonths([]);
             setSourceErrors({
                 [source]: 'Network error - tidak dapat terhubung ke server',
             });
         } finally {
-            setLoadingFiles(false);
+            if (browseRequestRef.current === requestId) {
+                setLoadingFiles(false);
+            }
         }
     }
 
@@ -260,9 +314,19 @@ export function FtpConfigCard({
     async function handleSelectMonth(
         monthStr: string,
         source: FtpBrowserSource = browserSource,
+        forceRefresh = false,
     ) {
         setSelectedMonth(monthStr);
         setBrowseView('files');
+
+        const requestId = ++browseRequestRef.current;
+        const cached = fileCache[fileCacheKey(source, monthStr)];
+        if (cached && !forceRefresh) {
+            applyFilesEntry(cached);
+            setLoadingFiles(false);
+            return;
+        }
+
         setLoadingFiles(true);
         setFiles([]);
         setFileSources({});
@@ -282,23 +346,33 @@ export function FtpConfigCard({
             });
             const data = await res.json();
 
+            if (browseRequestRef.current !== requestId) return;
+
             if (data.success && Array.isArray(data.files)) {
-                setFiles(data.files);
-                setFileSources(data.file_sources || {});
-                setSourceErrors(data.source_errors || {});
+                const entry: FtpFilesCacheEntry = {
+                    files: data.files,
+                    fileSources: data.file_sources || {},
+                    sourceErrors: data.source_errors || {},
+                };
+                applyFilesEntry(entry);
+                setFileCache((cache) => ({
+                    ...cache,
+                    [fileCacheKey(source, monthStr)]: entry,
+                }));
             } else {
                 setFiles([]);
-                setSourceErrors(
-                    data.message ? { [source]: data.message } : {},
-                );
+                setSourceErrors(data.message ? { [source]: data.message } : {});
             }
         } catch {
+            if (browseRequestRef.current !== requestId) return;
             setFiles([]);
             setSourceErrors({
                 [source]: 'Network error - tidak dapat terhubung ke server',
             });
         } finally {
-            setLoadingFiles(false);
+            if (browseRequestRef.current === requestId) {
+                setLoadingFiles(false);
+            }
         }
     }
 
@@ -387,6 +461,11 @@ export function FtpConfigCard({
 
     function handleSourceChange(source: FtpBrowserSource) {
         setBrowserSource(source);
+        if (browseView === 'files' && selectedMonth) {
+            handleSelectMonth(selectedMonth, source);
+            return;
+        }
+
         handleBrowseFiles(source);
     }
 
@@ -421,7 +500,8 @@ export function FtpConfigCard({
 
     function latestFile(fileList: string[]) {
         return fileList.reduce<string | null>(
-            (latest, file) => (latest === null || file > latest ? file : latest),
+            (latest, file) =>
+                latest === null || file > latest ? file : latest,
             null,
         );
     }
@@ -1011,9 +1091,7 @@ export function FtpConfigCard({
                             <dd className="font-mono">
                                 {ftpHost}:{ftpPort}
                             </dd>
-                            <dt className="text-muted-foreground">
-                                Username
-                            </dt>
+                            <dt className="text-muted-foreground">Username</dt>
                             <dd className="font-mono">{ftpUser}</dd>
                         </dl>
                     </div>
@@ -1190,10 +1268,18 @@ export function FtpConfigCard({
                                 variant="outline"
                                 onClick={
                                     browseView === 'months'
-                                        ? () => handleBrowseFiles()
+                                        ? () =>
+                                              handleBrowseFiles(
+                                                  browserSource,
+                                                  true,
+                                              )
                                         : () =>
                                               selectedMonth &&
-                                              handleSelectMonth(selectedMonth)
+                                              handleSelectMonth(
+                                                  selectedMonth,
+                                                  browserSource,
+                                                  true,
+                                              )
                                 }
                                 className="gap-1.5"
                             >
@@ -2236,8 +2322,9 @@ export function SystemLogsCard({
 
     const [selectedFile, setSelectedFile] = useState<string | null>(null);
     const [ftpContent, setFtpContent] = useState<LogSourceContent | null>(null);
-    const [loggerContent, setLoggerContent] =
-        useState<LogSourceContent | null>(null);
+    const [loggerContent, setLoggerContent] = useState<LogSourceContent | null>(
+        null,
+    );
     const [loadingFtpContent, setLoadingFtpContent] = useState(false);
     const [loadingLoggerContent, setLoadingLoggerContent] = useState(false);
     const [ftpContentError, setFtpContentError] = useState<string | null>(null);
@@ -2430,67 +2517,69 @@ export function SystemLogsCard({
                 <ScrollText className="size-4" />
             </Button>
         ) : (
-        <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5"
-            onClick={openBrowser}
-            disabled={disabled || !ftpConfigured}
-            title={
-                disabled
-                    ? 'Device offline â€” tidak bisa mengirim'
-                    : !ftpConfigured
-                      ? 'Konfigurasi FTP diperlukan terlebih dahulu'
-                      : ''
-            }
-        >
-            <ScrollText className="size-4" /> Log Sistem Harian
-        </Button>
+            <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={openBrowser}
+                disabled={disabled || !ftpConfigured}
+                title={
+                    disabled
+                        ? 'Device offline â€” tidak bisa mengirim'
+                        : !ftpConfigured
+                          ? 'Konfigurasi FTP diperlukan terlebih dahulu'
+                          : ''
+                }
+            >
+                <ScrollText className="size-4" /> Log Sistem Harian
+            </Button>
         );
 
     return (
         <>
             {variant === 'card' ? (
                 <Card>
-            <CardHeader>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <CardTitle className="flex items-center gap-2">
-                            <ScrollText className="size-5" /> System Logs
-                        </CardTitle>
-                        <CardDescription className="mt-1">
-                            Black-box recorder — log sistem harian dari
-                            perangkat
-                        </CardDescription>
-                    </div>
-                </div>
-            </CardHeader>
-            <CardContent>
-                <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
-                    <div className="mb-3 flex items-center gap-2">
-                        <ScrollText className="size-4 text-blue-500" />
-                        <span className="text-sm font-medium">
-                            Log Sistem Harian
-                        </span>
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5"
-                        onClick={openBrowser}
-                        disabled={disabled || !ftpConfigured}
-                        title={
-                            disabled
-                                ? 'Device offline — tidak bisa mengirim'
-                                : !ftpConfigured
-                                  ? 'Konfigurasi FTP diperlukan terlebih dahulu'
-                                  : ''
-                        }
-                    >
-                        <HardDrive className="size-4" /> Lihat Log Sistem
-                    </Button>
-                </div>
-            </CardContent>
+                    <CardHeader>
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <CardTitle className="flex items-center gap-2">
+                                    <ScrollText className="size-5" /> System
+                                    Logs
+                                </CardTitle>
+                                <CardDescription className="mt-1">
+                                    Black-box recorder — log sistem harian dari
+                                    perangkat
+                                </CardDescription>
+                            </div>
+                        </div>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
+                            <div className="mb-3 flex items-center gap-2">
+                                <ScrollText className="size-4 text-blue-500" />
+                                <span className="text-sm font-medium">
+                                    Log Sistem Harian
+                                </span>
+                            </div>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-1.5"
+                                onClick={openBrowser}
+                                disabled={disabled || !ftpConfigured}
+                                title={
+                                    disabled
+                                        ? 'Device offline — tidak bisa mengirim'
+                                        : !ftpConfigured
+                                          ? 'Konfigurasi FTP diperlukan terlebih dahulu'
+                                          : ''
+                                }
+                            >
+                                <HardDrive className="size-4" /> Lihat Log
+                                Sistem
+                            </Button>
+                        </div>
+                    </CardContent>
                 </Card>
             ) : (
                 triggerButton
@@ -2602,8 +2691,13 @@ export function SystemLogsCard({
                                 ) : !hasLogText ? (
                                     <div className="rounded-lg border border-dashed border-muted-foreground/25 p-6 text-center">
                                         <FileText className="mx-auto size-8 text-muted-foreground/40" />
-                                        <p className="mt-2 text-sm font-medium">File log kosong</p>
-                                        <p className="mt-1 text-xs text-muted-foreground">Upload berhasil, tapi file dari FTP tidak berisi baris log.</p>
+                                        <p className="mt-2 text-sm font-medium">
+                                            File log kosong
+                                        </p>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            Upload berhasil, tapi file dari FTP
+                                            tidak berisi baris log.
+                                        </p>
                                     </div>
                                 ) : (
                                     <>
@@ -2614,16 +2708,19 @@ export function SystemLogsCard({
                                         )}
                                         {viewerMode.type === 'split' && (
                                             <div className="mb-2 shrink-0 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
-                                                FTP dan logger sama-sama terbaru; dua salinan ditampilkan berdampingan.
+                                                FTP dan logger sama-sama
+                                                terbaru; dua salinan ditampilkan
+                                                berdampingan.
                                             </div>
                                         )}
-                                        {summary && viewerMode.type !== 'split' && (
-                                            <div className="shrink-0">
-                                                <SyslogSummary
-                                                    summary={summary}
-                                                />
-                                            </div>
-                                        )}
+                                        {summary &&
+                                            viewerMode.type !== 'split' && (
+                                                <div className="shrink-0">
+                                                    <SyslogSummary
+                                                        summary={summary}
+                                                    />
+                                                </div>
+                                            )}
                                         {viewerMode.type === 'split' ? (
                                             <div className="grid min-h-0 flex-1 gap-3 md:grid-cols-2">
                                                 <LogSourcePanel

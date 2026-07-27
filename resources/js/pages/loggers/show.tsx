@@ -482,6 +482,7 @@ const SENSOR_TYPES = [
 
 const CONFIGURATOR_MODES = new Set([
     'DEFAULT',
+    'AWR',
     'AWLR_TD',
     'AWLR_US',
     'ARR',
