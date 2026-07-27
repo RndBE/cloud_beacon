@@ -34,6 +34,8 @@ export interface DeviceModule {
 const sensorNameCache = new Map<string, DeviceSensorName[]>();
 const mapSlotCache = new Map<string, DeviceMapSlot[]>();
 const moduleCache = new Map<string, DeviceModule[]>();
+const sensorNameReads = new Map<string, Promise<DeviceSensorName[] | null>>();
+const mapSlotReads = new Map<string, Promise<DeviceMapSlot[] | null>>();
 
 // Subscribers (mounted panels) are notified whenever the cache changes, so a sync triggered from
 // ANY tab updates the Data Mapping / Calibration views even when they are already on screen.
@@ -84,14 +86,28 @@ export async function fetchSensorNames(deviceId: string, force = false): Promise
     if (!force) {
         const cached = sensorNameCache.get(deviceId);
         if (cached) return cached;
+        const pending = sensorNameReads.get(deviceId);
+        if (pending) return pending;
     }
-    const resp = await postJson('/api/mqtt/sensors/get-name', { id_logger: deviceId });
-    const json = (await resp.json()) as { success: boolean; data?: DeviceSensorName[] };
-    if (json.success && Array.isArray(json.data)) {
-        setCachedSensorNames(deviceId, json.data); // notifies subscribers
-        return json.data;
+
+    const read = (async () => {
+        const resp = await postJson('/api/mqtt/sensors/get-name', { id_logger: deviceId });
+        const json = (await resp.json()) as { success: boolean; data?: DeviceSensorName[] };
+        if (json.success && Array.isArray(json.data)) {
+            setCachedSensorNames(deviceId, json.data); // notifies subscribers
+            return json.data;
+        }
+        return sensorNameCache.get(deviceId) ?? null;
+    })();
+
+    if (!force) sensorNameReads.set(deviceId, read);
+    try {
+        return await read;
+    } finally {
+        if (!force && sensorNameReads.get(deviceId) === read) {
+            sensorNameReads.delete(deviceId);
+        }
     }
-    return sensorNameCache.get(deviceId) ?? null;
 }
 
 // ── GCM modules (topology) ───────────────────────────────────────────────────
@@ -127,24 +143,38 @@ export async function fetchMapSlots(deviceId: string, force = false): Promise<De
     if (!force) {
         const cached = mapSlotCache.get(deviceId);
         if (cached) return cached;
+        const pending = mapSlotReads.get(deviceId);
+        if (pending) return pending;
     }
-    const resp = await postJson('/api/mqtt/protocol/command', {
-        id_logger: deviceId,
-        module: 'MAP_DATA',
-        payload: { MAP_DATA: { cmd: 'GET' } },
-    });
-    const json = (await resp.json()) as { success: boolean; data?: { MAP_DATA?: Record<string, unknown> } };
-    const inner = json.success ? json.data?.MAP_DATA : undefined;
-    if (inner) {
-        const slots: DeviceMapSlot[] = [];
-        for (let slot = 1; slot <= MAP_SLOT_MAX; slot += 1) {
-            const name = inner[`s${slot}`];
-            if (typeof name === 'string' && name.trim() !== '') slots.push({ slot, name: name.trim() });
+
+    const read = (async () => {
+        const resp = await postJson('/api/mqtt/protocol/command', {
+            id_logger: deviceId,
+            module: 'MAP_DATA',
+            payload: { MAP_DATA: { cmd: 'GET' } },
+        });
+        const json = (await resp.json()) as { success: boolean; data?: { MAP_DATA?: Record<string, unknown> } };
+        const inner = json.success ? json.data?.MAP_DATA : undefined;
+        if (inner) {
+            const slots: DeviceMapSlot[] = [];
+            for (let slot = 1; slot <= MAP_SLOT_MAX; slot += 1) {
+                const name = inner[`s${slot}`];
+                if (typeof name === 'string' && name.trim() !== '') slots.push({ slot, name: name.trim() });
+            }
+            setCachedMapSlots(deviceId, slots); // notifies subscribers
+            return slots;
         }
-        setCachedMapSlots(deviceId, slots); // notifies subscribers
-        return slots;
+        return mapSlotCache.get(deviceId) ?? null;
+    })();
+
+    if (!force) mapSlotReads.set(deviceId, read);
+    try {
+        return await read;
+    } finally {
+        if (!force && mapSlotReads.get(deviceId) === read) {
+            mapSlotReads.delete(deviceId);
+        }
     }
-    return mapSlotCache.get(deviceId) ?? null;
 }
 
 // ── Panel form snapshots (Module EWS/GCM + Device Configuration) ──────────────

@@ -23,7 +23,7 @@ class MqttService
         $this->username     = config('mqtt.username');
         $this->password     = config('mqtt.password');
         $this->timeout      = config('mqtt.timeout', 30);
-        $this->ftpTimeout   = config('mqtt.ftp_timeout', 120);
+        $this->ftpTimeout   = config('mqtt.ftp_timeout', 300);
         $this->clientPrefix = config('mqtt.client_id_prefix', 'cloud_beacon_');
     }
 
@@ -298,7 +298,7 @@ class MqttService
         return match ($normalized) {
             'DEF' => 'DEFAULT',
             // Active modes per spec §3.14 / §3.4. WEATHER kept only for legacy stored values.
-            'DEFAULT', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS', 'WEATHER' => $normalized,
+            'DEFAULT', 'AWR', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS', 'WEATHER' => $normalized,
             default => null,
         };
     }

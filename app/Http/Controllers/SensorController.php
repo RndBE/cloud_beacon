@@ -11,6 +11,8 @@ use Illuminate\Http\Request;
 
 class SensorController extends Controller
 {
+    private const SENSOR_PARAMETER_NAME_MAX_LENGTH = 12;
+
     /**
      * Resolve the logger, enforcing ownership for non-super-admins.
      */
@@ -21,6 +23,11 @@ class SensorController extends Controller
 
         $query = Logger::query()->manageableBy(auth()->user());
         return $query->findOrFail($id);
+    }
+
+    private function deviceAlreadySynced(Request $request): bool
+    {
+        return $request->input('_device_synced') === 'serial';
     }
 
     /**
@@ -235,6 +242,7 @@ class SensorController extends Controller
         $persist = $this->persistableSensorData($validated);
         $persist['logger_id'] = $logger->id;
         $connType = $mqttPayloadData['connection_type'] ?? null;
+        $skipDevicePush = $this->deviceAlreadySynced($request);
 
         if (in_array($connType, self::GROUPED_TYPES, true)) {
             // RS485/RS232: re-SET the whole slave/port with its existing params + the new one.
@@ -244,7 +252,9 @@ class SensorController extends Controller
                 ->push($this->paramFromData($mqttPayloadData))
                 ->values()->all();
 
-            $result = $this->pushGroupConfig($logger, $connType, $groupId, $params, $this->deviceFromData($mqttPayloadData));
+            $result = $skipDevicePush
+                ? null
+                : $this->pushGroupConfig($logger, $connType, $groupId, $params, $this->deviceFromData($mqttPayloadData));
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']])->withInput();
             }
@@ -256,7 +266,7 @@ class SensorController extends Controller
         }
 
         // Analog/Digital (one param per channel) or virtual sensor.
-        if (!empty($connType)) {
+        if (!$skipDevicePush && !empty($connType)) {
             $result = $this->sendMqttSet($logger, $mqttPayloadData);
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']])->withInput();
@@ -276,6 +286,7 @@ class SensorController extends Controller
         $mqttPayloadData = $validated;
         $persist = $this->persistableSensorData($validated);
         $connType = $mqttPayloadData['connection_type'] ?? null;
+        $skipDevicePush = $this->deviceAlreadySynced($request);
 
         if (in_array($connType, self::GROUPED_TYPES, true)) {
             $col = $this->groupColumn($connType);
@@ -289,13 +300,15 @@ class SensorController extends Controller
                 ->push($this->paramFromData($mqttPayloadData))
                 ->values()->all();
 
-            $result = $this->pushGroupConfig($logger, $connType, $newGroupId, $params, $this->deviceFromData($mqttPayloadData));
+            $result = $skipDevicePush
+                ? null
+                : $this->pushGroupConfig($logger, $connType, $newGroupId, $params, $this->deviceFromData($mqttPayloadData));
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']])->withInput();
             }
 
             // If the param moved to a different slave/port, fix the old group too.
-            if ($oldGroupId != $newGroupId) {
+            if (!$skipDevicePush && $oldGroupId != $newGroupId) {
                 $oldRemaining = $this->groupMembers($logger, $connType, $oldGroupId)
                     ->reject(fn (Sensor $s) => $s->id === $sensor->id);
                 $oldDevice = $oldRemaining->isNotEmpty() ? $this->deviceFromSensor($oldRemaining->first()) : [];
@@ -316,7 +329,7 @@ class SensorController extends Controller
         }
 
         // Analog/Digital or virtual.
-        if (!empty($connType)) {
+        if (!$skipDevicePush && !empty($connType)) {
             $result = $this->sendMqttSet($logger, $mqttPayloadData);
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']])->withInput();
@@ -328,11 +341,12 @@ class SensorController extends Controller
         return back()->with('success', 'Sensor updated successfully.');
     }
 
-    public function destroy(string $loggerHash, int $id): RedirectResponse
+    public function destroy(Request $request, string $loggerHash, int $id): RedirectResponse
     {
         $logger = $this->resolveLogger($loggerHash);
         $sensor = Sensor::where('logger_id', $logger->id)->findOrFail($id);
         $connType = $sensor->connection_type;
+        $skipDevicePush = $this->deviceAlreadySynced($request);
 
         if (in_array($connType, self::GROUPED_TYPES, true)) {
             // Deleting ONE parameter of a multi-param slave/port must re-SET the
@@ -342,11 +356,13 @@ class SensorController extends Controller
                 ->reject(fn (Sensor $s) => $s->id === $sensor->id);
             $device = $remaining->isNotEmpty() ? $this->deviceFromSensor($remaining->first()) : [];
 
-            $result = $this->pushGroupConfig(
-                $logger, $connType, $sensor->{$col},
-                $remaining->map(fn (Sensor $s) => $this->paramFromSensor($s))->values()->all(),
-                $device,
-            );
+            $result = $skipDevicePush
+                ? null
+                : $this->pushGroupConfig(
+                    $logger, $connType, $sensor->{$col},
+                    $remaining->map(fn (Sensor $s) => $this->paramFromSensor($s))->values()->all(),
+                    $device,
+                );
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']]);
             }
@@ -357,7 +373,7 @@ class SensorController extends Controller
         }
 
         // Analog/Digital (channel = unit) or virtual.
-        if ($connType) {
+        if (!$skipDevicePush && $connType) {
             $result = $this->sendMqttDel($logger, $sensor);
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']]);
@@ -373,7 +389,7 @@ class SensorController extends Controller
      * Delete an ENTIRE RS485 slave / RS232 port (the device group and all its
      * parameters): DEL the slave/port on the device, then remove all DB rows.
      */
-    public function destroyGroup(string $loggerHash, string $connType, int $groupId): RedirectResponse
+    public function destroyGroup(Request $request, string $loggerHash, string $connType, int $groupId): RedirectResponse
     {
         $logger = $this->resolveLogger($loggerHash);
         $connType = strtolower($connType);
@@ -382,7 +398,7 @@ class SensorController extends Controller
         $rows = $this->groupMembers($logger, $connType, $groupId);
         abort_if($rows->isEmpty(), 404);
 
-        if ($logger->device_identifier) {
+        if (!$this->deviceAlreadySynced($request) && $logger->device_identifier) {
             $result = (new MqttService())->sendSensorDel($logger->device_identifier, $connType, $groupId);
             if ($result && !$result['success']) {
                 return back()->withErrors(['mqtt' => $result['message']]);
@@ -405,6 +421,7 @@ class SensorController extends Controller
         $logger = $this->resolveLogger($loggerHash);
         $connType = strtolower($connType);
         abort_unless(in_array($connType, self::GROUPED_TYPES, true), 404);
+        $skipDevicePush = $this->deviceAlreadySynced($request);
 
         // RS485 unified device form: full cfg + the complete `s` param list in one shot.
         if ($connType === 'rs485' && $request->has('params')) {
@@ -465,13 +482,15 @@ class SensorController extends Controller
         $params = $rows->map(fn (Sensor $s) => $this->paramFromSensor($s))->values()->all();
 
         // Re-SET the (possibly new) slave/port with the new cfg + existing params.
-        $result = $this->pushGroupConfig($logger, $connType, $newGroupId, $params, $device);
+        $result = $skipDevicePush
+            ? null
+            : $this->pushGroupConfig($logger, $connType, $newGroupId, $params, $device);
         if ($result && !$result['success']) {
             return back()->withErrors(['mqtt' => $result['message']]);
         }
 
         // If the device moved, remove the old slave/port on the firmware.
-        if ($newGroupId !== $groupId && $logger->device_identifier) {
+        if (!$skipDevicePush && $newGroupId !== $groupId && $logger->device_identifier) {
             $delResult = (new MqttService())->sendSensorDel($logger->device_identifier, $connType, $groupId);
             if ($delResult && !$delResult['success']) {
                 return back()->withErrors(['mqtt' => $delResult['message']]);
@@ -500,13 +519,14 @@ class SensorController extends Controller
             'serial_format' => 'required|string|in:8N1,8E1,8O1',
             'params' => 'required|array|min:1|max:16', // MAX_SENSORS_PER_SLAVE
             'params.*.id' => 'nullable|integer',
-            'params.*.name' => 'required|string|max:255',
+            'params.*.name' => 'required|string|max:' . self::SENSOR_PARAMETER_NAME_MAX_LENGTH,
             'params.*.unit' => 'nullable|string|max:50',
             'params.*.scale_factor' => 'nullable|numeric',
             'params.*.register_address' => 'nullable|integer|min:0|max:65535',
             'params.*.reg_count' => 'nullable|integer|in:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27',
             'params.*.fast_poll' => 'nullable|boolean',
         ]);
+        $skipDevicePush = $this->deviceAlreadySynced($request);
 
         $newSlave = (int) $validated['modbus_slave_id'];
 
@@ -540,13 +560,15 @@ class SensorController extends Controller
         ]), $validated['params']);
 
         // Push the whole slave once.
-        $result = $this->pushGroupConfig($logger, 'rs485', $newSlave, $params, $device);
+        $result = $skipDevicePush
+            ? null
+            : $this->pushGroupConfig($logger, 'rs485', $newSlave, $params, $device);
         if ($result && !$result['success']) {
             return back()->withErrors(['mqtt' => $result['message']])->withInput();
         }
 
         // Device moved to a different slave → remove the old slave on the firmware.
-        if ($groupId !== null && $newSlave !== $groupId && $logger->device_identifier) {
+        if (!$skipDevicePush && $groupId !== null && $newSlave !== $groupId && $logger->device_identifier) {
             $del = (new MqttService())->sendSensorDel($logger->device_identifier, 'rs485', $groupId);
             if ($del && !$del['success']) {
                 return back()->withErrors(['mqtt' => $del['message']])->withInput();

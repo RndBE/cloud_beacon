@@ -343,7 +343,7 @@ test('mobile logger detail returns sensors integrations and activity logs', func
         'created_at' => now(),
     ]);
 
-    mobileApiGet($this, $user, '/api/mobile/v1/loggers/'.$logger->id)
+    $response = mobileApiGet($this, $user, '/api/mobile/v1/loggers/'.$logger->id)
         ->assertOk()
         ->assertJsonPath('data.summary.name', 'AWR Bendung Barat')
         ->assertJsonPath('data.summary.modelImage', asset('storage/device-models/bl-1100.webp'))
@@ -354,6 +354,12 @@ test('mobile logger detail returns sensors integrations and activity logs', func
         ->assertJsonPath('data.ftp.host', 'ftp.example.test')
         ->assertJsonPath('data.sensors.0.name', 'Water Level')
         ->assertJsonPath('data.activityLogs.0.action', 'Device Push');
+
+    expect(collect($response->json('data.availableModes'))->contains(
+        fn ($mode) => $mode['slug'] === 'AWR'
+            && $mode['label'] === 'AWR (Automatic Weather Recorder)'
+            && $mode['hasCalibration'] === false
+    ))->toBeTrue();
 });
 
 test('mobile topology is scoped to owned projects and loggers', function () {

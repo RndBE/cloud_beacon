@@ -1,10 +1,13 @@
 <?php
 
+use App\Models\Logger;
 use App\Models\Permission;
 use App\Models\RemoteDevice;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\IdHasher;
 use Illuminate\Support\Facades\Cache;
+use Inertia\Testing\AssertableInertia as Assert;
 
 function userWithCloudSshPermissions(array $permissions): User
 {
@@ -31,9 +34,9 @@ function userWithCloudSshPermissions(array $permissions): User
 function makeRemoteDevice(array $overrides = []): RemoteDevice
 {
     return RemoteDevice::create(array_merge([
-        'name'     => 'Modul AI (Orange Pi)',
-        'host'     => '10.8.0.2',
-        'port'     => 22,
+        'name' => 'Modul AI (Orange Pi)',
+        'host' => '10.8.0.2',
+        'port' => 22,
         'username' => 'orangepi',
     ], $overrides));
 }
@@ -49,6 +52,40 @@ it('shows the device list to users with cloudssh.view', function () {
         ->assertOk();
 });
 
+it('shares logger choices and their current device assignments', function () {
+    $user = userWithCloudSshPermissions(['cloudssh.view']);
+    $device = makeRemoteDevice(['name' => 'A Modul AI']);
+    $otherDevice = makeRemoteDevice([
+        'name' => 'Z Modul AI',
+        'host' => '10.8.0.9',
+    ]);
+    $freeLogger = Logger::factory()->create(['user_id' => $user->id, 'name' => 'A Logger Bebas']);
+    $selectedLogger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'name' => 'B Logger Terpilih',
+        'remote_device_id' => $device->id,
+    ]);
+    Logger::factory()->create([
+        'user_id' => $user->id,
+        'name' => 'C Logger Milik Lain',
+        'remote_device_id' => $otherDevice->id,
+    ]);
+
+    $this->actingAs($user)
+        ->get(route('cloud-ssh.index'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('cloud-ssh/index')
+            ->where('devices.0.loggerIds', [$selectedLogger->id])
+            ->has('availableLoggers', 3)
+            ->where('availableLoggers.0.id', $freeLogger->id)
+            ->where('availableLoggers.0.remoteDeviceId', null)
+            ->where('availableLoggers.1.remoteDeviceId', $device->id)
+            ->where('availableLoggers.1.remoteDeviceName', 'A Modul AI')
+            ->where('availableLoggers.2.remoteDeviceId', $otherDevice->id)
+            ->where('availableLoggers.2.remoteDeviceName', 'Z Modul AI'));
+});
+
 it('denies the device list without cloudssh.view', function () {
     $user = userWithCloudSshPermissions([]);
 
@@ -62,9 +99,9 @@ it('creates a device with cloudssh.manage', function () {
 
     $this->actingAs($user)
         ->post(route('cloud-ssh.store'), [
-            'name'     => 'Modul AI 2',
-            'host'     => '10.8.0.5',
-            'port'     => 22,
+            'name' => 'Modul AI 2',
+            'host' => '10.8.0.5',
+            'port' => 22,
             'username' => 'orangepi',
         ])
         ->assertRedirect(route('cloud-ssh.index'));
@@ -72,14 +109,56 @@ it('creates a device with cloudssh.manage', function () {
     expect(RemoteDevice::where('host', '10.8.0.5')->exists())->toBeTrue();
 });
 
+it('assigns multiple loggers when creating a device', function () {
+    $user = userWithCloudSshPermissions(['cloudssh.manage']);
+    $loggers = Logger::factory()->count(2)->create(['user_id' => $user->id]);
+
+    $this->actingAs($user)
+        ->post(route('cloud-ssh.store'), [
+            'name' => 'Modul AI Multi Logger',
+            'host' => '10.8.0.6',
+            'port' => 22,
+            'username' => 'orangepi',
+            'logger_ids' => $loggers->modelKeys(),
+        ])
+        ->assertRedirect(route('cloud-ssh.index'));
+
+    $device = RemoteDevice::where('host', '10.8.0.6')->firstOrFail();
+
+    expect($loggers->map(fn (Logger $logger) => $logger->fresh()->remote_device_id)->all())
+        ->toBe([$device->id, $device->id]);
+});
+
+it('does not move a logger that belongs to another device', function () {
+    $user = userWithCloudSshPermissions(['cloudssh.manage']);
+    $existingDevice = makeRemoteDevice();
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'remote_device_id' => $existingDevice->id,
+    ]);
+
+    $this->actingAs($user)
+        ->post(route('cloud-ssh.store'), [
+            'name' => 'Modul AI Baru',
+            'host' => '10.8.0.7',
+            'port' => 22,
+            'username' => 'orangepi',
+            'logger_ids' => [$logger->id],
+        ])
+        ->assertSessionHasErrors('logger_ids');
+
+    expect($logger->fresh()->remote_device_id)->toBe($existingDevice->id)
+        ->and(RemoteDevice::where('host', '10.8.0.7')->exists())->toBeFalse();
+});
+
 it('rejects device creation without cloudssh.manage', function () {
     $user = userWithCloudSshPermissions(['cloudssh.view']);
 
     $this->actingAs($user)
         ->post(route('cloud-ssh.store'), [
-            'name'     => 'Modul AI 2',
-            'host'     => '10.8.0.5',
-            'port'     => 22,
+            'name' => 'Modul AI 2',
+            'host' => '10.8.0.5',
+            'port' => 22,
             'username' => 'orangepi',
         ])
         ->assertForbidden();
@@ -90,9 +169,9 @@ it('validates device input', function () {
 
     $this->actingAs($user)
         ->post(route('cloud-ssh.store'), [
-            'name'     => '',
-            'host'     => '10.8.0.5',
-            'port'     => 99999,
+            'name' => '',
+            'host' => '10.8.0.5',
+            'port' => 99999,
             'username' => 'bad user!',
         ])
         ->assertSessionHasErrors(['name', 'port', 'username']);
@@ -104,9 +183,9 @@ it('updates and deletes a device with cloudssh.manage', function () {
 
     $this->actingAs($user)
         ->put(route('cloud-ssh.update', $device), [
-            'name'     => 'Renamed',
-            'host'     => $device->host,
-            'port'     => $device->port,
+            'name' => 'Renamed',
+            'host' => $device->host,
+            'port' => $device->port,
             'username' => $device->username,
         ])
         ->assertRedirect(route('cloud-ssh.index'));
@@ -118,6 +197,115 @@ it('updates and deletes a device with cloudssh.manage', function () {
         ->assertRedirect(route('cloud-ssh.index'));
 
     expect(RemoteDevice::find($device->id))->toBeNull();
+});
+
+it('replaces logger assignments when updating a device', function () {
+    $user = userWithCloudSshPermissions(['cloudssh.manage']);
+    $device = makeRemoteDevice();
+    $previousLogger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'remote_device_id' => $device->id,
+    ]);
+    $nextLogger = Logger::factory()->create(['user_id' => $user->id]);
+
+    $this->actingAs($user)
+        ->put(route('cloud-ssh.update', $device), [
+            'name' => $device->name,
+            'host' => $device->host,
+            'port' => $device->port,
+            'username' => $device->username,
+            'logger_ids' => [$nextLogger->id],
+        ])
+        ->assertRedirect(route('cloud-ssh.index'));
+
+    expect($previousLogger->fresh()->remote_device_id)->toBeNull()
+        ->and($nextLogger->fresh()->remote_device_id)->toBe($device->id);
+});
+
+it('rejects a conflicting logger assignment when updating a device', function () {
+    $user = userWithCloudSshPermissions(['cloudssh.manage']);
+    $device = makeRemoteDevice();
+    $otherDevice = makeRemoteDevice(['host' => '10.8.0.10']);
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'remote_device_id' => $otherDevice->id,
+    ]);
+
+    $this->actingAs($user)
+        ->put(route('cloud-ssh.update', $device), [
+            'name' => $device->name,
+            'host' => $device->host,
+            'port' => $device->port,
+            'username' => $device->username,
+            'logger_ids' => [$logger->id],
+        ])
+        ->assertSessionHasErrors('logger_ids');
+
+    expect($logger->fresh()->remote_device_id)->toBe($otherDevice->id);
+});
+
+it('keeps loggers and clears their assignment when deleting a device', function () {
+    $user = userWithCloudSshPermissions(['cloudssh.manage']);
+    $device = makeRemoteDevice();
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'remote_device_id' => $device->id,
+    ]);
+
+    $this->actingAs($user)
+        ->delete(route('cloud-ssh.destroy', $device))
+        ->assertRedirect(route('cloud-ssh.index'));
+
+    expect($logger->fresh())->not->toBeNull()
+        ->and($logger->fresh()->remote_device_id)->toBeNull();
+});
+
+it('shares the linked module ai on logger detail according to permissions', function () {
+    config(['cloud-web.base_domain' => 'devices.example.test']);
+
+    $user = userWithCloudSshPermissions([
+        'loggers.view',
+        'cloudssh.view',
+        'cloudssh.connect',
+        'cloudweb.connect',
+    ]);
+    $device = makeRemoteDevice([
+        'name' => 'Modul AI Logger',
+        'web_enabled' => true,
+        'web_port' => 8080,
+    ]);
+    $device->forceFill(['web_slug' => 'device-logger'])->saveQuietly();
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'remote_device_id' => $device->id,
+    ]);
+
+    $this->actingAs($user)
+        ->get(route('loggers.show', IdHasher::encode($logger->id)))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('loggers/show')
+            ->where('logger.remoteDevice.id', $device->id)
+            ->where('logger.remoteDevice.name', 'Modul AI Logger')
+            ->where('logger.remoteDevice.webEnabled', true)
+            ->where('logger.remoteDevice.webUrl', 'https://device-logger.devices.example.test')
+            ->where('logger.remoteDevice.canSshConnect', true)
+            ->where('logger.remoteDevice.canWebConnect', true));
+});
+
+it('hides the linked module ai without cloudssh view permission', function () {
+    $user = userWithCloudSshPermissions(['loggers.view']);
+    $device = makeRemoteDevice();
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'remote_device_id' => $device->id,
+    ]);
+
+    $this->actingAs($user)
+        ->get(route('loggers.show', IdHasher::encode($logger->id)))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('logger.remoteDevice', null));
 });
 
 // ── Terminal page & session token ───────────────────────────────────
@@ -184,8 +372,8 @@ it('lets the bridge redeem a token exactly once', function () {
     $this->postJson(route('internal.cloud-ssh.validate'), ['token' => $token], ['X-Bridge-Secret' => 'test-secret'])
         ->assertOk()
         ->assertJson([
-            'host'     => '10.8.0.2',
-            'port'     => 22,
+            'host' => '10.8.0.2',
+            'port' => 22,
             'username' => 'orangepi',
         ]);
 

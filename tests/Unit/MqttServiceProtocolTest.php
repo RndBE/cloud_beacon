@@ -339,6 +339,14 @@ it('normalizes the APMS system mode', function () {
     expect(MqttService::parseInfoResponse($apms)['logger_mode'])->toBe('APMS');
 });
 
+it('normalizes the AWR system mode', function () {
+    $awr = array_fill(0, 29, 0);
+    $awr[25] = 1;
+    $awr[27] = 'AWR';
+
+    expect(MqttService::parseInfoResponse($awr)['logger_mode'])->toBe('AWR');
+});
+
 it('normalizes legacy rainfall sensor names for APMS and ARR', function () {
     expect(MqttService::normalizeCalibrationData('APMS', [
         'arr_sensor' => 'RK400-04',

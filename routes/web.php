@@ -8,6 +8,7 @@ use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MaintenanceTicketController;
+use App\Http\Controllers\ModeProfileController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
@@ -130,6 +131,20 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.sensors.ctrl');
     Route::post('api/mqtt/sensors/confirm', [MqttController::class, 'confirmSensorSync'])
         ->name('api.mqtt.sensors.confirm');
+    Route::post('api/serial/info/import', [MqttController::class, 'importInfoFromSerial'])
+        ->name('api.serial.info.import');
+    Route::post('api/serial/sensors/preview', [MqttController::class, 'previewSensorsFromSerial'])
+        ->name('api.serial.sensors.preview');
+    Route::post('api/serial/sensors/confirm', [MqttController::class, 'confirmSensorSync'])
+        ->name('api.serial.sensors.confirm');
+    Route::post('api/serial/sensors/ctrl/import', [MqttController::class, 'importSensorCtrlFromSerial'])
+        ->name('api.serial.sensors.ctrl.import');
+    Route::post('api/serial/system/set-mode/import', [MqttController::class, 'importSetModeFromSerial'])
+        ->name('api.serial.system.set-mode.import');
+    Route::post('api/serial/calibration/import', [MqttController::class, 'importCalibrationFromSerial'])
+        ->name('api.serial.calibration.import');
+    Route::post('api/serial/mode-profile/import', [ModeProfileController::class, 'importSerialApply'])
+        ->name('api.serial.mode-profile.import');
     Route::post('api/mqtt/reboot', [MqttController::class, 'reboot'])
         ->name('api.mqtt.reboot');
     // INTERVAL routes removed — firmware locks read/send interval to 1 min (spec §2).
@@ -143,11 +158,20 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.ftp.get');
     Route::post('api/mqtt/ftp/download', [MqttController::class, 'downloadFtpFile'])
         ->name('api.mqtt.ftp.download');
-    // Read a system-log file's text content from FTP (for the in-app log viewer).
+    // Read a system-log file's text content from FTP without touching the logger.
+    Route::post('api/mqtt/ftp/logcontent', [MqttController::class, 'readFtpLogContent'])
+        ->name('api.mqtt.ftp.logcontent');
+    // Read a system-log file's text content after asking the logger to upload the latest copy.
     Route::post('api/mqtt/ftp/logview', [MqttController::class, 'viewFtpLog'])
         ->name('api.mqtt.ftp.logview');
     Route::post('api/mqtt/system/set-mode', [MqttController::class, 'setMode'])
         ->name('api.mqtt.system.set-mode');
+    Route::get('api/mqtt/mode-profiles/{mode}', [ModeProfileController::class, 'show'])
+        ->name('api.mqtt.mode-profiles.show');
+    Route::post('api/mqtt/mode-profile/preview', [ModeProfileController::class, 'preview'])
+        ->name('api.mqtt.mode-profile.preview');
+    Route::post('api/mqtt/mode-profile/apply', [ModeProfileController::class, 'apply'])
+        ->name('api.mqtt.mode-profile.apply');
     Route::post('api/mqtt/calibration/set', [MqttController::class, 'setCalibration'])
         ->name('api.mqtt.calibration.set');
     Route::post('api/mqtt/calibration/get', [MqttController::class, 'getCalibration'])
