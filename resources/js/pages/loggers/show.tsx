@@ -891,7 +891,12 @@ function serialSensorDeletePayload(
     identifier: number,
 ): ProtocolCommandPayload {
     const type = connectionType.toUpperCase();
-    const key = connectionType === 'rs485' ? 'id' : connectionType === 'rs232' ? 'p' : 'ch';
+    const key =
+        connectionType === 'rs485'
+            ? 'id'
+            : connectionType === 'rs232'
+              ? 'p'
+              : 'ch';
     return {
         SENSORS: {
             cmd: 'DEL',
@@ -1286,8 +1291,11 @@ function sensorNamesFromSerialData(
                 satuan: typeof satuan === 'string' ? satuan : '',
             };
         })
-        .filter((item): item is { nama: string; nilai: number | null; satuan: string } =>
-            Boolean(item),
+        .filter(
+            (
+                item,
+            ): item is { nama: string; nilai: number | null; satuan: string } =>
+                Boolean(item),
         );
 
     return names.length > 0 ? names : null;
@@ -1364,7 +1372,9 @@ function telemetryNameVariants(name: string): string[] {
     };
 
     expand((value) =>
-        value.startsWith('rainfall') ? `rain${value.slice('rainfall'.length)}` : null,
+        value.startsWith('rainfall')
+            ? `rain${value.slice('rainfall'.length)}`
+            : null,
     );
     expand((value) =>
         value.startsWith('rain') && !value.startsWith('rainfall')
@@ -1384,13 +1394,17 @@ function telemetryNameVariants(name: string): string[] {
         value.includes('hou') ? value.replaceAll('hou', 'hour') : null,
     );
     expand((value) =>
-        value.includes('temperature') ? value.replaceAll('temperature', 'temp') : null,
+        value.includes('temperature')
+            ? value.replaceAll('temperature', 'temp')
+            : null,
     );
     expand((value) =>
         value.includes('temp') ? value.replaceAll('temp', 'temperature') : null,
     );
     expand((value) =>
-        value.includes('humidity') ? value.replaceAll('humidity', 'humi') : null,
+        value.includes('humidity')
+            ? value.replaceAll('humidity', 'humi')
+            : null,
     );
     expand((value) =>
         value.includes('humi') ? value.replaceAll('humi', 'humidity') : null,
@@ -1415,7 +1429,11 @@ function applySerialTelemetry(
 
     const temp = serialNumber(message.temp);
     const humi = serialNumber(message.humi);
-    if (typeof message.internal === 'string' || temp !== null || humi !== null) {
+    if (
+        typeof message.internal === 'string' ||
+        temp !== null ||
+        humi !== null
+    ) {
         if (temp !== null) next.temperature = temp.toFixed(1);
         if (humi !== null) next.humidity = humi.toFixed(1);
     }
@@ -1465,7 +1483,9 @@ function applySerialTelemetry(
         const matched =
             slaveId === null
                 ? candidates
-                : candidates.filter((sensor) => sensor.modbusSlaveId === slaveId);
+                : candidates.filter(
+                      (sensor) => sensor.modbusSlaveId === slaveId,
+                  );
         const targetSensors = matched.length > 0 ? matched : candidates;
         for (const sensor of targetSensors) {
             next.sensorValues[sensor.id] = {
@@ -1805,7 +1825,8 @@ function SyncFromDeviceDialog({
                     }).then((result) => {
                         if (!result.success) return;
                         const names = sensorNamesFromSerialData(result.data);
-                        if (names) setCachedSensorNames(deviceIdentifier, names);
+                        if (names)
+                            setCachedSensorNames(deviceIdentifier, names);
                     }),
                 ];
 
@@ -1816,7 +1837,8 @@ function SyncFromDeviceDialog({
                         }).then((result) => {
                             if (!result.success) return;
                             const slots = mapSlotsFromSerialData(result.data);
-                            if (slots) setCachedMapSlots(deviceIdentifier, slots);
+                            if (slots)
+                                setCachedMapSlots(deviceIdentifier, slots);
                         }),
                     );
                 }
@@ -1879,8 +1901,8 @@ function SyncFromDeviceDialog({
                     ? '/api/serial/sensors/confirm'
                     : '/api/mqtt/sensors/confirm',
                 {
-                logger_id: loggerId,
-                diff,
+                    logger_id: loggerId,
+                    diff,
                 },
             );
             const data = await res.json();
@@ -2843,7 +2865,7 @@ function AnalogCalibration({
                             Set
                         </Button>
                     </div>
-                    </div>
+                </div>
                 <div className="grid gap-1.5">
                     <Label className="text-xs">Offset</Label>
                     <div className="flex items-start gap-2">
@@ -3072,8 +3094,7 @@ function SensorCrudPanel({
                 if (!setResult.success) {
                     setErrors({
                         mqtt:
-                            setResult.message ||
-                            'Gagal set sensor via Serial.',
+                            setResult.message || 'Gagal set sensor via Serial.',
                     });
                     setProcessing(false);
                     return;
@@ -3423,8 +3444,7 @@ function SensorCrudPanel({
                 if (!result.success) {
                     setErrors({
                         mqtt:
-                            result.message ||
-                            'Gagal hapus device via Serial.',
+                            result.message || 'Gagal hapus device via Serial.',
                     });
                     return;
                 }
@@ -3473,12 +3493,15 @@ function SensorCrudPanel({
                           },
                       }).then(async (result) => {
                           if (result.success) {
-                              await apiFetch('/api/serial/sensors/ctrl/import', {
-                                  id_logger: deviceIdentifier,
-                                  sensor_id: editingSensor.id,
-                                  state,
-                                  response: result.data ?? null,
-                              });
+                              await apiFetch(
+                                  '/api/serial/sensors/ctrl/import',
+                                  {
+                                      id_logger: deviceIdentifier,
+                                      sensor_id: editingSensor.id,
+                                      state,
+                                      response: result.data ?? null,
+                                  },
+                              );
                           }
                           return result;
                       })
@@ -4164,13 +4187,13 @@ function SensorCrudPanel({
                                                     errors[
                                                         `params.${i}.name`
                                                     ] && (
-                                                    <p className="text-xs text-red-500">
-                                                        {
-                                                            errors[
-                                                                `params.${i}.name`
-                                                            ]
-                                                        }
-                                                    </p>
+                                                        <p className="text-xs text-red-500">
+                                                            {
+                                                                errors[
+                                                                    `params.${i}.name`
+                                                                ]
+                                                            }
+                                                        </p>
                                                     )
                                                 )}
                                             </div>
@@ -5352,7 +5375,10 @@ function FirmwareCard({
                     disabled={disabled}
                     className="disabled:opacity-50"
                 >
-                    <Badge variant="destructive" className="cursor-pointer gap-1">
+                    <Badge
+                        variant="destructive"
+                        className="cursor-pointer gap-1"
+                    >
                         <Download className="size-3" />
                         Update available
                     </Badge>
@@ -5363,9 +5389,7 @@ function FirmwareCard({
                     Device busy
                 </Badge>
             ) : (
-                <Badge variant="default">
-                    {t('loggerDetail.up_to_date')}
-                </Badge>
+                <Badge variant="default">{t('loggerDetail.up_to_date')}</Badge>
             )}
         </div>
     );
@@ -5375,83 +5399,84 @@ function FirmwareCard({
             {embedded ? (
                 statusPanel
             ) : (
-            <Card>
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                        <Zap className="size-5" /> {t('loggerDetail.firmware')}
-                    </CardTitle>
-                    <CardDescription>
-                        Current: {currentVersion || '—'}
-                    </CardDescription>
-                </CardHeader>
-                <CardContent>
-                    <div className="flex items-center justify-between rounded-lg border p-3">
-                        <div>
-                            <p className="text-sm font-medium">
-                                {t('loggerDetail.current_firmware')}
-                            </p>
-                            <p className="font-mono text-xs text-muted-foreground">
-                                {currentVersion || '—'}
-                            </p>
-                            {(state === 'install' || state === 'update') &&
-                                targetVersion && (
-                                    <p className="mt-0.5 font-mono text-xs text-emerald-600">
-                                        → {targetVersion}
-                                    </p>
-                                )}
-                        </div>
-                        {phase === 'online' ? (
-                            <Badge variant="default" className="gap-1">
-                                <CheckCircle2 className="size-3" />
-                                Terinstall
-                            </Badge>
-                        ) : phase === 'installing' ? (
-                            <Button size="sm" disabled>
-                                <Loader2 className="mr-1 size-3.5 animate-spin" />
-                                Installing…
-                            </Button>
-                        ) : checking ? (
-                            <Badge variant="secondary" className="gap-1">
-                                <Loader2 className="size-3 animate-spin" />
-                                Checking…
-                            </Badge>
-                        ) : ready || state === 'install' ? (
-                            <Button
-                                size="sm"
-                                onClick={handleInstall}
-                                disabled={disabled}
-                            >
-                                <Download className="mr-1 size-3.5" />
-                                Install
-                            </Button>
-                        ) : state === 'update' ? (
-                            <button
-                                type="button"
-                                onClick={() => setDialogOpen(true)}
-                                disabled={disabled}
-                                className="disabled:opacity-50"
-                            >
-                                <Badge
-                                    variant="destructive"
-                                    className="cursor-pointer gap-1"
-                                >
-                                    <Download className="size-3" />
-                                    Update available
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                            <Zap className="size-5" />{' '}
+                            {t('loggerDetail.firmware')}
+                        </CardTitle>
+                        <CardDescription>
+                            Current: {currentVersion || '—'}
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="flex items-center justify-between rounded-lg border p-3">
+                            <div>
+                                <p className="text-sm font-medium">
+                                    {t('loggerDetail.current_firmware')}
+                                </p>
+                                <p className="font-mono text-xs text-muted-foreground">
+                                    {currentVersion || '—'}
+                                </p>
+                                {(state === 'install' || state === 'update') &&
+                                    targetVersion && (
+                                        <p className="mt-0.5 font-mono text-xs text-emerald-600">
+                                            → {targetVersion}
+                                        </p>
+                                    )}
+                            </div>
+                            {phase === 'online' ? (
+                                <Badge variant="default" className="gap-1">
+                                    <CheckCircle2 className="size-3" />
+                                    Terinstall
                                 </Badge>
-                            </button>
-                        ) : state === 'busy' ? (
-                            <Badge variant="secondary" className="gap-1">
-                                <Loader2 className="size-3 animate-spin" />
-                                Device busy
-                            </Badge>
-                        ) : (
-                            <Badge variant="default">
-                                {t('loggerDetail.up_to_date')}
-                            </Badge>
-                        )}
-                    </div>
-                </CardContent>
-            </Card>
+                            ) : phase === 'installing' ? (
+                                <Button size="sm" disabled>
+                                    <Loader2 className="mr-1 size-3.5 animate-spin" />
+                                    Installing…
+                                </Button>
+                            ) : checking ? (
+                                <Badge variant="secondary" className="gap-1">
+                                    <Loader2 className="size-3 animate-spin" />
+                                    Checking…
+                                </Badge>
+                            ) : ready || state === 'install' ? (
+                                <Button
+                                    size="sm"
+                                    onClick={handleInstall}
+                                    disabled={disabled}
+                                >
+                                    <Download className="mr-1 size-3.5" />
+                                    Install
+                                </Button>
+                            ) : state === 'update' ? (
+                                <button
+                                    type="button"
+                                    onClick={() => setDialogOpen(true)}
+                                    disabled={disabled}
+                                    className="disabled:opacity-50"
+                                >
+                                    <Badge
+                                        variant="destructive"
+                                        className="cursor-pointer gap-1"
+                                    >
+                                        <Download className="size-3" />
+                                        Update available
+                                    </Badge>
+                                </button>
+                            ) : state === 'busy' ? (
+                                <Badge variant="secondary" className="gap-1">
+                                    <Loader2 className="size-3 animate-spin" />
+                                    Device busy
+                                </Badge>
+                            ) : (
+                                <Badge variant="default">
+                                    {t('loggerDetail.up_to_date')}
+                                </Badge>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
             )}
 
             {/* Latest-firmware dialog with download trigger */}
@@ -6590,25 +6615,25 @@ function SetModeCard({
             const data =
                 transportMode === 'serial' && commandTransport
                     ? await commandTransport('SYSTEM', {
-                            SYSTEM: { cmd: 'SET_MODE', mode: selectedMode },
-                        }).then(async (result) => {
-                            if (result.success) {
-                                const persist = await apiFetch(
-                                    '/api/serial/system/set-mode/import',
-                                    {
-                                        id_logger: logger.deviceIdentifier!,
-                                        mode: selectedMode,
-                                        response: result.data ?? null,
-                                    },
-                                );
-                                return persist.json();
-                            }
-                            return result;
-                        })
-                        : await apiFetch('/api/mqtt/system/set-mode', {
-                            id_logger: logger.deviceIdentifier!,
-                            mode: selectedMode,
-                        }).then((res) => res.json());
+                          SYSTEM: { cmd: 'SET_MODE', mode: selectedMode },
+                      }).then(async (result) => {
+                          if (result.success) {
+                              const persist = await apiFetch(
+                                  '/api/serial/system/set-mode/import',
+                                  {
+                                      id_logger: logger.deviceIdentifier!,
+                                      mode: selectedMode,
+                                      response: result.data ?? null,
+                                  },
+                              );
+                              return persist.json();
+                          }
+                          return result;
+                      })
+                    : await apiFetch('/api/mqtt/system/set-mode', {
+                          id_logger: logger.deviceIdentifier!,
+                          mode: selectedMode,
+                      }).then((res) => res.json());
             if (data.success) {
                 setPhase('success');
                 setMessage(
@@ -6625,14 +6650,10 @@ function SetModeCard({
         }
     }
 
-    const guidedModes = new Set([
-        'ARR',
-        'AWR',
-        'AWLR_TD',
-        'AWLR_US',
-        'APMS',
-    ]);
-    const supportsGuidedProfiles = allowedModes.some((mode) => guidedModes.has(mode.slug));
+    const guidedModes = new Set(['ARR', 'AWR', 'AWLR_TD', 'AWLR_US', 'APMS']);
+    const supportsGuidedProfiles = allowedModes.some((mode) =>
+        guidedModes.has(mode.slug),
+    );
 
     if (supportsGuidedProfiles) {
         return (
@@ -6965,22 +6986,22 @@ function CalibrationCard({
             } =
                 transportMode === 'serial' && commandTransport
                     ? await commandTransport(logger.loggerMode!, {
-                            [logger.loggerMode!]: { cmd: 'GET' },
-                        }).then((result) => {
-                            const raw = asRecord(result.data);
-                            const moduleData = asRecord(
-                                raw?.[logger.loggerMode!],
-                            );
-                            const clean = { ...(moduleData ?? raw ?? {}) };
-                            delete clean.status;
-                            return {
-                                success: result.success,
-                                data: clean as Record<string, number | string>,
-                            };
-                        })
-                        : await apiFetch('/api/mqtt/calibration/get', {
-                            id_logger: logger.deviceIdentifier,
-                        }).then((r) => r.json());
+                          [logger.loggerMode!]: { cmd: 'GET' },
+                      }).then((result) => {
+                          const raw = asRecord(result.data);
+                          const moduleData = asRecord(
+                              raw?.[logger.loggerMode!],
+                          );
+                          const clean = { ...(moduleData ?? raw ?? {}) };
+                          delete clean.status;
+                          return {
+                              success: result.success,
+                              data: clean as Record<string, number | string>,
+                          };
+                      })
+                    : await apiFetch('/api/mqtt/calibration/get', {
+                          id_logger: logger.deviceIdentifier,
+                      }).then((r) => r.json());
             if (data.success && data.data) {
                 const dd = data.data;
                 setDeviceCalib(dd);
@@ -7465,74 +7486,81 @@ function ProjectAssignDropdown({ logger }: { logger: LoggerDetail }) {
                     {notification.text}
                 </div>
             )}
-            <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5"
-                onClick={() => setOpen(!open)}
-                disabled={saving}
+            <DropdownMenu
+                open={open && !notification}
+                onOpenChange={(nextOpen) => {
+                    if (!saving) setOpen(nextOpen);
+                }}
             >
-                {saving ? (
-                    <Loader2 className="size-4 animate-spin" />
-                ) : (
-                    <FolderKanban className="size-4" />
-                )}
-                {logger.projectName || 'Assign Project'}
-                <ChevronDown className="size-3 text-muted-foreground" />
-            </Button>
-            {open && !notification && (
-                <div className="absolute top-full right-0 z-50 mt-1 w-56 animate-in rounded-lg border bg-popover p-1 shadow-lg duration-150 fade-in slide-in-from-top-2">
+                <DropdownMenuTrigger asChild>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5"
+                        disabled={saving}
+                    >
+                        {saving ? (
+                            <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                            <FolderKanban className="size-4" />
+                        )}
+                        {logger.projectName || 'Assign Project'}
+                        <ChevronDown className="size-3 text-muted-foreground" />
+                    </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                    align="end"
+                    sideOffset={6}
+                    className="w-64"
+                >
                     {logger.projectId && (
                         <>
-                            <button
-                                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs text-red-500 transition-colors hover:bg-muted"
-                                onClick={() => handleAssign(null)}
+                            <DropdownMenuItem
+                                variant="destructive"
+                                className="gap-2 px-3 py-2 text-xs"
+                                onSelect={() => handleAssign(null)}
                             >
-                                <XCircle className="size-3.5" /> Hapus dari
-                                Project
-                            </button>
-                            <div className="my-1 h-px bg-border" />
+                                <XCircle className="size-3.5" />
+                                Hapus dari Project
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
                         </>
                     )}
                     {logger.availableProjects.length === 0 ? (
-                        <p className="px-3 py-4 text-center text-xs text-muted-foreground">
-                            Belum ada project.{' '}
-                            <Link
-                                href="/projects"
-                                className="text-primary underline"
-                            >
-                                Buat project
-                            </Link>
-                        </p>
+                        <DropdownMenuItem asChild className="px-3 py-2 text-xs">
+                            <Link href="/projects">Buat project</Link>
+                        </DropdownMenuItem>
                     ) : (
                         logger.availableProjects.map((p) => (
-                            <button
+                            <DropdownMenuItem
                                 key={p.id}
-                                className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs transition-colors ${
+                                className={`gap-2.5 px-3 py-2 text-xs ${
                                     logger.projectId === p.id
                                         ? 'bg-primary/10 font-medium text-primary'
-                                        : 'hover:bg-muted'
+                                        : ''
                                 }`}
-                                onClick={() => handleAssign(p.id)}
+                                onSelect={() => handleAssign(p.id)}
                             >
                                 <span
                                     className="h-3 w-3 shrink-0 rounded-full"
                                     style={{ backgroundColor: p.color }}
                                 />
-                                <span className="truncate">{p.name}</span>
-                                {p.code && (
-                                    <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                                <span className="min-w-0 flex-1 truncate">
+                                    {p.name}
+                                </span>
+                                {p.code && logger.projectId !== p.id && (
+                                    <span className="font-mono text-[10px] text-muted-foreground">
                                         {p.code}
                                     </span>
                                 )}
                                 {logger.projectId === p.id && (
-                                    <Check className="ml-auto size-3.5 text-primary" />
+                                    <Check className="size-3.5 text-primary" />
                                 )}
-                            </button>
+                            </DropdownMenuItem>
                         ))
                     )}
-                </div>
-            )}
+                </DropdownMenuContent>
+            </DropdownMenu>
         </div>
     );
 }
@@ -7676,9 +7704,7 @@ function InternalSensorsPanel({ logger }: { logger: LoggerDetail }) {
                             {t('loggerDetail.temperature')}
                         </p>
                         <p className="font-mono text-lg font-bold">
-                            {logger.temperature
-                                ? `${logger.temperature}`
-                                : '—'}
+                            {logger.temperature ? `${logger.temperature}` : '—'}
                             {logger.temperature && (
                                 <span className="ml-1 text-xs font-normal text-muted-foreground">
                                     °C
@@ -7733,12 +7759,11 @@ function LoggerConditionCard({
     const forwardingPending = dataHealth.forwarding?.neverAttempted ?? 0;
     const hasForwarding = dataHealth.forwarding !== null;
     const hasMissingLoggerData = dataHealth.missing > 0;
-    const dataStatus =
-        hasMissingLoggerData
-            ? dataHealth.status === 'critical'
-                ? 'critical'
-                : 'warning'
-            : 'healthy';
+    const dataStatus = hasMissingLoggerData
+        ? dataHealth.status === 'critical'
+            ? 'critical'
+            : 'warning'
+        : 'healthy';
     const forwardingStatus = !hasForwarding
         ? 'healthy'
         : forwardingFailed > 0 || forwardingPending > 0
@@ -7864,73 +7889,85 @@ function LoggerConditionCard({
 
                 {(healthView === 'data' || healthView === 'forwarding') && (
                     <div className={`rounded-lg border px-4 py-3 ${tone}`}>
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                        {hasProblem ? (
-                            <AlertTriangle className="size-4" />
-                        ) : (
-                            <CheckCircle2 className="size-4" />
-                        )}
-                        {activeSummary}
-                    </div>
-                    <p className="mt-1 text-xs">{activeDescription}</p>
-                    {healthView === 'data' && dataHealth.missing > 0 && (
-                        <div className="mt-3 space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground uppercase">
-                                {t('loggerDetail.logger_condition_missing_times')}
-                            </p>
-                            <div className="flex flex-wrap gap-1.5">
-                                {dataHealth.missingWindows.map((window) => (
-                                    <span
-                                        key={`${window.start}-${window.end}`}
-                                        className="inline-flex items-center gap-1 rounded-md border bg-background/70 px-2 py-1 font-mono text-xs"
-                                    >
-                                        {window.start === window.end
-                                            ? window.start
-                                            : `${window.start}-${window.end}`}
-                                        <span className="font-sans text-[10px] text-muted-foreground">
-                                            {t('loggerDetail.minutes_count', {
-                                                count: window.count,
-                                            })}
-                                        </span>
-                                    </span>
-                                ))}
-                                {dataHealth.missingWindowCount >
-                                    dataHealth.missingWindows.length && (
-                                    <span className="inline-flex items-center rounded-md border bg-background/70 px-2 py-1 text-xs text-muted-foreground">
-                                        +
-                                        {dataHealth.missingWindowCount -
-                                            dataHealth.missingWindows.length}{' '}
-                                        {t('loggerDetail.logger_condition_more_gaps')}
-                                    </span>
-                                )}
-                            </div>
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                            {hasProblem ? (
+                                <AlertTriangle className="size-4" />
+                            ) : (
+                                <CheckCircle2 className="size-4" />
+                            )}
+                            {activeSummary}
                         </div>
-                    )}
+                        <p className="mt-1 text-xs">{activeDescription}</p>
+                        {healthView === 'data' && dataHealth.missing > 0 && (
+                            <div className="mt-3 space-y-2">
+                                <p className="text-xs font-medium text-muted-foreground uppercase">
+                                    {t(
+                                        'loggerDetail.logger_condition_missing_times',
+                                    )}
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {dataHealth.missingWindows.map((window) => (
+                                        <span
+                                            key={`${window.start}-${window.end}`}
+                                            className="inline-flex items-center gap-1 rounded-md border bg-background/70 px-2 py-1 font-mono text-xs"
+                                        >
+                                            {window.start === window.end
+                                                ? window.start
+                                                : `${window.start}-${window.end}`}
+                                            <span className="font-sans text-[10px] text-muted-foreground">
+                                                {t(
+                                                    'loggerDetail.minutes_count',
+                                                    {
+                                                        count: window.count,
+                                                    },
+                                                )}
+                                            </span>
+                                        </span>
+                                    ))}
+                                    {dataHealth.missingWindowCount >
+                                        dataHealth.missingWindows.length && (
+                                        <span className="inline-flex items-center rounded-md border bg-background/70 px-2 py-1 text-xs text-muted-foreground">
+                                            +
+                                            {dataHealth.missingWindowCount -
+                                                dataHealth.missingWindows
+                                                    .length}{' '}
+                                            {t(
+                                                'loggerDetail.logger_condition_more_gaps',
+                                            )}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
                 {(healthView === 'data' || healthView === 'forwarding') && (
                     <div className="flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-                    <span>
-                        {healthView === 'data'
-                            ? t('loggerDetail.logger_condition_audit_date', {
-                                  date: dataHealth.date,
-                              })
-                            : hasForwarding
-                              ? t(
-                                    'loggerDetail.logger_condition_forwarding_unforwarded',
-                                    { count: forwardingPending },
-                                )
-                              : t('loggerDetail.logger_condition_forwarding_inactive')}
-                    </span>
-                    <span className="hidden" aria-hidden="true">
-                        {hasForwarding
-                            ? `${dataHealth.forwarding?.targets ?? 0} target aktif · ${dataHealth.forwarding?.ok ?? 0}/${dataHealth.forwarding?.due ?? 0} forwarding OK`
-                            : 'Belum ada target forwarding aktif.'}
-                    </span>
+                        <span>
+                            {healthView === 'data'
+                                ? t(
+                                      'loggerDetail.logger_condition_audit_date',
+                                      {
+                                          date: dataHealth.date,
+                                      },
+                                  )
+                                : hasForwarding
+                                  ? t(
+                                        'loggerDetail.logger_condition_forwarding_unforwarded',
+                                        { count: forwardingPending },
+                                    )
+                                  : t(
+                                        'loggerDetail.logger_condition_forwarding_inactive',
+                                    )}
+                        </span>
+                        <span className="hidden" aria-hidden="true">
+                            {hasForwarding
+                                ? `${dataHealth.forwarding?.targets ?? 0} target aktif · ${dataHealth.forwarding?.ok ?? 0}/${dataHealth.forwarding?.due ?? 0} forwarding OK`
+                                : 'Belum ada target forwarding aktif.'}
+                        </span>
                         <Button asChild variant="outline" size="sm">
                             <Link href={dataHealth.auditUrl}>
-                                <Link2 className="size-3.5" />{' '}
-                                {auditCtaLabel}
+                                <Link2 className="size-3.5" /> {auditCtaLabel}
                             </Link>
                         </Button>
                     </div>
@@ -7979,168 +8016,160 @@ function HealthDiagnosticsPanel({
 
     return (
         <div className="grid gap-4">
-                    {/* Status Banner */}
-                    <div
-                        className={`flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${
-                            diagnostics.status === 'healthy'
-                                ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-                                : diagnostics.status === 'warning'
-                                  ? 'border border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400'
-                                  : 'border border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-400'
-                        }`}
-                    >
-                        {diagnostics.status === 'healthy' ? (
-                            <>
-                                <CheckCircle2 className="size-4" /> No
-                                abnormality detected.
-                            </>
-                        ) : diagnostics.status === 'warning' ? (
-                            <>
-                                <AlertTriangle className="size-4" />{' '}
-                                {diagnostics.failedChecks} issue
-                                {diagnostics.failedChecks > 1 ? 's' : ''}{' '}
-                                detected
-                            </>
-                        ) : (
-                            <>
-                                <ShieldAlert className="size-4" />{' '}
-                                {diagnostics.criticalCount} critical issue
-                                {diagnostics.criticalCount > 1 ? 's' : ''}{' '}
-                                found!
-                            </>
-                        )}
-                    </div>
+            {/* Status Banner */}
+            <div
+                className={`flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${
+                    diagnostics.status === 'healthy'
+                        ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : diagnostics.status === 'warning'
+                          ? 'border border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                          : 'border border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-400'
+                }`}
+            >
+                {diagnostics.status === 'healthy' ? (
+                    <>
+                        <CheckCircle2 className="size-4" /> No abnormality
+                        detected.
+                    </>
+                ) : diagnostics.status === 'warning' ? (
+                    <>
+                        <AlertTriangle className="size-4" />{' '}
+                        {diagnostics.failedChecks} issue
+                        {diagnostics.failedChecks > 1 ? 's' : ''} detected
+                    </>
+                ) : (
+                    <>
+                        <ShieldAlert className="size-4" />{' '}
+                        {diagnostics.criticalCount} critical issue
+                        {diagnostics.criticalCount > 1 ? 's' : ''} found!
+                    </>
+                )}
+            </div>
 
-                    {failedChecks.length > 0 && (
-                        <div className="flex justify-end">
-                            <Button asChild variant="outline" size="sm">
-                                <a href="#logger-diagnostics-recommendations">
-                                    <AlertCircle className="size-3.5" />{' '}
-                                    {t(
-                                        'loggerDetail.logger_condition_cta_diagnostics',
-                                    )}
-                                </a>
-                            </Button>
-                        </div>
-                    )}
+            {failedChecks.length > 0 && (
+                <div className="flex justify-end">
+                    <Button asChild variant="outline" size="sm">
+                        <a href="#logger-diagnostics-recommendations">
+                            <AlertCircle className="size-3.5" />{' '}
+                            {t('loggerDetail.logger_condition_cta_diagnostics')}
+                        </a>
+                    </Button>
+                </div>
+            )}
 
-                    {/* Category Grid */}
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                        {Object.entries(diagnostics.categories).map(
-                            ([catKey, category]) => {
-                                const config =
-                                    CATEGORY_CONFIG[catKey] ||
-                                    CATEGORY_CONFIG.device;
-                                const Icon = config.icon;
-                                const catFails = category.checks.filter(
-                                    (c) => !c.passed,
-                                ).length;
+            {/* Category Grid */}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {Object.entries(diagnostics.categories).map(
+                    ([catKey, category]) => {
+                        const config =
+                            CATEGORY_CONFIG[catKey] || CATEGORY_CONFIG.device;
+                        const Icon = config.icon;
+                        const catFails = category.checks.filter(
+                            (c) => !c.passed,
+                        ).length;
 
-                                return (
+                        return (
+                            <div key={catKey} className="rounded-lg border">
+                                {/* Category Header */}
+                                <div className="flex items-center gap-2 border-b px-3 py-2.5">
                                     <div
-                                        key={catKey}
-                                        className="rounded-lg border"
+                                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${config.bg}`}
                                     >
-                                        {/* Category Header */}
-                                        <div className="flex items-center gap-2 border-b px-3 py-2.5">
-                                            <div
-                                                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${config.bg}`}
-                                            >
-                                                <Icon
-                                                    className={`size-3.5 ${config.color}`}
-                                                />
-                                            </div>
-                                            <span className="text-sm font-semibold">
-                                                {category.label}
-                                            </span>
-                                            {catFails > 0 && (
-                                                <Badge
-                                                    variant="outline"
-                                                    className="ml-auto border-red-500/30 bg-red-500/5 text-[10px] text-red-500"
-                                                >
-                                                    {catFails}
-                                                </Badge>
-                                            )}
-                                        </div>
-
-                                        {/* Check Items */}
-                                        <div className="divide-y">
-                                            {category.checks.map((check) => (
-                                                <div
-                                                    key={check.key}
-                                                    className={`flex items-center justify-between px-3 py-2 text-sm transition-colors ${
-                                                        !check.passed
-                                                            ? 'bg-red-500/[0.03]'
-                                                            : ''
-                                                    }`}
-                                                    title={
-                                                        check.message ||
-                                                        `${check.value} (threshold: ${check.threshold})`
-                                                    }
-                                                >
-                                                    <span
-                                                        className={`${!check.passed ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
-                                                    >
-                                                        {check.label}
-                                                    </span>
-                                                    <div className="flex items-center gap-1.5">
-                                                        <span className="font-mono text-[10px] text-muted-foreground">
-                                                            {check.value}
-                                                        </span>
-                                                        {check.passed ? (
-                                                            <Check className="size-4 text-emerald-500" />
-                                                        ) : check.severity ===
-                                                          'critical' ? (
-                                                            <XCircle className="size-4 text-red-500" />
-                                                        ) : (
-                                                            <AlertCircle className="size-4 text-amber-500" />
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
+                                        <Icon
+                                            className={`size-3.5 ${config.color}`}
+                                        />
                                     </div>
-                                );
-                            },
-                        )}
-                    </div>
+                                    <span className="text-sm font-semibold">
+                                        {category.label}
+                                    </span>
+                                    {catFails > 0 && (
+                                        <Badge
+                                            variant="outline"
+                                            className="ml-auto border-red-500/30 bg-red-500/5 text-[10px] text-red-500"
+                                        >
+                                            {catFails}
+                                        </Badge>
+                                    )}
+                                </div>
 
-                    {/* Failed Checks Detail */}
-                    {failedChecks.length > 0 && (
-                        <div
-                            id="logger-diagnostics-recommendations"
-                            className="scroll-mt-24 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3"
-                        >
-                            <p className="mb-2 text-[10px] font-semibold tracking-wider text-amber-600 uppercase dark:text-amber-400">
-                                Rekomendasi
-                            </p>
-                            <ul className="space-y-1.5">
-                                {failedChecks.map((check) => (
-                                    <li
-                                        key={check.key}
-                                        className="flex items-start gap-2 text-xs"
-                                    >
-                                        {check.severity === 'critical' ? (
-                                            <XCircle className="mt-0.5 size-3 shrink-0 text-red-500" />
-                                        ) : (
-                                            <AlertCircle className="mt-0.5 size-3 shrink-0 text-amber-500" />
-                                        )}
-                                        <span
-                                            className={
-                                                check.severity === 'critical'
-                                                    ? 'text-red-700 dark:text-red-400'
-                                                    : 'text-amber-700 dark:text-amber-400'
+                                {/* Check Items */}
+                                <div className="divide-y">
+                                    {category.checks.map((check) => (
+                                        <div
+                                            key={check.key}
+                                            className={`flex items-center justify-between px-3 py-2 text-sm transition-colors ${
+                                                !check.passed
+                                                    ? 'bg-red-500/[0.03]'
+                                                    : ''
+                                            }`}
+                                            title={
+                                                check.message ||
+                                                `${check.value} (threshold: ${check.threshold})`
                                             }
                                         >
-                                            <strong>{check.label}</strong>:{' '}
-                                            {check.message ||
-                                                `Nilai ${check.value} di luar threshold ${check.threshold}`}
-                                        </span>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    )}
+                                            <span
+                                                className={`${!check.passed ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
+                                            >
+                                                {check.label}
+                                            </span>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="font-mono text-[10px] text-muted-foreground">
+                                                    {check.value}
+                                                </span>
+                                                {check.passed ? (
+                                                    <Check className="size-4 text-emerald-500" />
+                                                ) : check.severity ===
+                                                  'critical' ? (
+                                                    <XCircle className="size-4 text-red-500" />
+                                                ) : (
+                                                    <AlertCircle className="size-4 text-amber-500" />
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    },
+                )}
+            </div>
+
+            {/* Failed Checks Detail */}
+            {failedChecks.length > 0 && (
+                <div
+                    id="logger-diagnostics-recommendations"
+                    className="scroll-mt-24 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3"
+                >
+                    <p className="mb-2 text-[10px] font-semibold tracking-wider text-amber-600 uppercase dark:text-amber-400">
+                        Rekomendasi
+                    </p>
+                    <ul className="space-y-1.5">
+                        {failedChecks.map((check) => (
+                            <li
+                                key={check.key}
+                                className="flex items-start gap-2 text-xs"
+                            >
+                                {check.severity === 'critical' ? (
+                                    <XCircle className="mt-0.5 size-3 shrink-0 text-red-500" />
+                                ) : (
+                                    <AlertCircle className="mt-0.5 size-3 shrink-0 text-amber-500" />
+                                )}
+                                <span
+                                    className={
+                                        check.severity === 'critical'
+                                            ? 'text-red-700 dark:text-red-400'
+                                            : 'text-amber-700 dark:text-amber-400'
+                                    }
+                                >
+                                    <strong>{check.label}</strong>:{' '}
+                                    {check.message ||
+                                        `Nilai ${check.value} di luar threshold ${check.threshold}`}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
         </div>
     );
 }
@@ -8567,9 +8596,7 @@ export default function LoggerShow({
                                             : 'text-muted-foreground'
                                     }`}
                                     disabled={readOnly || dongleBusy}
-                                    onClick={() =>
-                                        void enableSerialTransport()
-                                    }
+                                    onClick={() => void enableSerialTransport()}
                                     aria-label="Gunakan Serial"
                                     aria-pressed={dongleEnabled}
                                     title="Gunakan serial dongle untuk setup logger"
@@ -8694,7 +8721,7 @@ export default function LoggerShow({
                                     <Button
                                         variant="outline"
                                         size="sm"
-                                        className="gap-1.5 whitespace-nowrap border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                                        className="gap-1.5 border-red-500/30 whitespace-nowrap text-red-500 hover:bg-red-500/10 hover:text-red-600"
                                         onClick={() =>
                                             setShowDeleteDialog(true)
                                         }
@@ -9002,7 +9029,10 @@ export default function LoggerShow({
                                                 {t('loggerDetail.firmware')}
                                             </TabsTrigger>
                                         </TabsList>
-                                        <TabsContent value="info" className="mt-4">
+                                        <TabsContent
+                                            value="info"
+                                            className="mt-4"
+                                        >
                                             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                                                 <dt className="text-muted-foreground">
                                                     {t('loggerDetail.model')}
@@ -9011,39 +9041,50 @@ export default function LoggerShow({
                                                     {logger.model || '-'}
                                                 </dd>
                                                 <dt className="text-muted-foreground">
-                                                    {t('loggerDetail.serial_number')}
+                                                    {t(
+                                                        'loggerDetail.serial_number',
+                                                    )}
                                                 </dt>
                                                 <dd className="font-mono text-xs">
                                                     {logger.serialNumber}
                                                 </dd>
                                                 <dt className="text-muted-foreground">
-                                                    {t('loggerDetail.device_id')}
+                                                    {t(
+                                                        'loggerDetail.device_id',
+                                                    )}
                                                 </dt>
                                                 <dd className="font-mono text-xs">
-                                                    {logger.deviceIdentifier || '-'}
+                                                    {logger.deviceIdentifier ||
+                                                        '-'}
                                                 </dd>
                                                 <dt className="text-muted-foreground">
                                                     {t('loggerDetail.firmware')}
                                                 </dt>
                                                 <dd className="font-mono text-xs">
-                                                    {logger.firmwareVersion || '-'}
+                                                    {logger.firmwareVersion ||
+                                                        '-'}
                                                 </dd>
                                                 <dt className="text-muted-foreground">
                                                     {t('loggerDetail.uptime')}
                                                 </dt>
                                                 <dd className="font-medium">
-                                                    {formatUptime(logger.uptime)}
+                                                    {formatUptime(
+                                                        logger.uptime,
+                                                    )}
                                                 </dd>
                                                 <dt className="text-muted-foreground">
                                                     Reboot Counter
                                                 </dt>
                                                 <dd className="font-medium">
-                                                    {logger.rebootCounter ?? '-'}
+                                                    {logger.rebootCounter ??
+                                                        '-'}
                                                 </dd>
                                                 <dt className="text-muted-foreground">
                                                     {t('loggerDetail.location')}
                                                 </dt>
-                                                <dd>{logger.location || '-'}</dd>
+                                                <dd>
+                                                    {logger.location || '-'}
+                                                </dd>
                                             </dl>
                                         </TabsContent>
                                         <TabsContent
@@ -9111,84 +9152,86 @@ export default function LoggerShow({
 
                         {/* Internal Sensors */}
                         {logger.id === '__internal_sensor_moved__' && (
-                        <Card>
-                            <CardHeader>
-                                <CardTitle className="flex items-center gap-2">
-                                    <Thermometer className="size-5" />{' '}
-                                    {t('loggerDetail.internal_sensors')}
-                                </CardTitle>
-                            </CardHeader>
-                            <CardContent>
-                                <div className="grid gap-3 sm:grid-cols-3">
-                                    <div className="flex items-center gap-3 rounded-lg border p-4">
-                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10">
-                                            <Battery className="size-5 text-amber-500" />
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <Thermometer className="size-5" />{' '}
+                                        {t('loggerDetail.internal_sensors')}
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                    <div className="grid gap-3 sm:grid-cols-3">
+                                        <div className="flex items-center gap-3 rounded-lg border p-4">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10">
+                                                <Battery className="size-5 text-amber-500" />
+                                            </div>
+                                            <div>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {t('loggerDetail.battery')}
+                                                </p>
+                                                <p className="font-mono text-lg font-bold">
+                                                    {logger.battery
+                                                        ? `${logger.battery}`
+                                                        : '—'}
+                                                    {logger.battery && (
+                                                        <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                                            V
+                                                        </span>
+                                                    )}
+                                                </p>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <p className="text-xs text-muted-foreground">
-                                                {t('loggerDetail.battery')}
-                                            </p>
-                                            <p className="font-mono text-lg font-bold">
-                                                {logger.battery
-                                                    ? `${logger.battery}`
-                                                    : '—'}
-                                                {logger.battery && (
-                                                    <span className="ml-1 text-xs font-normal text-muted-foreground">
-                                                        V
-                                                    </span>
-                                                )}
-                                            </p>
+                                        <div className="flex items-center gap-3 rounded-lg border p-4">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
+                                                <Thermometer className="size-5 text-red-500" />
+                                            </div>
+                                            <div>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {t(
+                                                        'loggerDetail.temperature',
+                                                    )}
+                                                </p>
+                                                <p className="font-mono text-lg font-bold">
+                                                    {logger.temperature
+                                                        ? `${logger.temperature}`
+                                                        : '—'}
+                                                    {logger.temperature && (
+                                                        <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                                            °C
+                                                        </span>
+                                                    )}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3 rounded-lg border p-4">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-500/10">
+                                                <Droplets className="size-5 text-blue-500" />
+                                            </div>
+                                            <div>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {t('loggerDetail.humidity')}
+                                                </p>
+                                                <p className="font-mono text-lg font-bold">
+                                                    {logger.humidity
+                                                        ? `${logger.humidity}`
+                                                        : '—'}
+                                                    {logger.humidity && (
+                                                        <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                                            %
+                                                        </span>
+                                                    )}
+                                                </p>
+                                            </div>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-3 rounded-lg border p-4">
-                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
-                                            <Thermometer className="size-5 text-red-500" />
-                                        </div>
-                                        <div>
-                                            <p className="text-xs text-muted-foreground">
-                                                {t('loggerDetail.temperature')}
-                                            </p>
-                                            <p className="font-mono text-lg font-bold">
-                                                {logger.temperature
-                                                    ? `${logger.temperature}`
-                                                    : '—'}
-                                                {logger.temperature && (
-                                                    <span className="ml-1 text-xs font-normal text-muted-foreground">
-                                                        °C
-                                                    </span>
-                                                )}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-3 rounded-lg border p-4">
-                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-500/10">
-                                            <Droplets className="size-5 text-blue-500" />
-                                        </div>
-                                        <div>
-                                            <p className="text-xs text-muted-foreground">
-                                                {t('loggerDetail.humidity')}
-                                            </p>
-                                            <p className="font-mono text-lg font-bold">
-                                                {logger.humidity
-                                                    ? `${logger.humidity}`
-                                                    : '—'}
-                                                {logger.humidity && (
-                                                    <span className="ml-1 text-xs font-normal text-muted-foreground">
-                                                        %
-                                                    </span>
-                                                )}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                                {logger.lastConnected && (
-                                    <p className="mt-3 flex items-center gap-1 text-xs text-muted-foreground">
-                                        <Clock className="size-3" />
-                                        Last updated: {logger.lastConnected}
-                                    </p>
-                                )}
-                            </CardContent>
-                        </Card>
+                                    {logger.lastConnected && (
+                                        <p className="mt-3 flex items-center gap-1 text-xs text-muted-foreground">
+                                            <Clock className="size-3" />
+                                            Last updated: {logger.lastConnected}
+                                        </p>
+                                    )}
+                                </CardContent>
+                            </Card>
                         )}
 
                         {/* Power Rails — live INA219 readings per output rail (5V/12V/24V), captured
