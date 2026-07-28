@@ -105,6 +105,7 @@ export default function ProjectList({ projects }: ProjectListProps) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [editingProject, setEditingProject] = useState<ProjectItem | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<ProjectItem | null>(null);
+    const [loggerModalOpen, setLoggerModalOpen] = useState(false);
     const [loggerModalProject, setLoggerModalProject] = useState<ProjectItem | null>(null);
 
     const form = useForm({
@@ -117,6 +118,16 @@ export default function ProjectList({ projects }: ProjectListProps) {
     useEffect(() => {
         if (flash?.success) setSuccessMsg(flash.success);
     }, [flash]);
+
+    useEffect(() => {
+        if (loggerModalOpen) return;
+
+        const timer = window.setTimeout(() => {
+            setLoggerModalProject(null);
+        }, 220);
+
+        return () => window.clearTimeout(timer);
+    }, [loggerModalOpen]);
 
     function openCreate() {
         setEditingProject(null);
@@ -158,6 +169,7 @@ export default function ProjectList({ projects }: ProjectListProps) {
 
     function openLoggerModal(project: ProjectItem) {
         setLoggerModalProject(project);
+        setLoggerModalOpen(true);
     }
 
     return (
@@ -284,10 +296,8 @@ export default function ProjectList({ projects }: ProjectListProps) {
 
                 {/* Project Loggers Dialog */}
                 <Dialog
-                    open={!!loggerModalProject}
-                    onOpenChange={(open) => {
-                        if (!open) setLoggerModalProject(null);
-                    }}
+                    open={loggerModalOpen}
+                    onOpenChange={setLoggerModalOpen}
                 >
                     <DialogContent className="sm:max-w-2xl">
                         <DialogHeader>
