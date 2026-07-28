@@ -11,6 +11,7 @@ import {
     Lock,
     LockOpen,
     Play,
+    Plug,
     RefreshCw,
     Tag,
     Unplug,
@@ -410,12 +411,6 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                 {serialSupported && (
                     <>
                         <Card>
-                            <CardHeader>
-                                <CardTitle className="flex items-center gap-2">
-                                    <Usb className="size-5" />
-                                    Koneksi USB
-                                </CardTitle>
-                            </CardHeader>
                             <CardContent className="space-y-3">
                                 <div className="flex items-center gap-2">
                                     <Badge
@@ -459,7 +454,7 @@ export default function ProductionProvision({ deviceModels = [] }: { deviceModel
                                                 </>
                                             ) : (
                                                 <>
-                                                    <Usb className="size-4" />
+                                                    <Plug className="size-4" />
                                                     Hubungkan ke Logger
                                                 </>
                                             )}

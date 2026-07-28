@@ -574,9 +574,6 @@ export function FtpConfigCard({
                         <CardTitle className="flex items-center gap-2">
                             <Upload className="size-5" /> Konfigurasi FTP
                         </CardTitle>
-                        <CardDescription className="mt-1">
-                            Atur pengiriman data logger ke server FTP
-                        </CardDescription>
                     </div>
                     <div className="flex items-center gap-1">
                         {!editing && (
@@ -2029,9 +2026,6 @@ export function UsbCopyCard({
                 <CardTitle className="flex items-center gap-2">
                     <HardDrive className="size-5" /> SD Card → USB
                 </CardTitle>
-                <CardDescription className="mt-1">
-                    Salin data harian dari SD card ke USB flashdisk
-                </CardDescription>
             </CardHeader>
             <CardContent>
                 <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-4">

@@ -1,14 +1,19 @@
-import { Head, router, useForm, usePage } from '@inertiajs/react';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
 import {
     AlertTriangle,
     Check,
     CheckCircle2,
+    Clock,
+    ExternalLink,
     FolderKanban,
     Loader2,
+    MapPin,
     Pencil,
     Plus,
     Radio,
     Trash2,
+    Wifi,
+    WifiOff,
     X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -49,6 +54,18 @@ interface ProjectItem {
     color: string;
     loggerCount: number;
     createdAt: string;
+    loggers: ProjectLoggerItem[];
+}
+
+interface ProjectLoggerItem {
+    id: string;
+    name: string;
+    serialNumber: string | null;
+    deviceIdentifier: string | null;
+    status: 'online' | 'offline' | 'warning';
+    connectionType: string | null;
+    location: string | null;
+    lastSeen: string | null;
 }
 
 interface ProjectListProps {
@@ -66,6 +83,19 @@ const PRESET_COLORS = [
     '#06b6d4', '#6366f1', '#a855f7', '#64748b',
 ];
 
+function loggerStatusClass(status: ProjectLoggerItem['status']): string {
+    switch (status) {
+        case 'online':
+            return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+        case 'warning':
+            return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+        case 'offline':
+            return 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300';
+        default:
+            return 'border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300';
+    }
+}
+
 export default function ProjectList({ projects }: ProjectListProps) {
     const { t } = useTranslation();
     const { flash } = usePage<{ flash: { success?: string; error?: string } }>().props;
@@ -75,6 +105,7 @@ export default function ProjectList({ projects }: ProjectListProps) {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [editingProject, setEditingProject] = useState<ProjectItem | null>(null);
     const [deleteTarget, setDeleteTarget] = useState<ProjectItem | null>(null);
+    const [loggerModalProject, setLoggerModalProject] = useState<ProjectItem | null>(null);
 
     const form = useForm({
         name: '',
@@ -125,6 +156,10 @@ export default function ProjectList({ projects }: ProjectListProps) {
         });
     }
 
+    function openLoggerModal(project: ProjectItem) {
+        setLoggerModalProject(project);
+    }
+
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Projects" />
@@ -168,10 +203,22 @@ export default function ProjectList({ projects }: ProjectListProps) {
                 ) : (
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         {projects.map(project => (
-                            <Card key={project.id} className="group relative overflow-hidden">
+                            <Card
+                                key={project.id}
+                                className="group relative cursor-pointer gap-0 overflow-hidden py-0 transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => openLoggerModal(project)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        openLoggerModal(project);
+                                    }
+                                }}
+                            >
                                 {/* Color stripe */}
                                 <div className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: project.color }} />
-                                <CardHeader className="p-4 pb-3">
+                                <CardHeader className="px-4 pt-6 pb-4">
                                     <div className="flex items-start justify-between">
                                         <div className="flex items-center gap-2.5 min-w-0">
                                             <div
@@ -188,14 +235,25 @@ export default function ProjectList({ projects }: ProjectListProps) {
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(project)}>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-7 w-7"
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    openEdit(project);
+                                                }}
+                                            >
                                                 <Pencil className="size-3.5" />
                                             </Button>
                                             <Button
                                                 variant="ghost"
                                                 size="icon"
                                                 className="h-7 w-7 text-red-500 hover:bg-red-500/10 hover:text-red-600"
-                                                onClick={() => setDeleteTarget(project)}
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    setDeleteTarget(project);
+                                                }}
                                             >
                                                 <Trash2 className="size-3.5" />
                                             </Button>
@@ -208,7 +266,7 @@ export default function ProjectList({ projects }: ProjectListProps) {
                                     )}
                                 </CardHeader>
                                 <Separator />
-                                <CardContent className="p-3">
+                                <CardContent className="px-4 py-3">
                                     <div className="flex items-center justify-between text-xs">
                                         <span className="flex items-center gap-1.5 text-muted-foreground">
                                             <Radio className="size-3.5" />
@@ -223,6 +281,114 @@ export default function ProjectList({ projects }: ProjectListProps) {
                         ))}
                     </div>
                 )}
+
+                {/* Project Loggers Dialog */}
+                <Dialog
+                    open={!!loggerModalProject}
+                    onOpenChange={(open) => {
+                        if (!open) setLoggerModalProject(null);
+                    }}
+                >
+                    <DialogContent className="sm:max-w-2xl">
+                        <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2">
+                                <span
+                                    className="h-2.5 w-2.5 rounded-full"
+                                    style={{
+                                        backgroundColor:
+                                            loggerModalProject?.color ||
+                                            '#64748b',
+                                    }}
+                                />
+                                {loggerModalProject?.name || 'Project Loggers'}
+                            </DialogTitle>
+                            <DialogDescription>
+                                {loggerModalProject?.loggerCount || 0} logger
+                                {(loggerModalProject?.loggerCount || 0) !== 1
+                                    ? 's'
+                                    : ''}{' '}
+                                di project ini
+                            </DialogDescription>
+                        </DialogHeader>
+                        {loggerModalProject?.loggers.length ? (
+                            <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+                                {loggerModalProject.loggers.map((logger) => (
+                                    <div
+                                        key={logger.id}
+                                        className="flex items-start justify-between gap-3 rounded-lg border p-3"
+                                    >
+                                        <div className="min-w-0 flex-1">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <p className="truncate text-sm font-semibold">
+                                                    {logger.name}
+                                                </p>
+                                                <Badge
+                                                    variant="outline"
+                                                    className={`capitalize ${loggerStatusClass(logger.status)}`}
+                                                >
+                                                    {logger.status ===
+                                                    'online' ? (
+                                                        <Wifi className="mr-1 size-3" />
+                                                    ) : (
+                                                        <WifiOff className="mr-1 size-3" />
+                                                    )}
+                                                    {logger.status}
+                                                </Badge>
+                                            </div>
+                                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                                                <span className="font-mono">
+                                                    {logger.serialNumber ||
+                                                        logger.deviceIdentifier ||
+                                                        '-'}
+                                                </span>
+                                                {logger.connectionType && (
+                                                    <span className="capitalize">
+                                                        {
+                                                            logger.connectionType
+                                                        }
+                                                    </span>
+                                                )}
+                                                {logger.location && (
+                                                    <span className="flex items-center gap-1">
+                                                        <MapPin className="size-3" />
+                                                        {logger.location}
+                                                    </span>
+                                                )}
+                                                {logger.lastSeen && (
+                                                    <span className="flex items-center gap-1">
+                                                        <Clock className="size-3" />
+                                                        {logger.lastSeen}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <Button
+                                            asChild
+                                            variant="outline"
+                                            size="sm"
+                                            className="shrink-0 gap-1.5"
+                                        >
+                                            <Link href={`/loggers/${logger.id}`}>
+                                                Detail
+                                                <ExternalLink className="size-3.5" />
+                                            </Link>
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="flex flex-col items-center justify-center rounded-lg border py-10 text-center">
+                                <Radio className="mb-2 size-8 text-muted-foreground/40" />
+                                <p className="text-sm font-medium">
+                                    Belum ada logger
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                    Project ini belum memiliki logger.
+                                </p>
+                            </div>
+                        )}
+                    </DialogContent>
+                </Dialog>
 
                 {/* Create/Edit Dialog */}
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

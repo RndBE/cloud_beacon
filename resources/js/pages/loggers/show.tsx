@@ -7814,9 +7814,6 @@ function LoggerConditionCard({
                             <HeartPulse className="size-5" />{' '}
                             {t('loggerDetail.logger_condition')}
                         </CardTitle>
-                        <CardDescription className="mt-1">
-                            {t('loggerDetail.logger_condition_desc')}
-                        </CardDescription>
                     </div>
                     <Badge variant="outline" className={tone}>
                         {statusLabel}
@@ -8535,18 +8532,18 @@ export default function LoggerShow({
                     </div>
                     <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1 sm:mx-0 sm:pb-0">
                         <div className="flex w-max flex-nowrap items-start gap-2 sm:ml-auto">
-                            <div className="relative flex shrink-0 items-center rounded-lg border bg-background p-0.5">
+                            <div className="relative flex h-7 shrink-0 items-center rounded-lg border bg-background p-0.5">
                                 <span
-                                    className={`pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-7 rounded-md bg-primary transition-transform duration-200 ${
+                                    className={`pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-6 rounded-md bg-primary transition-transform duration-200 ${
                                         dongleEnabled
-                                            ? 'translate-x-7'
+                                            ? 'translate-x-6'
                                             : 'translate-x-0'
                                     }`}
                                 />
                                 <Button
                                     variant="ghost"
                                     size="icon-sm"
-                                    className={`relative z-10 size-7 rounded-md hover:bg-transparent ${
+                                    className={`relative z-10 size-6 rounded-md hover:bg-transparent ${
                                         !dongleEnabled
                                             ? 'text-primary-foreground hover:text-primary-foreground'
                                             : 'text-muted-foreground'
@@ -8564,7 +8561,7 @@ export default function LoggerShow({
                                 <Button
                                     variant="ghost"
                                     size="icon-sm"
-                                    className={`relative z-10 size-7 rounded-md hover:bg-transparent ${
+                                    className={`relative z-10 size-6 rounded-md hover:bg-transparent ${
                                         dongleEnabled
                                             ? 'text-primary-foreground hover:text-primary-foreground'
                                             : 'text-muted-foreground'
@@ -9320,9 +9317,6 @@ export default function LoggerShow({
                                         <CardTitle className="flex items-center gap-2">
                                             <Cpu className="size-5" /> Module
                                         </CardTitle>
-                                        <CardDescription>
-                                            EWS (Early Warning System) &amp; GCM
-                                        </CardDescription>
                                     </div>
                                     <Button
                                         size="sm"

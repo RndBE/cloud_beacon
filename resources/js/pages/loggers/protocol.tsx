@@ -3075,7 +3075,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             <>
                 <CommandCard
                     title="Power Output"
-                    description="Output Voltage State"
                     icon={Zap}
                 >
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -3157,7 +3156,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
 
                 <CommandCard
                     title="Sensor Door"
-                    description="Panel door sensor polarity."
                     icon={DoorOpen}
                 >
                     <div className="flex items-end gap-2">
@@ -3190,11 +3188,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     </div>
                 </CommandCard>
 
-                <CommandCard
-                    title="Alert"
-                    description="State buzzer"
-                    icon={Bell}
-                >
+                <CommandCard title="Alert" icon={Bell}>
                     <div className="flex items-end gap-2">
                         <div className="flex-1">
                             <Field label="State">
@@ -3359,7 +3353,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 {isEthernetBoard && (
                     <CommandCard
                         title="Modbus TCP"
-                        description="Modbus TCP server"
                         icon={Server}
                         result={responses.MODBUSTCP}
                     >

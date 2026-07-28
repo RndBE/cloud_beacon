@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Project;
+use App\Services\IdHasher;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -12,7 +13,21 @@ class ProjectController extends Controller
     public function index(): Response
     {
         $user = auth()->user();
-        $query = Project::withCount('loggers');
+        $query = Project::with([
+            'loggers' => fn ($query) => $query
+                ->select([
+                    'id',
+                    'project_id',
+                    'name',
+                    'serial_number',
+                    'device_identifier',
+                    'status',
+                    'connection_type',
+                    'location',
+                    'last_seen_at',
+                ])
+                ->orderBy('name'),
+        ])->withCount('loggers');
 
         if (!$user->isSuperAdmin()) {
             $query->where('user_id', $user->id);
@@ -26,6 +41,16 @@ class ProjectController extends Controller
             'color'       => $p->color,
             'loggerCount' => $p->loggers_count,
             'createdAt'   => $p->created_at?->format('Y-m-d H:i'),
+            'loggers'     => $p->loggers->map(fn ($logger) => [
+                'id'               => IdHasher::encode($logger->id),
+                'name'             => $logger->name,
+                'serialNumber'     => $logger->serial_number,
+                'deviceIdentifier' => $logger->device_identifier,
+                'status'           => $logger->status,
+                'connectionType'   => $logger->connection_type,
+                'location'         => $logger->location,
+                'lastSeen'         => $logger->last_seen_at?->format('Y-m-d H:i:s'),
+            ]),
         ]);
 
         return Inertia::render('projects/index', [
