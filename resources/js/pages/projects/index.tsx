@@ -12,6 +12,7 @@ import {
     Plus,
     Radio,
     Trash2,
+    Usb,
     Wifi,
     WifiOff,
     X,
@@ -66,6 +67,7 @@ interface ProjectLoggerItem {
     connectionType: string | null;
     location: string | null;
     lastSeen: string | null;
+    usbProvisioned: boolean;
 }
 
 interface ProjectListProps {
@@ -344,6 +346,15 @@ export default function ProjectList({ projects }: ProjectListProps) {
                                                     )}
                                                     {logger.status}
                                                 </Badge>
+                                                {logger.usbProvisioned && (
+                                                    <Badge
+                                                        variant="outline"
+                                                        className="border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300"
+                                                    >
+                                                        <Usb className="mr-1 size-3" />
+                                                        Setup USB
+                                                    </Badge>
+                                                )}
                                             </div>
                                             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                                                 <span className="font-mono">

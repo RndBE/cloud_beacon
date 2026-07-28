@@ -23,6 +23,7 @@ class ProductionDevice extends Model
         'qc_status',
         'notes',
         'is_registered',
+        'provisioned_via_usb',
     ];
 
     protected function casts(): array
@@ -31,6 +32,7 @@ class ProductionDevice extends Model
             'production_date' => 'date',
             'firmware_uploaded_at' => 'datetime',
             'is_registered' => 'boolean',
+            'provisioned_via_usb' => 'boolean',
         ];
     }
 

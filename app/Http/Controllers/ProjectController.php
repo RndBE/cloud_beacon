@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Project;
+use App\Models\ProductionDevice;
 use App\Services\IdHasher;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -33,7 +34,38 @@ class ProjectController extends Controller
             $query->where('user_id', $user->id);
         }
 
-        $projects = $query->orderBy('name')->get()->map(fn(Project $p) => [
+        $projectModels = $query->orderBy('name')->get();
+        $loggerSerials = $projectModels
+            ->flatMap(fn (Project $project) => $project->loggers->pluck('serial_number'))
+            ->filter()
+            ->unique()
+            ->values();
+        $loggerDeviceIds = $projectModels
+            ->flatMap(fn (Project $project) => $project->loggers->pluck('device_identifier'))
+            ->filter()
+            ->unique()
+            ->values();
+        $usbProvisionedKeys = ProductionDevice::query()
+            ->where('provisioned_via_usb', true)
+            ->where(function ($query) use ($loggerSerials, $loggerDeviceIds) {
+                if ($loggerSerials->isNotEmpty()) {
+                    $query->whereIn('serial_number', $loggerSerials);
+                }
+
+                if ($loggerDeviceIds->isNotEmpty()) {
+                    $method = $loggerSerials->isNotEmpty() ? 'orWhereIn' : 'whereIn';
+                    $query->{$method}('device_id', $loggerDeviceIds);
+                }
+            })
+            ->get(['serial_number', 'device_id'])
+            ->flatMap(fn (ProductionDevice $device) => [
+                $device->serial_number ? "sn:{$device->serial_number}" : null,
+                $device->device_id ? "id:{$device->device_id}" : null,
+            ])
+            ->filter()
+            ->flip();
+
+        $projects = $projectModels->map(fn(Project $p) => [
             'id'          => $p->id,
             'name'        => $p->name,
             'code'        => $p->code,
@@ -50,6 +82,8 @@ class ProjectController extends Controller
                 'connectionType'   => $logger->connection_type,
                 'location'         => $logger->location,
                 'lastSeen'         => $logger->last_seen_at?->format('Y-m-d H:i:s'),
+                'usbProvisioned'   => $usbProvisionedKeys->has("sn:{$logger->serial_number}")
+                    || $usbProvisionedKeys->has("id:{$logger->device_identifier}"),
             ]),
         ]);
 

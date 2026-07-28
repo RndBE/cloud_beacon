@@ -1,9 +1,12 @@
 <?php
 
+use App\Models\Logger;
 use App\Models\Permission;
 use App\Models\ProductionDevice;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\IdHasher;
+use Inertia\Testing\AssertableInertia as Assert;
 
 function productionProvisionUser(array $permissions): User
 {
@@ -58,6 +61,35 @@ it('validates USB provisioning registration input', function () {
         ->assertJsonValidationErrors(['serial_number', 'device_id', 'qc_status']);
 });
 
+it('shows USB-provisioned devices on the Setup Logger USB page', function () {
+    $user = productionProvisionUser(['production.provision']);
+    $logger = Logger::factory()->create([
+        'user_id' => $user->id,
+        'name' => 'USB Logger A',
+        'serial_number' => 'SN-USB-LIST',
+        'device_identifier' => '39001',
+        'status' => 'online',
+    ]);
+    ProductionDevice::create([
+        'serial_number' => 'SN-USB-LIST',
+        'device_id' => '39001',
+        'qc_status' => 'pending',
+        'provisioned_via_usb' => true,
+    ]);
+
+    $this->actingAs($user)
+        ->get(route('production.provision'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('production/provision')
+            ->where('usbProvisionedLoggers.0.serialNumber', 'SN-USB-LIST')
+            ->where('usbProvisionedLoggers.0.deviceId', '39001')
+            ->where('usbProvisionedLoggers.0.logger.id', IdHasher::encode($logger->id))
+            ->where('usbProvisionedLoggers.0.logger.name', 'USB Logger A')
+            ->where('usbProvisionedLoggers.0.logger.status', 'online')
+        );
+});
+
 it('creates a Production record after USB provisioning succeeds', function () {
     $user = productionProvisionUser(['production.provision']);
 
@@ -87,6 +119,7 @@ it('creates a Production record after USB provisioning succeeds', function () {
         'tested_by' => 'QC Team A',
         'qc_status' => 'pending',
         'notes' => 'Provisioned via USB (BT: BL-1100-NEW)',
+        'provisioned_via_usb' => true,
     ]);
 });
 
@@ -130,5 +163,6 @@ it('updates an existing serial without erasing omitted Production metadata', fun
         'tested_by' => 'QC Team B',
         'qc_status' => 'passed',
         'notes' => 'Existing production notes',
+        'provisioned_via_usb' => true,
     ]);
 });

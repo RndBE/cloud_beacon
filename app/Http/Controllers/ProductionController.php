@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\DeviceModel;
+use App\Models\Logger;
 use App\Models\ProductionDevice;
+use App\Services\IdHasher;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -60,8 +62,59 @@ class ProductionController extends Controller
 
     public function provision(): Response
     {
+        $usbDevices = ProductionDevice::query()
+            ->where('provisioned_via_usb', true)
+            ->orderByDesc('updated_at')
+            ->limit(20)
+            ->get();
+        $serials = $usbDevices->pluck('serial_number')->filter()->unique()->values();
+        $deviceIds = $usbDevices->pluck('device_id')->filter()->unique()->values();
+        $matchedLoggers = collect();
+
+        if ($serials->isNotEmpty() || $deviceIds->isNotEmpty()) {
+            $matchedLoggers = Logger::query()
+                ->with('project')
+                ->where(function ($query) use ($serials, $deviceIds) {
+                    if ($serials->isNotEmpty()) {
+                        $query->whereIn('serial_number', $serials);
+                    }
+
+                    if ($deviceIds->isNotEmpty()) {
+                        $method = $serials->isNotEmpty() ? 'orWhereIn' : 'whereIn';
+                        $query->{$method}('device_identifier', $deviceIds);
+                    }
+                })
+                ->get()
+                ->flatMap(fn (Logger $logger) => collect([
+                    $logger->serial_number ? "sn:{$logger->serial_number}" : null,
+                    $logger->device_identifier ? "id:{$logger->device_identifier}" : null,
+                ])
+                    ->filter()
+                    ->mapWithKeys(fn (string $key) => [$key => $logger]));
+        }
+
+        $usbProvisionedLoggers = $usbDevices->map(function (ProductionDevice $device) use ($matchedLoggers) {
+            $logger = $matchedLoggers->get("sn:{$device->serial_number}")
+                ?? $matchedLoggers->get("id:{$device->device_id}");
+
+            return [
+                'serialNumber' => $device->serial_number,
+                'deviceId' => $device->device_id,
+                'model' => $device->model,
+                'qcStatus' => $device->qc_status,
+                'provisionedAt' => $device->updated_at?->format('Y-m-d H:i'),
+                'logger' => $logger ? [
+                    'id' => IdHasher::encode($logger->id),
+                    'name' => $logger->name,
+                    'status' => $logger->status,
+                    'projectName' => $logger->project?->name,
+                ] : null,
+            ];
+        });
+
         return Inertia::render('production/provision', [
             'deviceModels' => DeviceModel::orderBy('name')->pluck('name'),
+            'usbProvisionedLoggers' => $usbProvisionedLoggers,
         ]);
     }
 
@@ -114,7 +167,10 @@ class ProductionController extends Controller
         $device = ProductionDevice::where('serial_number', $validated['serial_number'])->first();
 
         if ($device) {
-            $device->update(array_merge($optional, ['device_id' => $validated['device_id']]));
+            $device->update(array_merge($optional, [
+                'device_id' => $validated['device_id'],
+                'provisioned_via_usb' => true,
+            ]));
 
             return response()->json(['success' => true, 'status' => 'updated']);
         }
@@ -127,6 +183,7 @@ class ProductionController extends Controller
             'notes' => $validated['bt_name'] ?? null
                 ? "Provisioned via USB (BT: {$validated['bt_name']})"
                 : 'Provisioned via USB',
+            'provisioned_via_usb' => true,
         ], $optional));
 
         return response()->json(['success' => true, 'status' => 'created']);

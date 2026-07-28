@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Logger;
+use App\Models\ProductionDevice;
 use App\Models\Project;
 use App\Models\User;
 use App\Services\IdHasher;
@@ -26,6 +27,12 @@ test('projects page includes project loggers for the details modal', function ()
         'connection_type' => 'wifi',
         'location' => 'Lab',
     ]);
+    ProductionDevice::create([
+        'serial_number' => 'SN-001',
+        'device_id' => 'DEV-001',
+        'qc_status' => 'pending',
+        'provisioned_via_usb' => true,
+    ]);
 
     $this->actingAs($user)
         ->get(route('projects.index'))
@@ -41,5 +48,6 @@ test('projects page includes project loggers for the details modal', function ()
             ->where('projects.0.loggers.0.status', 'online')
             ->where('projects.0.loggers.0.connectionType', 'wifi')
             ->where('projects.0.loggers.0.location', 'Lab')
+            ->where('projects.0.loggers.0.usbProvisioned', true)
         );
 });

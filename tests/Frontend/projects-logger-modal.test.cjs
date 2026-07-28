@@ -16,6 +16,8 @@ test('projects cards open a logger modal without hijacking edit and delete actio
     assert.match(source, /openLoggerModal\(project\)/);
     assert.match(source, /Project Loggers/);
     assert.match(source, /loggerModalProject\.loggers\.map/);
+    assert.match(source, /usbProvisioned/);
+    assert.match(source, /Setup USB/);
     assert.match(source, /href=\{`\/loggers\/\$\{logger\.id\}`\}/);
     assert.match(source, /event\.stopPropagation\(\);/);
     assert.match(source, /className="px-4 pt-6 pb-4"/);
