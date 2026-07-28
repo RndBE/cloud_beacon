@@ -556,7 +556,7 @@ export default function ProductionProvision({
                     {serialSupported && (
                         <div className="space-y-4">
                             <Card className="self-start py-0">
-                                <CardContent className="flex flex-col gap-3 px-5 pt-4 pb-3 sm:flex-row sm:items-start sm:justify-between">
+                                <CardContent className="flex flex-col gap-3 px-5 pt-4 pb-3 sm:flex-row sm:items-center sm:justify-between">
                                     <div className="flex min-w-0 items-center gap-3">
                                         <div
                                             className={`flex size-10 shrink-0 items-center justify-center rounded-lg border ${
@@ -576,8 +576,8 @@ export default function ProductionProvision({
                                                 variant="outline"
                                                 className={
                                                     connected
-                                                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                                        : 'border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300'
+                                                        ? 'h-8 border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-300'
+                                                        : 'h-8 border-slate-500/30 bg-slate-500/10 px-3 py-2 text-slate-700 dark:text-slate-300'
                                                 }
                                             >
                                                 {connected
@@ -602,7 +602,7 @@ export default function ProductionProvision({
                                     </div>
 
                                     {connectError && (
-                                        <p className="flex items-center gap-1.5 text-sm text-red-600 dark:text-red-400">
+                                        <p className="flex min-w-0 flex-1 items-center justify-center gap-1.5 text-center text-sm text-red-600 dark:text-red-400">
                                             <XCircle className="size-4" />
                                             {connectError}
                                         </p>
@@ -1275,6 +1275,11 @@ export default function ProductionProvision({
                     )}
 
                     <Card className="self-start py-3">
+                        <CardHeader className="px-3 pb-2">
+                            <CardTitle className="text-base">
+                                Riwayat Setup
+                            </CardTitle>
+                        </CardHeader>
                         <CardContent className="px-3">
                             {usbProvisionedLoggers.length > 0 ? (
                                 <div className="grid gap-2">
