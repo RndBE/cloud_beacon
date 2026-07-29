@@ -1274,8 +1274,8 @@ export default function ProductionProvision({
                         </div>
                     )}
 
-                    <Card className="self-start py-3">
-                        <CardHeader className="px-3 pb-2">
+                    <Card className="self-start gap-2 py-3">
+                        <CardHeader className="px-3 pb-0">
                             <CardTitle className="text-base">
                                 Riwayat Setup
                             </CardTitle>

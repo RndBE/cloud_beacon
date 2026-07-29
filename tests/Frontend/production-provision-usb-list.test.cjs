@@ -17,7 +17,8 @@ test('Setup Logger USB page renders USB-provisioned logger list', () => {
     assert.match(source, /Riwayat Setup/);
     assert.match(source, /Belum jadi logger/);
     assert.match(source, /lg:grid-cols-\[minmax\(340px,1fr\)_minmax\(260px,0\.55fr\)\]/);
-    assert.match(source, /className="self-start py-3"/);
+    assert.match(source, /className="self-start gap-2 py-3"/);
+    assert.match(source, /className="px-3 pb-0"/);
     assert.match(source, /className="self-start py-0"/);
     assert.match(source, /h-8 border-slate-500\/30 bg-slate-500\/10 px-3 py-2/);
     assert.match(source, /px-5 pt-4 pb-3/);
