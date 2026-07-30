@@ -45,12 +45,13 @@ test('output is picked icon-only, beside the toggle, and locks once EWS is on', 
     // across lines without changing a thing about the behaviour.
     const flat = source.replace(/\s+/g, ' ');
 
-    // Icon-only buttons: Siren = the physical RS232 sirine, Cloud = the MQTT alarm, and BOTH
-    // renders both icons so it reads as "keduanya" rather than needing to be memorised.
+    // Icon-only buttons: BellRing = the physical RS232 sirine sounding, SatelliteDish = the alarm
+    // leaving over the network, and BOTH renders both icons so it reads as "keduanya" rather than
+    // having to be memorised.
     assert.match(flat, /const EWS_OUT_OPTIONS/);
-    assert.match(flat, /icons: \[Siren\],/);
-    assert.match(flat, /icons: \[Cloud\],/);
-    assert.match(flat, /icons: \[Siren, Cloud\],/);
+    assert.match(flat, /icons: \[BellRing\],/);
+    assert.match(flat, /icons: \[SatelliteDish\],/);
+    assert.match(flat, /icons: \[BellRing, SatelliteDish\],/);
 
     // No text labels left over from the old <select>.
     assert.doesNotMatch(flat, /<option value="MODULE">/);
@@ -89,12 +90,36 @@ test('picking an output sends nothing; enable=1 is what commits it', () => {
     assert.doesNotMatch(picker, /send\(/);
     assert.match(picker, /setEwsOutMode\(mode\);/);
 
-    // enable=1 carries out (+ ch when the module is driven), and a refusal un-flips the toggle.
+    // enable=1 carries out (+ ch when the module is driven).
     assert.match(
         source,
         /return ewsOutAvailable \? \{ \.\.\.payload, out: ewsOutMode \} : payload;/,
     );
-    assert.match(source, /if \(!result\?\.success\) setEwsEnable\(!next\);/);
+});
+
+test('the enable toggle waits for the device instead of flipping optimistically', () => {
+    const source = readFileSync(protocolPath, 'utf8');
+    const flat = source.replace(/\s+/g, ' ');
+
+    // §4: with out MODULE/BOTH the firmware sends `Cek` to the module first and can take up to 15s,
+    // and it may refuse outright. The switch must not claim a state the device never granted.
+    const toggle = flat.slice(
+        flat.indexOf('function toggleEwsEnable('),
+        flat.indexOf('// Output destination (MODULE / ONLINE / BOTH)'),
+    );
+    assert.ok(toggle.length > 0, 'toggleEwsEnable not found');
+    assert.match(toggle, /setEwsEnablePending\(next\);/);
+    assert.match(toggle, /if \(result\?\.success\) setEwsEnable\(next\);/);
+    assert.match(toggle, /setEwsEnablePending\(null\);/);
+    // No optimistic flip before the request.
+    assert.doesNotMatch(
+        toggle.slice(0, toggle.indexOf('send(')),
+        /setEwsEnable\(/,
+    );
+
+    // The pending state is visible, explains the 15s module round-trip, and is exposed to AT.
+    assert.match(flat, /aria-busy=\{ ewsEnablePending !== null \}/);
+    assert.match(flat, /balasan bisa sampai 15 detik/);
 });
 
 test('the topology EWS card reports the output destination', () => {

@@ -2,12 +2,12 @@ import { Head, Link } from '@inertiajs/react';
 import {
     ArrowLeft,
     Bell,
+    BellRing,
     Check,
     CheckCircle2,
     Circle,
     CircleAlert,
     Clock,
-    Cloud,
     Cpu,
     DoorOpen,
     Layers,
@@ -17,6 +17,7 @@ import {
     Plus,
     Power,
     RefreshCw,
+    SatelliteDish,
     Send,
     Server,
     Siren,
@@ -283,29 +284,29 @@ function normalizeEwsOutMode(value: unknown): EwsOutMode {
     return value === 'ONLINE' || value === 'BOTH' ? value : 'MODULE';
 }
 
-// Output destination picker, rendered icon-only next to the enable toggle. Siren = the physical
-// sirine wired to RS232 — the firmware's own vocabulary, cf. the "WITHOUT SIRINE" CTRL levels
-// below — and cloud = the MQTT alarm. BOTH shows both icons, so "keduanya aktif" is readable
-// without being memorised. Icon-only leaves no room for a label, so every button repeats its
-// meaning in `title` + `aria-label`: that is the only place the picture is explained.
+// Output destination picker, rendered icon-only next to the enable toggle. BellRing carries motion
+// lines, so it reads as a sirine actually sounding rather than a bell sitting idle; the dish is the
+// alarm leaving over the network. BOTH shows both icons, so "keduanya aktif" is readable without
+// being memorised. Icon-only leaves no room for a label, so every button repeats its meaning in
+// `title` + `aria-label`: that is the only place the picture is explained.
 const EWS_OUT_OPTIONS: {
     value: EwsOutMode;
-    icons: (typeof Siren)[];
+    icons: (typeof BellRing)[];
     hint: string;
 }[] = [
     {
         value: 'MODULE',
-        icons: [Siren],
+        icons: [BellRing],
         hint: 'MODULE — level siaga hanya ke modul sirine RS232',
     },
     {
         value: 'ONLINE',
-        icons: [Cloud],
+        icons: [SatelliteDish],
         hint: 'ONLINE — level siaga hanya ke MQTT, tidak ada sirine di lapangan',
     },
     {
         value: 'BOTH',
-        icons: [Siren, Cloud],
+        icons: [BellRing, SatelliteDish],
         hint: 'BOTH — level siaga ke modul sirine RS232 dan MQTT',
     },
 ];
@@ -1138,6 +1139,12 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const [ewsEnable, setEwsEnable] = useState(
             moduleSnapshot?.ewsEnable ?? false,
         );
+        // Target state of an enable/disable SET still awaiting the device's verdict (null = idle).
+        // Kept separate from `loading` because that flag covers every EWS command, and only the
+        // toggle needs to hold its own position until the device answers.
+        const [ewsEnablePending, setEwsEnablePending] = useState<
+            boolean | null
+        >(null);
         const [ewsMode, setEwsMode] = useState<'MANUAL' | 'AUTO'>(
             moduleSnapshot?.ewsMode ?? 'MANUAL',
         );
@@ -2880,11 +2887,18 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             return ewsOutAvailable ? { ...payload, out: ewsOutMode } : payload;
         }
 
-        // Enable/disable toggle (the slider). Optimistically reflects the new state, then sends SET.
-        // Enabling claims the chosen RS232 channel, so `ch` rides along on enable=1 — and so does
-        // `out`, because enabling is the moment the destination is actually committed.
+        // Enable/disable toggle (the slider). Enabling claims the chosen RS232 channel, so `ch`
+        // rides along on enable=1 — and so does `out`, because enabling is the moment the
+        // destination is actually committed.
+        //
+        // The switch deliberately does NOT flip optimistically. With out MODULE/BOTH the firmware
+        // sends `Cek` to the module and only answers once the module replies or times out — up to
+        // 15 seconds (§4) — and it can refuse outright (ONLINE while a GCM_GATE_WARN slot is
+        // active, or an RS232 channel already taken by a sensor). Flipping first would show "on"
+        // for that whole window and then have to take it back. Instead the toggle holds its
+        // position, a spinner says the click landed, and the state changes only on OK.
         function toggleEwsEnable(next: boolean) {
-            setEwsEnable(next);
+            setEwsEnablePending(next);
             const payload: Payload = next
                 ? withEwsOut({
                       cmd: 'SET',
@@ -2893,10 +2907,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                   })
                 : { cmd: 'SET', enable: 0 };
             void send('EWS', { EWS: payload }, 'EWS').then((result) => {
-                // The device can refuse — ONLINE while a GCM_GATE_WARN slot is active, or an RS232
-                // channel already claimed by a sensor. The toggle must not sit there claiming an
-                // enable that never happened.
-                if (!result?.success) setEwsEnable(!next);
+                if (result?.success) setEwsEnable(next);
+                setEwsEnablePending(null);
             });
         }
 
@@ -4278,6 +4290,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                             role="switch"
                                             aria-checked={ewsEnable}
                                             aria-label="Enable EWS"
+                                            aria-busy={
+                                                ewsEnablePending !== null
+                                            }
                                             disabled={
                                                 !canSend || loading === 'EWS'
                                             }
@@ -4286,12 +4301,34 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                             }
                                             className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${ewsEnable ? 'bg-emerald-500' : 'bg-input'}`}
                                         >
-                                            <span
-                                                className={`inline-block size-4 transform rounded-full bg-white shadow transition-transform ${ewsEnable ? 'translate-x-4' : 'translate-x-0.5'}`}
-                                            />
+                                            {/* The knob becomes the spinner while the device is
+                                                deciding — the click is visibly acknowledged without
+                                                the switch claiming a state it hasn't got yet. */}
+                                            {ewsEnablePending !== null ? (
+                                                <Loader2
+                                                    className={`size-3.5 animate-spin transition-transform ${ewsEnable ? 'translate-x-4.5 text-white' : 'translate-x-1 text-muted-foreground'}`}
+                                                />
+                                            ) : (
+                                                <span
+                                                    className={`inline-block size-4 transform rounded-full bg-white shadow transition-transform ${ewsEnable ? 'translate-x-4' : 'translate-x-0.5'}`}
+                                                />
+                                            )}
                                         </button>
                                     </div>
                                 </div>
+                                {/* Why the wait: with out MODULE/BOTH the firmware talks to the
+                                    module before answering, so say so rather than leaving the
+                                    operator watching a silent spinner for 15 seconds. */}
+                                {ewsEnablePending !== null && (
+                                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                        <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                                        {ewsEnablePending
+                                            ? ewsUsesModule
+                                                ? 'Mengaktifkan — firmware mengirim Cek ke modul dulu, balasan bisa sampai 15 detik.'
+                                                : 'Mengaktifkan — menunggu balasan logger.'
+                                            : 'Menonaktifkan — menunggu balasan logger.'}
+                                    </p>
+                                )}
                                 {ewsEnable && ewsOutVersionMismatch && (
                                     <p className="text-xs text-amber-600">
                                         Device melaporkan output{' '}
