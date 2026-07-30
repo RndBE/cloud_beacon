@@ -51,6 +51,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { useClipboard } from '@/hooks/use-clipboard';
 import {
+    describeSerialError,
     isWebSerialSupported,
     useLoggerSerial,
 } from '@/hooks/use-logger-serial';
@@ -248,14 +249,13 @@ export default function ProductionProvision({
         setConnectError(null);
         setConnecting(true);
         try {
-            await connect();
+            // connect() → false berarti operator menutup dialog pemilih port.
+            // Batal memilih port bukan kegagalan, jadi jangan tampilkan error.
+            const opened = await connect();
+            if (!opened) return;
             sessionStorage.setItem(AUTO_RECONNECT_KEY, '1');
         } catch (error) {
-            setConnectError(
-                error instanceof Error
-                    ? error.message
-                    : 'Gagal terhubung ke logger.',
-            );
+            setConnectError(describeSerialError(error));
         } finally {
             setConnecting(false);
         }
@@ -556,100 +556,109 @@ export default function ProductionProvision({
                     {serialSupported && (
                         <div className="space-y-4">
                             <Card className="self-start py-0">
-                                <CardContent className="flex flex-col gap-3 px-5 pt-4 pb-3 sm:flex-row sm:items-center sm:justify-between">
-                                    <div className="flex min-w-0 items-center gap-3">
-                                        <div
-                                            className={`flex size-10 shrink-0 items-center justify-center rounded-lg border ${
-                                                connected
-                                                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
-                                                    : 'border-slate-500/30 bg-slate-500/10 text-slate-600 dark:text-slate-300'
-                                            }`}
-                                        >
-                                            {connected ? (
-                                                <Unplug className="size-5" />
+                                <CardContent className="flex flex-col gap-3 px-5 pt-4 pb-3">
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="flex min-w-0 items-center gap-3">
+                                            <div
+                                                className={`flex size-10 shrink-0 items-center justify-center rounded-lg border ${
+                                                    connected
+                                                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
+                                                        : 'border-slate-500/30 bg-slate-500/10 text-slate-600 dark:text-slate-300'
+                                                }`}
+                                            >
+                                                {connected ? (
+                                                    <Unplug className="size-5" />
+                                                ) : (
+                                                    <Plug className="size-5" />
+                                                )}
+                                            </div>
+                                            <div className="min-w-0 space-y-1">
+                                                <Badge
+                                                    variant="outline"
+                                                    className={
+                                                        connected
+                                                            ? 'h-8 border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-300'
+                                                            : 'h-8 border-slate-500/30 bg-slate-500/10 px-3 py-2 text-slate-700 dark:text-slate-300'
+                                                    }
+                                                >
+                                                    {connected
+                                                        ? 'Terhubung'
+                                                        : 'Belum terhubung'}
+                                                </Badge>
+                                                {connected &&
+                                                    portInfo?.usbVendorId !==
+                                                        undefined && (
+                                                        <p className="text-xs text-muted-foreground">
+                                                            VID:
+                                                            {portInfo.usbVendorId.toString(
+                                                                16,
+                                                            )}{' '}
+                                                            PID:
+                                                            {portInfo.usbProductId?.toString(
+                                                                16,
+                                                            ) ?? '-'}
+                                                        </p>
+                                                    )}
+                                            </div>
+                                        </div>
+
+                                        {reconnecting && !connected && (
+                                            <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                                <RefreshCw className="size-4 animate-spin" />
+                                                Menyambungkan ulang ke port
+                                                sebelumnya…
+                                            </p>
+                                        )}
+
+                                        <div className="flex w-full sm:w-auto">
+                                            {!connected ? (
+                                                <Button
+                                                    onClick={handleConnect}
+                                                    disabled={
+                                                        connecting ||
+                                                        reconnecting
+                                                    }
+                                                    size="lg"
+                                                    className="h-10 w-full gap-2 px-5 sm:min-w-56"
+                                                >
+                                                    {connecting ? (
+                                                        <>
+                                                            <RefreshCw className="size-4 animate-spin" />
+                                                            Menghubungkan
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Plug className="size-4" />
+                                                            Hubungkan ke Logger
+                                                        </>
+                                                    )}
+                                                </Button>
                                             ) : (
-                                                <Plug className="size-5" />
+                                                <Button
+                                                    variant="outline"
+                                                    onClick={handleDisconnect}
+                                                    size="lg"
+                                                    className="h-10 w-full gap-2 px-5 sm:min-w-56"
+                                                >
+                                                    <Unplug className="size-4" />
+                                                    Putuskan Koneksi
+                                                </Button>
                                             )}
                                         </div>
-                                        <div className="min-w-0 space-y-1">
-                                            <Badge
-                                                variant="outline"
-                                                className={
-                                                    connected
-                                                        ? 'h-8 border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-300'
-                                                        : 'h-8 border-slate-500/30 bg-slate-500/10 px-3 py-2 text-slate-700 dark:text-slate-300'
-                                                }
-                                            >
-                                                {connected
-                                                    ? 'Terhubung'
-                                                    : 'Belum terhubung'}
-                                            </Badge>
-                                            {connected &&
-                                                portInfo?.usbVendorId !==
-                                                    undefined && (
-                                                    <p className="text-xs text-muted-foreground">
-                                                        VID:
-                                                        {portInfo.usbVendorId.toString(
-                                                            16,
-                                                        )}{' '}
-                                                        PID:
-                                                        {portInfo.usbProductId?.toString(
-                                                            16,
-                                                        ) ?? '-'}
-                                                    </p>
-                                                )}
-                                        </div>
                                     </div>
 
+                                    {/* Baris sendiri di bawah, bukan diselipkan
+                                        di antara badge dan tombol — pesan error
+                                        serial bisa panjang dan dulu terpotong
+                                        di kolom selebar dua kata. */}
                                     {connectError && (
-                                        <p className="flex min-w-0 flex-1 items-center justify-center gap-1.5 text-center text-sm text-red-600 dark:text-red-400">
-                                            <XCircle className="size-4" />
-                                            {connectError}
+                                        <p className="flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm wrap-break-word text-red-600 dark:text-red-400">
+                                            <XCircle className="mt-0.5 size-4 shrink-0" />
+                                            <span className="min-w-0">
+                                                {connectError}
+                                            </span>
                                         </p>
                                     )}
-
-                                    {reconnecting && !connected && (
-                                        <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                                            <RefreshCw className="size-4 animate-spin" />
-                                            Menyambungkan ulang ke port
-                                            sebelumnya…
-                                        </p>
-                                    )}
-
-                                    <div className="flex w-full sm:w-auto">
-                                        {!connected ? (
-                                            <Button
-                                                onClick={handleConnect}
-                                                disabled={
-                                                    connecting || reconnecting
-                                                }
-                                                size="lg"
-                                                className="h-10 w-full gap-2 px-5 sm:min-w-56"
-                                            >
-                                                {connecting ? (
-                                                    <>
-                                                        <RefreshCw className="size-4 animate-spin" />
-                                                        Menghubungkan
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <Plug className="size-4" />
-                                                        Hubungkan ke Logger
-                                                    </>
-                                                )}
-                                            </Button>
-                                        ) : (
-                                            <Button
-                                                variant="outline"
-                                                onClick={handleDisconnect}
-                                                size="lg"
-                                                className="h-10 w-full gap-2 px-5 sm:min-w-56"
-                                            >
-                                                <Unplug className="size-4" />
-                                                Putuskan Koneksi
-                                            </Button>
-                                        )}
-                                    </div>
                                 </CardContent>
                             </Card>
 
@@ -1274,7 +1283,7 @@ export default function ProductionProvision({
                         </div>
                     )}
 
-                    <Card className="self-start gap-2 py-3">
+                    <Card className="gap-2 self-start py-3">
                         <CardHeader className="px-3 pb-0">
                             <CardTitle className="text-base">
                                 Riwayat Setup

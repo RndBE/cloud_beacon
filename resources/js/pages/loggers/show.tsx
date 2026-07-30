@@ -116,6 +116,7 @@ import {
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
+    describeSerialError,
     isWebSerialSupported,
     useLoggerSerial,
 } from '@/hooks/use-logger-serial';
@@ -8304,18 +8305,24 @@ export default function LoggerShow({
 
         setDongleError(null);
         const connectPromise = dongleConnected
-            ? Promise.resolve()
+            ? Promise.resolve(true)
             : connectDongle();
         setDongleBusy(true);
         try {
-            await connectPromise;
+            // false = dialog pemilih port ditutup operator. Itu pembatalan,
+            // bukan error, jadi jangan tampilkan pesan apa pun.
+            if (!(await connectPromise)) {
+                setDongleEnabled(false);
+                return;
+            }
             setDongleEnabled(true);
         } catch (error) {
             setDongleEnabled(false);
             setDongleError(
-                error instanceof Error
-                    ? error.message
-                    : 'Gagal menghubungkan dongle serial.',
+                describeSerialError(
+                    error,
+                    'Gagal menghubungkan dongle serial.',
+                ),
             );
         } finally {
             setDongleBusy(false);
