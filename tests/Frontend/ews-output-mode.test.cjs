@@ -37,52 +37,64 @@ test('EWS panel supports firmware output mode without exposing it to legacy firm
         /setEwsOutMode\(\s*normalizeEwsOutMode\(inner\.out\),?\s*\)/,
     );
     assert.match(source, /out: ewsOutMode/);
-    assert.match(source, /<option value="MODULE">/);
-    assert.match(source, /value="ONLINE"\s*\n?\s*disabled=\{gcmWarnEnabled\}/);
-    assert.match(source, /<option value="BOTH">BOTH<\/option>/);
 });
 
-test('switching EWS output back to the module re-runs the port/channel validation', () => {
+test('output is picked icon-only, beside the toggle, and locks once EWS is on', () => {
     const source = readFileSync(protocolPath, 'utf8');
+    // Collapse whitespace: these are structural assertions, and Prettier is free to reflow JSX
+    // across lines without changing a thing about the behaviour.
+    const flat = source.replace(/\s+/g, ' ');
 
-    // A bare out:"MODULE" would keep a stale `ch` (possibly a ch=2 the board lacks) and skip the
-    // firmware's RS232 conflict check — only the enable=1 path validates both.
+    // Icon-only buttons: Siren = the physical RS232 sirine, Cloud = the MQTT alarm, and BOTH
+    // renders both icons so it reads as "keduanya" rather than needing to be memorised.
+    assert.match(flat, /const EWS_OUT_OPTIONS/);
+    assert.match(flat, /icons: \[Siren\],/);
+    assert.match(flat, /icons: \[Cloud\],/);
+    assert.match(flat, /icons: \[Siren, Cloud\],/);
+
+    // No text labels left over from the old <select>.
+    assert.doesNotMatch(flat, /<option value="MODULE">/);
+    assert.doesNotMatch(flat, /<option value="BOTH">BOTH<\/option>/);
+
+    // A picture carries no meaning on its own, so each button must expose it to the operator
+    // (tooltip) and to a screen reader (aria-label).
+    for (const hint of [
+        /hint: 'MODULE — /,
+        /hint: 'ONLINE — /,
+        /hint: 'BOTH — /,
+    ]) {
+        assert.match(flat, hint);
+    }
+    assert.match(flat, /aria-label=\{ hint \}|aria-label=\{hint\}/);
+    assert.match(flat, /role="radiogroup"/);
+
+    // Locked while EWS is enabled — and ONLINE stays locked while a GCM_GATE_WARN slot is active.
     assert.match(
-        source,
-        /mode === 'ONLINE'\s*\?\s*\{ cmd: 'SET', out: mode \}\s*:\s*\{\s*cmd: 'SET',\s*enable: 1,\s*ch: numberValue\(ewsCh\),\s*out: mode,\s*\}/,
+        flat,
+        /const locked = ewsEnable \|\| !canSend \|\| loading === 'EWS' \|\| \(value === 'ONLINE' && gcmWarnEnabled\);/,
     );
+    assert.match(flat, /matikan EWS dulu untuk mengubah/);
 });
 
-test('a rejected EWS output change reverts the dropdown', () => {
+test('picking an output sends nothing; enable=1 is what commits it', () => {
     const source = readFileSync(protocolPath, 'utf8');
 
-    // The device rejects ONLINE while any GCM_GATE_WARN slot is active, and the local guard only
-    // sees the slot currently loaded in the form — so the UI must follow the device's verdict.
-    assert.match(source, /const previous = ewsOutMode;/);
-    assert.match(
-        source,
-        /\} else \{\s*setEwsOutMode\(previous\);\s*setEwsOutDirty\(previousDirty\);\s*\}/,
+    // The pick only happens while EWS is off, and a standalone `out` SET requires enable=1 (§2),
+    // so the picker must not talk to the device at all — it just records the choice.
+    const picker = source.slice(
+        source.indexOf('function setEwsOutputMode('),
+        source.indexOf('// Change the RS232 channel'),
     );
-});
+    assert.ok(picker.length > 0, 'setEwsOutputMode not found');
+    assert.doesNotMatch(picker, /send\(/);
+    assert.match(picker, /setEwsOutMode\(mode\);/);
 
-test('out rides along only when the operator changed it', () => {
-    const source = readFileSync(protocolPath, 'utf8');
-
-    // §2: an omitted `out` preserves the device's stored destination. Attaching it to every SET
-    // would let a stale form rewrite the output mode nobody touched.
+    // enable=1 carries out (+ ch when the module is driven), and a refusal un-flips the toggle.
     assert.match(
         source,
-        /return ewsOutAvailable && ewsOutDirty\s*\?\s*\{ \.\.\.payload, out: ewsOutMode \}\s*:\s*payload;/,
+        /return ewsOutAvailable \? \{ \.\.\.payload, out: ewsOutMode \} : payload;/,
     );
-    // Reading the device's own value clears the pending pick; a confirmed SET that carried it too.
-    assert.match(
-        source,
-        /setEwsOutMode\(normalizeEwsOutMode\(inner\.out\)\);\s*\n\s*\/\/[^\n]*\n\s*setEwsOutDirty\(false\);/,
-    );
-    assert.match(
-        source,
-        /if \(carriesOut && result\?\.success\) setEwsOutDirty\(false\);/,
-    );
+    assert.match(source, /if \(!result\?\.success\) setEwsEnable\(!next\);/);
 });
 
 test('the topology EWS card reports the output destination', () => {

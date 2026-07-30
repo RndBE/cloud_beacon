@@ -19,7 +19,7 @@ const protocolPath = path.resolve(
 function loadRuleBuilder() {
     const source = readFileSync(protocolPath, 'utf8');
     const start = source.indexOf('function buildEwsRulesPayload()');
-    const end = source.indexOf('// Attach `out` only when', start);
+    const end = source.indexOf('// `out` is chosen while EWS is off', start);
     assert.ok(
         start !== -1 && end > start,
         'buildEwsRulesPayload not found in protocol.tsx — did it move or get renamed?',

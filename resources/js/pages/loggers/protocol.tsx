@@ -7,6 +7,7 @@ import {
     Circle,
     CircleAlert,
     Clock,
+    Cloud,
     Cpu,
     DoorOpen,
     Layers,
@@ -141,7 +142,6 @@ type ModuleSnapshot = {
     ewsCh: string;
     ewsOutMode: EwsOutMode;
     ewsOutSupported: boolean;
-    ewsOutDirty: boolean;
 };
 
 export interface ProtocolLogger {
@@ -282,6 +282,33 @@ const EWS_CTRL_LEVELS: { value: number; label: string }[] = [
 function normalizeEwsOutMode(value: unknown): EwsOutMode {
     return value === 'ONLINE' || value === 'BOTH' ? value : 'MODULE';
 }
+
+// Output destination picker, rendered icon-only next to the enable toggle. Siren = the physical
+// sirine wired to RS232 — the firmware's own vocabulary, cf. the "WITHOUT SIRINE" CTRL levels
+// below — and cloud = the MQTT alarm. BOTH shows both icons, so "keduanya aktif" is readable
+// without being memorised. Icon-only leaves no room for a label, so every button repeats its
+// meaning in `title` + `aria-label`: that is the only place the picture is explained.
+const EWS_OUT_OPTIONS: {
+    value: EwsOutMode;
+    icons: (typeof Siren)[];
+    hint: string;
+}[] = [
+    {
+        value: 'MODULE',
+        icons: [Siren],
+        hint: 'MODULE — level siaga hanya ke modul sirine RS232',
+    },
+    {
+        value: 'ONLINE',
+        icons: [Cloud],
+        hint: 'ONLINE — level siaga hanya ke MQTT, tidak ada sirine di lapangan',
+    },
+    {
+        value: 'BOTH',
+        icons: [Siren, Cloud],
+        hint: 'BOTH — level siaga ke modul sirine RS232 dan MQTT',
+    },
+];
 
 // ONLINE / BOTH output is only offered from this firmware onwards. Below it the EWS panel behaves
 // exactly as it did before the feature existed: the alert level goes to the physical RS232 module
@@ -1134,15 +1161,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         );
         const [ewsOutSupported, setEwsOutSupported] = useState(
             moduleSnapshot?.ewsOutSupported ?? false,
-        );
-        // True while `ewsOutMode` is an operator pick the device hasn't been told about yet.
-        // `out` is optional and persistent (§2): omitting it preserves whatever the device has
-        // stored, so a SET that isn't about output must leave it out entirely. Attaching it to
-        // every SET would let a stale form silently drag a device back to MODULE — e.g. the
-        // snapshot still says MODULE while someone moved the device to ONLINE over serial, and
-        // then merely flipping the enable toggle rewrites the output destination.
-        const [ewsOutDirty, setEwsOutDirty] = useState(
-            moduleSnapshot?.ewsOutDirty ?? false,
         );
 
         const canSend =
@@ -2122,8 +2140,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                 ),
                             );
                             setEwsOutMode(normalizeEwsOutMode(inner.out));
-                            // Just read the device's own value, so nothing is pending anymore.
-                            setEwsOutDirty(false);
                             if (
                                 inner.mode === 'AUTO' ||
                                 inner.mode === 'MANUAL'
@@ -2217,7 +2233,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 ewsCh,
                 ewsOutMode,
                 ewsOutSupported,
-                ewsOutDirty,
             } satisfies ModuleSnapshot);
         }, [
             isModulePanel,
@@ -2232,7 +2247,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             ewsCh,
             ewsOutMode,
             ewsOutSupported,
-            ewsOutDirty,
         ]);
 
         // Map GET response m:[[reg, name], …] → rows. Empty name → '-' (the UI's empty sentinel).
@@ -2859,25 +2873,16 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             return { ok: true, value: out };
         }
 
-        // Enable/disable toggle (the slider). Optimistically reflects the new state, then sends SET.
-        // Enabling claims the chosen RS232 channel, so `ch` rides along on enable=1.
-        // Attach `out` only when there's an unapplied pick to deliver — otherwise the device keeps
-        // its stored destination, which is what §2 guarantees for an omitted `out`.
+        // `out` is chosen while EWS is off and locked once it's on, so the value on screen is
+        // always the one the device is about to be given — no stale-form hazard, and nothing to
+        // reconcile mid-flight.
         function withEwsOut(payload: Payload): Payload {
-            return ewsOutAvailable && ewsOutDirty
-                ? { ...payload, out: ewsOutMode }
-                : payload;
+            return ewsOutAvailable ? { ...payload, out: ewsOutMode } : payload;
         }
 
-        // Send an EWS command, clearing the pending-pick flag once the device has confirmed a SET
-        // that actually carried `out`.
-        function sendEws(payload: Payload) {
-            const carriesOut = 'out' in payload;
-            void send('EWS', { EWS: payload }, 'EWS').then((result) => {
-                if (carriesOut && result?.success) setEwsOutDirty(false);
-            });
-        }
-
+        // Enable/disable toggle (the slider). Optimistically reflects the new state, then sends SET.
+        // Enabling claims the chosen RS232 channel, so `ch` rides along on enable=1 — and so does
+        // `out`, because enabling is the moment the destination is actually committed.
         function toggleEwsEnable(next: boolean) {
             setEwsEnable(next);
             const payload: Payload = next
@@ -2887,19 +2892,19 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                       ...(ewsUsesModule ? { ch: numberValue(ewsCh) } : {}),
                   })
                 : { cmd: 'SET', enable: 0 };
-            sendEws(payload);
+            void send('EWS', { EWS: payload }, 'EWS').then((result) => {
+                // The device can refuse — ONLINE while a GCM_GATE_WARN slot is active, or an RS232
+                // channel already claimed by a sensor. The toggle must not sit there claiming an
+                // enable that never happened.
+                if (!result?.success) setEwsEnable(!next);
+            });
         }
 
-        // Output destination (MODULE / ONLINE / BOTH). Persistent on the device, so when EWS is
-        // already enabled the pick is applied right away.
-        //
-        // Moving INTO a mode that drives the module goes out as a full `enable=1` + `ch` SET
-        // instead of a bare `out`: only the enable path makes the firmware re-check that the
-        // RS232 channel isn't claimed by a sensor and that `ch` exists on this board. A bare
-        // `out:"MODULE"` would silently reuse whatever `ch` was stored while output was ONLINE —
-        // on BL110/BL11 that can be a `ch=2` the board doesn't have, and then every CTRL comes
-        // back a bare ERR.
-        async function setEwsOutputMode(mode: EwsOutMode) {
+        // Output destination (MODULE / ONLINE / BOTH). Selectable only while EWS is off, so this
+        // just records the pick — nothing is sent until the enable=1 SET commits it. That ordering
+        // is what makes the firmware re-check the RS232 port and validate `ch` for every change of
+        // destination, instead of a bare `out` SET slipping past both.
+        function setEwsOutputMode(mode: EwsOutMode) {
             if (mode === 'ONLINE' && gcmWarnEnabled) {
                 localError(
                     'EWS',
@@ -2907,36 +2912,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 );
                 return;
             }
-            const previous = ewsOutMode;
-            const previousDirty = ewsOutDirty;
             setEwsOutMode(mode);
-            setEwsOutDirty(true);
-            // EWS still off: remember the pick and let the enable=1 SET carry it.
-            if (!ewsEnable) return;
-            const result = await send(
-                'EWS',
-                {
-                    EWS:
-                        mode === 'ONLINE'
-                            ? { cmd: 'SET', out: mode }
-                            : {
-                                  cmd: 'SET',
-                                  enable: 1,
-                                  ch: numberValue(ewsCh),
-                                  out: mode,
-                              },
-                },
-                'EWS',
-            );
-            // The device has the last word. It rejects ONLINE while any GCM_GATE_WARN slot is
-            // active, and the guard above only sees the slot currently loaded in the form — so a
-            // reject must not leave the dropdown showing a mode the device never stored.
-            if (result?.success) {
-                setEwsOutDirty(false);
-            } else {
-                setEwsOutMode(previous);
-                setEwsOutDirty(previousDirty);
-            }
         }
 
         // Change the RS232 channel. If EWS is already enabled, re-apply immediately so the module
@@ -2944,12 +2920,16 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         function setEwsChannel(ch: string) {
             setEwsCh(ch);
             if (ewsEnable) {
-                sendEws(
-                    withEwsOut({
-                        cmd: 'SET',
-                        enable: 1,
-                        ch: numberValue(ch),
-                    }),
+                send(
+                    'EWS',
+                    {
+                        EWS: withEwsOut({
+                            cmd: 'SET',
+                            enable: 1,
+                            ch: numberValue(ch),
+                        }),
+                    },
+                    'EWS',
                 );
             }
         }
@@ -2969,13 +2949,17 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 localError('EWS', rules.error);
                 return;
             }
-            sendEws(
-                withEwsOut({
-                    cmd: 'SET',
-                    mode: 'AUTO',
-                    source: ewsSourceName,
-                    rules: rules.value,
-                }),
+            send(
+                'EWS',
+                {
+                    EWS: withEwsOut({
+                        cmd: 'SET',
+                        mode: 'AUTO',
+                        source: ewsSourceName,
+                        rules: rules.value,
+                    }),
+                },
+                'EWS',
             );
         }
 
@@ -4209,25 +4193,104 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             icon={Siren}
                         >
                             <div className="space-y-3 rounded-md border border-border/60 p-3">
-                                <div className="flex items-center justify-between">
+                                <div className="flex items-center justify-between gap-3">
                                     <Label className="text-xs font-semibold text-muted-foreground uppercase">
                                         Enable / Disable
                                     </Label>
-                                    <button
-                                        type="button"
-                                        role="switch"
-                                        aria-checked={ewsEnable}
-                                        aria-label="Enable EWS"
-                                        disabled={!canSend || loading === 'EWS'}
-                                        onClick={() =>
-                                            toggleEwsEnable(!ewsEnable)
-                                        }
-                                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${ewsEnable ? 'bg-emerald-500' : 'bg-input'}`}
-                                    >
-                                        <span
-                                            className={`inline-block size-4 transform rounded-full bg-white shadow transition-transform ${ewsEnable ? 'translate-x-4' : 'translate-x-0.5'}`}
-                                        />
-                                    </button>
+                                    <div className="flex items-center gap-2">
+                                        {/* Output destination sits beside the toggle and is picked
+                                            BEFORE enabling: the enable=1 SET is what commits it, so
+                                            it locks (greys out) the moment EWS is on. To change it,
+                                            disable EWS, pick again, enable. */}
+                                        {ewsOutAvailable && (
+                                            <div
+                                                role="radiogroup"
+                                                aria-label="Output level siaga EWS"
+                                                className="flex items-center overflow-hidden rounded-md border border-input"
+                                            >
+                                                {EWS_OUT_OPTIONS.map(
+                                                    ({
+                                                        value,
+                                                        icons,
+                                                        hint,
+                                                    }) => {
+                                                        const active =
+                                                            ewsOutMode ===
+                                                            value;
+                                                        const locked =
+                                                            ewsEnable ||
+                                                            !canSend ||
+                                                            loading === 'EWS' ||
+                                                            (value ===
+                                                                'ONLINE' &&
+                                                                gcmWarnEnabled);
+                                                        return (
+                                                            <button
+                                                                key={value}
+                                                                type="button"
+                                                                role="radio"
+                                                                aria-checked={
+                                                                    active
+                                                                }
+                                                                aria-label={
+                                                                    hint
+                                                                }
+                                                                title={
+                                                                    ewsEnable
+                                                                        ? `${hint} — matikan EWS dulu untuk mengubah`
+                                                                        : hint
+                                                                }
+                                                                disabled={
+                                                                    locked
+                                                                }
+                                                                onClick={() =>
+                                                                    setEwsOutputMode(
+                                                                        value,
+                                                                    )
+                                                                }
+                                                                className={`flex h-7 items-center gap-0.5 px-2 transition-colors disabled:cursor-not-allowed ${
+                                                                    active
+                                                                        ? 'bg-primary text-primary-foreground disabled:opacity-40'
+                                                                        : 'text-muted-foreground hover:bg-muted disabled:opacity-30'
+                                                                }`}
+                                                            >
+                                                                {icons.map(
+                                                                    (
+                                                                        Icon,
+                                                                        index,
+                                                                    ) => (
+                                                                        <Icon
+                                                                            key={
+                                                                                index
+                                                                            }
+                                                                            className="size-3.5"
+                                                                        />
+                                                                    ),
+                                                                )}
+                                                            </button>
+                                                        );
+                                                    },
+                                                )}
+                                            </div>
+                                        )}
+                                        <button
+                                            type="button"
+                                            role="switch"
+                                            aria-checked={ewsEnable}
+                                            aria-label="Enable EWS"
+                                            disabled={
+                                                !canSend || loading === 'EWS'
+                                            }
+                                            onClick={() =>
+                                                toggleEwsEnable(!ewsEnable)
+                                            }
+                                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${ewsEnable ? 'bg-emerald-500' : 'bg-input'}`}
+                                        >
+                                            <span
+                                                className={`inline-block size-4 transform rounded-full bg-white shadow transition-transform ${ewsEnable ? 'translate-x-4' : 'translate-x-0.5'}`}
+                                            />
+                                        </button>
+                                    </div>
                                 </div>
                                 {ewsEnable && ewsOutVersionMismatch && (
                                     <p className="text-xs text-amber-600">
@@ -4242,34 +4305,6 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         ditampilkan. Update firmware untuk
                                         mengubahnya dari sini.
                                     </p>
-                                )}
-                                {ewsEnable && ewsOutAvailable && (
-                                    <Field label="Output">
-                                        <select
-                                            className={`${selectClass} w-full`}
-                                            value={ewsOutMode}
-                                            disabled={
-                                                !canSend || loading === 'EWS'
-                                            }
-                                            onChange={(event) =>
-                                                void setEwsOutputMode(
-                                                    event.target
-                                                        .value as EwsOutMode,
-                                                )
-                                            }
-                                        >
-                                            <option value="MODULE">
-                                                MODULE
-                                            </option>
-                                            <option
-                                                value="ONLINE"
-                                                disabled={gcmWarnEnabled}
-                                            >
-                                                ONLINE
-                                            </option>
-                                            <option value="BOTH">BOTH</option>
-                                        </select>
-                                    </Field>
                                 )}
                                 {ewsEnable && ewsUsesModule && (
                                     <Field label="RS232 Channel">
