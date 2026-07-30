@@ -459,6 +459,31 @@ it('builds an RS232 group SET with all params of the port', function () {
     ]);
 });
 
+// =====================================================================
+// EWS async pushes vs command replies (ews-out-mode-changes.md §3)
+//   EWS_EVENT / EWS_ALARM share the "EWS_" prefix the reply matcher accepts, and with
+//   out ONLINE/BOTH an AUTO rule change publishes EWS_ALARM on its own — it must not be
+//   mistaken for the answer to a GET/SET. CTRL/CHECK have no synchronous success reply,
+//   so for those the push IS the confirmation and must still resolve the wait.
+// =====================================================================
+
+it('ignores spontaneous EWS pushes while waiting for a GET or SET reply', function () {
+    expect(MqttService::asyncKeysToIgnore('EWS', ['EWS' => ['cmd' => 'GET']]))
+        ->toBe(['EWS_EVENT', 'EWS_ALARM'])
+        ->and(MqttService::asyncKeysToIgnore('EWS', ['EWS' => ['cmd' => 'SET', 'enable' => 1, 'out' => 'ONLINE']]))
+        ->toBe(['EWS_EVENT', 'EWS_ALARM']);
+});
+
+it('lets EWS_ALARM / EWS_EVENT confirm CTRL and CHECK', function () {
+    expect(MqttService::asyncKeysToIgnore('EWS', ['EWS' => ['cmd' => 'CTRL', 'level' => 2]]))->toBe([])
+        ->and(MqttService::asyncKeysToIgnore('EWS', ['EWS' => ['cmd' => 'CHECK']]))->toBe([]);
+});
+
+it('leaves non-EWS modules unaffected by the async-push filter', function () {
+    expect(MqttService::asyncKeysToIgnore('GCM_GATE', ['GCM_GATE' => ['cmd' => 'OPEN', 'id' => 1]]))->toBe([])
+        ->and(MqttService::asyncKeysToIgnore('SENSORS', ['SENSORS' => ['cmd' => 'GET']]))->toBe([]);
+});
+
 it('resolves OTA terminal success and failure frames correctly', function () {
     expect(MqttService::interpretOtaMessage(['OTA' => ['status' => 'OK']])['success'])->toBeTrue()
         ->and(MqttService::interpretOtaMessage(['OTA_INSTALL' => ['status' => 'PROCESS']])['success'])->toBeTrue()

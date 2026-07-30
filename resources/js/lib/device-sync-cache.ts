@@ -6,7 +6,11 @@
 // button) to bypass the cache and refresh it. Editing sensors on the device should be followed
 // by a forced reload to pick up the new names.
 
-export type DeviceSensorName = { nama: string; nilai: number | null; satuan: string };
+export type DeviceSensorName = {
+    nama: string;
+    nilai: number | null;
+    satuan: string;
+};
 export type DeviceMapSlot = { slot: number; name: string };
 
 // A GCM module as shown in the topology. Cached per device so re-opening the topology
@@ -26,9 +30,13 @@ export interface DeviceModule {
     status: 'active' | 'fault';
     // EWS fields:
     mode?: 'MANUAL' | 'AUTO' | null;
-    level?: number | null;  // current alert level (0 normal, 1–3 siaga, 6–8 siaga muted)
+    level?: number | null; // current alert level (0 normal, 1–3 siaga, 6–8 siaga muted)
     source?: string | null; // AUTO-mode monitored sensor name
-    ch?: number | null;     // RS232 channel the EWS module is on (configurable, 1 or 2)
+    ch?: number | null; // RS232 channel the EWS module is on (configurable, 1 or 2)
+    // Where the alert level is delivered (firmware ≥ v2.1.3). Operationally the difference that
+    // matters: MODULE/BOTH drive a physical horn over RS232, ONLINE has no horn at all.
+    // null/undefined = firmware doesn't report it, i.e. module-only like before the feature.
+    out?: 'MODULE' | 'ONLINE' | 'BOTH' | null;
 }
 
 const sensorNameCache = new Map<string, DeviceSensorName[]>();
@@ -44,15 +52,27 @@ const listeners = new Set<() => void>();
 /** Subscribe to cache changes; returns an unsubscribe function. */
 export function subscribeDeviceCache(listener: () => void): () => void {
     listeners.add(listener);
-    return () => { listeners.delete(listener); };
+    return () => {
+        listeners.delete(listener);
+    };
 }
 
 function notify(): void {
-    listeners.forEach((l) => { try { l(); } catch { /* ignore a bad listener */ } });
+    listeners.forEach((l) => {
+        try {
+            l();
+        } catch {
+            /* ignore a bad listener */
+        }
+    });
 }
 
 function csrfToken(): string {
-    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? '';
+    return (
+        document
+            .querySelector('meta[name="csrf-token"]')
+            ?.getAttribute('content') ?? ''
+    );
 }
 
 async function postJson(url: string, body: unknown): Promise<Response> {
@@ -69,11 +89,16 @@ async function postJson(url: string, body: unknown): Promise<Response> {
 
 // ── Sensor names (SENSORS GET_NAME) ──────────────────────────────────────────
 
-export function getCachedSensorNames(deviceId: string): DeviceSensorName[] | null {
+export function getCachedSensorNames(
+    deviceId: string,
+): DeviceSensorName[] | null {
     return sensorNameCache.get(deviceId) ?? null;
 }
 
-export function setCachedSensorNames(deviceId: string, data: DeviceSensorName[]): void {
+export function setCachedSensorNames(
+    deviceId: string,
+    data: DeviceSensorName[],
+): void {
     sensorNameCache.set(deviceId, data);
     notify();
 }
@@ -82,7 +107,10 @@ export function setCachedSensorNames(deviceId: string, data: DeviceSensorName[])
  * Read the device's sensor names, reusing the cached result so the hardware is queried once.
  * Returns the cached list on a cache hit (no request). Pass force=true to refresh.
  */
-export async function fetchSensorNames(deviceId: string, force = false): Promise<DeviceSensorName[] | null> {
+export async function fetchSensorNames(
+    deviceId: string,
+    force = false,
+): Promise<DeviceSensorName[] | null> {
     if (!force) {
         const cached = sensorNameCache.get(deviceId);
         if (cached) return cached;
@@ -91,8 +119,13 @@ export async function fetchSensorNames(deviceId: string, force = false): Promise
     }
 
     const read = (async () => {
-        const resp = await postJson('/api/mqtt/sensors/get-name', { id_logger: deviceId });
-        const json = (await resp.json()) as { success: boolean; data?: DeviceSensorName[] };
+        const resp = await postJson('/api/mqtt/sensors/get-name', {
+            id_logger: deviceId,
+        });
+        const json = (await resp.json()) as {
+            success: boolean;
+            data?: DeviceSensorName[];
+        };
         if (json.success && Array.isArray(json.data)) {
             setCachedSensorNames(deviceId, json.data); // notifies subscribers
             return json.data;
@@ -116,7 +149,10 @@ export function getCachedModules(deviceId: string): DeviceModule[] | null {
     return moduleCache.get(deviceId) ?? null;
 }
 
-export function setCachedModules(deviceId: string, modules: DeviceModule[]): void {
+export function setCachedModules(
+    deviceId: string,
+    modules: DeviceModule[],
+): void {
     moduleCache.set(deviceId, modules);
     notify();
 }
@@ -127,7 +163,10 @@ export function getCachedMapSlots(deviceId: string): DeviceMapSlot[] | null {
     return mapSlotCache.get(deviceId) ?? null;
 }
 
-export function setCachedMapSlots(deviceId: string, slots: DeviceMapSlot[]): void {
+export function setCachedMapSlots(
+    deviceId: string,
+    slots: DeviceMapSlot[],
+): void {
     mapSlotCache.set(deviceId, slots);
     notify();
 }
@@ -139,7 +178,10 @@ const MAP_SLOT_MAX = 43;
  * Read the device's data-map ordering (MAP_DATA GET), reusing the cache so the hardware is
  * queried once. Returns the cached slots on a hit. Pass force=true to refresh.
  */
-export async function fetchMapSlots(deviceId: string, force = false): Promise<DeviceMapSlot[] | null> {
+export async function fetchMapSlots(
+    deviceId: string,
+    force = false,
+): Promise<DeviceMapSlot[] | null> {
     if (!force) {
         const cached = mapSlotCache.get(deviceId);
         if (cached) return cached;
@@ -153,13 +195,17 @@ export async function fetchMapSlots(deviceId: string, force = false): Promise<De
             module: 'MAP_DATA',
             payload: { MAP_DATA: { cmd: 'GET' } },
         });
-        const json = (await resp.json()) as { success: boolean; data?: { MAP_DATA?: Record<string, unknown> } };
+        const json = (await resp.json()) as {
+            success: boolean;
+            data?: { MAP_DATA?: Record<string, unknown> };
+        };
         const inner = json.success ? json.data?.MAP_DATA : undefined;
         if (inner) {
             const slots: DeviceMapSlot[] = [];
             for (let slot = 1; slot <= MAP_SLOT_MAX; slot += 1) {
                 const name = inner[`s${slot}`];
-                if (typeof name === 'string' && name.trim() !== '') slots.push({ slot, name: name.trim() });
+                if (typeof name === 'string' && name.trim() !== '')
+                    slots.push({ slot, name: name.trim() });
             }
             setCachedMapSlots(deviceId, slots); // notifies subscribers
             return slots;
@@ -187,12 +233,21 @@ export async function fetchMapSlots(deviceId: string, force = false): Promise<De
 // no cross-tree subscribers to wake.
 const panelStateCache = new Map<string, unknown>();
 
-export function getCachedPanelState<T = unknown>(deviceId: string, panel: string): T | null {
+export function getCachedPanelState<T = unknown>(
+    deviceId: string,
+    panel: string,
+): T | null {
     if (!deviceId) return null;
-    return (panelStateCache.get(`${deviceId}::${panel}`) as T | undefined) ?? null;
+    return (
+        (panelStateCache.get(`${deviceId}::${panel}`) as T | undefined) ?? null
+    );
 }
 
-export function setCachedPanelState(deviceId: string, panel: string, state: unknown): void {
+export function setCachedPanelState(
+    deviceId: string,
+    panel: string,
+    state: unknown,
+): void {
     if (!deviceId) return;
     panelStateCache.set(`${deviceId}::${panel}`, state);
 }

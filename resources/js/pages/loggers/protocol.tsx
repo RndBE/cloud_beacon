@@ -103,6 +103,7 @@ type Payload = ProtocolCommandPayload;
 export type ProtocolTransportMode = 'mqtt' | 'serial';
 // Each GCM module binding: slave = Modbus RTU ID (0 = disabled), mode = 1 AWGC | 2 PUMP.
 type GcmModule = { slave: string; mode: string };
+type EwsOutMode = 'MODULE' | 'ONLINE' | 'BOTH';
 
 // Snapshots persisted to the device cache so the Mode tab's panels (which unmount on tab
 // switch) restore their last-synced values on remount instead of forcing a re-sync.
@@ -138,6 +139,9 @@ type ModuleSnapshot = {
     ewsSourceName: string;
     ewsRules: { min: string; max: string; level: string }[];
     ewsCh: string;
+    ewsOutMode: EwsOutMode;
+    ewsOutSupported: boolean;
+    ewsOutDirty: boolean;
 };
 
 export interface ProtocolLogger {
@@ -274,6 +278,36 @@ const EWS_CTRL_LEVELS: { value: number; label: string }[] = [
     { value: 7, label: 'ALERT 2 WITHOUT SIRINE' },
     { value: 8, label: 'ALERT 3 WITHOUT SIRINE' },
 ];
+
+function normalizeEwsOutMode(value: unknown): EwsOutMode {
+    return value === 'ONLINE' || value === 'BOTH' ? value : 'MODULE';
+}
+
+// ONLINE / BOTH output is only offered from this firmware onwards. Below it the EWS panel behaves
+// exactly as it did before the feature existed: the alert level goes to the physical RS232 module
+// and nowhere else.
+const EWS_OUT_MIN_FIRMWARE = [2, 1, 3];
+
+// Firmware strings arrive in a few shapes ("BL110-v2.1.3", "BL110 v2.1.3", "v2.1.3"), so pull the
+// first dotted number out rather than parsing the whole label. A missing patch part reads as 0.
+function parseFirmwareVersion(value: string | null): number[] | null {
+    const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(value ?? '');
+    return match
+        ? [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)]
+        : null;
+}
+
+// Unknown or unparseable version → treated as unsupported, so an unidentified logger falls back to
+// the old module-only behaviour instead of being offered an output mode it may not honour.
+function firmwareSupportsEwsOut(value: string | null): boolean {
+    const parsed = parseFirmwareVersion(value);
+    if (!parsed) return false;
+    for (let i = 0; i < EWS_OUT_MIN_FIRMWARE.length; i++) {
+        if (parsed[i] !== EWS_OUT_MIN_FIRMWARE[i])
+            return parsed[i] > EWS_OUT_MIN_FIRMWARE[i];
+    }
+    return true;
+}
 
 function inferBoardVariant(
     logger: ProtocolLogger,
@@ -1095,6 +1129,21 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const [ewsManualLevel, setEwsManualLevel] = useState('0');
         // RS232 channel the EWS module is wired to (1 or 2). Sent together with enable on SET.
         const [ewsCh, setEwsCh] = useState(moduleSnapshot?.ewsCh ?? '1');
+        const [ewsOutMode, setEwsOutMode] = useState<EwsOutMode>(
+            moduleSnapshot?.ewsOutMode ?? 'MODULE',
+        );
+        const [ewsOutSupported, setEwsOutSupported] = useState(
+            moduleSnapshot?.ewsOutSupported ?? false,
+        );
+        // True while `ewsOutMode` is an operator pick the device hasn't been told about yet.
+        // `out` is optional and persistent (§2): omitting it preserves whatever the device has
+        // stored, so a SET that isn't about output must leave it out entirely. Attaching it to
+        // every SET would let a stale form silently drag a device back to MODULE — e.g. the
+        // snapshot still says MODULE while someone moved the device to ONLINE over serial, and
+        // then merely flipping the enable toggle rewrites the output destination.
+        const [ewsOutDirty, setEwsOutDirty] = useState(
+            moduleSnapshot?.ewsOutDirty ?? false,
+        );
 
         const canSend =
             !readOnly &&
@@ -1105,6 +1154,17 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const isCellularBoard = variant === 'BL11';
         const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
         const gcmEnabled = numberValue(gcm.enable) === 1;
+        const gcmWarnEnabled = numberValue(gcmWarn.enable) === 1;
+        // Two independent signals must agree before the output selector appears: the firmware is
+        // at least v2.1.3, and the device itself reported `out` in its GET reply. Either one
+        // missing → the panel keeps the pre-feature module-only behaviour.
+        const ewsOutFirmwareOk = firmwareSupportsEwsOut(logger.firmwareVersion);
+        const ewsOutAvailable = ewsOutSupported && ewsOutFirmwareOk;
+        // The device reports an online output mode we're not allowed to drive from here — worth
+        // saying out loud, otherwise the hidden selector looks like the mode simply isn't set.
+        const ewsOutVersionMismatch =
+            ewsOutSupported && !ewsOutFirmwareOk && ewsOutMode !== 'MODULE';
+        const ewsUsesModule = !ewsOutAvailable || ewsOutMode !== 'ONLINE';
 
         // Only modules whose slave is bound (enabled) in the Binding Slave section are
         // selectable in Mapping Parameter / Pump Control / Gate Control.
@@ -1259,10 +1319,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             setMapStatus(null);
             setMapBusy('read');
 
-            Promise.all([
-                readMapSlots(deviceId),
-                readSensorNames(deviceId),
-            ])
+            Promise.all([readMapSlots(deviceId), readSensorNames(deviceId)])
                 .then(([slots, names]) => {
                     if (cancelled) return;
                     if (names) setDeviceSensors(names);
@@ -1357,9 +1414,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         nama,
                         nilai: Number.isFinite(nilai) ? nilai : null,
                         satuan:
-                            typeof item.satuan === 'string'
-                                ? item.satuan
-                                : '',
+                            typeof item.satuan === 'string' ? item.satuan : '',
                     },
                 ];
             });
@@ -1370,7 +1425,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         async function readSensorNames(
             deviceId: string,
             force = false,
-        ): Promise<{ nama: string; nilai: number | null; satuan: string }[] | null> {
+        ): Promise<
+            { nama: string; nilai: number | null; satuan: string }[] | null
+        > {
             if (transportMode !== 'serial') {
                 return fetchSensorNamesViaMqtt(deviceId, force);
             }
@@ -1467,11 +1524,18 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             );
         }
 
+        // Client-side validation failure — nothing was sent to the device.
+        //
+        // `responses` is only rendered for the modules that own a result panel (MODBUSTCP, FTP,
+        // POWER), so for EWS/GCM this state alone is invisible: the operator would click Apply and
+        // see literally nothing happen. Toast it as well, which is the channel this panel already
+        // uses for EWS/GCM feedback.
         function localError(key: string, message: string) {
             setResponses((current) => ({
                 ...current,
                 [key]: { success: false, message },
             }));
+            pushToast({ title: key, description: message, variant: 'error' });
         }
 
         // Entering a tab auto-pulls its current state from the device — but only when NOT in
@@ -2037,6 +2101,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                       EWS?: {
                                           enable?: number;
                                           mode?: string;
+                                          out?: unknown;
                                           source?: string;
                                           ch?: number;
                                           rules?: {
@@ -2050,6 +2115,15 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         )?.EWS;
                         if (e.success && inner) {
                             setEwsEnable(Number(inner.enable) === 1);
+                            setEwsOutSupported(
+                                Object.prototype.hasOwnProperty.call(
+                                    inner,
+                                    'out',
+                                ),
+                            );
+                            setEwsOutMode(normalizeEwsOutMode(inner.out));
+                            // Just read the device's own value, so nothing is pending anymore.
+                            setEwsOutDirty(false);
                             if (
                                 inner.mode === 'AUTO' ||
                                 inner.mode === 'MANUAL'
@@ -2094,8 +2168,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         // state; the tabs panel (Module card) pulls EWS + GCM.
         useImperativeHandle(ref, () => ({
             sync: () => {
-                if (!canSend || loading === 'GCM' || mapBusy !== null)
-                    return;
+                if (!canSend || loading === 'GCM' || mapBusy !== null) return;
                 if (ioRow) void loadIo();
                 else void loadModule();
             },
@@ -2142,6 +2215,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 ewsSourceName,
                 ewsRules,
                 ewsCh,
+                ewsOutMode,
+                ewsOutSupported,
+                ewsOutDirty,
             } satisfies ModuleSnapshot);
         }, [
             isModulePanel,
@@ -2154,6 +2230,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             ewsSourceName,
             ewsRules,
             ewsCh,
+            ewsOutMode,
+            ewsOutSupported,
+            ewsOutDirty,
         ]);
 
         // Map GET response m:[[reg, name], …] → rows. Empty name → '-' (the UI's empty sentinel).
@@ -2554,9 +2633,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             : 'Request gagal.',
                 });
             } finally {
-                setMapBusy((current) =>
-                    current === 'write' ? null : current,
-                );
+                setMapBusy((current) => (current === 'write' ? null : current));
             }
         }
 
@@ -2635,9 +2712,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             : 'Request gagal.',
                 });
             } finally {
-                setMapBusy((current) =>
-                    current === 'clear' ? null : current,
-                );
+                setMapBusy((current) => (current === 'clear' ? null : current));
             }
         }
 
@@ -2759,6 +2834,26 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         error: `Rule #${i + 1}: level harus integer 0–8.`,
                     };
                 }
+                // Rules are evaluated `min <= nilai < max`, and a value landing between two rules
+                // triggers nothing at all — no level change, no event, no error. That failure is
+                // invisible in the field, so require the boundaries to meet exactly: the previous
+                // rule's max must be the next rule's min. Equality also rules out overlap, where
+                // which rule wins would be anyone's guess.
+                const previous = i > 0 ? Number(ewsRules[i - 1].max) : null;
+                if (previous !== null && Number.isFinite(previous)) {
+                    if (min > previous) {
+                        return {
+                            ok: false,
+                            error: `Rule #${i + 1}: min (${min}) harus sama dengan max rule #${i} (${previous}). Nilai di celah ${previous}–${min} tidak akan memicu apa pun.`,
+                        };
+                    }
+                    if (min < previous) {
+                        return {
+                            ok: false,
+                            error: `Rule #${i + 1}: min (${min}) menumpuk dengan rule #${i} yang berakhir di ${previous}. Set min = ${previous}.`,
+                        };
+                    }
+                }
                 out.push({ min, max, level });
             }
             return { ok: true, value: out };
@@ -2766,12 +2861,82 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
 
         // Enable/disable toggle (the slider). Optimistically reflects the new state, then sends SET.
         // Enabling claims the chosen RS232 channel, so `ch` rides along on enable=1.
+        // Attach `out` only when there's an unapplied pick to deliver — otherwise the device keeps
+        // its stored destination, which is what §2 guarantees for an omitted `out`.
+        function withEwsOut(payload: Payload): Payload {
+            return ewsOutAvailable && ewsOutDirty
+                ? { ...payload, out: ewsOutMode }
+                : payload;
+        }
+
+        // Send an EWS command, clearing the pending-pick flag once the device has confirmed a SET
+        // that actually carried `out`.
+        function sendEws(payload: Payload) {
+            const carriesOut = 'out' in payload;
+            void send('EWS', { EWS: payload }, 'EWS').then((result) => {
+                if (carriesOut && result?.success) setEwsOutDirty(false);
+            });
+        }
+
         function toggleEwsEnable(next: boolean) {
             setEwsEnable(next);
             const payload: Payload = next
-                ? { cmd: 'SET', enable: 1, ch: numberValue(ewsCh) }
+                ? withEwsOut({
+                      cmd: 'SET',
+                      enable: 1,
+                      ...(ewsUsesModule ? { ch: numberValue(ewsCh) } : {}),
+                  })
                 : { cmd: 'SET', enable: 0 };
-            send('EWS', { EWS: payload }, 'EWS');
+            sendEws(payload);
+        }
+
+        // Output destination (MODULE / ONLINE / BOTH). Persistent on the device, so when EWS is
+        // already enabled the pick is applied right away.
+        //
+        // Moving INTO a mode that drives the module goes out as a full `enable=1` + `ch` SET
+        // instead of a bare `out`: only the enable path makes the firmware re-check that the
+        // RS232 channel isn't claimed by a sensor and that `ch` exists on this board. A bare
+        // `out:"MODULE"` would silently reuse whatever `ch` was stored while output was ONLINE —
+        // on BL110/BL11 that can be a `ch=2` the board doesn't have, and then every CTRL comes
+        // back a bare ERR.
+        async function setEwsOutputMode(mode: EwsOutMode) {
+            if (mode === 'ONLINE' && gcmWarnEnabled) {
+                localError(
+                    'EWS',
+                    'Matikan EWS Pre-Warning dulu sebelum pilih output ONLINE.',
+                );
+                return;
+            }
+            const previous = ewsOutMode;
+            const previousDirty = ewsOutDirty;
+            setEwsOutMode(mode);
+            setEwsOutDirty(true);
+            // EWS still off: remember the pick and let the enable=1 SET carry it.
+            if (!ewsEnable) return;
+            const result = await send(
+                'EWS',
+                {
+                    EWS:
+                        mode === 'ONLINE'
+                            ? { cmd: 'SET', out: mode }
+                            : {
+                                  cmd: 'SET',
+                                  enable: 1,
+                                  ch: numberValue(ewsCh),
+                                  out: mode,
+                              },
+                },
+                'EWS',
+            );
+            // The device has the last word. It rejects ONLINE while any GCM_GATE_WARN slot is
+            // active, and the guard above only sees the slot currently loaded in the form — so a
+            // reject must not leave the dropdown showing a mode the device never stored.
+            if (result?.success) {
+                setEwsOutDirty(false);
+            } else {
+                setEwsOutMode(previous);
+                setEwsOutDirty(previousDirty);
+            }
         }
 
         // Change the RS232 channel. If EWS is already enabled, re-apply immediately so the module
@@ -2779,10 +2944,12 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         function setEwsChannel(ch: string) {
             setEwsCh(ch);
             if (ewsEnable) {
-                send(
-                    'EWS',
-                    { EWS: { cmd: 'SET', enable: 1, ch: numberValue(ch) } },
-                    'EWS',
+                sendEws(
+                    withEwsOut({
+                        cmd: 'SET',
+                        enable: 1,
+                        ch: numberValue(ch),
+                    }),
                 );
             }
         }
@@ -2802,17 +2969,13 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 localError('EWS', rules.error);
                 return;
             }
-            send(
-                'EWS',
-                {
-                    EWS: {
-                        cmd: 'SET',
-                        mode: 'AUTO',
-                        source: ewsSourceName,
-                        rules: rules.value,
-                    },
-                },
-                'EWS',
+            sendEws(
+                withEwsOut({
+                    cmd: 'SET',
+                    mode: 'AUTO',
+                    source: ewsSourceName,
+                    rules: rules.value,
+                }),
             );
         }
 
@@ -3073,10 +3236,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         // tab and the Mode tab's 3-across `ioRow` layout.
         const ioCards = (
             <>
-                <CommandCard
-                    title="Power Output"
-                    icon={Zap}
-                >
+                <CommandCard title="Power Output" icon={Zap}>
                     <div className="grid gap-3 sm:grid-cols-2">
                         <div className="flex items-end gap-2">
                             <div className="flex-1">
@@ -3154,10 +3314,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     </div>
                 </CommandCard>
 
-                <CommandCard
-                    title="Sensor Door"
-                    icon={DoorOpen}
-                >
+                <CommandCard title="Sensor Door" icon={DoorOpen}>
                     <div className="flex items-end gap-2">
                         <div className="flex-1">
                             <Field label="Close State">
@@ -4072,7 +4229,49 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         />
                                     </button>
                                 </div>
-                                {ewsEnable && (
+                                {ewsEnable && ewsOutVersionMismatch && (
+                                    <p className="text-xs text-amber-600">
+                                        Device melaporkan output{' '}
+                                        <span className="font-medium">
+                                            {ewsOutMode}
+                                        </span>
+                                        , tetapi firmware{' '}
+                                        {logger.firmwareVersion ??
+                                            'tidak diketahui'}{' '}
+                                        di bawah v2.1.3 — pilihan output tidak
+                                        ditampilkan. Update firmware untuk
+                                        mengubahnya dari sini.
+                                    </p>
+                                )}
+                                {ewsEnable && ewsOutAvailable && (
+                                    <Field label="Output">
+                                        <select
+                                            className={`${selectClass} w-full`}
+                                            value={ewsOutMode}
+                                            disabled={
+                                                !canSend || loading === 'EWS'
+                                            }
+                                            onChange={(event) =>
+                                                void setEwsOutputMode(
+                                                    event.target
+                                                        .value as EwsOutMode,
+                                                )
+                                            }
+                                        >
+                                            <option value="MODULE">
+                                                MODULE
+                                            </option>
+                                            <option
+                                                value="ONLINE"
+                                                disabled={gcmWarnEnabled}
+                                            >
+                                                ONLINE
+                                            </option>
+                                            <option value="BOTH">BOTH</option>
+                                        </select>
+                                    </Field>
+                                )}
+                                {ewsEnable && ewsUsesModule && (
                                     <Field label="RS232 Channel">
                                         <select
                                             className={`${selectClass} w-full`}
@@ -4087,7 +4286,12 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                             }
                                         >
                                             <option value="1">Channel 1</option>
-                                            <option value="2">Channel 2</option>
+                                            <option
+                                                value="2"
+                                                disabled={variant !== 'BL1100'}
+                                            >
+                                                Channel 2
+                                            </option>
                                         </select>
                                     </Field>
                                 )}

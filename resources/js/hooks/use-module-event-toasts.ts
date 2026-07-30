@@ -9,14 +9,22 @@ export function useModuleEventToasts(deviceId: string | null | undefined) {
     useEffect(() => {
         if (!deviceId) return;
 
-        const es = new EventSource(`/api/mqtt/modules/stream?id_logger=${encodeURIComponent(deviceId)}`);
+        const es = new EventSource(
+            `/api/mqtt/modules/stream?id_logger=${encodeURIComponent(deviceId)}`,
+        );
 
         es.addEventListener('status', (event) => {
             try {
-                const msg = JSON.parse((event as MessageEvent).data) as { module?: unknown } & Record<string, unknown>;
+                const msg = JSON.parse((event as MessageEvent).data) as {
+                    module?: unknown;
+                } & Record<string, unknown>;
                 if (typeof msg?.module !== 'string') return;
                 // notifyModuleResponse formats EWS/GCM into a clean message and ignores everything else.
-                notifyModuleResponse(msg.module, true, msg);
+                // Device-initiated, so the wide repeat window applies (firmware retries a failed
+                // EWS level every ~5s and would otherwise toast forever).
+                notifyModuleResponse(msg.module, true, msg, {
+                    spontaneous: true,
+                });
             } catch {
                 /* ignore a malformed frame */
             }
