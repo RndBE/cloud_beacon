@@ -45,13 +45,13 @@ test('output is picked icon-only, beside the toggle, and locks once EWS is on', 
     // across lines without changing a thing about the behaviour.
     const flat = source.replace(/\s+/g, ' ');
 
-    // Icon-only buttons: BellRing = the physical RS232 sirine sounding, SatelliteDish = the alarm
-    // leaving over the network, and BOTH renders both icons so it reads as "keduanya" rather than
-    // having to be memorised.
+    // Icon-only buttons: AudioLines = sound leaving the RS232 sirine, Network = the alarm leaving
+    // over MQTT, and BOTH renders both icons so it reads as "keduanya" rather than having to be
+    // memorised. Both hold their silhouette at 14px, which denser icons do not.
     assert.match(flat, /const EWS_OUT_OPTIONS/);
-    assert.match(flat, /icons: \[BellRing\],/);
-    assert.match(flat, /icons: \[SatelliteDish\],/);
-    assert.match(flat, /icons: \[BellRing, SatelliteDish\],/);
+    assert.match(flat, /icons: \[AudioLines\],/);
+    assert.match(flat, /icons: \[Network\],/);
+    assert.match(flat, /icons: \[AudioLines, Network\],/);
 
     // No text labels left over from the old <select>.
     assert.doesNotMatch(flat, /<option value="MODULE">/);
@@ -68,6 +68,11 @@ test('output is picked icon-only, beside the toggle, and locks once EWS is on', 
     }
     assert.match(flat, /aria-label=\{ hint \}|aria-label=\{hint\}/);
     assert.match(flat, /role="radiogroup"/);
+
+    // All three buttons share one fixed width. BOTH renders two icons, so width driven by padding
+    // would make it wider than its neighbours and read as though it were already selected.
+    assert.match(flat, /flex h-7 w-11 items-center justify-center gap-0\.5/);
+    assert.doesNotMatch(flat, /flex h-7 items-center gap-0\.5 px-2/);
 
     // Locked while EWS is enabled — and ONLINE stays locked while a GCM_GATE_WARN slot is active.
     assert.match(
@@ -120,6 +125,35 @@ test('the enable toggle waits for the device instead of flipping optimistically'
     // The pending state is visible, explains the 15s module round-trip, and is exposed to AT.
     assert.match(flat, /aria-busy=\{ ewsEnablePending !== null \}/);
     assert.match(flat, /balasan bisa sampai 15 detik/);
+});
+
+test('the enable switch shows "unknown" until a GET has been read back', () => {
+    const source = readFileSync(protocolPath, 'utf8');
+    const flat = source.replace(/\s+/g, ' ');
+
+    // The switch reports whether a physical sirine is armed. Defaulting to false would state that
+    // as fact before the logger was ever asked — and a technician acting on it would be acting on
+    // a guess. Only a GET (or a confirmed SET) may put it into a definite position.
+    assert.match(
+        flat,
+        /const \[ewsEnable, setEwsEnable\] = useState<boolean \| null>\( moduleSnapshot\?\.ewsEnable \?\? null, \)/,
+    );
+    assert.match(flat, /ewsEnable: boolean \| null;/);
+
+    // A third visual state, not a silent "off": dashed empty track, knob parked centre.
+    assert.match(flat, /ewsEnable === null \? 'border border-dashed/);
+    assert.match(flat, /Status EWS belum dibaca dari logger/);
+
+    // aria-checked is a two-state attribute on role="switch", so unknown is carried by a
+    // description instead of a bogus third value.
+    assert.match(flat, /aria-checked=\{ewsEnable === true\}/);
+    assert.match(
+        flat,
+        /aria-describedby=\{ ewsEnable === null \? 'ews-enable-unknown' : undefined \}/,
+    );
+
+    // Pressing while unknown enables — never accidentally disables a running EWS.
+    assert.match(flat, /toggleEwsEnable\( ewsEnable !== true, \)/);
 });
 
 test('the topology EWS card reports the output destination', () => {

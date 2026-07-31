@@ -1,8 +1,8 @@
 import { Head, Link } from '@inertiajs/react';
 import {
     ArrowLeft,
+    AudioLines,
     Bell,
-    BellRing,
     Check,
     CheckCircle2,
     Circle,
@@ -17,7 +17,6 @@ import {
     Plus,
     Power,
     RefreshCw,
-    SatelliteDish,
     Send,
     Server,
     Siren,
@@ -136,7 +135,8 @@ type ModuleSnapshot = {
     };
     gcmMapRows: { reg: string; name: string }[];
     gcmMapId: string;
-    ewsEnable: boolean;
+    // null = never read back from the device (see the state declaration below).
+    ewsEnable: boolean | null;
     ewsMode: 'MANUAL' | 'AUTO';
     ewsSourceName: string;
     ewsRules: { min: string; max: string; level: string }[];
@@ -284,29 +284,30 @@ function normalizeEwsOutMode(value: unknown): EwsOutMode {
     return value === 'ONLINE' || value === 'BOTH' ? value : 'MODULE';
 }
 
-// Output destination picker, rendered icon-only next to the enable toggle. BellRing carries motion
-// lines, so it reads as a sirine actually sounding rather than a bell sitting idle; the dish is the
-// alarm leaving over the network. BOTH shows both icons, so "keduanya aktif" is readable without
-// being memorised. Icon-only leaves no room for a label, so every button repeats its meaning in
-// `title` + `aria-label`: that is the only place the picture is explained.
+// Output destination picker, rendered icon-only next to the enable toggle. AudioLines = sound
+// leaving the sirine on RS232, Network = the alarm leaving over MQTT. Both are built from strokes
+// of similar weight, so neither dominates when they sit side by side in the BOTH button — and both
+// keep their silhouette at 14px, where denser icons turn to mush. Icon-only leaves no room for a
+// label, so every button repeats its meaning in `title` + `aria-label`: that is the only place the
+// picture is explained.
 const EWS_OUT_OPTIONS: {
     value: EwsOutMode;
-    icons: (typeof BellRing)[];
+    icons: (typeof AudioLines)[];
     hint: string;
 }[] = [
     {
         value: 'MODULE',
-        icons: [BellRing],
+        icons: [AudioLines],
         hint: 'MODULE — level siaga hanya ke modul sirine RS232',
     },
     {
         value: 'ONLINE',
-        icons: [SatelliteDish],
+        icons: [Network],
         hint: 'ONLINE — level siaga hanya ke MQTT, tidak ada sirine di lapangan',
     },
     {
         value: 'BOTH',
-        icons: [BellRing, SatelliteDish],
+        icons: [AudioLines, Network],
         hint: 'BOTH — level siaga ke modul sirine RS232 dan MQTT',
     },
 ];
@@ -1136,8 +1137,15 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         >(null);
 
         type EwsRuleRow = { min: string; max: string; level: string };
-        const [ewsEnable, setEwsEnable] = useState(
-            moduleSnapshot?.ewsEnable ?? false,
+        // null until a GET has actually been read back — deliberately NOT false.
+        //
+        // This switch reports whether a physical sirine is armed in the field. Defaulting it to
+        // "off" would state that as fact before the logger was ever asked, and a technician
+        // reading "off" on an EWS that is really running (or pressing the switch to "turn it on"
+        // and thereby turning it off) is a failure with consequences outdoors. Unknown is shown
+        // as unknown until the device says otherwise.
+        const [ewsEnable, setEwsEnable] = useState<boolean | null>(
+            moduleSnapshot?.ewsEnable ?? null,
         );
         // Target state of an enable/disable SET still awaiting the device's verdict (null = idle).
         // Kept separate from `loading` because that flag covers every EWS command, and only the
@@ -4260,7 +4268,10 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                                                         value,
                                                                     )
                                                                 }
-                                                                className={`flex h-7 items-center gap-0.5 px-2 transition-colors disabled:cursor-not-allowed ${
+                                                                // w-11, not padding: BOTH's two
+                                                                // icons would otherwise make it
+                                                                // the widest button in the group.
+                                                                className={`flex h-7 w-11 items-center justify-center gap-0.5 transition-colors disabled:cursor-not-allowed ${
                                                                     active
                                                                         ? 'bg-primary text-primary-foreground disabled:opacity-40'
                                                                         : 'text-muted-foreground hover:bg-muted disabled:opacity-30'
@@ -4288,26 +4299,38 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         <button
                                             type="button"
                                             role="switch"
-                                            aria-checked={ewsEnable}
+                                            aria-checked={ewsEnable === true}
                                             aria-label="Enable EWS"
                                             aria-busy={
                                                 ewsEnablePending !== null
+                                            }
+                                            aria-describedby={
+                                                ewsEnable === null
+                                                    ? 'ews-enable-unknown'
+                                                    : undefined
                                             }
                                             disabled={
                                                 !canSend || loading === 'EWS'
                                             }
                                             onClick={() =>
-                                                toggleEwsEnable(!ewsEnable)
+                                                toggleEwsEnable(
+                                                    ewsEnable !== true,
+                                                )
                                             }
-                                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${ewsEnable ? 'bg-emerald-500' : 'bg-input'}`}
+                                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${ewsEnable === true ? 'bg-emerald-500' : ewsEnable === null ? 'border border-dashed border-muted-foreground/50 bg-transparent' : 'bg-input'}`}
                                         >
                                             {/* The knob becomes the spinner while the device is
                                                 deciding — the click is visibly acknowledged without
                                                 the switch claiming a state it hasn't got yet. */}
                                             {ewsEnablePending !== null ? (
                                                 <Loader2
-                                                    className={`size-3.5 animate-spin transition-transform ${ewsEnable ? 'translate-x-4.5 text-white' : 'translate-x-1 text-muted-foreground'}`}
+                                                    className={`size-3.5 animate-spin transition-transform ${ewsEnable === true ? 'translate-x-4.5 text-white' : 'translate-x-1 text-muted-foreground'}`}
                                                 />
+                                            ) : ewsEnable === null ? (
+                                                // Unknown: an empty dashed track with the knob
+                                                // parked in the middle, so it can't be mistaken for
+                                                // either position.
+                                                <span className="inline-block size-3 translate-x-3 rounded-full bg-muted-foreground/40" />
                                             ) : (
                                                 <span
                                                     className={`inline-block size-4 transform rounded-full bg-white shadow transition-transform ${ewsEnable ? 'translate-x-4' : 'translate-x-0.5'}`}
@@ -4316,6 +4339,21 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         </button>
                                     </div>
                                 </div>
+                                {/* The switch says whether a sirine is armed in the field. Until a
+                                    GET has been read back we don't know, and saying nothing is
+                                    safer than showing "off" as though it were a fact. */}
+                                {ewsEnable === null &&
+                                    ewsEnablePending === null && (
+                                        <p
+                                            id="ews-enable-unknown"
+                                            className="text-xs text-muted-foreground"
+                                        >
+                                            Status EWS belum dibaca dari logger.
+                                            Tekan Sync untuk melihat kondisi
+                                            sebenarnya — menekan toggle sekarang
+                                            akan mengaktifkan EWS.
+                                        </p>
+                                    )}
                                 {/* Why the wait: with out MODULE/BOTH the firmware talks to the
                                     module before answering, so say so rather than leaving the
                                     operator watching a silent spinner for 15 seconds. */}
