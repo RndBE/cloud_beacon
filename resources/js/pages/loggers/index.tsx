@@ -19,6 +19,7 @@ import {
     Signal,
     Thermometer,
     Trash2,
+    Usb,
     Wifi,
     WifiOff,
     X,
@@ -61,6 +62,11 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import {
+    describeSerialError,
+    isWebSerialSupported,
+    useLoggerSerial,
+} from '@/hooks/use-logger-serial';
 import AppLayout from '@/layouts/app-layout';
 import { postJson } from '@/lib/csrf-fetch';
 import {
@@ -151,12 +157,24 @@ const PROVISION_STEPS: ProvisionStep[] = [
     { id: 'sensors', label: 'Fetching Sensor Data', description: 'Discovering sensor channels…', icon: Thermometer, durationMs: 2200 },
 ];
 
+// Jalur LEO: tidak ada MQTT, semua dibaca lewat kabel USB. Ketiga langkah ini
+// nyata (tanpa timer palsu) — satu `INFO GET` sudah membawa seluruh field yang
+// dibutuhkan wizard, jadi tidak perlu dipecah seperti jalur MQTT.
+const SERIAL_PROVISION_STEPS: ProvisionStep[] = [
+    { id: 'port', label: 'Opening USB Port', description: 'Membuka port serial…', icon: Usb, durationMs: 0 },
+    { id: 'info', label: 'Reading Device INFO', description: 'Membaca INFO dari logger…', icon: Cable, durationMs: 0 },
+    { id: 'verify', label: 'Verifying Device', description: 'Mencocokkan serial number…', icon: Settings, durationMs: 0 },
+];
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Production device info
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 interface ProductionDeviceInfo {
     serialNumber: string;
     deviceId: string | null;
+    // 'serial' untuk seri LEO (USB / Web Serial), 'mqtt' untuk sisanya.
+    // Backend yang memutuskan — lihat ProductionController::transportFor().
+    transport: 'mqtt' | 'serial';
     model: string | null;
     hardwareVersion: string | null;
     batchNumber: string | null;
@@ -166,7 +184,7 @@ interface ProductionDeviceInfo {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Add Logger Wizard
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-type WizardPhase = 'form' | 'provisioning' | 'success' | 'error';
+type WizardPhase = 'form' | 'usb-connect' | 'provisioning' | 'success' | 'error';
 
 function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOpenChange: (v: boolean) => void; projects: ProjectOption[] }) {
     const { t } = useTranslation();
@@ -181,6 +199,14 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
     const [serialError, setSerialError] = useState<string | null>(null);
     const [prodDevice, setProdDevice] = useState<ProductionDeviceInfo | null>(null);
 
+    // Jalur USB (seri LEO)
+    const { connect: connectSerial, disconnect: disconnectSerial, sendCommand } = useLoggerSerial();
+    const [usbConnecting, setUsbConnecting] = useState(false);
+    const [usbError, setUsbError] = useState<string | null>(null);
+
+    const isSerialTransport = prodDevice?.transport === 'serial';
+    const activeSteps = isSerialTransport ? SERIAL_PROVISION_STEPS : PROVISION_STEPS;
+
     // MQTT data received from provisioning
     const [mqttData, setMqttData] = useState<Record<string, string | number | null> | null>(null);
 
@@ -194,6 +220,9 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
     // Reset on close
     useEffect(() => {
         if (!open) {
+            // Lepaskan port USB begitu wizard ditutup — kalau tidak, percobaan
+            // berikutnya kena "already open" dan operator harus reload halaman.
+            void disconnectSerial();
             setTimeout(() => {
                 setPhase('form');
                 setStepStatuses(PROVISION_STEPS.map(() => 'idle'));
@@ -203,11 +232,15 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                 setProdDevice(null);
                 setMqttData(null);
                 setErrorMessage('');
+                setUsbConnecting(false);
+                setUsbError(null);
                 cancelled.current = false;
                 form.reset();
             }, 200);
         }
-    }, [open]);
+        // disconnectSerial stabil (useCallback tanpa dep), jadi mencantumkannya
+        // tidak membuat effect ini ikut jalan di luar perubahan `open`.
+    }, [open, disconnectSerial]);
 
     // Animate a fake progress bar for a given duration
     function animateProgress(durationMs: number): Promise<void> {
@@ -307,6 +340,109 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
         }
     }, []);
 
+    // Jalur LEO — port USB sudah terbuka saat fungsi ini dipanggil.
+    // Satu `INFO GET` membawa semua field; parsing index→field dilakukan server
+    // (/api/serial/info/parse) supaya pemetaannya tidak terduplikasi di sini.
+    const runSerialProvisioning = useCallback(async (expectedSerial: string) => {
+        cancelled.current = false;
+        setStepStatuses(SERIAL_PROVISION_STEPS.map(() => 'idle'));
+
+        const fail = (message: string, stepIndex: number) => {
+            setStepStatuses(prev => { const n = [...prev]; n[stepIndex] = 'error'; return n; });
+            setStepProgress(100);
+            setErrorMessage(message);
+            setPhase('error');
+        };
+
+        // Step 0 — port sudah dibuka di phase 'usb-connect'.
+        setStepStatuses(prev => { const n = [...prev]; n[0] = 'done'; return n; });
+
+        // Step 1 — baca INFO.
+        setStepStatuses(prev => { const n = [...prev]; n[1] = 'running'; return n; });
+        setStepProgress(40);
+
+        let info: unknown;
+        try {
+            const response = await sendCommand({ INFO: { cmd: 'GET' } }, 'INFO');
+            info = response.INFO;
+        } catch (error) {
+            if (cancelled.current) return;
+            fail(describeSerialError(error, 'Gagal membaca INFO dari logger.'), 1);
+            return;
+        }
+        if (cancelled.current) return;
+
+        if (!Array.isArray(info)) {
+            fail('Respons INFO dari logger tidak dikenali.', 1);
+            return;
+        }
+
+        setStepStatuses(prev => { const n = [...prev]; n[1] = 'done'; return n; });
+        setStepProgress(100);
+
+        // Step 2 — cocokkan serial number, lalu parse di server.
+        setStepStatuses(prev => { const n = [...prev]; n[2] = 'running'; return n; });
+        setStepProgress(50);
+
+        // Operator memilih port USB secara manual, jadi tidak ada jaminan port
+        // itu perangkat yang serial number-nya baru saja diketik. Tanpa cek ini
+        // wizard bisa mendaftarkan logger dengan data milik unit lain.
+        const reportedSerial = typeof info[0] === 'string' ? info[0].trim() : '';
+        if (reportedSerial && reportedSerial.toUpperCase() !== expectedSerial.trim().toUpperCase()) {
+            fail(
+                `Perangkat yang terhubung punya serial number ${reportedSerial}, ` +
+                `bukan ${expectedSerial}. Pastikan Anda memilih port USB yang benar.`,
+                2,
+            );
+            return;
+        }
+
+        try {
+            const res = await postJson('/api/serial/info/parse', { info });
+            const data = await res.json();
+            if (cancelled.current) return;
+
+            if (!data.success) {
+                fail(data.message || 'Gagal memproses data INFO.', 2);
+                return;
+            }
+
+            setMqttData(data.data || null);
+            setStepStatuses(prev => { const n = [...prev]; n[2] = 'done'; return n; });
+            setStepProgress(100);
+            setPhase('success');
+        } catch {
+            if (cancelled.current) return;
+            fail(t('loggers.connection_failed_retry'), 2);
+        }
+    }, [sendCommand, t]);
+
+    // Buka port USB, lalu lanjut ke provisioning. Dipanggil dari klik tombol
+    // supaya requestPort() punya user activation yang masih segar — Chrome
+    // menolaknya kalau dipanggil setelah await panjang (mis. /api/check-serial).
+    async function handleUsbConnect() {
+        if (!prodDevice) return;
+
+        setUsbConnecting(true);
+        setUsbError(null);
+        try {
+            const opened = await connectSerial();
+            if (!opened) {
+                // Operator menutup dialog pemilih port — batal, bukan gagal.
+                setUsbConnecting(false);
+                return;
+            }
+        } catch (error) {
+            setUsbError(error instanceof Error ? error.message : describeSerialError(error));
+            setUsbConnecting(false);
+            return;
+        }
+
+        setUsbConnecting(false);
+        setPhase('provisioning');
+        void runSerialProvisioning(prodDevice.serialNumber);
+    }
+
     // Check serial → start provisioning
     async function handleFormSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -343,6 +479,16 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
 
             setProdDevice(data.device);
             setSerialChecking(false);
+
+            // Seri LEO tidak punya jalur MQTT — antar operator ke langkah pilih
+            // port USB dulu, jangan langsung ke progress bar.
+            if (data.device.transport === 'serial') {
+                setStepStatuses(SERIAL_PROVISION_STEPS.map(() => 'idle'));
+                setPhase('usb-connect');
+                return;
+            }
+
+            setStepStatuses(PROVISION_STEPS.map(() => 'idle'));
             setPhase('provisioning');
             runProvisioning(data.device.deviceId);
         } catch {
@@ -370,18 +516,30 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
     }
 
     function handleRetry() {
-        setPhase('provisioning');
-        setStepStatuses(PROVISION_STEPS.map(() => 'idle'));
         setStepProgress(0);
         setErrorMessage('');
         setMqttData(null);
+
+        // Jalur USB: port bisa saja sudah lepas (kabel dicabut, perangkat
+        // reboot), jadi mundur ke pemilihan port alih-alih langsung mengulang
+        // pembacaan pada handle yang mungkin sudah mati.
+        if (isSerialTransport) {
+            void disconnectSerial();
+            setStepStatuses(SERIAL_PROVISION_STEPS.map(() => 'idle'));
+            setUsbError(null);
+            setPhase('usb-connect');
+            return;
+        }
+
+        setPhase('provisioning');
+        setStepStatuses(PROVISION_STEPS.map(() => 'idle'));
         if (prodDevice?.deviceId) runProvisioning(prodDevice.deviceId);
     }
 
     const overallProgress = (() => {
         const doneSteps = stepStatuses.filter(s => s === 'done').length;
         if (phase === 'success') return 100;
-        return ((doneSteps / PROVISION_STEPS.length) * 100) + (stepProgress / PROVISION_STEPS.length);
+        return ((doneSteps / activeSteps.length) * 100) + (stepProgress / activeSteps.length);
     })();
 
     return (
@@ -459,6 +617,59 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                     </>
                 )}
 
+                {/* ─── USB CONNECT (seri LEO) ─── */}
+                {phase === 'usb-connect' && (
+                    <>
+                        <DialogHeader>
+                            <DialogTitle>{t('loggers.usb_connect_title')}</DialogTitle>
+                            <DialogDescription>{t('loggers.usb_connect_description')}</DialogDescription>
+                        </DialogHeader>
+                        <div className="py-2">
+                            {prodDevice && (
+                                <div className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+                                    <p className="mb-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">{t('loggers.production_device_found')}</p>
+                                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                                        <span className="text-muted-foreground">{t('loggers.model')}</span>
+                                        <span className="font-medium">{prodDevice.model || '—'}</span>
+                                        <span className="text-muted-foreground">{t('loggers.serial_number')}</span>
+                                        <span className="font-mono">{prodDevice.serialNumber}</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {!isWebSerialSupported() ? (
+                                <div className="flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 p-3">
+                                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                                    <p className="text-xs text-amber-600 dark:text-amber-400">{t('loggers.usb_not_supported')}</p>
+                                </div>
+                            ) : (
+                                <ol className="space-y-2 text-xs text-muted-foreground">
+                                    <li className="flex gap-2"><span className="font-mono text-foreground">1.</span>{t('loggers.usb_step_cable')}</li>
+                                    <li className="flex gap-2"><span className="font-mono text-foreground">2.</span>{t('loggers.usb_step_power')}</li>
+                                    <li className="flex gap-2"><span className="font-mono text-foreground">3.</span>{t('loggers.usb_step_pick')}</li>
+                                </ol>
+                            )}
+
+                            {usbError && (
+                                <div className="mt-4 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 p-3">
+                                    <XCircle className="mt-0.5 size-4 shrink-0 text-red-500" />
+                                    <p className="text-xs text-red-600 dark:text-red-400">{usbError}</p>
+                                </div>
+                            )}
+                        </div>
+                        <DialogFooter>
+                            <Button variant="outline" onClick={handleCancel}>{t('common.cancel')}</Button>
+                            <Button onClick={handleUsbConnect} disabled={usbConnecting || !isWebSerialSupported()} className="gap-1.5">
+                                {usbConnecting ? (
+                                    <><Loader2 className="size-4 animate-spin" /> {t('loggers.usb_connecting')}</>
+                                ) : (
+                                    <><Usb className="size-4" /> {t('loggers.usb_select_port')}</>
+                                )}
+                            </Button>
+                        </DialogFooter>
+                    </>
+                )}
+
                 {/* ─── PROVISIONING ─── */}
                 {phase === 'provisioning' && (
                     <>
@@ -490,7 +701,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                                 <Progress value={overallProgress} className="h-2 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-200" />
                             </div>
                             <div className="space-y-1">
-                                {PROVISION_STEPS.map((step, i) => {
+                                {activeSteps.map((step, i) => {
                                     const status = stepStatuses[i];
                                     const StepIcon = step.icon;
                                     const isActive = status === 'running';
@@ -516,7 +727,9 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                                                 {isActive && (
                                                     <>
                                                         <p className="mt-0.5 text-xs text-muted-foreground animate-in fade-in slide-in-from-left-2 duration-200">
-                                                            {i === 0 ? `Menghubungkan ke ${prodDevice?.deviceId ?? '...'}…` : step.description}
+                                                            {i === 0 && !isSerialTransport
+                                                                ? `Menghubungkan ke ${prodDevice?.deviceId ?? '...'}…`
+                                                                : step.description}
                                                         </p>
                                                         <div className="mt-2">
                                                             <Progress value={stepProgress} className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100" />
@@ -594,10 +807,10 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                                 </div>
                             )}
                             <div className="flex flex-wrap justify-center gap-2 px-4">
-                                {PROVISION_STEPS.map((step) => (
+                                {activeSteps.map((step) => (
                                     <div key={step.id} className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/5 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
                                         <Check className="size-3" />
-                                        {step.label.replace('Connecting to Logger', 'Connected').replace('Fetching ', '')}
+                                        {step.label.replace('Connecting to Logger', 'Connected').replace('Fetching ', '').replace('Reading ', '')}
                                     </div>
                                 ))}
                             </div>

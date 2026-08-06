@@ -112,6 +112,36 @@ class MqttController extends Controller
     }
 
     /**
+     * Parse an INFO response read over Web Serial WITHOUT persisting anything.
+     *
+     * The Add Logger wizard needs this for LEO-series devices: they have no MQTT
+     * path, so the wizard reads INFO over USB while the `loggers` row still does
+     * not exist (it is only inserted on the final submit). importInfoFromSerial()
+     * cannot serve that case — it 404s on a missing logger because its whole job
+     * is to write to one. Parsing stays server-side so the index→field mapping
+     * lives in exactly one place (MqttService::parseInfoResponse).
+     */
+    public function parseInfoFromSerial(Request $request): JsonResponse
+    {
+        $request->validate(['info' => 'required|array']);
+
+        $rawInfo = $request->input('info');
+        $info = array_key_exists('INFO', $rawInfo) ? $rawInfo['INFO'] : $rawInfo;
+
+        if (!is_array($info)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Format respons INFO serial tidak dikenali.',
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => MqttService::parseInfoResponse($info),
+        ]);
+    }
+
+    /**
      * Import an INFO response that was read locally through Web Serial.
      * The server only parses/persists the payload; it does not contact the device.
      */

@@ -295,6 +295,27 @@ class ProductionController extends Controller
     }
 
     /**
+     * Jalur provisioning yang dipakai perangkat: 'serial' atau 'mqtt'.
+     *
+     * Seri LEO tidak punya jalur MQTT sama sekali, jadi Add Logger harus
+     * membacanya lewat kabel USB (Web Serial). Kolom `model` adalah sumber
+     * kebenarannya; serial number dipakai sebagai cadangan karena registry
+     * lama ada yang `model`-nya masih kosong.
+     *
+     * Lookbehind `(?<![A-Z])` mencegah model seperti "Galileo" ikut terjaring.
+     */
+    public static function transportFor(?string $model, ?string $serialNumber): string
+    {
+        foreach ([$model, $serialNumber] as $candidate) {
+            if (is_string($candidate) && preg_match('/(?<![A-Z])LEO/i', $candidate)) {
+                return 'serial';
+            }
+        }
+
+        return 'mqtt';
+    }
+
+    /**
      * API: Check if serial number exists in production registry
      */
     public function checkSerial(Request $request)
@@ -336,6 +357,7 @@ class ProductionController extends Controller
             'device' => [
                 'serialNumber' => $device->serial_number,
                 'deviceId' => $device->device_id,
+                'transport' => self::transportFor($device->model, $device->serial_number),
                 'model' => $device->model,
                 'hardwareVersion' => $device->hardware_version,
                 'firmwareVersion' => $firmwareModel?->firmware_version ?? $device->firmware_version,
