@@ -181,6 +181,47 @@ function blankProfile(): ProfileItem {
 const inputClass = 'h-8';
 const fieldLabel = 'text-[11px] text-muted-foreground';
 
+// The backend validates these as slugs. Sanitising on the way in beats bouncing the whole form back
+// with "roles.0.templates.0.id field format is invalid" — the natural thing to type is the sensor's
+// display name ("TB-400-04"), which the rule rejects for its capitals.
+//
+// Template ids allow hyphens (tb-400-04); role keys allow underscores (water_level) and must start
+// with a letter. Kept in step with ModeProfileAdminController::validateProfile().
+function toTemplateId(value: string): string {
+    return value
+        .toLowerCase()
+        .replace(/[\s_]+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+        .replace(/^-+/, '');
+}
+
+function toRoleKey(value: string): string {
+    return value
+        .toLowerCase()
+        .replace(/[\s-]+/g, '_')
+        .replace(/[^a-z0-9_]/g, '')
+        .replace(/^[^a-z]+/, '');
+}
+
+// Laravel reports these by path ("roles.0.templates.0.id"), which reads like nothing at all in a
+// form this deep. Turn the path into the place the operator is actually looking at.
+function describeErrorField(path: string): string {
+    const match =
+        /^roles\.(\d+)(?:\.templates\.(\d+))?(?:\.(parameters|user_inputs)\.(\d+))?/.exec(
+            path,
+        );
+
+    if (!match) return path;
+
+    const parts = [`Role ${Number(match[1]) + 1}`];
+    if (match[2] !== undefined) parts.push(`Sensor ${Number(match[2]) + 1}`);
+    if (match[3] === 'parameters')
+        parts.push(`Parameter ${Number(match[4]) + 1}`);
+    if (match[3] === 'user_inputs') parts.push(`Input ${Number(match[4]) + 1}`);
+
+    return parts.join(' › ');
+}
+
 function Field({
     label,
     children,
@@ -344,6 +385,8 @@ function TemplateEditor({
     onRemove: () => void;
 }) {
     const [open, setOpen] = useState(false);
+    // An id that already exists came from the catalogue, so never overwrite it from the name.
+    const [idTouched, setIdTouched] = useState(template.id !== '');
     const isRs485 = template.connection_type === 'rs485';
 
     return (
@@ -395,25 +438,35 @@ function TemplateEditor({
                             <Input
                                 className={inputClass}
                                 value={template.id}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                    setIdTouched(true);
                                     onChange({
                                         ...template,
-                                        id: e.target.value,
-                                    })
-                                }
+                                        id: toTemplateId(e.target.value),
+                                    });
+                                }}
                                 placeholder="tb-400-04"
                             />
+                            <p className="text-[10px] text-muted-foreground">
+                                huruf kecil, angka, tanda hubung
+                            </p>
                         </Field>
                         <Field label="Nama">
                             <Input
                                 className={inputClass}
                                 value={template.name}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                    const name = e.target.value;
                                     onChange({
                                         ...template,
-                                        name: e.target.value,
-                                    })
-                                }
+                                        name,
+                                        // Fill the id from the name until the operator edits it
+                                        // themselves, so the common case needs no thought.
+                                        ...(idTouched
+                                            ? {}
+                                            : { id: toTemplateId(name) }),
+                                    });
+                                }}
                                 placeholder="TB-400-04"
                             />
                         </Field>
@@ -702,9 +755,19 @@ function ModeEditor({
                         berikut
                     </p>
                     <ul className="ml-5 list-disc text-[11px] text-red-600 dark:text-red-400">
-                        {errorList.map(([key, message]) => (
-                            <li key={key}>{message}</li>
-                        ))}
+                        {errorList.map(([key, message]) => {
+                            const where = describeErrorField(key);
+                            return (
+                                <li key={key}>
+                                    {where !== key && (
+                                        <span className="font-medium">
+                                            {where}:{' '}
+                                        </span>
+                                    )}
+                                    {message}
+                                </li>
+                            );
+                        })}
                     </ul>
                 </div>
             )}
@@ -835,11 +898,14 @@ function ModeEditor({
                                     value={role.role}
                                     onChange={(e) =>
                                         patchRole(roleIndex, {
-                                            role: e.target.value,
+                                            role: toRoleKey(e.target.value),
                                         })
                                     }
                                     placeholder="rainfall"
                                 />
+                                <p className="text-[10px] text-muted-foreground">
+                                    huruf kecil, angka, garis bawah
+                                </p>
                             </Field>
                             <Field label="Label">
                                 <Input
