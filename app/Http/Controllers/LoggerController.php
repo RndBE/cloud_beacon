@@ -617,10 +617,20 @@ class LoggerController extends Controller
         // ── Sync to MQTT server DB (t_logger) + SSH service restart ──────────
         // idlogger = device_identifier (e.g. "10091")
         // user     = serial_number (as identifier label)
+        //
+        // Skipped for LEO along with the sensor fetch above. Both steps exist to make the MQTT
+        // broker forward a device's telemetry, and a LEO board never connects to that broker. It is
+        // not merely wasteful: the t_logger write goes to the mysql_second connection and the
+        // restart opens an SSH session, so an unreachable host blocks registration until each times
+        // out. Both sit in try/catch, which hides the failure but not the wait — the operator just
+        // sees a button that never finishes.
         $mqttDbSyncFailed = false;
         $deviceId = $logger->device_identifier;
 
-        if ($deviceId) {
+        if (! $usesMqtt) {
+            \Log::info('[MQTT-DB] Skipped t_logger sync + SSH restart — "'
+                . $logger->serial_number . '" is a LEO board with no MQTT path.');
+        } elseif ($deviceId) {
             try {
                 $pushUrl = rtrim(config('app.url'), '/') . '/api/v1/device/push';
 

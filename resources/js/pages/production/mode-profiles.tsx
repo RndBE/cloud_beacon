@@ -10,6 +10,7 @@ import {
     X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { DtypeSelect, dtypeLabel } from '@/components/loggers/dtype-select';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -112,8 +113,9 @@ function emptyParameter(): Parameter {
         unit: '',
         scale_factor: 1,
         register_address: 0,
+        // dtype code 1 = Unsigned 16-bit. Label derived so it always reads the same as the picker.
         reg_count: 1,
-        data_type_label: 'Unsigned 16-bit',
+        data_type_label: dtypeLabel(1),
         fast_poll: false,
     };
 }
@@ -255,7 +257,7 @@ function ParameterRows({
                     key={`parameter-${index}`}
                     className="grid gap-2 rounded-md border bg-muted/30 p-2 sm:grid-cols-12"
                 >
-                    <div className="sm:col-span-3">
+                    <div className="sm:col-span-4">
                         <Field label="Nama">
                             <Input
                                 className={inputClass}
@@ -310,25 +312,27 @@ function ParameterRows({
                             />
                         </Field>
                     </div>
-                    <div className="sm:col-span-2">
-                        {/* Written to the sensor row as `quantity` — how many consecutive Modbus
-                        registers this one value spans. 1 for a 16-bit value, 2 for a 32-bit one. */}
-                        <Field label="Jml register">
-                            <Input
-                                className={inputClass}
-                                type="number"
-                                min={1}
-                                title="Berapa register Modbus berurutan yang dibaca untuk satu nilai. 1 = 16-bit, 2 = 32-bit."
+                    {/* Full width on its own row: the label runs to "32 Bit unsigned · Big-endian
+                    byte swap", which truncates to noise in a narrow column. */}
+                    <div className="sm:col-span-12">
+                        {/* `reg_count` carries the Modbus data TYPE code (1..27), not a register
+                        count — the firmware derives the span from the code (docs/modbus_data_type_codes.md).
+                        Same picker the Add Sensor form uses, so a code can only come from the table. */}
+                        <Field label="Tipe Data (dtype)">
+                            <DtypeSelect
                                 value={parameter.reg_count}
-                                onChange={(e) =>
+                                onChange={(code) =>
                                     patch(index, {
-                                        reg_count: Number(e.target.value),
+                                        reg_count: code,
+                                        // Keep the human label in step — the wizard shows it to the
+                                        // operator when they pick this template.
+                                        data_type_label: dtypeLabel(code),
                                     })
                                 }
                             />
                         </Field>
                     </div>
-                    <div className="flex items-end justify-between gap-2 sm:col-span-1">
+                    <div className="flex items-end justify-between gap-2 sm:col-span-2">
                         <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
                             <input
                                 type="checkbox"

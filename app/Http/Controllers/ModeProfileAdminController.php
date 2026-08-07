@@ -134,7 +134,11 @@ class ModeProfileAdminController extends Controller
             'roles.*.templates.*.parameters.*.unit' => ['nullable', 'string', 'max:32'],
             'roles.*.templates.*.parameters.*.scale_factor' => ['required', 'numeric'],
             'roles.*.templates.*.parameters.*.register_address' => ['required', 'integer', 'min:0', 'max:65535'],
-            'roles.*.templates.*.parameters.*.reg_count' => ['required', 'integer', 'min:1', 'max:8'],
+            // Despite the name, reg_count carries the Modbus data TYPE code, not a register count —
+            // the firmware derives the span from the code. Valid codes are 1..27 (MB_TYPE_TABLE, see
+            // docs/modbus_data_type_codes.md). This was capped at 8 while the field was mistaken for
+            // a register count, which silently rejected every 64-bit and byte-swapped type.
+            'roles.*.templates.*.parameters.*.reg_count' => ['required', 'integer', 'between:1,27'],
             'roles.*.templates.*.parameters.*.data_type_label' => ['nullable', 'string', 'max:64'],
             'roles.*.templates.*.parameters.*.fast_poll' => ['required', 'boolean'],
         ]);

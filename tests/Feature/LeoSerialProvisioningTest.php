@@ -151,6 +151,26 @@ it('registers a LEO logger without waiting on an MQTT round trip', function () {
         );
 });
 
+// store() also registers the device in the broker's t_logger table (mysql_second) and restarts
+// mosquitto over SSH. Both exist so the broker forwards a device's telemetry — a LEO board never
+// connects to that broker, so both are pointless for it, and an unreachable host makes registration
+// hang until each times out. try/catch hides the failure but not the wait.
+//
+// Observable signal: the failure path sets the "gagal mendaftarkan ke MQTT Server DB" warning flash.
+// Skipping the block entirely means that warning must never appear for a LEO board.
+it('does not touch the MQTT broker registry when saving a LEO logger', function () {
+    $user = leoUser(['loggers.create']);
+    leoDevice(['serial_number' => 'LEO-2026-00942', 'device_id' => '40942']);
+
+    $this->actingAs($user)->post('/loggers', [
+        'name' => 'LEO Tanpa Broker',
+        'serial_number' => 'LEO-2026-00942',
+        'mqtt_data' => ['device_identifier' => '40942'],
+    ])->assertSessionMissing('warning');
+
+    expect(Logger::where('serial_number', 'LEO-2026-00942')->exists())->toBeTrue();
+});
+
 // ── check-serial exposes the transport ────────────────────────────────────
 
 it('reports the serial transport for a LEO device on check-serial', function () {

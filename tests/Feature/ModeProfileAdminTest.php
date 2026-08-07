@@ -242,8 +242,46 @@ it('accepts only RS485 templates while the wizard supports nothing else', functi
     'digital' => ['digital', false],
 ]);
 
-// reg_count lands on the sensor row as `quantity` (ModeProfileApplyService) — how many consecutive
-// Modbus registers one value spans. It has to survive the round trip intact.
+// Despite the name, reg_count carries the Modbus data TYPE code (1..27) — the firmware derives the
+// register span from it (docs/modbus_data_type_codes.md). It was capped at 8 while the field was
+// mistaken for a register count, which silently rejected every 64-bit and byte-swapped type.
+it('accepts the whole Modbus dtype code range', function (int $code, bool $ok) {
+    $response = $this->actingAs(modeProfileUser())
+        ->post(route('production.mode-profiles.store'), samplePayload([
+            'roles' => [[
+                'role' => 'rainfall',
+                'label' => 'Sensor Curah Hujan',
+                'required' => true,
+                'templates' => [sampleTemplate([
+                    'parameters' => [[
+                        'name' => 'Nilai',
+                        'unit' => 'mm',
+                        'scale_factor' => 0.1,
+                        'register_address' => 0,
+                        'reg_count' => $code,
+                        'data_type_label' => 'X',
+                        'fast_poll' => false,
+                    ]],
+                ])],
+            ]],
+        ]));
+
+    $ok
+        ? $response->assertSessionHasNoErrors()
+        : $response->assertSessionHasErrors('roles.0.templates.0.parameters.0.reg_count');
+})->with([
+    'unsigned 16-bit (1)' => [1, true],
+    'float32 big-endian (2)' => [2, true],
+    'uint32 byte swap (8)' => [8, true],
+    'int32 little-endian (10)' => [10, true],
+    'uint64 (19)' => [19, true],
+    'float64 top of range (27)' => [27, true],
+    'zero is not a code' => [0, false],
+    'past the table (28)' => [28, false],
+]);
+
+// reg_count lands on the sensor row as `quantity` (ModeProfileApplyService), so the code has to
+// survive the round trip byte for byte — a shifted code decodes as a different data type.
 it('round-trips reg_count through to the catalogue', function () {
     $this->actingAs(modeProfileUser())
         ->post(route('production.mode-profiles.store'), samplePayload([
