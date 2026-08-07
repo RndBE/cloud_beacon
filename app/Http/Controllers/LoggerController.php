@@ -510,8 +510,15 @@ class LoggerController extends Controller
 
         $logger = Logger::create($validated);
 
-        // Fetch and sync external sensors via SENSORS GET + GET_ALL
-        if (!empty($validated['device_identifier'])) {
+        // Fetch and sync external sensors via SENSORS GET + GET_ALL.
+        //
+        // Skipped for LEO: that board has no MQTT path at all, so requestSensorsGet() can only ever
+        // run out the full mqtt.timeout (15 s by default) before returning null. The registration
+        // request blocked for that whole window with nothing to show for it — the operator saw a
+        // button that appeared to do nothing. Its sensors come over USB instead.
+        $usesMqtt = ! BoardModel::isLeo($validated['serial_number'] ?? null, $logger->model);
+
+        if ($usesMqtt && !empty($validated['device_identifier'])) {
             try {
                 $mqtt = new MqttService();
                 $sensorConfig = $mqtt->requestSensorsGet($validated['device_identifier']);

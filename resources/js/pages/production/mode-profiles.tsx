@@ -100,12 +100,6 @@ interface PageProps {
 }
 
 const BAUDRATES = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
-const CONNECTION_TYPES: ConnectionType[] = [
-    'rs485',
-    'rs232',
-    'analog',
-    'digital',
-];
 
 const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Production', href: '/production' },
@@ -317,11 +311,14 @@ function ParameterRows({
                         </Field>
                     </div>
                     <div className="sm:col-span-2">
-                        <Field label="Reg count">
+                        {/* Written to the sensor row as `quantity` — how many consecutive Modbus
+                        registers this one value spans. 1 for a 16-bit value, 2 for a 32-bit one. */}
+                        <Field label="Jml register">
                             <Input
                                 className={inputClass}
                                 type="number"
                                 min={1}
+                                title="Berapa register Modbus berurutan yang dibaca untuk satu nilai. 1 = 16-bit, 2 = 32-bit."
                                 value={parameter.reg_count}
                                 onChange={(e) =>
                                     patch(index, {
@@ -470,24 +467,16 @@ function TemplateEditor({
                                 placeholder="TB-400-04"
                             />
                         </Field>
+                        {/* Not a choice yet: the wizard refuses anything but RS485 at apply time
+                        (ModeProfilePreviewService), and only syncRs485Slave() exists. Showing a
+                        dropdown here would let someone build a template that can never be applied. */}
                         <Field label="Koneksi">
-                            <select
-                                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                                value={template.connection_type}
-                                onChange={(e) =>
-                                    onChange({
-                                        ...template,
-                                        connection_type: e.target
-                                            .value as ConnectionType,
-                                    })
-                                }
-                            >
-                                {CONNECTION_TYPES.map((type) => (
-                                    <option key={type} value={type}>
-                                        {type.toUpperCase()}
-                                    </option>
-                                ))}
-                            </select>
+                            <div className="flex h-8 items-center rounded-md border border-input bg-muted/40 px-2 text-sm text-muted-foreground">
+                                RS485 (Modbus RTU)
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">
+                                mode profile baru mendukung RS485
+                            </p>
                         </Field>
                     </div>
 

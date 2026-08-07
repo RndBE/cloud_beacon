@@ -121,6 +121,36 @@ it('defaults a new LEO logger to the satellite connection type', function () {
         ->toBe('satellite');
 });
 
+// LoggerController::store() fetches sensors over MQTT after creating the logger. LEO has no MQTT
+// path, so that call could only ever burn the whole mqtt.timeout (15 s by default) and return null —
+// registration blocked for that window while the button showed nothing. Before the guard this very
+// test took 15.4 s; after it, well under a second.
+//
+// Elapsed time is the only observable here: store() does `new MqttService()` inline rather than
+// resolving it from the container, so there is nothing to fake. The threshold is deliberately loose —
+// it can only trip if the MQTT round trip runs again.
+it('registers a LEO logger without waiting on an MQTT round trip', function () {
+    $user = leoUser(['loggers.create']);
+    leoDevice(['serial_number' => 'LEO-2026-00931', 'device_id' => '40931']);
+
+    $startedAt = microtime(true);
+
+    $this->actingAs($user)->post('/loggers', [
+        'name' => 'LEO Tanpa MQTT',
+        'serial_number' => 'LEO-2026-00931',
+        'mqtt_data' => ['device_identifier' => '40931'],
+    ]);
+
+    $elapsed = microtime(true) - $startedAt;
+    $mqttTimeout = (int) config('mqtt.timeout', 15);
+
+    expect(Logger::where('serial_number', 'LEO-2026-00931')->exists())->toBeTrue()
+        ->and($elapsed)->toBeLessThan(
+            max(3.0, $mqttTimeout * 0.5),
+            "registration took {$elapsed}s — the MQTT sensor fetch is running for a LEO board again"
+        );
+});
+
 // ── check-serial exposes the transport ────────────────────────────────────
 
 it('reports the serial transport for a LEO device on check-serial', function () {

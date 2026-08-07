@@ -105,7 +105,12 @@ class ModeProfileAdminController extends Controller
             'roles.*.templates.*.description' => ['nullable', 'string', 'max:1000'],
             'roles.*.templates.*.enabled' => ['required', 'boolean'],
             'roles.*.templates.*.disabled_reason' => ['nullable', 'string', 'max:255'],
-            'roles.*.templates.*.connection_type' => ['required', Rule::in(['rs485', 'rs232', 'analog', 'digital'])],
+            // RS485 only, and not as a placeholder: ModeProfilePreviewService rejects anything else
+            // outright ("MVP mode profile hanya mendukung template RS485"), and
+            // ModeProfileApplyService implements syncRs485Slave() and nothing more. Accepting a wider
+            // set here would let an operator save a template that the wizard then refuses to apply.
+            // Widen this only together with those two services.
+            'roles.*.templates.*.connection_type' => ['required', Rule::in(['rs485'])],
 
             'roles.*.templates.*.device' => ['present', 'array'],
             'roles.*.templates.*.device.device_name' => ['nullable', 'string', 'max:255'],

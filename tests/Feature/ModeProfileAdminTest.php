@@ -218,6 +218,62 @@ it('rejects an invalid profile', function (array $overrides, string $field) {
     ],
 ]);
 
+// ModeProfilePreviewService throws "MVP mode profile hanya mendukung template RS485" and
+// ModeProfileApplyService only implements syncRs485Slave(). Saving a non-RS485 template would
+// therefore produce something the wizard refuses to apply — reject it at the door instead.
+it('accepts only RS485 templates while the wizard supports nothing else', function (string $type, bool $ok) {
+    $response = $this->actingAs(modeProfileUser())
+        ->post(route('production.mode-profiles.store'), samplePayload([
+            'roles' => [[
+                'role' => 'rainfall',
+                'label' => 'Sensor Curah Hujan',
+                'required' => true,
+                'templates' => [sampleTemplate(['connection_type' => $type])],
+            ]],
+        ]));
+
+    $ok
+        ? $response->assertSessionHasNoErrors()
+        : $response->assertSessionHasErrors('roles.0.templates.0.connection_type');
+})->with([
+    'rs485' => ['rs485', true],
+    'rs232' => ['rs232', false],
+    'analog' => ['analog', false],
+    'digital' => ['digital', false],
+]);
+
+// reg_count lands on the sensor row as `quantity` (ModeProfileApplyService) — how many consecutive
+// Modbus registers one value spans. It has to survive the round trip intact.
+it('round-trips reg_count through to the catalogue', function () {
+    $this->actingAs(modeProfileUser())
+        ->post(route('production.mode-profiles.store'), samplePayload([
+            'roles' => [[
+                'role' => 'rainfall',
+                'label' => 'Sensor Curah Hujan',
+                'required' => true,
+                'templates' => [sampleTemplate([
+                    'parameters' => [[
+                        'name' => 'Total_32bit',
+                        'unit' => 'mm',
+                        'scale_factor' => 0.1,
+                        'register_address' => 4,
+                        'reg_count' => 2,
+                        'data_type_label' => 'Unsigned 32-bit',
+                        'fast_poll' => true,
+                    ]],
+                ])],
+            ]],
+        ]))
+        ->assertSessionHasNoErrors();
+
+    $parameter = (new DbModeProfileCatalog)
+        ->template('TESTMODE', 'rainfall', 'tb-400-04')['parameters'][0];
+
+    expect($parameter['reg_count'])->toBe(2)
+        ->and($parameter['register_address'])->toBe(4)
+        ->and($parameter['fast_poll'])->toBeTrue();
+});
+
 it('rejects a duplicate mode', function () {
     $this->actingAs(modeProfileUser())
         ->post(route('production.mode-profiles.store'), samplePayload(['mode' => 'ARR']))

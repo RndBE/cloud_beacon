@@ -210,6 +210,10 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
     // MQTT data received from provisioning
     const [mqttData, setMqttData] = useState<Record<string, string | number | null> | null>(null);
 
+    // Final save state. Separate from form.processing — see handleFinalSubmit.
+    const [saving, setSaving] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
+
     const form = useForm({
         name: '',
         serial_number: '',
@@ -234,6 +238,8 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                 setErrorMessage('');
                 setUsbConnecting(false);
                 setUsbError(null);
+                setSaving(false);
+                setSaveError(null);
                 cancelled.current = false;
                 form.reset();
             }, 200);
@@ -497,7 +503,14 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
         }
     }
 
+    // Driven by router.post, so `form.processing` never moves — it belongs to useForm. Without its
+    // own state the button showed no spinner, stayed clickable (double-submitting), and swallowed
+    // validation errors, which made a slow save look like a dead button.
     function handleFinalSubmit() {
+        if (saving) return;
+
+        setSaving(true);
+        setSaveError(null);
         router.post('/loggers', {
             name: form.data.name,
             serial_number: form.data.serial_number,
@@ -507,6 +520,11 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any, {
             onSuccess: () => onOpenChange(false),
+            onError: (errors: Record<string, string>) => {
+                const first = Object.values(errors)[0];
+                setSaveError(first || t('loggers.connection_failed_retry'));
+            },
+            onFinish: () => setSaving(false),
         });
     }
 
@@ -814,11 +832,17 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                                     </div>
                                 ))}
                             </div>
+                            {saveError && (
+                                <div className="flex w-full items-start gap-2 rounded-md border border-red-500/20 bg-red-500/5 p-3">
+                                    <XCircle className="mt-0.5 size-4 shrink-0 text-red-500" />
+                                    <p className="text-xs text-red-600 dark:text-red-400">{saveError}</p>
+                                </div>
+                            )}
                         </div>
                         <DialogFooter>
-                            <Button variant="outline" onClick={handleCancel}>{t('common.cancel')}</Button>
-                            <Button onClick={handleFinalSubmit} disabled={form.processing} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
-                                {form.processing ? (
+                            <Button variant="outline" onClick={handleCancel} disabled={saving}>{t('common.cancel')}</Button>
+                            <Button onClick={handleFinalSubmit} disabled={saving} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                                {saving ? (
                                     <><Loader2 className="size-4 animate-spin" /> {t('loggers.saving')}</>
                                 ) : (
                                     <><Plus className="size-4" /> {t('loggers.add_logger')}</>
