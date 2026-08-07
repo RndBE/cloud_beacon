@@ -40,6 +40,11 @@ class MqttController extends Controller
     private function isCellularBoard(Logger $logger): bool
     {
         $model = strtoupper($logger->model ?? '');
+        // "BL11LEO" satisfies str_contains($model, 'BL11') below, so LEO has to be excluded first —
+        // it is a satellite board with no cellular modem at all.
+        if (\App\Support\BoardModel::isLeo($logger->model, $logger->serial_number)) {
+            return false;
+        }
         if (str_contains($model, 'BL1100') || str_contains($model, 'BL110')) {
             return false;
         }
@@ -108,6 +113,57 @@ class MqttController extends Controller
             'data' => $parsed,
             'power' => $powerRails,
             'raw' => $info,
+        ]);
+    }
+
+    /**
+     * Store the BL11LEO Iridium send schedule read back over Web Serial.
+     *
+     * LEO config is written locally over USB, so the platform otherwise has no record of what
+     * schedule a unit is running. Keeping a copy also makes LEO payloads decodable: the packet
+     * spends every byte on data and carries no timestamp, so a record's time can only be recovered
+     * from the schedule that produced it.
+     *
+     * `pack` and `roll` are absent on LEO_SEND v1 firmware and are stored as null rather than
+     * defaulted — "this firmware has no pack" and "pack is 1" are different facts, and guessing the
+     * second would mislabel record times later.
+     */
+    public function importLeoSendFromSerial(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'id_logger' => 'required|string',
+            'enabled' => 'required|boolean',
+            'mode' => 'required|string|in:NOW,AVG',
+            'pack' => 'nullable|integer|in:1,2',
+            'roll' => 'nullable|integer|in:0,1',
+            'dry' => 'nullable|boolean',
+            'times' => 'present|array|max:16',
+            'times.*' => ['required', 'string', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+        ]);
+
+        $logger = $this->resolveVisibleLogger($validated['id_logger']);
+        abort_unless($logger, 404, 'Logger not found');
+
+        // The device sorts ascending on SET, so mirror that here: pack:2 pairs records by index, and
+        // an unsorted copy would pair them differently from the device.
+        $times = array_values(array_unique($validated['times']));
+        sort($times);
+
+        $logger->update([
+            'leo_send_config' => [
+                'enabled' => (bool) $validated['enabled'],
+                'mode' => strtoupper($validated['mode']),
+                'pack' => $validated['pack'] ?? null,
+                'roll' => $validated['roll'] ?? null,
+                'dry' => isset($validated['dry']) ? (bool) $validated['dry'] : null,
+                'times' => $times,
+                'read_at' => now()->toISOString(),
+            ],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $logger->leo_send_config,
         ]);
     }
 

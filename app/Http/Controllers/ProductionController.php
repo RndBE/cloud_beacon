@@ -6,6 +6,7 @@ use App\Models\DeviceModel;
 use App\Models\Logger;
 use App\Models\ProductionDevice;
 use App\Services\IdHasher;
+use App\Support\BoardModel;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -302,17 +303,12 @@ class ProductionController extends Controller
      * kebenarannya; serial number dipakai sebagai cadangan karena registry
      * lama ada yang `model`-nya masih kosong.
      *
-     * Lookbehind `(?<![A-Z])` mencegah model seperti "Galileo" ikut terjaring.
+     * Predikatnya ada di BoardModel::isLeo() supaya definisi "ini board LEO" cuma
+     * satu — dipakai juga oleh MqttService saat melabeli jenis koneksi.
      */
     public static function transportFor(?string $model, ?string $serialNumber): string
     {
-        foreach ([$model, $serialNumber] as $candidate) {
-            if (is_string($candidate) && preg_match('/(?<![A-Z])LEO/i', $candidate)) {
-                return 'serial';
-            }
-        }
-
-        return 'mqtt';
+        return BoardModel::isLeo($model, $serialNumber) ? 'serial' : 'mqtt';
     }
 
     /**

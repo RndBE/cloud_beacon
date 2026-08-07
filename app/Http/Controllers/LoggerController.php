@@ -16,6 +16,7 @@ use App\Services\IdHasher;
 use App\Services\LoggerHealthService;
 use App\Services\MqttService;
 use App\Services\SshService;
+use App\Support\BoardModel;
 use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -193,6 +194,14 @@ class LoggerController extends Controller
             'lastSyncError' => $logger->last_sync_error,
             'macAddress' => $logger->mac_address,
             'model' => $logger->model,
+            // Seri LEO tidak punya jalur MQTT — halaman detail menyembunyikan
+            // toggle MQTT/Serial dan memaksa jalur USB. Satu sumber kebenaran
+            // dengan Add Logger: ProductionController::transportFor().
+            'transport' => ProductionController::transportFor($logger->model, $logger->serial_number),
+            // Jadwal Iridium yang terakhir dibaca dari alat. Cache panel di frontend
+            // cuma bertahan selama halaman hidup, jadi tanpa ini card Jadwal Iridium
+            // kosong lagi tiap refresh meski alatnya jelas punya jadwal.
+            'leoSendConfig' => $logger->leo_send_config,
             'modelImage' => $deviceModel?->image ? asset('storage/' . $deviceModel->image) : null,
             'channelCount' => $deviceModel?->channel_count,
             'uptime' => $logger->uptime,
@@ -336,43 +345,28 @@ class LoggerController extends Controller
         ]);
     }
 
-    public function protocol(string $hash): Response
+    /**
+     * Legacy "Advanced Settings" URL — now redirects to the logger detail page.
+     *
+     * The panels this route used to host (I/O row, POWER, FTP logs) were moved
+     * into the detail page's Mode / System tabs, and nothing in the UI has
+     * linked here since. The standalone copy kept rendering ProtocolPanel
+     * WITHOUT a transportMode, so it silently fell back to MQTT: broken for
+     * LEO-series devices (no MQTT path at all) and stale for anyone driving a
+     * logger over a serial dongle. Redirecting retires the trap while keeping
+     * old bookmarks landing somewhere useful.
+     *
+     * The 404/visibility checks stay so an invalid or hidden id still fails
+     * here rather than bouncing to a detail page that would reject it anyway.
+     */
+    public function protocol(string $hash): RedirectResponse
     {
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $query = Logger::with('externalSensors')->visibleTo(auth()->user());
+        $logger = Logger::visibleTo(auth()->user())->findOrFail($id);
 
-        $logger = $query->findOrFail($id);
-        $deviceModel = $logger->model
-            ? DeviceModel::where('name', $logger->model)->first()
-            : null;
-
-        return Inertia::render('loggers/protocol', [
-            'logger' => [
-                'id' => IdHasher::encode($logger->id),
-                'name' => $logger->name,
-                'serialNumber' => $logger->serial_number,
-                'status' => $logger->status,
-                'deviceIdentifier' => $logger->device_identifier,
-                'model' => $logger->model,
-                'connectionType' => $logger->connection_type,
-                'loggerMode' => $logger->logger_mode,
-                'channelCount' => $deviceModel?->channel_count,
-                'firmwareVersion' => $logger->firmware_version,
-                'sensors' => $logger->externalSensors->map(fn(Sensor $sensor) => [
-                    'id' => $sensor->id,
-                    'name' => $sensor->name,
-                    'type' => $sensor->type,
-                    'value' => $sensor->value,
-                    'connectionType' => $sensor->connection_type,
-                    'analogMode' => $sensor->analog_mode,
-                    'modbusSlaveId' => $sensor->modbus_slave_id,
-                    'port' => $sensor->port,
-                    'channel' => $sensor->channel,
-                ]),
-            ],
-        ]);
+        return redirect()->route('loggers.show', IdHasher::encode($logger->id));
     }
 
     public function updateConfig(Request $request, string $hash)
@@ -450,7 +444,11 @@ class LoggerController extends Controller
 
         $validated['user_id'] = auth()->id();
         $validated['status'] = !empty($mqttData) ? 'online' : 'offline';
-        $validated['connection_type'] = 'ethernet'; // default, will be overridden by MQTT data
+        // Default before the INFO payload is merged below. LEO has no Ethernet port, so defaulting it
+        // to 'ethernet' would show the wrong uplink for any LEO registered without a readable INFO.
+        $validated['connection_type'] = BoardModel::isLeo($validated['serial_number'])
+            ? 'satellite'
+            : 'ethernet';
         $validated['memory_total'] = 512;
         $validated['storage_total'] = 4;
 

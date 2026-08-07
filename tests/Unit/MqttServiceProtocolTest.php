@@ -310,17 +310,46 @@ it('parses INFO array with correct ethernet connection mode and firmware version
         ->and($parsed['serial_number'])->toBe('BL110-001');
 });
 
-it('maps INFO connection mode 2 to cellular and 3 to wifi', function () {
+// This used to assert 3 => 'wifi'. That arm was a fabrication: WiFi appears nowhere in
+// beacon_logger.md, whose §1 transport table lists only MQTT, UART and Bluetooth, and §3.5 documents
+// index 25 as 0=Cellular / 1=Ethernet. The old assertion locked in the code's behaviour from a
+// synthetic fixture, not from a device — and it is what labelled LEO loggers "wifi" in production.
+// An unrecognised mode is now null: an honest "unknown" rather than an invented transport.
+//
+// 2 => cellular is kept. The spec says 0, the original code said 2, and which the deployed firmware
+// sends is unconfirmed — so both map to cellular until a real INFO dump settles it.
+it('maps INFO connection modes and never invents wifi', function () {
     $base = array_fill(0, 29, 0);
     $base[27] = 'ARR';
     $base[28] = 'BL11-v2.0.0';
 
-    $cell = $base; $cell[25] = 2;
-    $wifi = $base; $wifi[25] = 3;
+    $mode = function (int $value) use ($base) {
+        $info = $base;
+        $info[25] = $value;
 
-    expect(MqttService::parseInfoResponse($cell)['connection_type'])->toBe('cellular')
-        ->and(MqttService::parseInfoResponse($wifi)['connection_type'])->toBe('wifi')
-        ->and(MqttService::parseInfoResponse($cell)['logger_mode'])->toBe('ARR');
+        return MqttService::parseInfoResponse($info)['connection_type'];
+    };
+
+    expect($mode(0))->toBe('cellular')
+        ->and($mode(1))->toBe('ethernet')
+        ->and($mode(2))->toBe('cellular')
+        ->and($mode(3))->toBeNull()
+        ->and($mode(99))->toBeNull();
+
+    $cell = $base;
+    $cell[25] = 2;
+    expect(MqttService::parseInfoResponse($cell)['logger_mode'])->toBe('ARR');
+});
+
+// A LEO board's uplink is Iridium — a hardware fact the INFO field cannot express, so it is taken
+// from the serial number at index 0 instead of whatever mode the firmware reports.
+it('labels a LEO board satellite whatever INFO connection mode says', function () {
+    $info = array_fill(0, 29, 0);
+    $info[0] = 'LEO-2026-00001';
+    $info[25] = 3; // the value that used to yield 'wifi'
+    $info[27] = 'DEF';
+
+    expect(MqttService::parseInfoResponse($info)['connection_type'])->toBe('satellite');
 });
 
 it('normalizes new system modes ARR and GNSS', function () {

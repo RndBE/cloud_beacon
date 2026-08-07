@@ -138,14 +138,18 @@ import { FtpConfigCard } from './components/ftp-config-card';
 import { UsbCopyCard } from './components/usb-copy-card';
 import { ModuleAiCard } from './module-ai-card';
 import type { LoggerRemoteDevice } from './module-ai-card';
-import { ProtocolPanel, MODULE_PROTOCOL_TABS } from './protocol';
+import {
+    ProtocolPanel,
+    MODULE_PROTOCOL_TABS,
+    inferBoardVariant,
+} from './protocol';
 import type {
     ProtocolCommandPayload,
     ProtocolCommandResult,
     ProtocolCommandTransport,
     ProtocolPanelHandle,
 } from './protocol';
-import type { ProtocolLogger } from './protocol';
+import type { LeoSendConfig, ProtocolLogger } from './protocol';
 
 interface SensorItem {
     id: number;
@@ -248,6 +252,12 @@ interface LoggerDetail {
     ipAddress: string;
     macAddress: string;
     model: string;
+    // 'serial' untuk seri LEO — tidak ada jalur MQTT, jadi tidak ada pilihan
+    // transport yang bisa ditawarkan ke operator.
+    transport: 'mqtt' | 'serial';
+    // Jadwal Iridium terakhir yang dibaca dari alat (LEO). Sumber hidrasi card
+    // setelah refresh — cache panel di frontend tidak bertahan selewat reload.
+    leoSendConfig: LeoSendConfig | null;
     modelImage: string | null;
     channelCount: number | null;
     uptime: string;
@@ -957,20 +967,6 @@ function serialGroupedSetPayloadFromSensors(
 
 function configuratorModes(modes: LoggerModeOption[]): LoggerModeOption[] {
     return modes.filter((mode) => CONFIGURATOR_MODES.has(mode.slug));
-}
-
-function inferBoardVariant(
-    logger: Pick<LoggerDetail, 'model' | 'connectionType' | 'channelCount'>,
-): 'BL11' | 'BL110' | 'BL1100' | null {
-    const normalized = (logger.model || '-')
-        .toUpperCase()
-        .replace(/[^A-Z0-9]/g, '');
-    if (normalized.includes('BL1100') || (logger.channelCount ?? 0) >= 8)
-        return 'BL1100';
-    if (normalized.includes('BL110')) return 'BL110';
-    if (normalized.includes('BL11') || logger.connectionType === 'cellular')
-        return 'BL11';
-    return null;
 }
 
 function maxAnalogChannel(
@@ -8190,6 +8186,7 @@ export default function LoggerShow({
     const {
         connected: dongleConnected,
         connect: connectDongle,
+        tryReconnect: tryReconnectDongle,
         disconnect: disconnectDongle,
         sendCommandUntil: sendDongleCommandUntil,
         subscribe: subscribeDongle,
@@ -8197,6 +8194,14 @@ export default function LoggerShow({
     const [dongleEnabled, setDongleEnabled] = useState(false);
     const [dongleBusy, setDongleBusy] = useState(false);
     const [dongleError, setDongleError] = useState<string | null>(null);
+
+    // Seri LEO hanya bicara lewat kabel. Tidak ada MQTT untuk dijadikan
+    // alternatif, jadi togglenya disembunyikan dan transport dilaporkan
+    // 'serial' apa pun status port-nya — kalau port belum terbuka,
+    // commandTransport tetap undefined sehingga aksi perangkat ikut disabled.
+    const serialOnly = logger.transport === 'serial';
+    const transportMode: 'mqtt' | 'serial' =
+        serialOnly || dongleEnabled ? 'serial' : 'mqtt';
     const [liveOverlay, setLiveOverlay] = useState<LiveLoggerOverlay>({
         sensorValues: {},
     });
@@ -8219,6 +8224,47 @@ export default function LoggerShow({
             setDongleEnabled(false);
         }
     }, [dongleConnected, dongleEnabled]);
+
+    // Menutup port TIDAK mencabut izinnya — getPorts() tetap mengembalikannya
+    // setelah refresh, jadi auto-reconnect di bawah akan membuka lagi port yang
+    // baru saja dilepas operator dan "Putuskan" terlihat tidak berefek.
+    // Penandanya bersesi-tab: memutus biasanya untuk meminjamkan port ke
+    // aplikasi lain sementara (mis. serial monitor), bukan selamanya — kalau
+    // disimpan permanen, auto-reconnect berhenti bekerja berhari-hari kemudian
+    // tanpa penjelasan.
+    const usbOptOutKey = `leo_usb_off_${logger.id}`;
+    const isUsbOptedOut = () =>
+        typeof window !== 'undefined' &&
+        sessionStorage.getItem(usbOptOutKey) === '1';
+    const setUsbOptedOut = (value: boolean) => {
+        if (typeof window === 'undefined' || !serialOnly) return;
+        if (value) sessionStorage.setItem(usbOptOutKey, '1');
+        else sessionStorage.removeItem(usbOptOutKey);
+    };
+
+    // Perangkat LEO tidak punya jalur lain, jadi buka portnya sendiri begitu
+    // halaman dimuat. Ini hanya berhasil untuk port yang pernah diizinkan
+    // operator — getPorts() tidak memunculkan dialog, dan requestPort() memang
+    // tidak boleh dipanggil tanpa klik. Jadi kunjungan pertama tetap perlu
+    // sekali pilih port; sesudahnya otomatis.
+    useEffect(() => {
+        if (!serialOnly || readOnly) return;
+        if (dongleConnected || dongleEnabled) return;
+        if (isUsbOptedOut()) return;
+
+        let active = true;
+        void (async () => {
+            const reopened = await tryReconnectDongle();
+            if (active && reopened) setDongleEnabled(true);
+        })();
+        return () => {
+            active = false;
+        };
+        // Sengaja hanya bergantung pada identitas logger: effect ini adalah
+        // percobaan sekali-jalan saat halaman dibuka, bukan pengawas yang ikut
+        // menyala tiap kali operator memutus port secara manual.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [logger.id, serialOnly, readOnly]);
 
     useEffect(() => {
         setLiveOverlay({ sensorValues: {} });
@@ -8279,6 +8325,9 @@ export default function LoggerShow({
         setDongleBusy(true);
         setDongleError(null);
         try {
+            // Sebelum menutup port: tandai bahwa ini pemutusan yang disengaja,
+            // supaya refresh berikutnya tidak menyambungkannya kembali.
+            setUsbOptedOut(true);
             setDongleEnabled(false);
             await disconnectDongle();
         } catch (error) {
@@ -8315,6 +8364,8 @@ export default function LoggerShow({
                 setDongleEnabled(false);
                 return;
             }
+            // Menyambung lagi mencabut penanda "sengaja diputus" di atas.
+            setUsbOptedOut(false);
             setDongleEnabled(true);
         } catch (error) {
             setDongleEnabled(false);
@@ -8375,6 +8426,7 @@ export default function LoggerShow({
         loggerMode: liveLogger.loggerMode,
         channelCount: liveLogger.channelCount,
         firmwareVersion: liveLogger.firmwareVersion,
+        leoSendConfig: liveLogger.leoSendConfig,
         sensors: liveLogger.sensors.map((s) => ({
             id: s.id,
             name: s.name,
@@ -8407,7 +8459,7 @@ export default function LoggerShow({
                     <QuickSetupWizard
                         logger={logger}
                         open={wizardOpen}
-                        transportMode={dongleEnabled ? 'serial' : 'mqtt'}
+                        transportMode={transportMode}
                         commandTransport={
                             dongleEnabled ? serialProtocolCommand : undefined
                         }
@@ -8568,58 +8620,110 @@ export default function LoggerShow({
                     </div>
                     <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1 sm:mx-0 sm:pb-0">
                         <div className="flex w-max flex-nowrap items-start gap-2 sm:ml-auto">
-                            <div className="relative flex h-7 shrink-0 items-center rounded-lg border bg-background p-0.5">
-                                <span
-                                    className={`pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-6 rounded-md bg-primary transition-transform duration-200 ${
-                                        dongleEnabled
-                                            ? 'translate-x-6'
-                                            : 'translate-x-0'
-                                    }`}
-                                />
-                                <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    className={`relative z-10 size-6 rounded-md hover:bg-transparent ${
-                                        !dongleEnabled
-                                            ? 'text-primary-foreground hover:text-primary-foreground'
-                                            : 'text-muted-foreground'
-                                    }`}
-                                    disabled={readOnly || dongleBusy}
-                                    onClick={() => {
-                                        void enableMqttTransport();
-                                    }}
-                                    aria-label="Gunakan MQTT"
-                                    aria-pressed={!dongleEnabled}
-                                    title="Gunakan MQTT untuk setup logger"
-                                >
-                                    <Wifi className="size-4" />
-                                </Button>
-                                <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    className={`relative z-10 size-6 rounded-md hover:bg-transparent ${
-                                        dongleEnabled
-                                            ? 'text-primary-foreground hover:text-primary-foreground'
-                                            : 'text-muted-foreground'
-                                    }`}
-                                    disabled={readOnly || dongleBusy}
-                                    onClick={() => void enableSerialTransport()}
-                                    aria-label="Gunakan Serial"
-                                    aria-pressed={dongleEnabled}
-                                    title="Gunakan serial dongle untuk setup logger"
-                                >
-                                    {dongleBusy ? (
-                                        <Loader2 className="size-4 animate-spin" />
-                                    ) : (
-                                        <Cable className="size-4" />
-                                    )}
-                                </Button>
-                                {dongleError && (
-                                    <span className="absolute top-full right-0 mt-1 max-w-56 text-right text-[10px] whitespace-normal text-red-500">
-                                        {dongleError}
+                            {serialOnly ? (
+                                // Seri LEO: tidak ada MQTT untuk dipilih, jadi
+                                // yang ditampilkan hanya status port USB. Tombol
+                                // tetap perlu — requestPort() wajib dipicu klik,
+                                // browser tidak mengizinkannya otomatis.
+                                <div className="relative flex h-7 shrink-0 items-center gap-1.5 rounded-lg border bg-background px-2">
+                                    <Cable
+                                        className={`size-3.5 ${dongleEnabled ? 'text-emerald-500' : 'text-muted-foreground'}`}
+                                    />
+                                    <span className="text-[11px] whitespace-nowrap text-muted-foreground">
+                                        {dongleEnabled
+                                            ? 'USB tersambung'
+                                            : 'USB belum tersambung'}
                                     </span>
-                                )}
-                            </div>
+                                    <Button
+                                        variant={
+                                            dongleEnabled
+                                                ? 'ghost'
+                                                : 'secondary'
+                                        }
+                                        size="sm"
+                                        className="-mr-1 h-6 px-2 text-[11px]"
+                                        disabled={readOnly || dongleBusy}
+                                        onClick={() =>
+                                            void (dongleEnabled
+                                                ? enableMqttTransport()
+                                                : enableSerialTransport())
+                                        }
+                                        title={
+                                            dongleEnabled
+                                                ? 'Putuskan port USB'
+                                                : 'Pilih port USB logger'
+                                        }
+                                    >
+                                        {dongleBusy ? (
+                                            <Loader2 className="size-3.5 animate-spin" />
+                                        ) : dongleEnabled ? (
+                                            'Putuskan'
+                                        ) : (
+                                            'Hubungkan'
+                                        )}
+                                    </Button>
+                                    {dongleError && (
+                                        <span className="absolute top-full right-0 mt-1 max-w-56 text-right text-[10px] whitespace-normal text-red-500">
+                                            {dongleError}
+                                        </span>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="relative flex h-7 shrink-0 items-center rounded-lg border bg-background p-0.5">
+                                    <span
+                                        className={`pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-6 rounded-md bg-primary transition-transform duration-200 ${
+                                            dongleEnabled
+                                                ? 'translate-x-6'
+                                                : 'translate-x-0'
+                                        }`}
+                                    />
+                                    <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        className={`relative z-10 size-6 rounded-md hover:bg-transparent ${
+                                            !dongleEnabled
+                                                ? 'text-primary-foreground hover:text-primary-foreground'
+                                                : 'text-muted-foreground'
+                                        }`}
+                                        disabled={readOnly || dongleBusy}
+                                        onClick={() => {
+                                            void enableMqttTransport();
+                                        }}
+                                        aria-label="Gunakan MQTT"
+                                        aria-pressed={!dongleEnabled}
+                                        title="Gunakan MQTT untuk setup logger"
+                                    >
+                                        <Wifi className="size-4" />
+                                    </Button>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        className={`relative z-10 size-6 rounded-md hover:bg-transparent ${
+                                            dongleEnabled
+                                                ? 'text-primary-foreground hover:text-primary-foreground'
+                                                : 'text-muted-foreground'
+                                        }`}
+                                        disabled={readOnly || dongleBusy}
+                                        onClick={() =>
+                                            void enableSerialTransport()
+                                        }
+                                        aria-label="Gunakan Serial"
+                                        aria-pressed={dongleEnabled}
+                                        title="Gunakan serial dongle untuk setup logger"
+                                    >
+                                        {dongleBusy ? (
+                                            <Loader2 className="size-4 animate-spin" />
+                                        ) : (
+                                            <Cable className="size-4" />
+                                        )}
+                                    </Button>
+                                    {dongleError && (
+                                        <span className="absolute top-full right-0 mt-1 max-w-56 text-right text-[10px] whitespace-normal text-red-500">
+                                            {dongleError}
+                                        </span>
+                                    )}
+                                </div>
+                            )}
                             {readOnly ? (
                                 <>
                                     {logger.deviceIdentifier ? (
@@ -8630,11 +8734,7 @@ export default function LoggerShow({
                                             loggerId={logger.id}
                                             label={t('loggerDetail.sync')}
                                             canApplySensorChanges={false}
-                                            transportMode={
-                                                dongleEnabled
-                                                    ? 'serial'
-                                                    : 'mqtt'
-                                            }
+                                            transportMode={transportMode}
                                             commandTransport={
                                                 dongleEnabled
                                                     ? serialProtocolCommand
@@ -8668,11 +8768,7 @@ export default function LoggerShow({
                                             }
                                             loggerId={logger.id}
                                             label={t('loggerDetail.sync')}
-                                            transportMode={
-                                                dongleEnabled
-                                                    ? 'serial'
-                                                    : 'mqtt'
-                                            }
+                                            transportMode={transportMode}
                                             commandTransport={
                                                 dongleEnabled
                                                     ? serialProtocolCommand
@@ -8701,11 +8797,7 @@ export default function LoggerShow({
                                                 !dongleEnabled &&
                                                 logger.status === 'offline'
                                             }
-                                            transportMode={
-                                                dongleEnabled
-                                                    ? 'serial'
-                                                    : 'mqtt'
-                                            }
+                                            transportMode={transportMode}
                                             commandTransport={
                                                 dongleEnabled
                                                     ? serialProtocolCommand
@@ -8982,7 +9074,7 @@ export default function LoggerShow({
                             analogChannelMax={maxAnalogChannel(logger)}
                             digitalChannelMax={maxDigitalChannel(logger)}
                             readOnly={readOnly}
-                            transportMode={dongleEnabled ? 'serial' : 'mqtt'}
+                            transportMode={transportMode}
                             commandTransport={
                                 dongleEnabled
                                     ? serialProtocolCommand
@@ -9003,9 +9095,7 @@ export default function LoggerShow({
                                     logger={protocolLogger}
                                     mapOnly
                                     readOnly={readOnly}
-                                    transportMode={
-                                        dongleEnabled ? 'serial' : 'mqtt'
-                                    }
+                                    transportMode={transportMode}
                                     commandTransport={
                                         dongleEnabled
                                             ? serialProtocolCommand
@@ -9243,8 +9333,12 @@ export default function LoggerShow({
 
                         {/* Power Rails — live INA219 readings per output rail (5V/12V/24V), captured
                             during the INFO sync (POWER READ). Only rails the device reports are shown.
-                            BL11 (cellular) has no INA219 rails, so the card is hidden entirely. */}
+                            BL11 (cellular) has no INA219 rails, so the card is hidden entirely — and
+                            neither does BL11LEO, which is the same base board. Before LEO had its own
+                            variant it read as 'BL11' here and was hidden correctly by accident; the
+                            check has to name it explicitly now. */}
                         {inferBoardVariant(logger) !== 'BL11' &&
+                            inferBoardVariant(logger) !== 'BL11LEO' &&
                             logger.power &&
                             (logger.power.out5 ||
                                 logger.power.out12 ||
@@ -9337,9 +9431,7 @@ export default function LoggerShow({
                             <SetModeCard
                                 logger={logger}
                                 disabled={readOnly}
-                                transportMode={
-                                    dongleEnabled ? 'serial' : 'mqtt'
-                                }
+                                transportMode={transportMode}
                                 commandTransport={
                                     dongleEnabled
                                         ? serialProtocolCommand
@@ -9350,9 +9442,7 @@ export default function LoggerShow({
                                 key={logger.loggerMode || 'no-mode'}
                                 logger={logger}
                                 disabled={readOnly}
-                                transportMode={
-                                    dongleEnabled ? 'serial' : 'mqtt'
-                                }
+                                transportMode={transportMode}
                                 commandTransport={
                                     dongleEnabled
                                         ? serialProtocolCommand
@@ -9410,9 +9500,7 @@ export default function LoggerShow({
                                     }
                                     manualSync
                                     readOnly={readOnly}
-                                    transportMode={
-                                        dongleEnabled ? 'serial' : 'mqtt'
-                                    }
+                                    transportMode={transportMode}
                                     commandTransport={
                                         dongleEnabled
                                             ? serialProtocolCommand
@@ -9458,9 +9546,7 @@ export default function LoggerShow({
                                     ioRow
                                     manualSync
                                     readOnly={readOnly}
-                                    transportMode={
-                                        dongleEnabled ? 'serial' : 'mqtt'
-                                    }
+                                    transportMode={transportMode}
                                     commandTransport={
                                         dongleEnabled
                                             ? serialProtocolCommand

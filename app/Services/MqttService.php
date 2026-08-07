@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\BoardModel;
 use Illuminate\Support\Facades\Log;
 use PhpMqtt\Client\ConnectionSettings;
 use PhpMqtt\Client\MqttClient;
@@ -199,6 +200,40 @@ class MqttService
      *    [27] System Mode     — string: "DEF", "AWLR_TD", "AWLR_US", "WEATHER" ("DEF" = belum di-set)
      * 2. Key-value object (legacy)
      */
+    /**
+     * Label the uplink from INFO's connection-mode field.
+     *
+     * LEO boards are decided from their identity, never from the field. Their uplink is Iridium SBD
+     * — a property of the hardware, and one the field cannot express: beacon_logger.md §3.5 documents
+     * index 25 as 0=Cellular / 1=Ethernet only, and LEO firmware reports outside that set. It used to
+     * land on a fabricated `3 => 'wifi'` arm, which is how LEO loggers ended up labelled "wifi".
+     * No Beacon board has WiFi at all — §1's transport table lists MQTT, UART and Bluetooth.
+     *
+     * Cellular accepts both 0 and 2. The spec says 0; the previous code said 2. Which one the
+     * deployed firmware actually sends is unconfirmed, and accepting both cannot regress anything:
+     * 0 currently falls through to null, so nothing today depends on it being unmapped.
+     *
+     * Anything unrecognised returns null — an honest "unknown" beats inventing a transport.
+     */
+    public static function connectionType(mixed $mode, mixed $serialNumber = null): ?string
+    {
+        // mixed, not ?string: INFO[0] is documented as the serial number but arrives from the wire,
+        // and synthetic/padded arrays carry integers there.
+        if (is_string($serialNumber) && BoardModel::isLeo($serialNumber)) {
+            return 'satellite';
+        }
+
+        if ($mode === null || ! is_numeric($mode)) {
+            return null;
+        }
+
+        return match ((int) $mode) {
+            0, 2 => 'cellular',
+            1 => 'ethernet',
+            default => null,
+        };
+    }
+
     public static function parseInfoResponse(array $info): array
     {
         // Format 1: Indexed array (protocol spec)
@@ -235,13 +270,8 @@ class MqttService
                 'interval_read' => isset($info[22]) ? (int) $info[22] : null,
                 'interval_send' => isset($info[23]) ? (int) $info[23] : null,
                 'max_reset' => isset($info[24]) ? (int) $info[24] : null,
-                // [25] Connection Mode per spec §3.4: 1=Ethernet, 2=Cellular, 3=WiFi/reserved.
-                'connection_type' => isset($info[25]) ? match ((int) $info[25]) {
-                    1 => 'ethernet',
-                    2 => 'cellular',
-                    3 => 'wifi',
-                    default => null,
-                } : null,
+                // [25] Connection Mode, [0] Serial Number — see self::connectionType().
+                'connection_type' => self::connectionType($info[25] ?? null, $info[0] ?? null),
                 'signal_strength' => isset($info[26]) && is_numeric($info[26]) ? (int) $info[26] : null,
                 // [27] System Mode in the current table. Some devices still send it as the last value at [26].
                 'logger_mode' => self::normalizeSystemMode($modeValue),
@@ -271,12 +301,7 @@ class MqttService
             'interval_read' => isset($info['iRead']) ? (int) $info['iRead'] : null,
             'interval_send' => isset($info['iSend']) ? (int) $info['iSend'] : null,
             'max_reset' => isset($info['wdt']) ? (int) $info['wdt'] : null,
-            'connection_type' => isset($info['connMode']) ? match ((int) $info['connMode']) {
-                1 => 'ethernet',
-                2 => 'cellular',
-                3 => 'wifi',
-                default => null,
-            } : null,
+            'connection_type' => self::connectionType($info['connMode'] ?? null, $info['SN'] ?? null),
             'signal_strength' => isset($info['signal']) ? (int) $info['signal'] : null,
             'logger_mode' => self::normalizeSystemMode($info['mode'] ?? $info['system_mode'] ?? null),
         ];

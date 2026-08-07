@@ -34,21 +34,26 @@ test('logger detail exposes a Dongle toggle that switches protocol transport to 
     assert.match(showSource, /useLoggerSerial/);
     assert.match(showSource, /dongleEnabled/);
     assert.match(showSource, /disconnect: disconnectDongle/);
-    assert.match(showSource, /Serial ON/);
-    assert.match(showSource, /Serial OFF/);
-    assert.match(showSource, /Memutuskan\.\.\./);
+    // The transport switch is an icon pair (Wifi / Cable), not the old
+    // "Serial ON"/"Serial OFF" text button.
+    assert.match(showSource, /aria-label="Gunakan MQTT"/);
+    assert.match(showSource, /aria-label="Gunakan Serial"/);
+    assert.match(showSource, /enableMqttTransport/);
+    assert.match(showSource, /enableSerialTransport/);
     assert.match(showSource, /await disconnectDongle\(\)/);
-    assert.match(showSource, /dongleButtonLabel/);
     assert.doesNotMatch(showSource, /Serial Dongle/);
     assert.doesNotMatch(showSource, /formatSerialDongleName/);
     assert.doesNotMatch(showSource, /Dongle ON/);
     assert.doesNotMatch(showSource, /Dongle OFF/);
     assert.doesNotMatch(showSource, /hidden max-w-40 text-right/);
     assert.match(showSource, /serialProtocolCommand/);
+    // Transport is derived once so the LEO-only path can force 'serial';
+    // re-inlining `dongleEnabled ? 'serial' : 'mqtt'` would bypass that.
     assert.match(
         showSource,
-        /transportMode=\{\s*dongleEnabled \? 'serial' : 'mqtt'\s*\}/,
+        /const transportMode: 'mqtt' \| 'serial' =\s*\n?\s*serialOnly \|\| dongleEnabled \? 'serial' : 'mqtt';/,
     );
+    assert.doesNotMatch(showSource, /transportMode=\{\s*dongleEnabled \?/);
     assert.match(
         showSource,
         /commandTransport=\{\s*dongleEnabled\s*\?\s*serialProtocolCommand\s*:\s*undefined\s*\}/,
@@ -77,6 +82,24 @@ test('logger detail exposes a Dongle toggle that switches protocol transport to 
     assert.match(showSource, /applySerialTelemetry/);
     assert.match(showSource, /ina_input/);
     assert.match(showSource, /liveLogger/);
+});
+
+test('a LEO logger hides the transport choice and forces serial', () => {
+    // Transport comes from the server, never from a string test in the page.
+    assert.match(showSource, /transport: 'mqtt' \| 'serial';/);
+    assert.match(showSource, /const serialOnly = logger\.transport === 'serial';/);
+    assert.doesNotMatch(showSource, /model.*\.includes\('LEO'\)/i);
+
+    // The MQTT/Serial toggle only renders for devices that actually have both.
+    assert.match(showSource, /\{serialOnly \? \(/);
+    assert.match(showSource, /USB belum tersambung/);
+
+    // Reopening a previously-authorized port needs no port picker, so a LEO
+    // page reconnects itself. requestPort() still requires a click, hence the
+    // Hubungkan button must survive.
+    assert.match(showSource, /tryReconnect: tryReconnectDongle/);
+    assert.match(showSource, /await tryReconnectDongle\(\)/);
+    assert.match(showSource, /Hubungkan/);
 });
 
 test('protocol panel routes generic commands through the selected transport', () => {

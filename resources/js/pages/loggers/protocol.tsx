@@ -17,6 +17,7 @@ import {
     Plus,
     Power,
     RefreshCw,
+    Satellite,
     Send,
     Server,
     Siren,
@@ -122,6 +123,15 @@ type IoSnapshot = {
         dns: string;
     };
     sim: { apn: string; netmode: string };
+    // BL11LEO only — Iridium send schedule. Takes the SIM card's place on that board.
+    leoSend: {
+        enabled: string;
+        mode: string;
+        pack: string;
+        roll: string;
+        dry: string;
+    };
+    leoTimes: string[];
     rtc: { date: string; time: string; timezone: string };
 };
 type ModuleSnapshot = {
@@ -145,6 +155,18 @@ type ModuleSnapshot = {
     ewsOutSupported: boolean;
 };
 
+// The LEO_SEND schedule as the server last saw it. `pack`/`roll` are null when the firmware did not
+// report them (v1), which is also how the card decides whether to offer those controls.
+export interface LeoSendConfig {
+    enabled: boolean;
+    mode: string;
+    pack: number | null;
+    roll: number | null;
+    dry: boolean | null;
+    times: string[];
+    read_at?: string | null;
+}
+
 export interface ProtocolLogger {
     id: string;
     name: string;
@@ -156,6 +178,7 @@ export interface ProtocolLogger {
     loggerMode: string | null;
     channelCount: number | null;
     firmwareVersion: string | null;
+    leoSendConfig?: LeoSendConfig | null;
     sensors: ProtocolSensor[];
 }
 
@@ -317,6 +340,27 @@ const EWS_OUT_OPTIONS: {
 // and nowhere else.
 const EWS_OUT_MIN_FIRMWARE = [2, 1, 3];
 
+// LEO_SEND v2 adds `pack` / `roll` (2 records per 50-byte Iridium credit) and lifts the schedule cap
+// from 8 to 16. Firmware v1 rejects those fields, so the card only offers them once the device
+// reports a version that has them.
+//
+// FALLBACK ONLY. The primary signal is feature detection: a device that returns `pack`/`roll` in its
+// LEO_SEND GET demonstrably supports them, which is more reliable than a version table — real units
+// were found reporting pack/roll while the plan document still listed v2 as unimplemented.
+//
+// This constant only matters before any GET has run on a device with no stored config. It is set
+// unreachably high so that case falls back to v1, which is the safe default. Set it to the real
+// version if one is ever published; nothing else needs editing.
+const LEO_SEND_V2_MIN_FIRMWARE = [99, 0, 0];
+
+// v1 caps the schedule at 8 entries; v2 at 16.
+const LEO_SEND_MAX_TIMES_V1 = 8;
+const LEO_SEND_MAX_TIMES_V2 = 16;
+
+// The Iridium plan allows 8 transmissions per day. More than this is not an error — the device will
+// still send — but it costs credits beyond the subscription, so the card warns instead of blocking.
+const LEO_SEND_DAILY_CREDIT_BUDGET = 8;
+
 // Firmware strings arrive in a few shapes ("BL110-v2.1.3", "BL110 v2.1.3", "v2.1.3"), so pull the
 // first dotted number out rather than parsing the whole label. A missing patch part reads as 0.
 function parseFirmwareVersion(value: string | null): number[] | null {
@@ -338,12 +382,54 @@ function firmwareSupportsEwsOut(value: string | null): boolean {
     return true;
 }
 
-function inferBoardVariant(
-    logger: ProtocolLogger,
-): 'BL11' | 'BL110' | 'BL1100' | null {
+// LEO must be tested before the plain BL11 check: "BL11LEO" satisfies
+// includes('BL11') too, and before this branch existed a LEO board was
+// classified as cellular — which handed it a SIM/APN card and a SIM GET it can
+// never answer (HAS_SIM7600 = 0; its uplink is Iridium satellite).
+//
+// The `[^A-Z]` guard keeps a model like "Galileo" out. Deliberately written
+// without a lookbehind so the module still parses on older Safari — this file
+// loads for every logger, not only the LEO ones. Same rule as the backend's
+// ProductionController::transportFor(); keep the two in step.
+function isLeoModel(model: string | null): boolean {
+    return /(?:^|[^A-Z])LEO/.test((model || '').toUpperCase());
+}
+
+// Unknown or unparseable version → v1, matching firmwareSupportsEwsOut()'s stance: never offer a
+// field the device may reject.
+function firmwareSupportsLeoSendV2(value: string | null): boolean {
+    const parsed = parseFirmwareVersion(value);
+    if (!parsed) return false;
+    for (let i = 0; i < LEO_SEND_V2_MIN_FIRMWARE.length; i++) {
+        if (parsed[i] !== LEO_SEND_V2_MIN_FIRMWARE[i])
+            return parsed[i] > LEO_SEND_V2_MIN_FIRMWARE[i];
+    }
+    return true;
+}
+
+// Transmissions per day implied by a schedule. Only pack:2 + roll:0 pairs records, halving sends;
+// pack:2 + roll:1 sends at every scheduled time (each record twice, for loss tolerance), and pack:1
+// sends one record per time — both cost one credit per scheduled time.
+export function leoSendsPerDay(
+    timesCount: number,
+    pack: number,
+    roll: number,
+): number {
+    if (pack === 2 && roll === 0) return Math.ceil(timesCount / 2);
+    return timesCount;
+}
+
+// Structural param rather than ProtocolLogger so the logger detail page can share this instead of
+// keeping its own copy — the two used to drift, and the copy classified LEO as BL11.
+export function inferBoardVariant(logger: {
+    model: string | null;
+    connectionType: string | null;
+    channelCount: number | null;
+}): 'BL11LEO' | 'BL11' | 'BL110' | 'BL1100' | null {
     const normalized = (logger.model || '')
         .toUpperCase()
         .replace(/[^A-Z0-9]/g, '');
+    if (isLeoModel(logger.model)) return 'BL11LEO';
     if (normalized.includes('BL1100') || (logger.channelCount ?? 0) >= 8)
         return 'BL1100';
     if (normalized.includes('BL110')) return 'BL110';
@@ -966,6 +1052,47 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             net?: number;
             rat?: string;
         } | null>(null);
+        // BL11LEO Iridium schedule. `dry:1` builds the payload and dumps it to Serial 1 without
+        // spending a credit — the only safe way to rehearse a schedule.
+        //
+        // Hydration order: the in-memory panel snapshot (survives a tab switch) → the copy the
+        // server holds (survives a refresh) → empty. Without the server copy the card came back
+        // blank after every reload even though the device clearly had a schedule, because
+        // panelStateCache is a plain Map and this panel is manualSync (no auto-GET on mount).
+        const leoStored = logger.leoSendConfig ?? null;
+        const [leoSend, setLeoSend] = useState(
+            ioSnapshot?.leoSend ??
+                (leoStored
+                    ? {
+                          enabled: leoStored.enabled ? '1' : '0',
+                          mode: leoStored.mode || 'NOW',
+                          pack:
+                              leoStored.pack != null
+                                  ? String(leoStored.pack)
+                                  : '1',
+                          roll:
+                              leoStored.roll != null
+                                  ? String(leoStored.roll)
+                                  : '0',
+                          dry: leoStored.dry ? '1' : '0',
+                      }
+                    : {
+                          enabled: '1',
+                          mode: 'NOW',
+                          pack: '1',
+                          roll: '0',
+                          dry: '0',
+                      }),
+        );
+        const [leoTimes, setLeoTimes] = useState<string[]>(
+            ioSnapshot?.leoTimes ?? leoStored?.times ?? [],
+        );
+        // The device announces v2 by returning pack/roll at all, so trust that over a version
+        // constant — the version v2 landed in was never published, and a device that reports `pack`
+        // demonstrably supports it. This is why the stored copy keeps "absent" as null.
+        const [leoV2Detected, setLeoV2Detected] = useState(
+            leoStored?.pack != null,
+        );
         const [pumpState, setPumpState] = useState('1');
         const [out24State, setOut24State] = useState(ioSnapshot?.out24 ?? '1');
         const [out12State, setOut12State] = useState(ioSnapshot?.out12 ?? '1');
@@ -1184,8 +1311,24 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 ? Boolean(commandTransport)
                 : Boolean(logger.deviceIdentifier));
         const variant = inferBoardVariant(logger);
+        // Mutually exclusive by construction: inferBoardVariant() tests LEO first, so a satellite
+        // board never reads as cellular.
+        const isSatelliteBoard = variant === 'BL11LEO';
         const isCellularBoard = variant === 'BL11';
         const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
+
+        const leoV2 =
+            leoV2Detected || firmwareSupportsLeoSendV2(logger.firmwareVersion);
+        const leoMaxTimes = leoV2
+            ? LEO_SEND_MAX_TIMES_V2
+            : LEO_SEND_MAX_TIMES_V1;
+        // On v1 firmware pack/roll do not exist, so the projection must ignore whatever is in state.
+        const leoPack = leoV2 ? numberValue(leoSend.pack, 1) : 1;
+        const leoRoll = leoV2 ? numberValue(leoSend.roll, 0) : 0;
+        const leoSends = leoSendsPerDay(leoTimes.length, leoPack, leoRoll);
+        const leoIsDry = numberValue(leoSend.dry, 0) === 1;
+        const leoCredits = leoIsDry ? 0 : leoSends;
+        const leoOverBudget = leoCredits > LEO_SEND_DAILY_CREDIT_BUDGET;
         const gcmEnabled = numberValue(gcm.enable) === 1;
         const gcmWarnEnabled = numberValue(gcmWarn.enable) === 1;
         // Two independent signals must agree before the output selector appears: the firmware is
@@ -1601,6 +1744,32 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             return runProtocolCommand(module, payload);
         }
 
+        // The platform keeps a copy of the LEO schedule because the board is configured locally over
+        // USB and nothing else records what it is running. Best-effort on purpose: if this fails the
+        // device is still configured correctly, only our copy is stale — never fail the sync or the
+        // SET over it.
+        //
+        // pack/roll are sent as null when the firmware did not report them (LEO_SEND v1). "No pack
+        // field" and "pack is 1" are different facts; collapsing them would mislabel record times.
+        async function persistLeoSendConfig(snapshot: {
+            enabled: boolean;
+            mode: string;
+            pack: number | null;
+            roll: number | null;
+            dry: boolean | null;
+            times: string[];
+        }) {
+            if (!logger.deviceIdentifier) return;
+            try {
+                await postJson('/api/serial/leo-send/import', {
+                    id_logger: logger.deviceIdentifier,
+                    ...snapshot,
+                });
+            } catch {
+                /* noop — see above */
+            }
+        }
+
         // Open the register-map popup and pull it from the device with {"MODBUSTCP":{"cmd":"GETMAP"}}.
         // The firmware replies {"MODBUSTCP":{"status":"OK","sbase":..,"dbase":..,"slots":[…]}}.
         async function loadModbusMap() {
@@ -1926,6 +2095,103 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 });
             }
 
+            // BL11LEO reads its Iridium schedule where a cellular board reads SIM. Before the LEO
+            // variant existed this board fell into the branch above and burned a 12 s timeout on a
+            // SIM GET it can never answer.
+            if (isSatelliteBoard) {
+                steps.push({
+                    // LEO_SEND GET → {"LEO_SEND":{"enabled":1,"mode":"NOW","pack":2,"roll":0,"count":2,
+                    // "times":["12:00","18:00"]}}. `pack`/`roll` are absent on v1 firmware.
+                    label: 'LEO_SEND',
+                    description: 'Membaca jadwal kirim Iridium…',
+                    icon: Satellite,
+                    run: async () => {
+                        const r = await gcmGet('LEO_SEND', {
+                            LEO_SEND: { cmd: 'GET' },
+                        });
+                        const inner = (
+                            r.data as
+                                | {
+                                      LEO_SEND?: {
+                                          enabled?: number;
+                                          mode?: string;
+                                          pack?: number;
+                                          roll?: number;
+                                          dry?: number;
+                                          times?: unknown;
+                                      };
+                                  }
+                                | undefined
+                        )?.LEO_SEND;
+                        if (!r.success) {
+                            throw new Error(
+                                r.message ?? 'LEO_SEND read failed.',
+                            );
+                        }
+                        if (!inner) return;
+
+                        // Feature detection, not version detection — see leoV2Detected.
+                        if (
+                            inner.pack !== undefined ||
+                            inner.roll !== undefined
+                        )
+                            setLeoV2Detected(true);
+
+                        setLeoSend((previous) => ({
+                            enabled:
+                                inner.enabled !== undefined
+                                    ? String(inner.enabled)
+                                    : previous.enabled,
+                            mode:
+                                typeof inner.mode === 'string' && inner.mode
+                                    ? inner.mode.toUpperCase()
+                                    : previous.mode,
+                            // Absent on v1 — keep what the form had rather than inventing a default.
+                            pack:
+                                inner.pack !== undefined
+                                    ? String(inner.pack)
+                                    : previous.pack,
+                            roll:
+                                inner.roll !== undefined
+                                    ? String(inner.roll)
+                                    : previous.roll,
+                            dry:
+                                inner.dry !== undefined
+                                    ? String(inner.dry)
+                                    : previous.dry,
+                        }));
+
+                        const times = Array.isArray(inner.times)
+                            ? inner.times
+                                  .filter(
+                                      (t): t is string => typeof t === 'string',
+                                  )
+                                  .map((t) => t.slice(0, 5))
+                            : null;
+                        if (times) setLeoTimes(times);
+
+                        // Snapshot straight from the device response, not from state — the setters
+                        // above have not applied yet at this point.
+                        await persistLeoSendConfig({
+                            enabled:
+                                numberValue(String(inner.enabled ?? 1), 1) ===
+                                1,
+                            mode:
+                                typeof inner.mode === 'string' && inner.mode
+                                    ? inner.mode.toUpperCase()
+                                    : 'NOW',
+                            pack: inner.pack ?? null,
+                            roll: inner.roll ?? null,
+                            dry:
+                                inner.dry === undefined
+                                    ? null
+                                    : inner.dry === 1,
+                            times: times ?? [],
+                        });
+                    },
+                });
+            }
+
             steps.push({
                 // RTC GET → {"date":"YYYY-MM-DD","time":"HH:MM:SS","timezone":"7"} (with/without RTC wrapper).
                 label: 'RTC',
@@ -2218,6 +2484,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 modbusTcp,
                 net,
                 sim: { apn: simApn, netmode: simNetmode },
+                leoSend,
+                leoTimes,
                 rtc,
             } satisfies IoSnapshot);
         }, [
@@ -2231,6 +2499,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             net,
             simApn,
             simNetmode,
+            leoSend,
+            leoTimes,
             rtc,
         ]);
 
@@ -3275,8 +3545,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                 'Change the 24V power output?',
                             )}
                         </div>
-                        {/* BL11 (cellular) only exposes the 24V output — its P_OUT GET returns just {"24":x}. */}
-                        {!isCellularBoard && (
+                        {/* BL11 and BL11LEO only expose the 24V output — their P_OUT GET returns just
+                        {"24":x}, and the firmware rejects a 12V command outright ("BL11 tidak punya
+                        output 12V"). Showing the control would read as "12V is off" rather than
+                        "there is no 12V rail". */}
+                        {!isCellularBoard && !isSatelliteBoard && (
                             <div className="flex items-end gap-2">
                                 <div className="flex-1">
                                     <Field label="Output 12V">
@@ -3422,6 +3695,58 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     });
                 }
             });
+        // LEO_SEND SET. `times` are the data-capture times, not send times — on pack:2 the device
+        // sends at every second entry. v1 firmware has no pack/roll, so those keys are omitted
+        // entirely rather than sent as defaults: an unknown key is a parse error on some builds.
+        const sendLeoSend = () => {
+            if (leoTimes.length === 0) {
+                setResponses((current) => ({
+                    ...current,
+                    LEO_SEND: {
+                        success: false,
+                        message:
+                            'Tambahkan minimal satu jam ambil data sebelum SET.',
+                    },
+                }));
+                return;
+            }
+            void send(
+                'LEO_SEND',
+                {
+                    LEO_SEND: {
+                        enabled: numberValue(leoSend.enabled, 1),
+                        mode: leoSend.mode,
+                        ...(leoV2 ? { pack: leoPack, roll: leoRoll } : {}),
+                        dry: numberValue(leoSend.dry, 0),
+                        times: leoTimes,
+                    },
+                },
+                'LEO_SEND',
+            ).then((result) => {
+                if (!result?.success) return;
+                void persistLeoSendConfig({
+                    enabled: numberValue(leoSend.enabled, 1) === 1,
+                    mode: leoSend.mode,
+                    pack: leoV2 ? leoPack : null,
+                    roll: leoV2 ? leoRoll : null,
+                    dry: leoIsDry,
+                    times: leoTimes,
+                });
+                pushToast({
+                    title: leoIsDry
+                        ? 'Jadwal tersimpan (mode uji)'
+                        : 'Jadwal Iridium tersimpan',
+                    description: leoIsDry
+                        ? `${leoTimes.length} jam ambil data. dry:1 — payload hanya keluar ke Serial 1, tidak memakai kredit.`
+                        : `${leoTimes.length} jam ambil data → ${leoSends} pengiriman/hari (${leoCredits} kredit).`,
+                    variant: leoOverBudget ? 'error' : 'success',
+                });
+            });
+        };
+        // TEST builds a payload from the current readings and prints it without waiting for a
+        // schedule. Independent of `dry` — TEST never transmits.
+        const sendLeoTest = () =>
+            void send('LEO_SEND', { LEO_SEND: 'TEST' }, 'LEO_SEND');
         const netDhcpField = (
             <Field label="DHCP">
                 <select
@@ -3585,6 +3910,253 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             )}
                             Baca Register Map
                         </Button>
+                    </CommandCard>
+                )}
+
+                {/* BL11LEO has neither NET nor SIM — no Ethernet, no cellular modem. Its uplink is
+                Iridium SBD, so the schedule card takes the SIM card's slot. Config is written over
+                USB (this board has no MQTT), which the serial transport already handles. */}
+                {isSatelliteBoard && (
+                    <CommandCard title="Jadwal Iridium" icon={Satellite}>
+                        <div className="grid gap-3 sm:grid-cols-3">
+                            <Field label="Penjadwalan">
+                                <select
+                                    className={`${selectClass} w-full`}
+                                    value={leoSend.enabled}
+                                    onChange={(event) =>
+                                        setLeoSend({
+                                            ...leoSend,
+                                            enabled: event.target.value,
+                                        })
+                                    }
+                                >
+                                    <option value="1">Aktif</option>
+                                    <option value="0">Non-Aktif</option>
+                                </select>
+                            </Field>
+                            <Field label="Nilai sensor">
+                                <select
+                                    className={`${selectClass} w-full`}
+                                    value={leoSend.mode}
+                                    onChange={(event) =>
+                                        setLeoSend({
+                                            ...leoSend,
+                                            mode: event.target.value,
+                                        })
+                                    }
+                                >
+                                    <option value="NOW">
+                                        NOW — sesaat pada jam jadwal
+                                    </option>
+                                    <option value="AVG">
+                                        AVG — rata-rata per periode
+                                    </option>
+                                </select>
+                            </Field>
+                            <Field label="Pengiriman">
+                                <select
+                                    className={`${selectClass} w-full`}
+                                    value={leoSend.dry}
+                                    onChange={(event) =>
+                                        setLeoSend({
+                                            ...leoSend,
+                                            dry: event.target.value,
+                                        })
+                                    }
+                                >
+                                    <option value="0">
+                                        Sungguhan — pakai kredit
+                                    </option>
+                                    <option value="1">
+                                        Uji (dry) — hanya ke Serial 1
+                                    </option>
+                                </select>
+                            </Field>
+                        </div>
+
+                        {/* pack/roll exist only on LEO_SEND v2. On v1 firmware the row is replaced by
+                        a note so the absence is explained rather than looking like a missing feature. */}
+                        {leoV2 ? (
+                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                <Field label="Record per paket (pack)">
+                                    <select
+                                        className={`${selectClass} w-full`}
+                                        value={leoSend.pack}
+                                        onChange={(event) =>
+                                            setLeoSend({
+                                                ...leoSend,
+                                                pack: event.target.value,
+                                            })
+                                        }
+                                    >
+                                        <option value="1">
+                                            1 — satu kredit satu data
+                                        </option>
+                                        <option value="2">
+                                            2 — satu kredit dua data
+                                        </option>
+                                    </select>
+                                </Field>
+                                <Field label="Pemasangan record (roll)">
+                                    <select
+                                        className={`${selectClass} w-full`}
+                                        value={leoSend.roll}
+                                        disabled={leoPack !== 2}
+                                        onChange={(event) =>
+                                            setLeoSend({
+                                                ...leoSend,
+                                                roll: event.target.value,
+                                            })
+                                        }
+                                    >
+                                        <option value="0">
+                                            Pasangan tetap — hemat
+                                        </option>
+                                        <option value="1">
+                                            Bergulir — tahan paket hilang
+                                        </option>
+                                    </select>
+                                </Field>
+                            </div>
+                        ) : (
+                            <p className="mt-3 text-[11px] text-muted-foreground">
+                                Dukungan <code>pack</code>/<code>roll</code>{' '}
+                                belum terdeteksi, jadi kartu ini memakai
+                                LEO_SEND v1: satu record per paket, maksimal{' '}
+                                {LEO_SEND_MAX_TIMES_V1} jam. Tekan Sync — kalau
+                                alat membalas kedua field itu, opsinya langsung
+                                muncul.
+                            </p>
+                        )}
+
+                        {/* Capture times. The device sorts ascending on SET, so order here is free. */}
+                        <div className="mt-4">
+                            <div className="mb-2 flex items-center justify-between">
+                                <span className="text-xs font-medium">
+                                    Jam ambil data
+                                </span>
+                                <span className="font-mono text-[11px] text-muted-foreground">
+                                    {leoTimes.length}/{leoMaxTimes}
+                                </span>
+                            </div>
+                            {leoTimes.length === 0 ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                    Belum ada jadwal. Tambahkan minimal satu
+                                    jam.
+                                </p>
+                            ) : (
+                                <div className="flex flex-wrap gap-2">
+                                    {leoTimes.map((time, index) => (
+                                        <div
+                                            key={`leo-time-${index}`}
+                                            className="flex items-center gap-1 rounded-md border bg-background px-1.5 py-1"
+                                        >
+                                            <input
+                                                type="time"
+                                                className="h-6 bg-transparent text-xs outline-none"
+                                                value={time}
+                                                onChange={(event) =>
+                                                    setLeoTimes(
+                                                        leoTimes.map((t, i) =>
+                                                            i === index
+                                                                ? event.target
+                                                                      .value
+                                                                : t,
+                                                        ),
+                                                    )
+                                                }
+                                            />
+                                            <button
+                                                type="button"
+                                                aria-label={`Hapus jam ${time}`}
+                                                className="text-muted-foreground hover:text-red-500"
+                                                onClick={() =>
+                                                    setLeoTimes(
+                                                        leoTimes.filter(
+                                                            (_, i) =>
+                                                                i !== index,
+                                                        ),
+                                                    )
+                                                }
+                                            >
+                                                <X className="size-3" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 gap-1 text-xs"
+                                    disabled={
+                                        !canSend ||
+                                        leoTimes.length >= leoMaxTimes
+                                    }
+                                    onClick={() =>
+                                        setLeoTimes([...leoTimes, '00:00'])
+                                    }
+                                >
+                                    <Plus className="size-3" /> Tambah jam
+                                </Button>
+                                {leoTimes.length > 0 && (
+                                    <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 text-xs text-muted-foreground"
+                                        disabled={!canSend}
+                                        onClick={() => setLeoTimes([])}
+                                    >
+                                        Kosongkan
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Live cost projection. The firmware accepts a schedule that outspends the
+                        subscription, so show the bill before SET rather than a month later. */}
+                        <div
+                            className={`mt-3 rounded-md border p-2 text-[11px] ${
+                                leoOverBudget
+                                    ? 'border-amber-500/30 bg-amber-500/5 text-amber-600 dark:text-amber-400'
+                                    : 'border-border bg-muted/40 text-muted-foreground'
+                            }`}
+                        >
+                            <span className="font-mono">
+                                {leoTimes.length} jam ambil data → {leoSends}{' '}
+                                pengiriman/hari → {leoCredits} kredit/hari
+                            </span>
+                            {leoIsDry && (
+                                <span className="ml-1">
+                                    (mode uji, tidak memakai kredit)
+                                </span>
+                            )}
+                            {leoOverBudget && (
+                                <span className="ml-1 font-medium">
+                                    — melebihi kuota{' '}
+                                    {LEO_SEND_DAILY_CREDIT_BUDGET} kredit/hari.
+                                </span>
+                            )}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                            {actionButton('SET', 'LEO_SEND', sendLeoSend)}
+                            {actionButton('TEST', 'LEO_SEND', sendLeoTest)}
+                        </div>
+                        {responses.LEO_SEND && (
+                            <p
+                                className={`mt-2 text-xs ${
+                                    responses.LEO_SEND.success
+                                        ? 'text-emerald-600'
+                                        : 'text-red-600'
+                                }`}
+                            >
+                                {resultText(responses.LEO_SEND)}
+                            </p>
+                        )}
                     </CommandCard>
                 )}
 
