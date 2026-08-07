@@ -9,6 +9,19 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
         return $this->profiles()[strtoupper($mode)] ?? null;
     }
 
+    /**
+     * Every profile, keyed by mode.
+     *
+     * This class is no longer the runtime catalogue — DbModeProfileCatalog is (see
+     * AppServiceProvider). It is kept as the seed source for the mode_profiles migration and as a
+     * known-good baseline the parity test compares the database against, so changes here stay
+     * meaningful rather than dead code.
+     */
+    public function all(): array
+    {
+        return $this->profiles();
+    }
+
     public function template(string $mode, string $role, string $templateId): ?array
     {
         $profile = $this->find($mode);

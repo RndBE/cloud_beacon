@@ -8,6 +8,7 @@ use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MaintenanceTicketController;
+use App\Http\Controllers\ModeProfileAdminController;
 use App\Http\Controllers\ModeProfileController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\OtaController;
@@ -109,6 +110,20 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('production/models/{id}', [DeviceModelController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.models.destroy');
+
+    // Mode profile catalogue — the sensor/slave templates the Mode Profile Wizard writes to loggers.
+    Route::get('production/mode-profiles', [ModeProfileAdminController::class, 'index'])
+        ->middleware('permission:production.mode-profiles')
+        ->name('production.mode-profiles.index');
+    Route::post('production/mode-profiles', [ModeProfileAdminController::class, 'store'])
+        ->middleware('permission:production.mode-profiles')
+        ->name('production.mode-profiles.store');
+    Route::put('production/mode-profiles/{id}', [ModeProfileAdminController::class, 'update'])
+        ->middleware('permission:production.mode-profiles')
+        ->name('production.mode-profiles.update');
+    Route::delete('production/mode-profiles/{id}', [ModeProfileAdminController::class, 'destroy'])
+        ->middleware('permission:production.mode-profiles')
+        ->name('production.mode-profiles.destroy');
 
     Route::post('api/check-serial', [ProductionController::class, 'checkSerial'])
         ->middleware('permission:production.check-serial')

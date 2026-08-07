@@ -2,7 +2,7 @@
 
 namespace App\Providers;
 
-use App\Services\ModeProfiles\HardcodedModeProfileCatalog;
+use App\Services\ModeProfiles\DbModeProfileCatalog;
 use App\Services\ModeProfiles\ModeProfileCatalog;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
@@ -17,7 +17,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->bind(ModeProfileCatalog::class, HardcodedModeProfileCatalog::class);
+        // Profiles are editable from Production now. HardcodedModeProfileCatalog stays as the seed
+        // source for the mode_profiles migration and as the baseline the parity test checks against.
+        $this->app->bind(ModeProfileCatalog::class, DbModeProfileCatalog::class);
     }
 
     /**

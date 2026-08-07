@@ -1,5 +1,21 @@
 import { Link, usePage } from '@inertiajs/react';
-import { ArrowUpDown, Box, ClipboardCheck, Factory, FolderKanban, LayoutGrid, Network, Radio, Settings, Shield, TerminalSquare, Usb, Users, Wrench } from 'lucide-react';
+import {
+    ArrowUpDown,
+    Box,
+    ClipboardCheck,
+    Factory,
+    FolderKanban,
+    Layers,
+    LayoutGrid,
+    Network,
+    Radio,
+    Settings,
+    Shield,
+    TerminalSquare,
+    Usb,
+    Users,
+    Wrench,
+} from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppLogo from '@/components/app-logo';
@@ -34,8 +50,10 @@ export function AppSidebar() {
     const { t } = useTranslation();
     const { auth } = usePage<{ auth: { permissions?: string[] } }>().props;
     const permissions = auth.permissions ?? [];
-    const canView = (permission?: string) => !permission || permissions.includes(permission);
-    const visibleItems = (items: PermissionNavItem[]): NavItem[] => items.filter((item) => canView(item.permission));
+    const canView = (permission?: string) =>
+        !permission || permissions.includes(permission);
+    const visibleItems = (items: PermissionNavItem[]): NavItem[] =>
+        items.filter((item) => canView(item.permission));
     const [openGroups, setOpenGroups] = useState(readStoredSidebarGroups);
 
     function updateGroupOpen(groupId: SidebarGroupId, open: boolean) {
@@ -104,6 +122,12 @@ export function AppSidebar() {
             href: '/production/provision',
             icon: Usb,
             permission: 'production.provision',
+        },
+        {
+            title: 'Mode Profiles',
+            href: '/production/mode-profiles',
+            icon: Layers,
+            permission: 'production.mode-profiles',
         },
     ]);
 
