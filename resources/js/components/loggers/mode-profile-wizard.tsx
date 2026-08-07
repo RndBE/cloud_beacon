@@ -208,6 +208,11 @@ type WizardPhase =
 
 const GUIDED_MODES = new Set(['ARR', 'AWR', 'AWLR_TD', 'AWLR_US', 'APMS']);
 
+// Selector fallback for a logger that has no mode yet. An empty selector reads as "nothing chosen"
+// when the real state is "not configured", and the operator has to discover that DEFAULT is the
+// plain mode. Nothing is sent on selection alone — the apply button still needs an explicit click.
+const FALLBACK_MODE = 'DEFAULT';
+
 function csrfToken(): string {
     return (
         document
@@ -287,11 +292,16 @@ export function ModeProfileWizard({
 }: ModeProfileWizardProps) {
     const { t } = useTranslation();
     const allowedModes = logger.availableModes;
+    // The logger's own mode wins; DEFAULT only fills in when it has none. Guarded on DEFAULT
+    // actually being offered, so a board whose allowlist excludes it still starts blank rather
+    // than showing a mode it cannot be set to.
     const initialMode = allowedModes.some(
         (mode) => mode.slug === logger.loggerMode,
     )
         ? logger.loggerMode || ''
-        : '';
+        : allowedModes.some((mode) => mode.slug === FALLBACK_MODE)
+          ? FALLBACK_MODE
+          : '';
     const [selectedMode, setSelectedMode] = useState(initialMode);
     const [profile, setProfile] = useState<ModeProfile | null>(null);
     const [templateIds, setTemplateIds] = useState<Record<string, string>>({});
