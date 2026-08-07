@@ -14,8 +14,16 @@ class ProjectController extends Controller
     public function index(): Response
     {
         $user = auth()->user();
+
+        // The logger list and its count are scoped per user, not per project. A member granted
+        // `logger_scope: selected` belongs to the project but is entitled to only some of its
+        // loggers — before project access widened this list, everyone here was the owner, so an
+        // unscoped eager load was safe. It no longer is.
+        $visibleLoggers = fn ($query) => $query->visibleTo($user);
+
         $query = Project::with([
             'loggers' => fn ($query) => $query
+                ->visibleTo($user)
                 ->select([
                     'id',
                     'project_id',
@@ -28,11 +36,9 @@ class ProjectController extends Controller
                     'last_seen_at',
                 ])
                 ->orderBy('name'),
-        ])->withCount('loggers');
+        ])->withCount(['loggers' => $visibleLoggers]);
 
-        if (!$user->isSuperAdmin()) {
-            $query->where('user_id', $user->id);
-        }
+        $query->visibleTo($user);
 
         $projectModels = $query->orderBy('name')->get();
         $loggerSerials = $projectModels
@@ -136,6 +142,12 @@ class ProjectController extends Controller
             ->with('success', 'Project berhasil dihapus. Logger tetap tersimpan.');
     }
 
+    /**
+     * Resolve a project for WRITING (update / destroy) — owner or super-admin only.
+     *
+     * Deliberately not Project::visibleTo(): that scope also matches projects merely granted to the
+     * user, and being able to see a project must not imply being able to rename or delete it.
+     */
     private function resolveProject(int $id): Project
     {
         $user = auth()->user();
