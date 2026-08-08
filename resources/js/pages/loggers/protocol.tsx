@@ -24,6 +24,7 @@ import {
     Table2,
     Terminal,
     Trash2,
+    TriangleAlert,
     UploadCloud,
     Wand2,
     Wifi,
@@ -353,8 +354,8 @@ const EWS_OUT_MIN_FIRMWARE = [2, 1, 3];
 // version if one is ever published; nothing else needs editing.
 const LEO_SEND_V2_MIN_FIRMWARE = [99, 0, 0];
 
-// v1 caps the schedule at 8 entries; v2 at 16.
-const LEO_SEND_MAX_TIMES_V1 = 8;
+// The editor always offers the v2 cap. v1 firmware stops at 8 and says so itself (TOO_MANY_TIMES
+// carries its own max), so the limit is enforced by the device rather than guessed at here.
 const LEO_SEND_MAX_TIMES_V2 = 16;
 
 // The Iridium plan allows 8 transmissions per day. More than this is not an error — the device will
@@ -1319,16 +1320,22 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
 
         const leoV2 =
             leoV2Detected || firmwareSupportsLeoSendV2(logger.firmwareVersion);
-        const leoMaxTimes = leoV2
-            ? LEO_SEND_MAX_TIMES_V2
-            : LEO_SEND_MAX_TIMES_V1;
+        // Always the v2 cap. The schedule limit is not gated on feature detection the way pack/roll
+        // are: firmware validates the count itself and answers TOO_MANY_TIMES with its own max, so a
+        // v1 board fails visibly and recoverably. Capping the editor at 8 instead meant an operator
+        // on v2 firmware silently could not reach 16 until they happened to press Sync — the limit
+        // looked like a product decision rather than a stale reading.
+        const leoMaxTimes = LEO_SEND_MAX_TIMES_V2;
         // On v1 firmware pack/roll do not exist, so the projection must ignore whatever is in state.
         const leoPack = leoV2 ? numberValue(leoSend.pack, 1) : 1;
         const leoRoll = leoV2 ? numberValue(leoSend.roll, 0) : 0;
         const leoSends = leoSendsPerDay(leoTimes.length, leoPack, leoRoll);
-        const leoIsDry = numberValue(leoSend.dry, 0) === 1;
-        const leoCredits = leoIsDry ? 0 : leoSends;
+        // The card always writes dry:0, so the projection is the real bill — never zeroed out. This
+        // is separate from what the device currently reports; see leoDeviceInDryMode.
+        const leoCredits = leoSends;
         const leoOverBudget = leoCredits > LEO_SEND_DAILY_CREDIT_BUDGET;
+        // Read back from the last GET only, to warn that a bench session left the unit in dry mode.
+        const leoDeviceInDryMode = numberValue(leoSend.dry, 0) === 1;
         const gcmEnabled = numberValue(gcm.enable) === 1;
         const gcmWarnEnabled = numberValue(gcmWarn.enable) === 1;
         // Two independent signals must agree before the output selector appears: the firmware is
@@ -3717,28 +3724,27 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         enabled: numberValue(leoSend.enabled, 1),
                         mode: leoSend.mode,
                         ...(leoV2 ? { pack: leoPack, roll: leoRoll } : {}),
-                        dry: numberValue(leoSend.dry, 0),
+                        // Always 0. Sent explicitly rather than omitted so a unit left in dry mode
+                        // by a bench session is cleared the moment its schedule is saved here.
+                        dry: 0,
                         times: leoTimes,
                     },
                 },
                 'LEO_SEND',
             ).then((result) => {
                 if (!result?.success) return;
+                setLeoSend((previous) => ({ ...previous, dry: '0' }));
                 void persistLeoSendConfig({
                     enabled: numberValue(leoSend.enabled, 1) === 1,
                     mode: leoSend.mode,
                     pack: leoV2 ? leoPack : null,
                     roll: leoV2 ? leoRoll : null,
-                    dry: leoIsDry,
+                    dry: false,
                     times: leoTimes,
                 });
                 pushToast({
-                    title: leoIsDry
-                        ? 'Jadwal tersimpan (mode uji)'
-                        : 'Jadwal Iridium tersimpan',
-                    description: leoIsDry
-                        ? `${leoTimes.length} jam ambil data. dry:1 — payload hanya keluar ke Serial 1, tidak memakai kredit.`
-                        : `${leoTimes.length} jam ambil data → ${leoSends} pengiriman/hari (${leoCredits} kredit).`,
+                    title: 'Jadwal Iridium tersimpan',
+                    description: `${leoTimes.length} jam ambil data → ${leoSends} pengiriman/hari (${leoCredits} kredit).`,
                     variant: leoOverBudget ? 'error' : 'success',
                 });
             });
@@ -3918,7 +3924,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 USB (this board has no MQTT), which the serial transport already handles. */}
                 {isSatelliteBoard && (
                     <CommandCard title="Jadwal Iridium" icon={Satellite}>
-                        <div className="grid gap-3 sm:grid-cols-3">
+                        {/* No dry-run control: SET always writes dry:0. Rehearsing a schedule is a
+                        bench activity done over COM50, not something to leave reachable on a page
+                        that configures live units — a device left in dry mode looks like it is
+                        transmitting when it is not. */}
+                        <div className="grid gap-3 sm:grid-cols-2">
                             <Field label="Penjadwalan">
                                 <select
                                     className={`${selectClass} w-full`}
@@ -3945,34 +3955,26 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         })
                                     }
                                 >
-                                    <option value="NOW">
-                                        NOW — sesaat pada jam jadwal
-                                    </option>
-                                    <option value="AVG">
-                                        AVG — rata-rata per periode
-                                    </option>
-                                </select>
-                            </Field>
-                            <Field label="Pengiriman">
-                                <select
-                                    className={`${selectClass} w-full`}
-                                    value={leoSend.dry}
-                                    onChange={(event) =>
-                                        setLeoSend({
-                                            ...leoSend,
-                                            dry: event.target.value,
-                                        })
-                                    }
-                                >
-                                    <option value="0">
-                                        Sungguhan — pakai kredit
-                                    </option>
-                                    <option value="1">
-                                        Uji (dry) — hanya ke Serial 1
-                                    </option>
+                                    <option value="NOW">NOW</option>
+                                    <option value="AVG">AVG</option>
                                 </select>
                             </Field>
                         </div>
+
+                        {/* The control is gone but the device can still be in dry mode from an
+                        earlier bench session. Say so, otherwise the schedule reads as live when
+                        nothing is reaching the satellite. Pressing SET clears it. */}
+                        {leoDeviceInDryMode && (
+                            <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-600 dark:text-amber-400">
+                                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                                <span>
+                                    Alat ini sedang dalam mode uji (
+                                    <code>dry:1</code>) — payload hanya keluar
+                                    ke Serial 1, tidak dikirim ke satelit. Tekan
+                                    SET untuk mengaktifkan pengiriman sungguhan.
+                                </span>
+                            </div>
+                        )}
 
                         {/* pack/roll exist only on LEO_SEND v2. On v1 firmware the row is replaced by
                         a note so the absence is explained rather than looking like a missing feature. */}
@@ -4018,16 +4020,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     </select>
                                 </Field>
                             </div>
-                        ) : (
-                            <p className="mt-3 text-[11px] text-muted-foreground">
-                                Dukungan <code>pack</code>/<code>roll</code>{' '}
-                                belum terdeteksi, jadi kartu ini memakai
-                                LEO_SEND v1: satu record per paket, maksimal{' '}
-                                {LEO_SEND_MAX_TIMES_V1} jam. Tekan Sync — kalau
-                                alat membalas kedua field itu, opsinya langsung
-                                muncul.
-                            </p>
-                        )}
+                        ) : null}
 
                         {/* Capture times. The device sorts ascending on SET, so order here is free. */}
                         <div className="mt-4">
@@ -4039,12 +4032,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     {leoTimes.length}/{leoMaxTimes}
                                 </span>
                             </div>
-                            {leoTimes.length === 0 ? (
-                                <p className="text-[11px] text-muted-foreground">
-                                    Belum ada jadwal. Tambahkan minimal satu
-                                    jam.
-                                </p>
-                            ) : (
+                            {leoTimes.length === 0 ? null : (
                                 <div className="flex flex-wrap gap-2">
                                     {leoTimes.map((time, index) => (
                                         <div
@@ -4116,31 +4104,16 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             </div>
                         </div>
 
-                        {/* Live cost projection. The firmware accepts a schedule that outspends the
-                        subscription, so show the bill before SET rather than a month later. */}
-                        <div
-                            className={`mt-3 rounded-md border p-2 text-[11px] ${
-                                leoOverBudget
-                                    ? 'border-amber-500/30 bg-amber-500/5 text-amber-600 dark:text-amber-400'
-                                    : 'border-border bg-muted/40 text-muted-foreground'
-                            }`}
-                        >
-                            <span className="font-mono">
-                                {leoTimes.length} jam ambil data → {leoSends}{' '}
-                                pengiriman/hari → {leoCredits} kredit/hari
-                            </span>
-                            {leoIsDry && (
-                                <span className="ml-1">
-                                    (mode uji, tidak memakai kredit)
-                                </span>
-                            )}
-                            {leoOverBudget && (
-                                <span className="ml-1 font-medium">
-                                    — melebihi kuota{' '}
-                                    {LEO_SEND_DAILY_CREDIT_BUDGET} kredit/hari.
-                                </span>
-                            )}
-                        </div>
+                        {/* Only shown when the schedule outspends the plan. The always-on projection
+                        was removed as clutter; the firmware still accepts a schedule that costs more
+                        than the subscription allows, so the over-limit case has to stay visible —
+                        otherwise it surfaces on the bill a month later. */}
+                        {leoOverBudget && (
+                            <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-600 dark:text-amber-400">
+                                {leoCredits} kredit/hari — melebihi kuota{' '}
+                                {LEO_SEND_DAILY_CREDIT_BUDGET} kredit/hari.
+                            </div>
+                        )}
 
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                             {actionButton('SET', 'LEO_SEND', sendLeoSend)}

@@ -91,8 +91,34 @@ test('daily credit projection follows the pack/roll pairing rule', () => {
 test('the card warns instead of blocking when the schedule outspends the plan', () => {
     assert.match(protocolSource, /LEO_SEND_DAILY_CREDIT_BUDGET = 8;/);
     assert.match(protocolSource, /const leoOverBudget = leoCredits > LEO_SEND_DAILY_CREDIT_BUDGET;/);
-    // dry runs never transmit, so they never cost a credit.
-    assert.match(protocolSource, /const leoCredits = leoIsDry \? 0 : leoSends;/);
+    // The card always writes dry:0, so the projection is the real bill and is never zeroed out.
+    assert.match(protocolSource, /const leoCredits = leoSends;/);
+});
+
+// Rehearsing a schedule is a bench activity over COM50. Leaving it reachable on the page that
+// configures live units means a device can sit in dry mode looking like it transmits.
+test('the card offers no dry-run control and always writes dry:0', () => {
+    // The selector is gone — no option row for it anywhere.
+    assert.doesNotMatch(protocolSource, /Uji \(dry\)/);
+    assert.doesNotMatch(protocolSource, /dry: event\.target\.value/);
+    assert.doesNotMatch(protocolSource, /leoIsDry/);
+
+    // Sent explicitly rather than omitted, so SET clears a unit a bench session left in dry mode.
+    const flat = protocolSource.replace(/\s+/g, ' ');
+    assert.match(flat, /dry: 0, times: leoTimes/);
+    assert.match(flat, /setLeoSend\(\(previous\) => \(\{ \.\.\.previous, dry: '0' \}\)\)/);
+
+    // A GET can still report dry:1 from an earlier session — that has to be visible, or the
+    // schedule reads as live while nothing reaches the satellite.
+    assert.match(protocolSource, /const leoDeviceInDryMode = numberValue\(leoSend\.dry, 0\) === 1;/);
+    assert.match(protocolSource, /\{leoDeviceInDryMode && \(/);
+});
+
+test('the sensor-value dropdown lists only NOW and AVG', () => {
+    assert.match(protocolSource, /<option value="NOW">NOW<\/option>/);
+    assert.match(protocolSource, /<option value="AVG">AVG<\/option>/);
+    assert.doesNotMatch(protocolSource, /NOW — sesaat pada jam jadwal/);
+    assert.doesNotMatch(protocolSource, /AVG — rata-rata per periode/);
 });
 
 // The card must survive a reload. panelStateCache is a plain in-memory Map and this panel is
@@ -128,14 +154,43 @@ test('pack and roll are feature-detected, with the version table only as fallbac
     assert.match(protocolSource, /LEO_SEND_V2_MIN_FIRMWARE = \[99, 0, 0\]/);
     assert.match(protocolSource, /FALLBACK ONLY/);
     assert.match(protocolSource, /firmwareSupportsLeoSendV2/);
-    // v1 gets 8 slots, v2 gets 16.
-    assert.match(protocolSource, /LEO_SEND_MAX_TIMES_V1 = 8;/);
     assert.match(protocolSource, /LEO_SEND_MAX_TIMES_V2 = 16;/);
     // On v1 the keys are omitted entirely, not sent as defaults.
     assert.match(
         protocolSource,
         /\.\.\.\(leoV2 \? \{ pack: leoPack, roll: leoRoll \} : \{\}\)/,
     );
+});
+
+// The schedule cap is deliberately NOT tied to feature detection the way pack/roll are. Firmware
+// validates the count itself and answers TOO_MANY_TIMES with its own max, so a v1 board fails
+// visibly. Capping the editor at 8 instead meant an operator on v2 firmware silently could not
+// reach 16 until they happened to press Sync.
+test('the schedule editor always allows the full 16 slots', () => {
+    assert.match(protocolSource, /const leoMaxTimes = LEO_SEND_MAX_TIMES_V2;/);
+    // The old form gated it on leoV2 — that must not come back.
+    const flat = protocolSource.replace(/\s+/g, ' ');
+    assert.doesNotMatch(
+        flat,
+        /leoMaxTimes = leoV2 \? LEO_SEND_MAX_TIMES_V2 : LEO_SEND_MAX_TIMES_V1/,
+    );
+    // Both the counter and the add button read the same cap, so they cannot disagree.
+    assert.match(protocolSource, /\{leoTimes\.length\}\/\{leoMaxTimes\}/);
+    assert.match(protocolSource, /leoTimes\.length >= leoMaxTimes/);
+});
+
+// The card carried three blocks of explanatory text that added nothing once the controls were
+// self-evident. They are gone; the over-limit warning is not, because the firmware happily accepts a
+// schedule that costs more than the plan allows and nothing else would surface that before the bill.
+test('the explanatory blocks are gone but the over-limit warning survives', () => {
+    assert.doesNotMatch(protocolSource, /Dukungan <code>pack<\/code>/);
+    assert.doesNotMatch(protocolSource, /Belum ada jadwal/);
+    // The always-on projection line is gone…
+    assert.doesNotMatch(protocolSource, /pengiriman\/hari → \{leoCredits\}/);
+    // …but the budget guard still renders, and only when it is actually exceeded.
+    assert.match(protocolSource, /\{leoOverBudget && \(/);
+    assert.match(protocolSource, /melebihi kuota/);
+    assert.match(protocolSource, /LEO_SEND_DAILY_CREDIT_BUDGET/);
 });
 
 // Closing a port does not revoke its permission, so getPorts() still returns it after a reload and
