@@ -1683,7 +1683,14 @@ class MqttController extends Controller
 
         $mqtt = new MqttService();
         // OTA GET streams a multi-minute firmware download (spec §3.26) — allow up to ~5.5 min.
-        $protocolTimeout = $module === 'OTA' ? 330 : null;
+        // FTP READLOGS scans the device's SD card for daily syslog files, which is slow on a full
+        // card — give it the same 5-minute budget as the GETLOG upload behind the log viewer so the
+        // whole "Log Sistem Harian" flow waits equally long instead of giving up after 15s.
+        $protocolTimeout = match ($module) {
+            'OTA' => 330,
+            'FTP' => (int) config('mqtt.ftp_timeout', 300),
+            default => null,
+        };
         $result = $mqtt->sendProtocolCommand($idLogger, $payload, $module, $protocolTimeout);
 
         \App\Models\ActivityLog::create([
