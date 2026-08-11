@@ -134,6 +134,10 @@ type IoSnapshot = {
     };
     leoTimes: string[];
     rtc: { date: string; time: string; timezone: string };
+    // false = the panel has never pulled this device's config. The manual-sync Device
+    // Configuration card stays locked (fields hidden) until a sync lands at least one reply,
+    // so nobody edits — or SETs — a default that was never read from the logger.
+    synced: boolean;
 };
 type ModuleSnapshot = {
     gcm: {
@@ -1014,8 +1018,19 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const moduleSnapshot = isModulePanel
             ? getCachedPanelState<ModuleSnapshot>(deviceId, 'module')
             : null;
+        // Manual-sync I/O card with nothing read yet: start every field EMPTY instead of at a
+        // plausible-looking default (ON, 192.168.1.100, browser clock). A default that looks
+        // like a device value is worse than a blank — it reads as "24V is on" when in truth
+        // nothing has been asked of the logger. Selects render a "—" placeholder while blank.
+        const startBlank = ioRow && manualSync && !ioSnapshot?.synced;
+        const blank = <T,>(value: T, empty: T): T =>
+            startBlank ? empty : value;
 
         const [loading, setLoading] = useState<string | null>(null);
+        // Has this device's I/O config been read at least once? Only gates the manual-sync
+        // Device Configuration card (logger detail → Mode tab); the auto-pulling I/O tab is
+        // unaffected. Hydrates from the snapshot so a tab switch does not re-lock the card.
+        const [ioSynced, setIoSynced] = useState(ioSnapshot?.synced ?? false);
         const [responses, setResponses] = useState<
             Record<string, CommandResult | null>
         >({});
@@ -1024,27 +1039,35 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         );
 
         const [rtc, setRtc] = useState(
-            ioSnapshot?.rtc ?? {
-                date: now.toISOString().slice(0, 10),
-                time: now.toTimeString().slice(0, 8),
-                timezone: '+7',
-            },
+            ioSnapshot?.rtc ??
+                blank(
+                    {
+                        date: now.toISOString().slice(0, 10),
+                        time: now.toTimeString().slice(0, 8),
+                        timezone: '+7',
+                    },
+                    { date: '', time: '', timezone: '' },
+                ),
         );
         const [net, setNet] = useState(
-            ioSnapshot?.net ?? {
-                dhcp: '1',
-                ip: '192.168.1.100',
-                subnet: '255.255.255.0',
-                gateway: '192.168.1.1',
-                dns: '8.8.8.8',
-            },
+            ioSnapshot?.net ??
+                blank(
+                    {
+                        dhcp: '1',
+                        ip: '192.168.1.100',
+                        subnet: '255.255.255.0',
+                        gateway: '192.168.1.1',
+                        dns: '8.8.8.8',
+                    },
+                    { dhcp: '', ip: '', subnet: '', gateway: '', dns: '' },
+                ),
         );
         const [simApn, setSimApn] = useState(
-            ioSnapshot?.sim?.apn ?? 'internet',
+            ioSnapshot?.sim?.apn ?? blank('internet', ''),
         );
         // BL11 cellular radio-access preference: AUTO lets the modem pick; 2G/3G/4G force a generation.
         const [simNetmode, setSimNetmode] = useState(
-            ioSnapshot?.sim?.netmode ?? 'AUTO',
+            ioSnapshot?.sim?.netmode ?? blank('AUTO', ''),
         );
         // Live SIM status from the last GET ({"SIM":{status,csq,net,netmode,rat}}) — read-only readout.
         const [simInfo, setSimInfo] = useState<{
@@ -1095,14 +1118,21 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             leoStored?.pack != null,
         );
         const [pumpState, setPumpState] = useState('1');
-        const [out24State, setOut24State] = useState(ioSnapshot?.out24 ?? '1');
-        const [out12State, setOut12State] = useState(ioSnapshot?.out12 ?? '1');
-        const [doorCloseState, setDoorCloseState] = useState(
-            ioSnapshot?.doorClose ?? '1',
+        const [out24State, setOut24State] = useState(
+            ioSnapshot?.out24 ?? blank('1', ''),
         );
-        const [alertState, setAlertState] = useState(ioSnapshot?.alert ?? '1');
+        const [out12State, setOut12State] = useState(
+            ioSnapshot?.out12 ?? blank('1', ''),
+        );
+        const [doorCloseState, setDoorCloseState] = useState(
+            ioSnapshot?.doorClose ?? blank('1', ''),
+        );
+        const [alertState, setAlertState] = useState(
+            ioSnapshot?.alert ?? blank('1', ''),
+        );
         const [modbusTcp, setModbusTcp] = useState(
-            ioSnapshot?.modbusTcp ?? { enable: '1', port: '502' },
+            ioSnapshot?.modbusTcp ??
+                blank({ enable: '1', port: '502' }, { enable: '', port: '' }),
         );
         // MODBUSTCP GETMAP register-map viewer (popup, mirrors the FTP read flow).
         const [modbusMapOpen, setModbusMapOpen] = useState(false);
@@ -1836,6 +1866,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         // Run GET steps strictly in sequence (send one, await its reply, then the next) while
         // surfacing live progress in the overlay. A step that throws is marked 'error' but the
         // sequence keeps going. The overlay auto-dismisses shortly after the last step settles.
+        // Returns how the run ended so callers can tell "device answered" from "every step
+        // failed / user cancelled" — the I/O card uses it to decide whether to unlock.
         async function runSyncSteps(
             title: string,
             subtitle: string,
@@ -1845,7 +1877,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 icon?: SyncStepIcon;
                 run: () => Promise<void>;
             }[],
-        ) {
+        ): Promise<{ done: number; failed: number; cancelled: boolean }> {
             syncCancelRef.current = false;
             setSyncState({
                 title,
@@ -1869,8 +1901,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         : prev,
                 );
 
+            let done = 0;
+            let failed = 0;
             for (let i = 0; i < steps.length; i += 1) {
-                if (syncCancelRef.current) return;
+                if (syncCancelRef.current)
+                    return { done, failed, cancelled: true };
                 mark(i, 'active');
                 // Creep the active step's mini-bar toward ~90% while we await the device reply.
                 setSyncProgress(8);
@@ -1884,18 +1919,21 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 try {
                     await steps[i].run();
                     mark(i, 'done');
+                    done += 1;
                 } catch {
                     mark(i, 'error');
+                    failed += 1;
                 } finally {
                     clearInterval(timer);
                     setSyncProgress(100);
                 }
             }
-            if (syncCancelRef.current) return;
+            if (syncCancelRef.current) return { done, failed, cancelled: true };
             // Hold the finished state briefly so the user sees the green checks, then dismiss.
             setTimeout(() => {
                 if (!syncCancelRef.current) setSyncState(null);
             }, 1000);
+            return { done, failed, cancelled: false };
         }
 
         // Pull the current I/O polarity/state from the device one command at a time, showing
@@ -2244,11 +2282,14 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 },
             });
 
-            await runSyncSteps(
+            const outcome = await runSyncSteps(
                 'Sinkronisasi Device Configuration',
                 `Mengambil status terbaru dari ${logger.deviceIdentifier}…`,
                 steps,
             );
+            // Unlock only when the device actually answered something. A fully failed or
+            // cancelled sync leaves the card locked so the shown values stay trustworthy.
+            if (!outcome.cancelled && outcome.done > 0) setIoSynced(true);
         }
 
         // One read step per GCM sub-command, sharing a `bound` list (filled by step 1, read by 2–3)
@@ -2494,10 +2535,12 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 leoSend,
                 leoTimes,
                 rtc,
+                synced: ioSynced,
             } satisfies IoSnapshot);
         }, [
             ioRow,
             deviceId,
+            ioSynced,
             out24State,
             out12State,
             doorCloseState,
@@ -3043,6 +3086,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             onClick: () => void,
             variant: 'default' | 'outline' | 'destructive' = 'outline',
             confirmMessage?: string,
+            // Blocks a SET whose field was never read back (e.g. that step of the sync failed):
+            // numberValue('') is 0, so sending it would quietly write OFF/Disable to the device.
+            blockedUnread = false,
         ) {
             const busy = loading === key;
             return (
@@ -3050,7 +3096,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     type="button"
                     size="sm"
                     variant={variant}
-                    disabled={!canSend || busy}
+                    disabled={!canSend || busy || blockedUnread}
                     onClick={() => {
                         if (confirmMessage) {
                             setConfirmDialog({
@@ -3513,6 +3559,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             </div>
         );
 
+        // A never-read select shows "—" instead of silently falling back to its first option,
+        // which the browser would otherwise render as if it were the device's answer.
+        const unreadOption = (value: string) =>
+            value === '' ? <option value="">—</option> : null;
+
         // I/O controls (Power Output, SENS_DOOR, ALERT) — shared between the standalone "I/O"
         // tab and the Mode tab's 3-across `ioRow` layout.
         const ioCards = (
@@ -3529,6 +3580,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                             setOut24State(event.target.value)
                                         }
                                     >
+                                        {unreadOption(out24State)}
                                         <option value="1">ON</option>
                                         <option value="0">OFF</option>
                                     </select>
@@ -3550,6 +3602,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     ),
                                 'destructive',
                                 'Change the 24V power output?',
+                                out24State === '',
                             )}
                         </div>
                         {/* BL11 and BL11LEO only expose the 24V output — their P_OUT GET returns just
@@ -3569,6 +3622,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                                 )
                                             }
                                         >
+                                            {unreadOption(out12State)}
                                             <option value="1">ON</option>
                                             <option value="0">OFF</option>
                                         </select>
@@ -3592,6 +3646,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         ),
                                     'destructive',
                                     'Change the 12V power output?',
+                                    out12State === '',
                                 )}
                             </div>
                         )}
@@ -3609,22 +3664,30 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         setDoorCloseState(event.target.value)
                                     }
                                 >
+                                    {unreadOption(doorCloseState)}
                                     <option value="1">LOW = closed</option>
                                     <option value="0">LOW = open</option>
                                 </select>
                             </Field>
                         </div>
-                        {actionButton('SET', 'SENS_DOOR', () =>
-                            send(
-                                'SENS_DOOR',
-                                {
-                                    SENS_DOOR: {
-                                        cmd: 'SET',
-                                        close_st: numberValue(doorCloseState),
+                        {actionButton(
+                            'SET',
+                            'SENS_DOOR',
+                            () =>
+                                send(
+                                    'SENS_DOOR',
+                                    {
+                                        SENS_DOOR: {
+                                            cmd: 'SET',
+                                            close_st:
+                                                numberValue(doorCloseState),
+                                        },
                                     },
-                                },
-                                'SENS_DOOR',
-                            ),
+                                    'SENS_DOOR',
+                                ),
+                            'outline',
+                            undefined,
+                            doorCloseState === '',
                         )}
                     </div>
                 </CommandCard>
@@ -3640,22 +3703,29 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         setAlertState(event.target.value)
                                     }
                                 >
+                                    {unreadOption(alertState)}
                                     <option value="1">ON</option>
                                     <option value="0">OFF</option>
                                 </select>
                             </Field>
                         </div>
-                        {actionButton('SET', 'ALERT', () =>
-                            send(
-                                'ALERT',
-                                {
-                                    ALERT: {
-                                        cmd: 'SET',
-                                        state: numberValue(alertState),
+                        {actionButton(
+                            'SET',
+                            'ALERT',
+                            () =>
+                                send(
+                                    'ALERT',
+                                    {
+                                        ALERT: {
+                                            cmd: 'SET',
+                                            state: numberValue(alertState),
+                                        },
                                     },
-                                },
-                                'ALERT',
-                            ),
+                                    'ALERT',
+                                ),
+                            'outline',
+                            undefined,
+                            alertState === '',
                         )}
                     </div>
                 </CommandCard>
@@ -3762,6 +3832,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         setNet({ ...net, dhcp: event.target.value })
                     }
                 >
+                    {unreadOption(net.dhcp)}
                     <option value="1">DHCP</option>
                     <option value="0">Static</option>
                 </select>
@@ -3776,7 +3847,14 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             // DHCP: just the mode selector + SET mepet to its right.
                             <div className="flex items-end gap-2">
                                 <div className="flex-1">{netDhcpField}</div>
-                                {actionButton('SET', 'NET', sendNet)}
+                                {actionButton(
+                                    'SET',
+                                    'NET',
+                                    sendNet,
+                                    'outline',
+                                    undefined,
+                                    net.dhcp === '',
+                                )}
                             </div>
                         ) : (
                             // Static: SET sits mepet to the right of Gateway; DNS drops to the next row.
@@ -3822,7 +3900,14 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                             />
                                         </Field>
                                     </div>
-                                    {actionButton('SET', 'NET', sendNet)}
+                                    {actionButton(
+                                        'SET',
+                                        'NET',
+                                        sendNet,
+                                        'outline',
+                                        undefined,
+                                        net.dhcp === '',
+                                    )}
                                 </div>
                                 <Field label="DNS">
                                     <Input
@@ -3861,6 +3946,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                             })
                                         }
                                     >
+                                        {unreadOption(modbusTcp.enable)}
                                         <option value="1">Enable</option>
                                         <option value="0">Disable</option>
                                     </select>
@@ -3881,23 +3967,29 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     />
                                 </Field>
                             </div>
-                            {actionButton('SET', 'MODBUSTCP', () =>
-                                send(
-                                    'MODBUSTCP',
-                                    {
-                                        MODBUSTCP: {
-                                            cmd: 'SET',
-                                            enable: numberValue(
-                                                modbusTcp.enable,
-                                            ),
-                                            port: numberValue(
-                                                modbusTcp.port,
-                                                502,
-                                            ),
+                            {actionButton(
+                                'SET',
+                                'MODBUSTCP',
+                                () =>
+                                    send(
+                                        'MODBUSTCP',
+                                        {
+                                            MODBUSTCP: {
+                                                cmd: 'SET',
+                                                enable: numberValue(
+                                                    modbusTcp.enable,
+                                                ),
+                                                port: numberValue(
+                                                    modbusTcp.port,
+                                                    502,
+                                                ),
+                                            },
                                         },
-                                    },
-                                    'MODBUSTCP',
-                                ),
+                                        'MODBUSTCP',
+                                    ),
+                                'outline',
+                                undefined,
+                                modbusTcp.enable === '',
                             )}
                         </div>
                         {/* Read the live register map (GETMAP) so a SCADA configurator can see slot → register/type. */}
@@ -4161,6 +4253,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                                 )
                                             }
                                         >
+                                            {unreadOption(simNetmode)}
                                             <option value="AUTO">AUTO</option>
                                             <option value="4G">4G</option>
                                             <option value="3G">3G</option>
@@ -4168,7 +4261,14 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         </select>
                                     </Field>
                                 </div>
-                                {actionButton('SET', 'SIM', sendSim)}
+                                {actionButton(
+                                    'SET',
+                                    'SIM',
+                                    sendSim,
+                                    'outline',
+                                    undefined,
+                                    simNetmode === '',
+                                )}
                             </div>
                         </div>
                         {/* Live status readout from the last SIM GET: registration, signal (CSQ 0–31), radio tech. */}
@@ -4251,12 +4351,18 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                     />
                                 </Field>
                             </div>
-                            {actionButton('SET', 'RTC', () =>
-                                send(
-                                    'RTC',
-                                    { RTC: { command: 'SET', ...rtc } },
-                                    'RTC',
-                                ),
+                            {actionButton(
+                                'SET',
+                                'RTC',
+                                () =>
+                                    send(
+                                        'RTC',
+                                        { RTC: { command: 'SET', ...rtc } },
+                                        'RTC',
+                                    ),
+                                'outline',
+                                undefined,
+                                rtc.date === '' || rtc.time === '',
                             )}
                         </div>
                     </div>
@@ -4436,6 +4542,10 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         // Mode tab "Device Configuration": I/O controls (Power Output, Sensor Door, Alert) on top,
         // then NET/SIM + Modbus TCP + RTC. The card's Sync button pulls all of it via loadIo.
         if (ioRow) {
+            // Manual-sync card (logger detail → Mode tab): the whole form stays visible but
+            // disabled until a sync has pulled the real values off the logger, so the defaults
+            // in state can never be edited — or SET back to the device — before they are read.
+            const ioLocked = manualSync && !ioSynced;
             return (
                 <div className="space-y-4">
                     {!canSend && (
@@ -4447,12 +4557,31 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             device terhubung.
                         </Badge>
                     )}
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        {ioCards}
-                    </div>
-                    <div className="grid gap-4 lg:grid-cols-3">
-                        {deviceConfigRow}
-                    </div>
+                    {ioLocked && (
+                        <div className="flex items-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">
+                            <RefreshCw className="size-4 shrink-0" />
+                            <span>
+                                Konfigurasi belum disinkronkan — nilai di bawah
+                                belum tentu sama dengan perangkat. Tekan{' '}
+                                <span className="font-medium">Sync</span> di
+                                kanan atas untuk membaca dari logger sebelum
+                                mengubah.
+                            </span>
+                        </div>
+                    )}
+                    {/* fieldset[disabled] mematikan seluruh select/input/button di dalamnya dalam
+                        satu langkah — tidak perlu meneruskan flag ke tiap kartu. */}
+                    <fieldset
+                        disabled={ioLocked}
+                        className={`min-w-0 space-y-4 ${ioLocked ? 'pointer-events-none opacity-50 select-none' : ''}`}
+                    >
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                            {ioCards}
+                        </div>
+                        <div className="grid gap-4 lg:grid-cols-3">
+                            {deviceConfigRow}
+                        </div>
+                    </fieldset>
 
                     {/* ══════ Modbus TCP Register Map (GETMAP) popup ══════ */}
                     <Dialog
