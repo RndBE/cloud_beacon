@@ -91,6 +91,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/import', [ProductionController::class, 'import'])
         ->middleware('permission:production.import')
         ->name('production.import');
+    Route::put('production/{id}', [ProductionController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.update');
     Route::delete('production/{id}', [ProductionController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.destroy');

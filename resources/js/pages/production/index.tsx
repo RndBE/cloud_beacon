@@ -1,4 +1,4 @@
-import { Head, router, useForm } from '@inertiajs/react';
+import { Head, router, useForm, usePage } from '@inertiajs/react';
 import {
     Check,
     CheckCircle2,
@@ -8,12 +8,14 @@ import {
     Factory,
     FileUp,
     Loader2,
+    Pencil,
     Plus,
     Search,
     Trash2,
+    X,
     XCircle,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -130,6 +132,21 @@ export default function ProductionIndex({
     devices,
     deviceModels,
 }: ProductionPageProps) {
+    const { flash } = usePage<{
+        flash: { success?: string; error?: string };
+    }>().props;
+    // Banner-nya diturunkan langsung dari props flash; state cuma mencatat objek
+    // flash mana yang sudah ditutup, jadi respons berikutnya tampil lagi.
+    const [dismissedFlash, setDismissedFlash] = useState<object | null>(null);
+    const flashText = flash?.success ?? flash?.error ?? null;
+    const flashVisible = !!flashText && dismissedFlash !== flash;
+
+    useEffect(() => {
+        if (!flashVisible) return;
+        const timer = setTimeout(() => setDismissedFlash(flash), 4000);
+        return () => clearTimeout(timer);
+    }, [flashVisible, flash]);
+
     const initialSearch =
         typeof window === 'undefined'
             ? ''
@@ -142,6 +159,9 @@ export default function ProductionIndex({
     );
     const [addOpen, setAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
+    const [editTarget, setEditTarget] = useState<ProductionDeviceItem | null>(
+        null,
+    );
     const [deleteTarget, setDeleteTarget] =
         useState<ProductionDeviceItem | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -152,6 +172,17 @@ export default function ProductionIndex({
         model: '',
         hardware_version: '',
         production_date: '',
+        tested_by: '',
+        qc_status: 'pending',
+        notes: '',
+    });
+
+    // Production date dan status Registered tidak ikut form ini — keduanya
+    // read-only, jadi cuma ditampilkan di dialog tanpa pernah dikirim ke server.
+    const editForm = useForm({
+        serial_number: '',
+        device_id: '',
+        model: '',
         tested_by: '',
         qc_status: 'pending',
         notes: '',
@@ -229,6 +260,30 @@ export default function ProductionIndex({
         });
     }
 
+    function openEdit(device: ProductionDeviceItem) {
+        editForm.clearErrors();
+        editForm.setData({
+            serial_number: device.serialNumber,
+            device_id: device.deviceId ?? '',
+            model: device.model ?? '',
+            tested_by: device.testedBy ?? '',
+            qc_status: device.qcStatus,
+            notes: device.notes ?? '',
+        });
+        setEditTarget(device);
+    }
+
+    function handleEditSubmit(e: React.FormEvent) {
+        e.preventDefault();
+        if (!editTarget) return;
+        editForm.put(`/production/${editTarget.id}`, {
+            onSuccess: () => {
+                setEditTarget(null);
+                editForm.reset();
+            },
+        });
+    }
+
     function handleDelete() {
         if (!deleteTarget) return;
         router.delete(`/production/${deleteTarget.id}`, {
@@ -240,6 +295,25 @@ export default function ProductionIndex({
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Production Registry" />
             <div className="flex flex-col gap-6 p-4 md:p-6">
+                {flashVisible && (
+                    <div
+                        className={`flex items-center justify-between rounded-lg border px-4 py-3 text-sm ${
+                            flash?.success
+                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                                : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400'
+                        }`}
+                    >
+                        <span>{flashText}</span>
+                        <button
+                            type="button"
+                            onClick={() => setDismissedFlash(flash)}
+                            aria-label="Dismiss message"
+                        >
+                            <X className="size-4" />
+                        </button>
+                    </div>
+                )}
+
                 {/* Summary Cards */}
                 <div className="grid gap-3 sm:grid-cols-4">
                     <div className="flex items-center gap-3 rounded-xl border p-4">
@@ -597,23 +671,23 @@ export default function ProductionIndex({
                                                 </div>
                                             </div>
                                             <div className="grid gap-2">
-                                                    <Label htmlFor="hardware_version">
-                                                        Hardware Version
-                                                    </Label>
-                                                    <Input
-                                                        id="hardware_version"
-                                                        value={
-                                                            form.data
-                                                                .hardware_version
-                                                        }
-                                                        onChange={(e) =>
-                                                            form.setData(
-                                                                'hardware_version',
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        placeholder="e.g. v4.0"
-                                                    />
+                                                <Label htmlFor="hardware_version">
+                                                    Hardware Version
+                                                </Label>
+                                                <Input
+                                                    id="hardware_version"
+                                                    value={
+                                                        form.data
+                                                            .hardware_version
+                                                    }
+                                                    onChange={(e) =>
+                                                        form.setData(
+                                                            'hardware_version',
+                                                            e.target.value,
+                                                        )
+                                                    }
+                                                    placeholder="e.g. v4.0"
+                                                />
                                             </div>
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="grid gap-2">
@@ -714,7 +788,7 @@ export default function ProductionIndex({
                                     <TableHead className="hidden md:table-cell">
                                         Production Date
                                     </TableHead>
-                                    <TableHead className="w-[132px]"></TableHead>
+                                    <TableHead className="w-[168px]"></TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -789,6 +863,20 @@ export default function ProductionIndex({
                                                         </a>
                                                     </Button>
                                                 )}
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon-sm"
+                                                    onClick={() =>
+                                                        openEdit(device)
+                                                    }
+                                                    disabled={
+                                                        device.qcStatus !==
+                                                        'pending'
+                                                    }
+                                                    aria-label={`Edit ${device.serialNumber}`}
+                                                >
+                                                    <Pencil className="size-4" />
+                                                </Button>
                                                 <Button
                                                     variant="ghost"
                                                     size="icon-sm"
@@ -878,7 +966,8 @@ export default function ProductionIndex({
                                         </span>
                                     </Button>
                                     <span className="px-1 text-sm text-muted-foreground">
-                                        Halaman {pagination.currentPage} / {pagination.totalPages}
+                                        Halaman {pagination.currentPage} /{' '}
+                                        {pagination.totalPages}
                                     </span>
                                     <Button
                                         type="button"
@@ -897,10 +986,10 @@ export default function ProductionIndex({
                                             pagination.currentPage ===
                                             pagination.totalPages
                                         }
-                                        >
-                                            <span className="hidden sm:inline">
-                                                Berikutnya
-                                            </span>
+                                    >
+                                        <span className="hidden sm:inline">
+                                            Berikutnya
+                                        </span>
                                         <ChevronRight className="size-4" />
                                     </Button>
                                 </div>
@@ -908,6 +997,197 @@ export default function ProductionIndex({
                         )}
                     </CardContent>
                 </Card>
+
+                {/* Edit Dialog — hanya bisa dibuka selama QC masih pending */}
+                <Dialog
+                    open={!!editTarget}
+                    onOpenChange={(open: boolean) => {
+                        if (!open) setEditTarget(null);
+                    }}
+                >
+                    <DialogContent className="sm:max-w-lg">
+                        <DialogHeader>
+                            <DialogTitle>Edit Production Device</DialogTitle>
+                            <DialogDescription>
+                                Production date dan status registrasi tidak bisa
+                                diubah dari sini.
+                            </DialogDescription>
+                        </DialogHeader>
+                        <form
+                            onSubmit={handleEditSubmit}
+                            className="grid gap-4 py-2"
+                        >
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="edit_serial_number">
+                                        Serial Number *
+                                    </Label>
+                                    <Input
+                                        id="edit_serial_number"
+                                        value={editForm.data.serial_number}
+                                        onChange={(e) =>
+                                            editForm.setData(
+                                                'serial_number',
+                                                e.target.value,
+                                            )
+                                        }
+                                    />
+                                    {editForm.errors.serial_number && (
+                                        <p className="text-xs text-red-500">
+                                            {editForm.errors.serial_number}
+                                        </p>
+                                    )}
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="edit_device_id">
+                                        Device ID
+                                    </Label>
+                                    <Input
+                                        id="edit_device_id"
+                                        value={editForm.data.device_id}
+                                        onChange={(e) =>
+                                            editForm.setData(
+                                                'device_id',
+                                                e.target.value,
+                                            )
+                                        }
+                                    />
+                                    {editForm.errors.device_id && (
+                                        <p className="text-xs text-red-500">
+                                            {editForm.errors.device_id}
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="edit_model">Model</Label>
+                                    <Select
+                                        value={editForm.data.model}
+                                        onValueChange={(v) =>
+                                            editForm.setData('model', v)
+                                        }
+                                    >
+                                        <SelectTrigger
+                                            id="edit_model"
+                                            className="w-full"
+                                        >
+                                            <SelectValue placeholder="Select model" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {deviceModels.map((m) => (
+                                                <SelectItem key={m} value={m}>
+                                                    {m}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="edit_qc_status">
+                                        QC Status *
+                                    </Label>
+                                    <Select
+                                        value={editForm.data.qc_status}
+                                        onValueChange={(v) =>
+                                            editForm.setData('qc_status', v)
+                                        }
+                                    >
+                                        <SelectTrigger
+                                            id="edit_qc_status"
+                                            className="w-full"
+                                        >
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="pending">
+                                                Pending
+                                            </SelectItem>
+                                            <SelectItem value="passed">
+                                                Passed
+                                            </SelectItem>
+                                            <SelectItem value="failed">
+                                                Failed
+                                            </SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    {editForm.errors.qc_status && (
+                                        <p className="text-xs text-red-500">
+                                            {editForm.errors.qc_status}
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="edit_tested_by">
+                                    Tested By
+                                </Label>
+                                <Input
+                                    id="edit_tested_by"
+                                    value={editForm.data.tested_by}
+                                    onChange={(e) =>
+                                        editForm.setData(
+                                            'tested_by',
+                                            e.target.value,
+                                        )
+                                    }
+                                    placeholder="e.g. QC Team A"
+                                />
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="edit_notes">Notes</Label>
+                                <Textarea
+                                    id="edit_notes"
+                                    value={editForm.data.notes}
+                                    onChange={(e) =>
+                                        editForm.setData(
+                                            'notes',
+                                            e.target.value,
+                                        )
+                                    }
+                                    rows={2}
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 rounded-lg border bg-muted/40 p-3">
+                                <div className="grid gap-1">
+                                    <p className="text-xs text-muted-foreground">
+                                        Production Date
+                                    </p>
+                                    <p className="text-sm font-medium">
+                                        {editTarget?.productionDate || '—'}
+                                    </p>
+                                </div>
+                                <div className="grid gap-1">
+                                    <p className="text-xs text-muted-foreground">
+                                        Registered
+                                    </p>
+                                    <p className="text-sm font-medium">
+                                        {editTarget?.isRegistered
+                                            ? 'Yes'
+                                            : 'No'}
+                                    </p>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => setEditTarget(null)}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    type="submit"
+                                    disabled={editForm.processing}
+                                >
+                                    {editForm.processing
+                                        ? 'Saving…'
+                                        : 'Save Changes'}
+                                </Button>
+                            </DialogFooter>
+                        </form>
+                    </DialogContent>
+                </Dialog>
 
                 {/* Delete Dialog */}
                 <AlertDialog

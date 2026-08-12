@@ -9,6 +9,7 @@ use App\Services\IdHasher;
 use App\Support\BoardModel;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -136,6 +137,44 @@ class ProductionController extends Controller
         ProductionDevice::create($validated);
 
         return redirect()->route('production.index')->with('success', 'Device registered successfully.');
+    }
+
+    /**
+     * Koreksi data entri produksi, dibatasi pada unit yang QC-nya masih 'pending'.
+     *
+     * Begitu QC sudah passed/failed, catatannya dianggap final — jadi tombol Edit
+     * di UI ikut hilang dan request yang tetap masuk ditolak di sini.
+     *
+     * production_date dan is_registered sengaja tidak ada di daftar validasi:
+     * tanggal produksi adalah fakta jalur produksi, dan status registrasi dimiliki
+     * alur Add Logger. Keduanya tidak boleh berubah lewat form ini.
+     */
+    public function update(Request $request, int $id): RedirectResponse
+    {
+        $device = ProductionDevice::findOrFail($id);
+
+        if ($device->qc_status !== 'pending') {
+            return redirect()->route('production.index')
+                ->with('error', "Only devices with a pending QC status can be edited. '{$device->serial_number}' is already {$device->qc_status}.");
+        }
+
+        $validated = $request->validate([
+            'serial_number' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('production_devices')->ignore($device->id),
+            ],
+            'device_id' => 'nullable|string|max:255',
+            'model' => 'nullable|string|max:255',
+            'tested_by' => 'nullable|string|max:255',
+            'qc_status' => 'required|string|in:passed,failed,pending',
+            'notes' => 'nullable|string|max:1000',
+        ]);
+
+        $device->update($validated);
+
+        return redirect()->route('production.index')->with('success', 'Device updated successfully.');
     }
 
     /**
