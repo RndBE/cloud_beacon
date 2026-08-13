@@ -40,4 +40,9 @@ class ProductionDevice extends Model
     {
         return $this->hasMany(ProductionFirmwareLog::class);
     }
+
+    public function testLogs(): HasMany
+    {
+        return $this->hasMany(ProductionTestLog::class);
+    }
 }

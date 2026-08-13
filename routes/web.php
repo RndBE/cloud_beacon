@@ -85,6 +85,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/provision/register', [ProductionController::class, 'storeProvisioned'])
         ->middleware('permission:production.provision')
         ->name('production.provision.register');
+    // Bench test unit QC 'pending' lewat USB — perintah protokolnya dikirim dari browser
+    // (Web Serial), server hanya menyiapkan daftar unit dan menyimpan hasil ujinya.
+    Route::get('production/testing', [ProductionController::class, 'testing'])
+        ->middleware('permission:production.testing')
+        ->name('production.testing');
+    Route::post('production/testing/{id}/result', [ProductionController::class, 'storeTestResult'])
+        ->middleware('permission:production.testing')
+        ->name('production.testing.result');
     Route::post('production', [ProductionController::class, 'store'])
         ->middleware('permission:production.create')
         ->name('production.store');

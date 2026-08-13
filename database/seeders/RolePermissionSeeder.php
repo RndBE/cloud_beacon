@@ -26,6 +26,9 @@ class RolePermissionSeeder extends Seeder
             ['name' => 'production.import', 'display_name' => 'Import Production Devices', 'group' => 'Production'],
             ['name' => 'production.delete', 'display_name' => 'Delete Production Device', 'group' => 'Production'],
             ['name' => 'production.check-serial', 'display_name' => 'Check Serial Number', 'group' => 'Production'],
+            // Terpisah dari production.create: menguji unit berarti mengirim perintah lewat kabel
+            // ke perangkat nyata dan menutup status QC-nya, bukan sekadar mengubah catatan registry.
+            ['name' => 'production.testing', 'display_name' => 'Test Logger Before QC', 'group' => 'Production'],
             // Separate from production.view: these templates are written to real devices, so being
             // allowed to look at the production registry must not imply being allowed to edit them.
             ['name' => 'production.mode-profiles', 'display_name' => 'Manage Mode Profiles', 'group' => 'Production'],

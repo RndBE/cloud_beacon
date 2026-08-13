@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\DeviceModel;
 use App\Models\Logger;
 use App\Models\ProductionDevice;
+use App\Models\ProductionTestLog;
 use App\Services\IdHasher;
 use App\Support\BoardModel;
 use Illuminate\Http\RedirectResponse;
@@ -117,6 +118,143 @@ class ProductionController extends Controller
         return Inertia::render('production/provision', [
             'deviceModels' => DeviceModel::orderBy('name')->pluck('name'),
             'usbProvisionedLoggers' => $usbProvisionedLoggers,
+        ]);
+    }
+
+    /**
+     * Bench test untuk unit yang QC-nya masih 'pending'.
+     *
+     * Hanya unit pending yang dilayani: begitu QC sudah passed/failed catatannya final
+     * (aturan yang sama dipakai update()), jadi tidak ada gunanya menawarkan unit itu
+     * di daftar uji.
+     *
+     * Halaman ini bicara ke perangkat lewat Web Serial di browser, bukan MQTT — unit
+     * pending belum punya baris di tabel `loggers`, sedangkan MqttController::sendProtocolCommand
+     * meresolve target dari sana. Jadi backend di sini cuma menyediakan daftar unit dan
+     * menerima hasil ujinya; semua perintah protokol dikirim dari halaman lewat kabel USB.
+     */
+    public function testing(): Response
+    {
+        $devices = ProductionDevice::query()
+            ->where('qc_status', 'pending')
+            ->with(['testLogs' => fn ($query) => $query->latest()->limit(1)])
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(function (ProductionDevice $device) {
+                $lastTest = $device->testLogs->first();
+
+                return [
+                    'id' => $device->id,
+                    'serialNumber' => $device->serial_number,
+                    'deviceId' => $device->device_id,
+                    'model' => $device->model,
+                    'hardwareVersion' => $device->hardware_version,
+                    'batchNumber' => $device->batch_number,
+                    'productionDate' => $device->production_date?->format('Y-m-d'),
+                    'testedBy' => $device->tested_by,
+                    'notes' => $device->notes,
+                    'transport' => self::transportFor($device->model, $device->serial_number),
+                    'lastTest' => $lastTest ? [
+                        'result' => $lastTest->result,
+                        'testedAt' => $lastTest->created_at?->format('Y-m-d H:i'),
+                    ] : null,
+                ];
+            });
+
+        $recentTests = ProductionTestLog::query()
+            ->with(['productionDevice', 'user'])
+            ->latest()
+            ->limit(20)
+            ->get()
+            ->map(fn (ProductionTestLog $log) => [
+                'id' => $log->id,
+                'serialNumber' => $log->productionDevice?->serial_number,
+                'result' => $log->result,
+                'passedCount' => $log->passed_count,
+                'failedCount' => $log->failed_count,
+                'skippedCount' => $log->skipped_count,
+                'testedBy' => $log->tested_by ?? $log->user?->name,
+                'notes' => $log->notes,
+                'testedAt' => $log->created_at?->format('Y-m-d H:i'),
+            ]);
+
+        return Inertia::render('production/testing', [
+            'devices' => $devices,
+            'recentTests' => $recentTests,
+            'defaultTestedBy' => auth()->user()?->name,
+        ]);
+    }
+
+    /**
+     * Simpan satu sesi pengujian dan tutup status QC unitnya.
+     *
+     * Penjagaan 'pending' diulang di sini (bukan cuma disembunyikan di UI) karena
+     * request bisa datang dari tab yang sudah basi setelah unit di-QC operator lain.
+     */
+    public function storeTestResult(Request $request, int $id)
+    {
+        $device = ProductionDevice::findOrFail($id);
+
+        if ($device->qc_status !== 'pending') {
+            return response()->json([
+                'success' => false,
+                'message' => "Hanya unit dengan QC 'pending' yang bisa diuji. '{$device->serial_number}' sudah {$device->qc_status}.",
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'result' => 'required|string|in:passed,failed',
+            'tested_by' => 'nullable|string|max:255',
+            'notes' => 'nullable|string|max:1000',
+            'checks' => 'required|array|min:1',
+            'checks.*.key' => 'required|string|max:64',
+            'checks.*.label' => 'required|string|max:120',
+            'checks.*.status' => 'required|string|in:passed,failed,skipped',
+            'checks.*.detail' => 'nullable|string|max:500',
+        ]);
+
+        $checks = collect($validated['checks'])
+            ->map(fn (array $check) => [
+                'key' => $check['key'],
+                'label' => $check['label'],
+                'status' => $check['status'],
+                'detail' => $check['detail'] ?? null,
+            ])
+            ->values();
+
+        $testedBy = $validated['tested_by'] ?? $device->tested_by ?? auth()->user()?->name;
+
+        $log = ProductionTestLog::create([
+            'production_device_id' => $device->id,
+            'user_id' => auth()->id(),
+            'tested_by' => $testedBy,
+            'result' => $validated['result'],
+            'passed_count' => $checks->where('status', 'passed')->count(),
+            'failed_count' => $checks->where('status', 'failed')->count(),
+            'skipped_count' => $checks->where('status', 'skipped')->count(),
+            'checks' => $checks->all(),
+            'notes' => $validated['notes'] ?? null,
+        ]);
+
+        $device->update([
+            'qc_status' => $validated['result'],
+            'tested_by' => $testedBy,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "QC '{$device->serial_number}' ditandai {$validated['result']}.",
+            'log' => [
+                'id' => $log->id,
+                'serialNumber' => $device->serial_number,
+                'result' => $log->result,
+                'passedCount' => $log->passed_count,
+                'failedCount' => $log->failed_count,
+                'skippedCount' => $log->skipped_count,
+                'testedBy' => $log->tested_by,
+                'notes' => $log->notes,
+                'testedAt' => $log->created_at?->format('Y-m-d H:i'),
+            ],
         ]);
     }
 

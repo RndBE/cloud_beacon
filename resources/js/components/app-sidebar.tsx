@@ -4,6 +4,7 @@ import {
     Box,
     ClipboardCheck,
     Factory,
+    FlaskConical,
     FolderKanban,
     Layers,
     LayoutGrid,
@@ -122,6 +123,12 @@ export function AppSidebar() {
             href: '/production/provision',
             icon: Usb,
             permission: 'production.provision',
+        },
+        {
+            title: 'Testing Logger',
+            href: '/production/testing',
+            icon: FlaskConical,
+            permission: 'production.testing',
         },
         {
             title: 'Mode Profiles',
