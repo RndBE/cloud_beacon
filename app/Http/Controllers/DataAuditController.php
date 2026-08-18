@@ -169,6 +169,19 @@ class DataAuditController extends Controller
         return back()->with('status', "Mengirim ulang {$count} forwarding yang gagal.");
     }
 
+    public function replayForwarding(Request $request, int $id, ForwardingAuditService $forwarding)
+    {
+        $logger = $this->resolveLogger($id);
+        $data = $request->validate([
+            'date' => ['required', 'date'],
+            'integration' => ['required', 'string'],
+        ]);
+
+        $count = $forwarding->replayNeverAttempted($logger, $data['integration'], Carbon::parse($data['date']));
+
+        return back()->with('status', "Meneruskan {$count} menit yang belum pernah dikirim.");
+    }
+
     public function resendStatus(Request $request, int $id, ForwardingAuditService $forwarding)
     {
         $logger = $this->resolveLogger($id);

@@ -4,6 +4,7 @@
 
 namespace App\Services;
 
+use App\Jobs\ReplayForwarding;
 use App\Jobs\ResendForwarding;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
@@ -285,6 +286,66 @@ class ForwardingAuditService
         }
 
         return $count;
+    }
+
+    /**
+     * Minutes on $date that have sensor data but never produced a forwarding_logs
+     * row for $bucketKey at all — the yellow cells on the coverage map.
+     *
+     * Distinct from resendFailed(): those minutes DID produce a row (status
+     * error) and carry a raw_payload to replay. These have nothing stored, so
+     * ReplayForwarding rebuilds the payload from sensor_logs instead.
+     *
+     * @return Collection<int,string> 'Y-m-d H:i:00'
+     */
+    public function neverAttemptedMinutes(Logger $logger, string $bucketKey, CarbonInterface $date): Collection
+    {
+        $day = Carbon::parse($date);
+        $dayStart = $day->copy()->startOfDay();
+        $dayEnd = $day->copy()->endOfDay();
+        $dateStr = $day->toDateString();
+
+        $present = $this->audits->presentMinutes($logger, $date);
+        if ($present->isEmpty()) {
+            return collect();
+        }
+
+        $query = ForwardingLog::where('logger_id', $logger->id)
+            ->whereNull('resend_of')
+            ->whereBetween('created_at', [$dayStart, $dayEnd]);
+
+        $bucketKey === 'ministesy'
+            ? $query->whereNull('integration_id')->where('target_name', 'Mini STESY')
+            : $query->where('integration_id', (int) $bucketKey);
+
+        // Same data-time keying as buildCoverage, so the list matches the map.
+        $covered = [];
+        foreach ($query->get(['status', 'created_at', 'payload_summary']) as $row) {
+            $minute = $this->rowDataMinute($row, $dateStr);
+            if ($minute !== null) {
+                $covered[$minute] = true;
+            }
+        }
+
+        return $present
+            ->reject(fn ($m) => isset($covered[Carbon::parse($m)->format('H:i')]))
+            ->map(fn ($m) => Carbon::parse($m)->format('Y-m-d H:i:00'))
+            ->values();
+    }
+
+    /**
+     * Queue a ReplayForwarding job for every never-attempted minute of the day.
+     * Returns how many were queued.
+     */
+    public function replayNeverAttempted(Logger $logger, string $bucketKey, CarbonInterface $date): int
+    {
+        $minutes = $this->neverAttemptedMinutes($logger, $bucketKey, $date);
+
+        foreach ($minutes as $minute) {
+            ReplayForwarding::dispatch($logger, $bucketKey, $minute);
+        }
+
+        return $minutes->count();
     }
 
     /** @param  Collection|null  $integrations  precomputed enabled LoggerIntegration list */

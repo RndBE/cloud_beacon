@@ -8,6 +8,7 @@ import {
     RadioTower,
     Repeat,
     Search,
+    Send,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -28,12 +29,7 @@ import {
     CardTitle,
 } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import {
-    Tabs,
-    TabsContent,
-    TabsList,
-    TabsTrigger,
-} from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useBackfillStatus } from '@/hooks/use-backfill-status';
 import type { BackfillProgress as Progress } from '@/hooks/use-backfill-status';
 import { useResendStatus } from '@/hooks/use-resend-status';
@@ -181,10 +177,18 @@ export default function DataAuditShow({
     const { post, processing } = useForm({ date });
     const retry = useForm({ date });
     const resend = useForm({ date, integration: '' });
+    const replay = useForm({ date, integration: '' });
 
     function resendFailed(key: string) {
         resend.transform((data) => ({ ...data, integration: key }));
         resend.post(`/data-audit/${logger.id}/resend`, {
+            preserveScroll: true,
+        });
+    }
+
+    function replayNeverAttempted(key: string) {
+        replay.transform((data) => ({ ...data, integration: key }));
+        replay.post(`/data-audit/${logger.id}/replay`, {
             preserveScroll: true,
         });
     }
@@ -219,7 +223,8 @@ export default function DataAuditShow({
         }));
     }, [missing, progress.updates]);
 
-    const backfillRunning = progress.total > 0 && progress.done < progress.total;
+    const backfillRunning =
+        progress.total > 0 && progress.done < progress.total;
 
     const loggerLegend: LegendItem[] = [
         { cls: 'bg-muted', label: t('data_audit.legend_present', 'Ada') },
@@ -518,6 +523,10 @@ export default function DataAuditShow({
                                             onResend={() =>
                                                 resendFailed(it.key)
                                             }
+                                            replaying={replay.processing}
+                                            onReplay={() =>
+                                                replayNeverAttempted(it.key)
+                                            }
                                         />
                                     </TabsContent>
                                 ))}
@@ -625,10 +634,7 @@ function LoggerSwitcher({
                     <ul role="listbox" className="max-h-64 overflow-y-auto p-1">
                         {filtered.length === 0 && (
                             <li className="px-2 py-6 text-center text-sm text-muted-foreground">
-                                {t(
-                                    'data_audit.no_pos',
-                                    'Pos tidak ditemukan',
-                                )}
+                                {t('data_audit.no_pos', 'Pos tidak ditemukan')}
                             </li>
                         )}
                         {filtered.map((l) => (
@@ -671,11 +677,15 @@ function IntegrationPanel({
     live,
     resending,
     onResend,
+    replaying,
+    onReplay,
 }: {
     audit: IntegrationAudit;
     live?: ResendBucketProgress;
     resending: boolean;
     onResend: () => void;
+    replaying: boolean;
+    onReplay: () => void;
 }) {
     const { t } = useTranslation();
 
@@ -753,13 +763,21 @@ function IntegrationPanel({
                             {t('forwarding_audit.resending', 'Mengirim ulang…')}
                         </span>
                     ) : audit.never_attempted > 0 ? (
-                        <span className="text-sm font-medium text-amber-600 dark:text-amber-400">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={replaying}
+                            onClick={onReplay}
+                            className="border-amber-500/40 text-amber-700 hover:bg-amber-500/10 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300"
+                        >
+                            <Send className="size-4" />
+                            {t('forwarding_audit.replay_btn', 'Teruskan')}{' '}
                             {audit.never_attempted}{' '}
                             {t(
                                 'forwarding_audit.pending_forward',
                                 'belum diteruskan',
                             )}
-                        </span>
+                        </Button>
                     ) : (
                         <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
                             {t('forwarding_audit.all_ok', 'Semua terkirim')}
@@ -811,7 +829,7 @@ function IntegrationPanel({
                     {audit.never_attempted}{' '}
                     {t(
                         'forwarding_audit.never_attempted_hint',
-                        'menit (kuning) punya data tapi belum pernah diteruskan — mis. hasil backfill yang terlewat throttle. Replay raw_payload tidak tersedia untuk menit ini.',
+                        'menit (kuning) punya data tapi belum pernah diteruskan — mis. integrasi baru ditambahkan setelah data masuk, atau hasil backfill yang terlewat throttle. Tombol "Teruskan" menyusun ulang payload dari data sensor dan mengirimkannya; throttle live tidak tergeser.',
                     )}
                 </p>
             )}
@@ -852,13 +870,7 @@ function StatChip({
     );
 }
 
-function MetaBadge({
-    children,
-    tone,
-}: {
-    children: ReactNode;
-    tone?: 'info';
-}) {
+function MetaBadge({ children, tone }: { children: ReactNode; tone?: 'info' }) {
     return (
         <span
             className={cn(
