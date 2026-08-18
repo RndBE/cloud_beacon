@@ -57,7 +57,7 @@ class RunLoggerBackfill implements ShouldQueue
 
         if (DataBackfillTask::where('logger_id', $this->logger->id)
             ->where('status', DataBackfillTask::PENDING)->exists()) {
-            self::dispatch($this->logger)->delay(now()->addSeconds((int) config('backfill.interval', 10)));
+            self::dispatch($this->logger)->delay(now()->addSeconds((int) config('backfill.interval', 1)));
         }
     }
 

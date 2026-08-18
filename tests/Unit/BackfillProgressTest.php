@@ -36,7 +36,7 @@ it('assembles a progress payload for a running backfill', function () {
         ->and($p['done'])->toBe(3)                       // 2 filled + 1 failed
         ->and($p['pct'])->toBe(43)                       // round(3/7*100)
         ->and($p['current'])->toBe(['minute' => '08:03', 'waiting_seconds' => 3])
-        ->and($p['eta_seconds'])->toBe(30)               // 3 pending * 10
+        ->and($p['eta_seconds'])->toBe(3)                // 3 pending * 1
         ->and($p['counts']['filled'])->toBe(2)
         ->and($p['counts']['pending'])->toBe(3)
         ->and($p['updates']['08:00'])->toBe('filled')

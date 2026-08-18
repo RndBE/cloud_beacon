@@ -82,6 +82,8 @@ type Props = {
     /** Array of 'H:i' strings for every missing minute of the day. */
     missing: string[];
     progress: Progress;
+    /** Seconds between consecutive RESEND requests; drives the ETA estimate. */
+    backfillInterval: number;
     integrations: IntegrationAudit[];
     resendProgress: ResendProgressMap;
 };
@@ -170,6 +172,7 @@ export default function DataAuditShow({
     present,
     missing,
     progress: initialProgress,
+    backfillInterval,
     integrations,
     resendProgress,
 }: Props) {
@@ -254,7 +257,7 @@ export default function DataAuditShow({
         expected === 0 ? 100 : Math.min(100, (present / expected) * 100);
     const hasGaps = missing.length > 0;
     const tone: Tone = !hasGaps ? 'ok' : completePct >= 90 ? 'warn' : 'bad';
-    const estSeconds = missing.length * 10;
+    const estSeconds = missing.length * backfillInterval;
     const estLabel = `${Math.floor(estSeconds / 3600)}h ${Math.round((estSeconds % 3600) / 60)}m`;
 
     const breadcrumbs: BreadcrumbItem[] = [

@@ -105,6 +105,8 @@ class DataAuditController extends Controller
             'present' => $present->count(),
             'missing' => $this->audits->missingMinutes($logger, $date, $present)->map->format('H:i')->values(),
             'progress' => $this->audits->backfillProgress($logger, $date),
+            // Jeda antar-permintaan RESEND; dipakai UI untuk estimasi durasi backfill.
+            'backfillInterval' => (int) config('backfill.interval', 1),
             'integrations' => $forwarding->integrationAudit($logger, $date, $present, $integrations),
             'resendProgress' => $forwarding->resendProgress($logger, $date, $integrations),
         ]);
