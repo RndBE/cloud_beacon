@@ -13,6 +13,7 @@ use App\Models\SensorLog;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 
 class ForwardingAuditService
 {
@@ -341,11 +342,83 @@ class ForwardingAuditService
     {
         $minutes = $this->neverAttemptedMinutes($logger, $bucketKey, $date);
 
+        if ($minutes->isEmpty()) {
+            return 0;
+        }
+
         foreach ($minutes as $minute) {
             ReplayForwarding::dispatch($logger, $bucketKey, $minute);
         }
 
+        // The batch size is what progress counts down from. Nothing on the rows
+        // themselves records it: a replayed minute is indistinguishable from a
+        // minute that was forwarded live, which is the point.
+        Cache::put(
+            $this->replayCacheKey($logger, $bucketKey, $date),
+            ['total' => $minutes->count(), 'started_at' => now()->toIso8601String()],
+            now()->addHours(6)
+        );
+
         return $minutes->count();
+    }
+
+    private function replayCacheKey(Logger $logger, string $bucketKey, CarbonInterface $date): string
+    {
+        return "replay:{$logger->id}:{$bucketKey}:".Carbon::parse($date)->toDateString();
+    }
+
+    /**
+     * Live progress for replay batches started on $date, keyed by bucket.
+     *
+     * Progress is derived rather than stored: every completed job writes a
+     * forwarding row, which removes that minute from neverAttemptedMinutes().
+     * So remaining is recomputed each poll and done is total - remaining.
+     *
+     * @param  Collection|null  $integrations  precomputed enabled LoggerIntegration list
+     */
+    public function replayProgress(Logger $logger, CarbonInterface $date, ?Collection $integrations = null): array
+    {
+        $integrations = $integrations ?? LoggerIntegration::where('logger_id', $logger->id)
+            ->where('is_enabled', true)
+            ->get();
+
+        $keys = $integrations->map(fn ($i) => (string) $i->id)->all();
+        if ($logger->ministesy_enabled) {
+            $keys[] = 'ministesy';
+        }
+
+        $result = [];
+
+        foreach ($keys as $bucketKey) {
+            $cacheKey = $this->replayCacheKey($logger, $bucketKey, $date);
+            $batch = Cache::get($cacheKey);
+            if (! $batch) {
+                continue; // no replay was started for this bucket/date
+            }
+
+            $total = (int) ($batch['total'] ?? 0);
+            $remaining = $this->neverAttemptedMinutes($logger, $bucketKey, $date)->count();
+            $done = max(0, $total - $remaining);
+
+            if ($remaining === 0) {
+                // Batch drained — stop advertising it so the UI stops polling.
+                Cache::forget($cacheKey);
+            }
+
+            $result[$bucketKey] = [
+                'key' => $bucketKey,
+                'total' => $total,
+                'done' => $done,
+                'remaining' => $remaining,
+                'pct' => $total > 0 ? (int) round($done / $total * 100) : 100,
+                // Two backfill workers clear roughly five minutes of data a second;
+                // deliberately conservative so the estimate does not run ahead.
+                'eta_seconds' => (int) ceil($remaining / 5),
+                'running' => $remaining > 0,
+            ];
+        }
+
+        return $result;
     }
 
     /** @param  Collection|null  $integrations  precomputed enabled LoggerIntegration list */

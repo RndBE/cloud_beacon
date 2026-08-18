@@ -20,6 +20,7 @@ import {
     type LegendItem,
 } from '@/components/data-audit/coverage-grid';
 import { ResendProgress } from '@/components/data-audit/resend-progress';
+import { ReplayProgress } from '@/components/data-audit/replay-progress';
 import { Button } from '@/components/ui/button';
 import {
     Card,
@@ -33,10 +34,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useBackfillStatus } from '@/hooks/use-backfill-status';
 import type { BackfillProgress as Progress } from '@/hooks/use-backfill-status';
 import { useResendStatus } from '@/hooks/use-resend-status';
+import { useReplayStatus } from '@/hooks/use-replay-status';
 import type {
     ResendBucketProgress,
     ResendProgressMap,
 } from '@/hooks/use-resend-status';
+import type {
+    ReplayBucketProgress,
+    ReplayProgressMap,
+} from '@/hooks/use-replay-status';
 import AppLayout from '@/layouts/app-layout';
 import { cn } from '@/lib/utils';
 import type { BreadcrumbItem } from '@/types';
@@ -82,6 +88,7 @@ type Props = {
     backfillInterval: number;
     integrations: IntegrationAudit[];
     resendProgress: ResendProgressMap;
+    replayProgress: ReplayProgressMap;
 };
 
 // -----------------------------------------------------------------------
@@ -171,6 +178,7 @@ export default function DataAuditShow({
     backfillInterval,
     integrations,
     resendProgress,
+    replayProgress,
 }: Props) {
     const { t } = useTranslation();
 
@@ -195,6 +203,7 @@ export default function DataAuditShow({
 
     const progress = useBackfillStatus(logger.id, date, initialProgress);
     const resendProg = useResendStatus(logger.id, date, resendProgress);
+    const replayProg = useReplayStatus(logger.id, date, replayProgress);
 
     // Local "today" (browser timezone) — audits can't run into the future.
     const today = new Date().toLocaleDateString('en-CA');
@@ -527,6 +536,7 @@ export default function DataAuditShow({
                                             onReplay={() =>
                                                 replayNeverAttempted(it.key)
                                             }
+                                            replayLive={replayProg[it.key]}
                                         />
                                     </TabsContent>
                                 ))}
@@ -679,6 +689,7 @@ function IntegrationPanel({
     onResend,
     replaying,
     onReplay,
+    replayLive,
 }: {
     audit: IntegrationAudit;
     live?: ResendBucketProgress;
@@ -686,6 +697,7 @@ function IntegrationPanel({
     onResend: () => void;
     replaying: boolean;
     onReplay: () => void;
+    replayLive?: ReplayBucketProgress;
 }) {
     const { t } = useTranslation();
 
@@ -719,6 +731,7 @@ function IntegrationPanel({
     const running =
         !!live && (live.current !== null || live.counts.pending > 0);
     const showResend = audit.failed > 0 && !running;
+    const replayRunning = !!replayLive?.running;
 
     return (
         <div className="flex flex-col gap-4">
@@ -762,11 +775,19 @@ function IntegrationPanel({
                             </span>
                             {t('forwarding_audit.resending', 'Mengirim ulang…')}
                         </span>
+                    ) : replayRunning ? (
+                        <span className="inline-flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400">
+                            <span className="relative flex size-2.5">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/60" />
+                                <span className="relative inline-flex size-2.5 rounded-full bg-amber-500" />
+                            </span>
+                            {t('forwarding_audit.replaying', 'Meneruskan…')}
+                        </span>
                     ) : audit.never_attempted > 0 ? (
                         <Button
                             variant="outline"
                             size="sm"
-                            disabled={replaying}
+                            disabled={replaying || replayRunning}
                             onClick={onReplay}
                             className="border-amber-500/40 text-amber-700 hover:bg-amber-500/10 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300"
                         >
@@ -832,6 +853,14 @@ function IntegrationPanel({
                         'menit (kuning) punya data tapi belum pernah diteruskan — mis. integrasi baru ditambahkan setelah data masuk, atau hasil backfill yang terlewat throttle. Tombol "Teruskan" menyusun ulang payload dari data sensor dan mengirimkannya; throttle live tidak tergeser.',
                     )}
                 </p>
+            )}
+
+            {/* Live replay progress */}
+            {replayLive && (
+                <>
+                    <Separator />
+                    <ReplayProgress progress={replayLive} />
+                </>
             )}
 
             {/* Live resend progress */}

@@ -286,6 +286,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('data-audit/{id}/retry-failed', [\App\Http\Controllers\DataAuditController::class, 'retryFailed'])->name('data-audit.retry-failed');
     Route::post('data-audit/{id}/resend', [\App\Http\Controllers\DataAuditController::class, 'resendForwarding'])->name('data-audit.resend');
     Route::post('data-audit/{id}/replay', [\App\Http\Controllers\DataAuditController::class, 'replayForwarding'])->name('data-audit.replay');
+    Route::get('data-audit/{id}/replay-status', [\App\Http\Controllers\DataAuditController::class, 'replayStatus'])->name('data-audit.replay-status');
     Route::get('data-audit/{id}/resend-status', [\App\Http\Controllers\DataAuditController::class, 'resendStatus'])->name('data-audit.resend-status');
 
     // Projects CRUD

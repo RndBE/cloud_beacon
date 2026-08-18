@@ -109,6 +109,7 @@ class DataAuditController extends Controller
             'backfillInterval' => (int) config('backfill.interval', 1),
             'integrations' => $forwarding->integrationAudit($logger, $date, $present, $integrations),
             'resendProgress' => $forwarding->resendProgress($logger, $date, $integrations),
+            'replayProgress' => $forwarding->replayProgress($logger, $date, $integrations),
         ]);
     }
 
@@ -180,6 +181,14 @@ class DataAuditController extends Controller
         $count = $forwarding->replayNeverAttempted($logger, $data['integration'], Carbon::parse($data['date']));
 
         return back()->with('status', "Meneruskan {$count} menit yang belum pernah dikirim.");
+    }
+
+    public function replayStatus(Request $request, int $id, ForwardingAuditService $forwarding)
+    {
+        $logger = $this->resolveLogger($id);
+        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
+
+        return response()->json($forwarding->replayProgress($logger, $date));
     }
 
     public function resendStatus(Request $request, int $id, ForwardingAuditService $forwarding)
