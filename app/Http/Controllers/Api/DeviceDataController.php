@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class DeviceDataController extends Controller
 {
@@ -109,6 +110,8 @@ class DeviceDataController extends Controller
         $results  = [];
         $matched  = 0;
         $unmatched = 0;
+        $failed    = 0;
+        $failedKeys = [];
 
         foreach ($sensorData as $item) {
             $incomingNameLower = strtolower($item['nama']);
@@ -129,26 +132,50 @@ class DeviceDataController extends Controller
                     ? 'exact'
                     : 'partial';
 
-                // Update nilai terbaru di tabel sensors
-                $registeredSensor->update([
-                    'value'          => $item['nilai'],
-                    'last_reading_at' => $recordedAt,
-                    // Update unit jika sensor punya unit kosong atau null dan device mengirim unit
-                    'unit'           => (empty($registeredSensor->unit) && ! empty($item['satuan']))
-                        ? $item['satuan']
-                        : $registeredSensor->unit,
-                ]);
+                // Update nilai terbaru di tabel sensors.
+                //
+                // Dibungkus try/catch dengan sengaja. Satu nilai di luar rentang
+                // kolom -- misalnya pembacaan Modbus 32-bit bertanda yang terbaca
+                // sebagai unsigned, sehingga -1280 menjadi 4294966016 -- akan
+                // melempar QueryException 22003. Tanpa penjagaan ini exception
+                // lolos ke atas, loop berhenti di tengah, dan
+                // ForwardToIntegrations::dispatch() di langkah 8 tidak pernah
+                // tercapai: satu sensor rusak mematikan seluruh ingest dan
+                // forwarding logger tersebut.
+                try {
+                    $registeredSensor->update([
+                        'value'          => $item['nilai'],
+                        'last_reading_at' => $recordedAt,
+                        // Update unit jika sensor punya unit kosong atau null dan device mengirim unit
+                        'unit'           => (empty($registeredSensor->unit) && ! empty($item['satuan']))
+                            ? $item['satuan']
+                            : $registeredSensor->unit,
+                    ]);
 
-                $matched++;
+                    $matched++;
 
-                Log::debug('[DevicePush] Sensor matched', [
-                    'key'          => $item['key'],
-                    'device_nama'  => $item['nama'],
-                    'db_name'      => $registeredSensor->name,
-                    'match_method' => $matchMethod,
-                    'nilai'        => $item['nilai'],
-                    'satuan'       => $item['satuan'],
-                ]);
+                    Log::debug('[DevicePush] Sensor matched', [
+                        'key'          => $item['key'],
+                        'device_nama'  => $item['nama'],
+                        'db_name'      => $registeredSensor->name,
+                        'match_method' => $matchMethod,
+                        'nilai'        => $item['nilai'],
+                        'satuan'       => $item['satuan'],
+                    ]);
+                } catch (Throwable $e) {
+                    $failed++;
+                    $failedKeys[] = $item['key'];
+
+                    Log::warning('[DevicePush] Nilai sensor gagal disimpan - sensor dilewati', [
+                        'logger_id' => $logger->id,
+                        'id_alat'   => $idAlat,
+                        'key'       => $item['key'],
+                        'nama'      => $item['nama'],
+                        'db_name'   => $registeredSensor->name,
+                        'nilai'     => $item['nilai'],
+                        'error'     => $e->getMessage(),
+                    ]);
+                }
             } else {
                 $unmatched++;
 
@@ -158,20 +185,38 @@ class DeviceDataController extends Controller
                 ]);
             }
 
-            // Simpan ke histori sensor_logs (idempotent: upsert berdasarkan logger+key+waktu)
-            SensorLog::updateOrCreate(
-                [
-                    'logger_id'   => $logger->id,
-                    'sensor_key'  => $item['key'],
-                    'recorded_at' => $recordedAt,
-                ],
-                [
-                    'sensor_id'   => $sensorId,
-                    'sensor_name' => $item['nama'],
-                    'value'       => $item['nilai'],
-                    'unit'        => $item['satuan'],
-                ]
-            );
+            // Simpan ke histori sensor_logs (idempotent: upsert berdasarkan logger+key+waktu).
+            // Dijaga dengan alasan yang sama seperti update di atas: kolom value
+            // punya rentang yang sama, jadi nilai yang sama akan gagal di sini juga.
+            try {
+                SensorLog::updateOrCreate(
+                    [
+                        'logger_id'   => $logger->id,
+                        'sensor_key'  => $item['key'],
+                        'recorded_at' => $recordedAt,
+                    ],
+                    [
+                        'sensor_id'   => $sensorId,
+                        'sensor_name' => $item['nama'],
+                        'value'       => $item['nilai'],
+                        'unit'        => $item['satuan'],
+                    ]
+                );
+            } catch (Throwable $e) {
+                if (! in_array($item['key'], $failedKeys, true)) {
+                    $failed++;
+                    $failedKeys[] = $item['key'];
+                }
+
+                Log::warning('[DevicePush] Histori sensor gagal disimpan - dilewati', [
+                    'logger_id' => $logger->id,
+                    'id_alat'   => $idAlat,
+                    'key'       => $item['key'],
+                    'nama'      => $item['nama'],
+                    'nilai'     => $item['nilai'],
+                    'error'     => $e->getMessage(),
+                ]);
+            }
 
             $results[] = [
                 'key'          => $item['key'],
@@ -193,6 +238,8 @@ class DeviceDataController extends Controller
             'total_sensor' => count($sensorData),
             'matched'      => $matched,
             'unmatched'    => $unmatched,
+            'failed'       => $failed,
+            'failed_keys'  => $failedKeys,
         ]);
 
         // --- 8. Dispatch forwarding job (async, database queue) ---
@@ -208,6 +255,7 @@ class DeviceDataController extends Controller
                 'total'     => count($sensorData),
                 'matched'   => $matched,
                 'unmatched' => $unmatched,
+                'failed'    => $failed,
             ],
             'sensors' => $results,
         ]);
