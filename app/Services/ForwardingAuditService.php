@@ -405,12 +405,18 @@ class ForwardingAuditService
             // A batch only advances while jobs are draining it. Remember the last
             // remaining count we saw so a batch that stops moving can be told apart
             // from one still working, and record when it last moved.
-            $seen = array_key_exists('last_remaining', $batch)
-                ? (int) $batch['last_remaining']
-                : $total;
+            $hasSeen = array_key_exists('last_remaining', $batch);
+            $seen = $hasSeen ? (int) $batch['last_remaining'] : $total;
             $movedAt = Carbon::parse($batch['progress_at'] ?? $batch['started_at'] ?? now());
 
-            if ($remaining < $seen) {
+            if (! $hasSeen) {
+                // First look at this batch. remaining is already below total the
+                // moment any minute was covered — including by live forwarding — so
+                // this is not evidence a job just ran. Record the baseline and leave
+                // the clock on started_at.
+                $batch['last_remaining'] = $remaining;
+                Cache::put($cacheKey, $batch, now()->addHours(6));
+            } elseif ($remaining < $seen) {
                 $batch['last_remaining'] = $remaining;
                 $batch['progress_at'] = now()->toIso8601String();
                 Cache::put($cacheKey, $batch, now()->addHours(6));
