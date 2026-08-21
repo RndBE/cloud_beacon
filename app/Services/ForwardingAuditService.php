@@ -378,6 +378,8 @@ class ForwardingAuditService
      */
     public function replayProgress(Logger $logger, CarbonInterface $date, ?Collection $integrations = null): array
     {
+        $staleAfter = (int) config('backfill.replay_stale_after', 300);
+
         $integrations = $integrations ?? LoggerIntegration::where('logger_id', $logger->id)
             ->where('is_enabled', true)
             ->get();
@@ -400,8 +402,31 @@ class ForwardingAuditService
             $remaining = $this->neverAttemptedMinutes($logger, $bucketKey, $date)->count();
             $done = max(0, $total - $remaining);
 
-            if ($remaining === 0) {
-                // Batch drained — stop advertising it so the UI stops polling.
+            // A batch only advances while jobs are draining it. Remember the last
+            // remaining count we saw so a batch that stops moving can be told apart
+            // from one still working, and record when it last moved.
+            $seen = array_key_exists('last_remaining', $batch)
+                ? (int) $batch['last_remaining']
+                : $total;
+            $movedAt = Carbon::parse($batch['progress_at'] ?? $batch['started_at'] ?? now());
+
+            if ($remaining < $seen) {
+                $batch['last_remaining'] = $remaining;
+                $batch['progress_at'] = now()->toIso8601String();
+                Cache::put($cacheKey, $batch, now()->addHours(6));
+                $movedAt = now();
+            }
+
+            // Abandoned batch: minutes are still missing but nothing has forwarded
+            // one for a while, so no job is coming. Without this the bucket reports
+            // running forever, the UI replaces the button that would restart it with
+            // a progress label, and the only thing that could clear the batch is the
+            // drain that can no longer happen.
+            $stalled = $remaining > 0 && abs(now()->diffInSeconds($movedAt)) > $staleAfter;
+
+            if ($remaining === 0 || $stalled) {
+                // Drained, or given up on — either way stop advertising it so the UI
+                // stops polling and offers the button again.
                 Cache::forget($cacheKey);
             }
 
@@ -414,7 +439,8 @@ class ForwardingAuditService
                 // Two backfill workers clear roughly five minutes of data a second;
                 // deliberately conservative so the estimate does not run ahead.
                 'eta_seconds' => (int) ceil($remaining / 5),
-                'running' => $remaining > 0,
+                'running' => $remaining > 0 && ! $stalled,
+                'stalled' => $stalled,
             ];
         }
 
