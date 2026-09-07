@@ -19,3 +19,12 @@ Schedule::command('audit:scan')
     ->hourly()
     ->withoutOverlapping()
     ->runInBackground();
+
+// Retention for the two unbounded tables. twiceMonthly is the closest native
+// cadence to "every two weeks" — a day-of-month step like */14 would fire on
+// the 1st, 15th and 29th, making the last gap three days instead of fourteen.
+// 02:00 keeps it clear of the Plesk backup and log rotation around 03:30-03:50.
+Schedule::command('logs:prune --days=14 --chunk=5000')
+    ->twiceMonthly(1, 15, '02:00')
+    ->withoutOverlapping()
+    ->runInBackground();

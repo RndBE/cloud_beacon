@@ -14,8 +14,8 @@ use Illuminate\Database\Eloquent\Builder;
  * grow forever, which slowly makes audit:scan and the audit screens heavier and
  * bloats MySQL.
  *
- * Deliberately NOT scheduled — running it deletes history, so it is opt-in. Run
- * it by hand (or wire your own cron once you have decided on a retention policy):
+ * Scheduled twice monthly at 02:00 (see routes/console.php) with a 14-day
+ * window. Still safe to run by hand, and --dry-run previews without deleting:
  *
  *   php artisan logs:prune --days=90 --dry-run     # preview only, deletes nothing
  *   php artisan logs:prune --days=90               # delete rows older than 90 days
