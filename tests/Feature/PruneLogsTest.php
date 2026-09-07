@@ -58,11 +58,11 @@ it('still prunes forwarding logs by created_at', function () {
     expect(ForwardingLog::count())->toBe(1);
 });
 
-it('is scheduled twice monthly so retention cannot silently stop running', function () {
+it('is scheduled daily so retention cannot silently stop running', function () {
     $event = collect(app(Illuminate\Console\Scheduling\Schedule::class)->events())
         ->first(fn ($e) => str_contains($e->command ?? '', 'logs:prune'));
 
     expect($event)->not->toBeNull()
-        ->and($event->expression)->toBe('0 2 1,15 * *')
+        ->and($event->expression)->toBe('0 2 * * *')
         ->and($event->command)->toContain('--days=14');
 });

@@ -20,11 +20,14 @@ Schedule::command('audit:scan')
     ->withoutOverlapping()
     ->runInBackground();
 
-// Retention for the two unbounded tables. twiceMonthly is the closest native
-// cadence to "every two weeks" — a day-of-month step like */14 would fire on
-// the 1st, 15th and 29th, making the last gap three days instead of fourteen.
+// Retention for the two unbounded tables: keep 14 days, enforced daily.
+// Running it every 14 days instead would let the tables hold 14-28 days —
+// they refill between purges — so the files settle at twice the size for the
+// same policy. Daily also keeps each run to roughly one day of rows, which is
+// a few minutes rather than a multi-million-row purge, and leaves so little
+// free space behind that OPTIMIZE TABLE never becomes worth scheduling.
 // 02:00 keeps it clear of the Plesk backup and log rotation around 03:30-03:50.
 Schedule::command('logs:prune --days=14 --chunk=5000')
-    ->twiceMonthly(1, 15, '02:00')
+    ->dailyAt('02:00')
     ->withoutOverlapping()
     ->runInBackground();
