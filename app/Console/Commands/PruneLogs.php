@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\ForwardingLog;
+use App\Models\Logger;
 use App\Models\SensorLog;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
@@ -48,9 +49,21 @@ class PruneLogs extends Command
         $cutoff = now()->subDays($days);
         $this->info(($dry ? '[DRY-RUN] ' : '') . "Pruning rows created before {$cutoff->toDateTimeString()} ({$days} days).");
 
+        // sensor_logs is filtered per logger on recorded_at so the delete rides
+        // the (logger_id, recorded_at) index. A global created_at filter has no
+        // index at all: on 27M rows even the COUNT(*) blows past
+        // max_statement_time, so the command could not run on this table.
+        // recorded_at is also the honest column for retention — it is the data
+        // timestamp, whereas created_at is when the row happened to be ingested.
         $targets = [
-            'sensor'     => fn () => SensorLog::query()->where('created_at', '<', $cutoff),
-            'forwarding' => fn () => ForwardingLog::query()->where('created_at', '<', $cutoff),
+            'sensor' => fn () => Logger::orderBy('id')->pluck('id')->map(
+                fn ($id) => fn () => SensorLog::query()
+                    ->where('logger_id', $id)
+                    ->where('recorded_at', '<', $cutoff)
+            ),
+            'forwarding' => fn () => collect([
+                fn () => ForwardingLog::query()->where('created_at', '<', $cutoff),
+            ]),
         ];
 
         if ($only !== null && ! isset($targets[$only])) {
@@ -58,32 +71,41 @@ class PruneLogs extends Command
             return self::FAILURE;
         }
 
-        foreach ($targets as $name => $builder) {
+        foreach ($targets as $name => $group) {
             if ($only !== null && $only !== $name) {
                 continue;
             }
 
-            $total = $builder()->count();
+            $total = 0;
+            $deleted = 0;
+
+            foreach ($group() as $builder) {
+                $slice = $builder()->count();
+                $total += $slice;
+
+                if ($dry || $slice === 0) {
+                    continue;
+                }
+
+                while (true) {
+                    /** @var Builder $q */
+                    $q = $builder();
+                    $batch = $q->limit($chunk)->delete();
+                    $deleted += $batch;
+                    if ($batch < $chunk) {
+                        break;
+                    }
+                    // brief pause to let the DB serve other queries between batches
+                    usleep(50_000);
+                }
+
+                $this->line("  {$name}: deleted {$deleted}/{$total} so far…");
+            }
 
             if ($dry) {
                 $this->line("  {$name}: would delete {$total} rows.");
-                continue;
-            }
 
-            $deleted = 0;
-            while (true) {
-                /** @var Builder $q */
-                $q = $builder();
-                $batch = $q->limit($chunk)->delete();
-                $deleted += $batch;
-                if ($batch > 0) {
-                    $this->line("  {$name}: deleted {$deleted}/{$total}…");
-                }
-                if ($batch < $chunk) {
-                    break;
-                }
-                // brief pause to let the DB serve other queries between batches
-                usleep(50_000);
+                continue;
             }
 
             $this->info("  {$name}: done — {$deleted} rows deleted.");
