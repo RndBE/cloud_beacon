@@ -362,31 +362,4 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('integrations.toggle');
 });
 
-// API v1 Routes
-Route::prefix('api/v1')->group(function () {
-    Route::get('production/models/{modelName}/firmware', [DeviceModelController::class, 'firmware']);
-    Route::get('production/{serialNumber}/firmware', [ProductionController::class, 'firmware']);
-    Route::get('loggers/{id}', [\App\Http\Controllers\Api\LoggerApiController::class, 'show']);
-    Route::get('loggers/{id}/sensors', [\App\Http\Controllers\Api\LoggerApiController::class, 'sensors']);
-    Route::get('loggers/{id}/logs', [\App\Http\Controllers\Api\LoggerApiController::class, 'logs']);
-    Route::post('loggers/{id}/command', [\App\Http\Controllers\Api\LoggerApiController::class, 'sendCommand']);
-    Route::post('loggers/{id}/sensors/data', [\App\Http\Controllers\Api\LoggerApiController::class, 'pushSensorData']);
-
-    /*
-     * POST /api/v1/device/push
-     * Endpoint untuk perangkat logger mengirimkan data sensor secara langsung.
-     * Tidak memerlukan autentikasi — logger diidentifikasi via `id_alat` di body JSON.
-     * - Lookup logger via device_identifier = id_alat
-     * - Update status logger → online + last_data_received_at
-     * - Simpan histori ke sensor_logs
-     * - Update nilai terbaru di sensors (jika sensor sudah terdaftar)
-     */
-    Route::post('device/push', [\App\Http\Controllers\Api\DeviceDataController::class, 'push'])
-        ->name('api.v1.device.push');
-
-    // Mobile App — Production device lookup (QR scan)
-    Route::post('production/lookup', [ProductionController::class, 'lookupSerial'])
-        ->name('api.v1.production.lookup');
-});
-
 require __DIR__.'/settings.php';
