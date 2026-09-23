@@ -20,7 +20,7 @@ class ForwardingAuditService
     public function __construct(private DataAuditService $audits) {}
 
     /**
-     * Greedy interval simulation over sorted present minutes (Carbon), mirroring
+     * Greedy interval simulation over sorted present minutes, mirroring
      * LoggerIntegration::isDueForForwarding. Returns how many records SHOULD have
      * been forwarded given the interval.
      */
@@ -34,7 +34,16 @@ class ForwardingAuditService
      * greedy interval simulation in LoggerIntegration::isDueForForwarding.
      * In raw mode every present minute is due (the interval is ignored).
      *
-     * @param  Collection<int,\Carbon\CarbonInterface>  $presentMinutes  sorted ascending
+     * Takes minute keys as strings ('Y-m-d H:i' or 'Y-m-d H:i:s') sorted
+     * ascending — exactly what DataAuditService::presentMinutes() and the
+     * aggregate query already return. Hydrating those into Carbon first cost
+     * ~160 MB on the Data Audit list (49 loggers x up to 1440 minutes = 54k
+     * objects) to do arithmetic that is one subtraction on minute-of-day.
+     * Every caller is scoped to a single day, so minute-of-day is enough to
+     * order and space them. Carbon instances still work: they stringify to
+     * 'Y-m-d H:i:s'.
+     *
+     * @param  Collection<int,string>  $presentMinutes  sorted ascending
      * @return Collection<int,string> 'H:i' strings
      */
     public function dueMinutesList(Collection $presentMinutes, int $interval, bool $raw): Collection
@@ -42,18 +51,23 @@ class ForwardingAuditService
         if ($presentMinutes->isEmpty()) {
             return collect();
         }
+
+        $hm = $presentMinutes->map(fn ($m) => substr((string) $m, 11, 5));
+
         if ($raw) {
-            return $presentMinutes->map(fn ($m) => $m->format('H:i'))->unique()->values();
+            return $hm->unique()->values();
         }
 
         $interval = max(1, $interval);
         $out = collect();
         $lastDue = null;
 
-        foreach ($presentMinutes as $minute) {
-            if ($lastDue === null || $minute->greaterThanOrEqualTo($lastDue->copy()->addMinutes($interval))) {
-                $out->push($minute->format('H:i'));
-                $lastDue = $minute;
+        foreach ($hm as $minute) {
+            $ofDay = ((int) substr($minute, 0, 2)) * 60 + (int) substr($minute, 3, 2);
+
+            if ($lastDue === null || $ofDay >= $lastDue + $interval) {
+                $out->push($minute);
+                $lastDue = $ofDay;
             }
         }
 
@@ -93,7 +107,7 @@ class ForwardingAuditService
             ->orderBy('minute')
             ->get()
             ->groupBy('logger_id')
-            ->map(fn ($rows) => $rows->map(fn ($r) => Carbon::parse($r->minute))->values());
+            ->map(fn ($rows) => $rows->pluck('minute')->values());
 
         $integrationsByLogger = LoggerIntegration::query()
             ->whereIn('logger_id', $loggerIds)
@@ -120,19 +134,32 @@ class ForwardingAuditService
                 ($statusCounts[$row->logger_id][$bucket][$row->status] ?? 0) + (int) $row->c;
         }
 
-        // Errors resolved by a later successful resend (child not day-filtered —
-        // a resend may run after midnight relative to the audited day).
+        // Errors resolved by a later successful resend (the resend itself is not
+        // day-filtered — it may run after midnight relative to the audited day).
+        //
+        // Written as a semi-join, not a self-join. The self-join let the planner
+        // drive from the child side: resend_of is NULL on all but a handful of
+        // rows, so its index statistics are skewed enough that MariaDB sometimes
+        // estimated ~36k matches per parent, flipped the join order and scanned
+        // every status = 'success' row — 700k rows and 57-60s in the production
+        // slow log, to return a single row. IN (subquery) keeps the tiny resend
+        // set as the driver. COUNT(*) is exact here; the join needed
+        // COUNT(DISTINCT) only because one parent can have several successful
+        // resends.
         $resolvedCounts = [];
         $resolvedRows = ForwardingLog::query()
-            ->from('forwarding_logs as parent')
-            ->join('forwarding_logs as child', 'child.resend_of', '=', 'parent.id')
-            ->where('child.status', 'success')
-            ->whereIn('parent.logger_id', $loggerIds)
-            ->whereNull('parent.resend_of')
-            ->where('parent.status', 'error')
-            ->whereBetween('parent.created_at', [$dayStart, $dayEnd])
-            ->selectRaw('parent.logger_id as logger_id, parent.integration_id as integration_id, parent.target_name as target_name, COUNT(DISTINCT parent.id) as c')
-            ->groupBy('parent.logger_id', 'parent.integration_id', 'parent.target_name')
+            ->whereIn('logger_id', $loggerIds)
+            ->whereNull('resend_of')
+            ->where('status', 'error')
+            ->whereBetween('created_at', [$dayStart, $dayEnd])
+            ->whereIn('id', function ($q) {
+                $q->select('resend_of')
+                    ->from('forwarding_logs')
+                    ->whereNotNull('resend_of')
+                    ->where('status', 'success');
+            })
+            ->selectRaw('logger_id, integration_id, target_name, COUNT(*) as c')
+            ->groupBy('logger_id', 'integration_id', 'target_name')
             ->get();
         foreach ($resolvedRows as $row) {
             $bucket = $this->bucketKeyForRow($row->integration_id, $row->target_name);
@@ -206,7 +233,7 @@ class ForwardingAuditService
         $dayEnd = $day->copy()->endOfDay();
         $dateStr = $day->toDateString();
         $fromLogger = $presentMinutes ?? $this->audits->presentMinutes($logger, $date);
-        $present = $fromLogger->map(fn ($m) => Carbon::parse($m))->values();
+        $present = $fromLogger->values();
         $fromCount = $fromLogger->count();
 
         $result = [];
