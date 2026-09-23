@@ -8,6 +8,7 @@ import {
     RadioTower,
     Repeat,
     Search,
+    Send,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -19,6 +20,7 @@ import {
     type LegendItem,
 } from '@/components/data-audit/coverage-grid';
 import { ResendProgress } from '@/components/data-audit/resend-progress';
+import { ReplayProgress } from '@/components/data-audit/replay-progress';
 import { Button } from '@/components/ui/button';
 import {
     Card,
@@ -28,19 +30,19 @@ import {
     CardTitle,
 } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import {
-    Tabs,
-    TabsContent,
-    TabsList,
-    TabsTrigger,
-} from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useBackfillStatus } from '@/hooks/use-backfill-status';
 import type { BackfillProgress as Progress } from '@/hooks/use-backfill-status';
 import { useResendStatus } from '@/hooks/use-resend-status';
+import { useReplayStatus } from '@/hooks/use-replay-status';
 import type {
     ResendBucketProgress,
     ResendProgressMap,
 } from '@/hooks/use-resend-status';
+import type {
+    ReplayBucketProgress,
+    ReplayProgressMap,
+} from '@/hooks/use-replay-status';
 import AppLayout from '@/layouts/app-layout';
 import { cn } from '@/lib/utils';
 import type { BreadcrumbItem } from '@/types';
@@ -82,8 +84,11 @@ type Props = {
     /** Array of 'H:i' strings for every missing minute of the day. */
     missing: string[];
     progress: Progress;
+    /** Seconds between consecutive RESEND requests; drives the ETA estimate. */
+    backfillInterval: number;
     integrations: IntegrationAudit[];
     resendProgress: ResendProgressMap;
+    replayProgress: ReplayProgressMap;
 };
 
 // -----------------------------------------------------------------------
@@ -170,14 +175,17 @@ export default function DataAuditShow({
     present,
     missing,
     progress: initialProgress,
+    backfillInterval,
     integrations,
     resendProgress,
+    replayProgress,
 }: Props) {
     const { t } = useTranslation();
 
     const { post, processing } = useForm({ date });
     const retry = useForm({ date });
     const resend = useForm({ date, integration: '' });
+    const replay = useForm({ date, integration: '' });
 
     function resendFailed(key: string) {
         resend.transform((data) => ({ ...data, integration: key }));
@@ -186,8 +194,16 @@ export default function DataAuditShow({
         });
     }
 
+    function replayNeverAttempted(key: string) {
+        replay.transform((data) => ({ ...data, integration: key }));
+        replay.post(`/data-audit/${logger.id}/replay`, {
+            preserveScroll: true,
+        });
+    }
+
     const progress = useBackfillStatus(logger.id, date, initialProgress);
     const resendProg = useResendStatus(logger.id, date, resendProgress);
+    const replayProg = useReplayStatus(logger.id, date, replayProgress);
 
     // Local "today" (browser timezone) — audits can't run into the future.
     const today = new Date().toLocaleDateString('en-CA');
@@ -216,7 +232,8 @@ export default function DataAuditShow({
         }));
     }, [missing, progress.updates]);
 
-    const backfillRunning = progress.total > 0 && progress.done < progress.total;
+    const backfillRunning =
+        progress.total > 0 && progress.done < progress.total;
 
     const loggerLegend: LegendItem[] = [
         { cls: 'bg-muted', label: t('data_audit.legend_present', 'Ada') },
@@ -254,7 +271,7 @@ export default function DataAuditShow({
         expected === 0 ? 100 : Math.min(100, (present / expected) * 100);
     const hasGaps = missing.length > 0;
     const tone: Tone = !hasGaps ? 'ok' : completePct >= 90 ? 'warn' : 'bad';
-    const estSeconds = missing.length * 10;
+    const estSeconds = missing.length * backfillInterval;
     const estLabel = `${Math.floor(estSeconds / 3600)}h ${Math.round((estSeconds % 3600) / 60)}m`;
 
     const breadcrumbs: BreadcrumbItem[] = [
@@ -515,6 +532,11 @@ export default function DataAuditShow({
                                             onResend={() =>
                                                 resendFailed(it.key)
                                             }
+                                            replaying={replay.processing}
+                                            onReplay={() =>
+                                                replayNeverAttempted(it.key)
+                                            }
+                                            replayLive={replayProg[it.key]}
                                         />
                                     </TabsContent>
                                 ))}
@@ -622,10 +644,7 @@ function LoggerSwitcher({
                     <ul role="listbox" className="max-h-64 overflow-y-auto p-1">
                         {filtered.length === 0 && (
                             <li className="px-2 py-6 text-center text-sm text-muted-foreground">
-                                {t(
-                                    'data_audit.no_pos',
-                                    'Pos tidak ditemukan',
-                                )}
+                                {t('data_audit.no_pos', 'Pos tidak ditemukan')}
                             </li>
                         )}
                         {filtered.map((l) => (
@@ -668,11 +687,17 @@ function IntegrationPanel({
     live,
     resending,
     onResend,
+    replaying,
+    onReplay,
+    replayLive,
 }: {
     audit: IntegrationAudit;
     live?: ResendBucketProgress;
     resending: boolean;
     onResend: () => void;
+    replaying: boolean;
+    onReplay: () => void;
+    replayLive?: ReplayBucketProgress;
 }) {
     const { t } = useTranslation();
 
@@ -706,6 +731,7 @@ function IntegrationPanel({
     const running =
         !!live && (live.current !== null || live.counts.pending > 0);
     const showResend = audit.failed > 0 && !running;
+    const replayRunning = !!replayLive?.running;
 
     return (
         <div className="flex flex-col gap-4">
@@ -749,14 +775,30 @@ function IntegrationPanel({
                             </span>
                             {t('forwarding_audit.resending', 'Mengirim ulang…')}
                         </span>
+                    ) : replayRunning ? (
+                        <span className="inline-flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400">
+                            <span className="relative flex size-2.5">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/60" />
+                                <span className="relative inline-flex size-2.5 rounded-full bg-amber-500" />
+                            </span>
+                            {t('forwarding_audit.replaying', 'Meneruskan…')}
+                        </span>
                     ) : audit.never_attempted > 0 ? (
-                        <span className="text-sm font-medium text-amber-600 dark:text-amber-400">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={replaying || replayRunning}
+                            onClick={onReplay}
+                            className="border-amber-500/40 text-amber-700 hover:bg-amber-500/10 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300"
+                        >
+                            <Send className="size-4" />
+                            {t('forwarding_audit.replay_btn', 'Teruskan')}{' '}
                             {audit.never_attempted}{' '}
                             {t(
                                 'forwarding_audit.pending_forward',
                                 'belum diteruskan',
                             )}
-                        </span>
+                        </Button>
                     ) : (
                         <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
                             {t('forwarding_audit.all_ok', 'Semua terkirim')}
@@ -808,9 +850,17 @@ function IntegrationPanel({
                     {audit.never_attempted}{' '}
                     {t(
                         'forwarding_audit.never_attempted_hint',
-                        'menit (kuning) punya data tapi belum pernah diteruskan — mis. hasil backfill yang terlewat throttle. Replay raw_payload tidak tersedia untuk menit ini.',
+                        'menit (kuning) punya data tapi belum pernah diteruskan — mis. integrasi baru ditambahkan setelah data masuk, atau hasil backfill yang terlewat throttle. Tombol "Teruskan" menyusun ulang payload dari data sensor dan mengirimkannya; throttle live tidak tergeser.',
                     )}
                 </p>
+            )}
+
+            {/* Live replay progress */}
+            {replayLive && (
+                <>
+                    <Separator />
+                    <ReplayProgress progress={replayLive} />
+                </>
             )}
 
             {/* Live resend progress */}
@@ -849,13 +899,7 @@ function StatChip({
     );
 }
 
-function MetaBadge({
-    children,
-    tone,
-}: {
-    children: ReactNode;
-    tone?: 'info';
-}) {
+function MetaBadge({ children, tone }: { children: ReactNode; tone?: 'info' }) {
     return (
         <span
             className={cn(

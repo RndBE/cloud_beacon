@@ -56,17 +56,24 @@ class TopologyController extends Controller
                 ]),
             ]);
 
-        // Projects list for filter dropdown
-        $projectQuery = Project::withCount('loggers');
-        if (!$user->isSuperAdmin()) {
-            $projectQuery->where('user_id', $user->id);
-        }
-        $projects = $projectQuery->orderBy('name')->get()->map(fn(Project $p) => [
-            'id'          => $p->id,
-            'name'        => $p->name,
-            'color'       => $p->color,
-            'loggerCount' => $p->loggers_count,
-        ]);
+        // Projects list for the filter dropdown and the level-1 project cards.
+        //
+        // Project::visibleTo(), not an owner-only filter: a user granted project access through
+        // Edit User -> Project Access owns nothing, so an owner-only list came back empty and the
+        // topology canvas rendered no project cards at all -- even though scopeVisibleTo above had
+        // already handed them the loggers. The count is scoped the same way, because a member with
+        // `logger_scope: selected` is entitled to only some of the project's loggers.
+        $projects = Project::query()
+            ->visibleTo($user)
+            ->withCount(['loggers' => fn($query) => $query->visibleTo($user)])
+            ->orderBy('name')
+            ->get()
+            ->map(fn(Project $p) => [
+                'id'          => $p->id,
+                'name'        => $p->name,
+                'color'       => $p->color,
+                'loggerCount' => $p->loggers_count,
+            ]);
 
         return Inertia::render('topology', [
             'loggers'  => $loggers,

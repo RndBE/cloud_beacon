@@ -4,6 +4,7 @@
 
 namespace App\Services;
 
+use App\Jobs\ReplayForwarding;
 use App\Jobs\ResendForwarding;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
@@ -12,6 +13,7 @@ use App\Models\SensorLog;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 
 class ForwardingAuditService
 {
@@ -285,6 +287,170 @@ class ForwardingAuditService
         }
 
         return $count;
+    }
+
+    /**
+     * Minutes on $date that have sensor data but never produced a forwarding_logs
+     * row for $bucketKey at all — the yellow cells on the coverage map.
+     *
+     * Distinct from resendFailed(): those minutes DID produce a row (status
+     * error) and carry a raw_payload to replay. These have nothing stored, so
+     * ReplayForwarding rebuilds the payload from sensor_logs instead.
+     *
+     * @return Collection<int,string> 'Y-m-d H:i:00'
+     */
+    public function neverAttemptedMinutes(Logger $logger, string $bucketKey, CarbonInterface $date): Collection
+    {
+        $day = Carbon::parse($date);
+        $dayStart = $day->copy()->startOfDay();
+        $dayEnd = $day->copy()->endOfDay();
+        $dateStr = $day->toDateString();
+
+        $present = $this->audits->presentMinutes($logger, $date);
+        if ($present->isEmpty()) {
+            return collect();
+        }
+
+        $query = ForwardingLog::where('logger_id', $logger->id)
+            ->whereNull('resend_of')
+            ->whereBetween('created_at', [$dayStart, $dayEnd]);
+
+        $bucketKey === 'ministesy'
+            ? $query->whereNull('integration_id')->where('target_name', 'Mini STESY')
+            : $query->where('integration_id', (int) $bucketKey);
+
+        // Same data-time keying as buildCoverage, so the list matches the map.
+        $covered = [];
+        foreach ($query->get(['status', 'created_at', 'payload_summary']) as $row) {
+            $minute = $this->rowDataMinute($row, $dateStr);
+            if ($minute !== null) {
+                $covered[$minute] = true;
+            }
+        }
+
+        return $present
+            ->reject(fn ($m) => isset($covered[Carbon::parse($m)->format('H:i')]))
+            ->map(fn ($m) => Carbon::parse($m)->format('Y-m-d H:i:00'))
+            ->values();
+    }
+
+    /**
+     * Queue a ReplayForwarding job for every never-attempted minute of the day.
+     * Returns how many were queued.
+     */
+    public function replayNeverAttempted(Logger $logger, string $bucketKey, CarbonInterface $date): int
+    {
+        $minutes = $this->neverAttemptedMinutes($logger, $bucketKey, $date);
+
+        if ($minutes->isEmpty()) {
+            return 0;
+        }
+
+        foreach ($minutes as $minute) {
+            ReplayForwarding::dispatch($logger, $bucketKey, $minute);
+        }
+
+        // The batch size is what progress counts down from. Nothing on the rows
+        // themselves records it: a replayed minute is indistinguishable from a
+        // minute that was forwarded live, which is the point.
+        Cache::put(
+            $this->replayCacheKey($logger, $bucketKey, $date),
+            ['total' => $minutes->count(), 'started_at' => now()->toIso8601String()],
+            now()->addHours(6)
+        );
+
+        return $minutes->count();
+    }
+
+    private function replayCacheKey(Logger $logger, string $bucketKey, CarbonInterface $date): string
+    {
+        return "replay:{$logger->id}:{$bucketKey}:".Carbon::parse($date)->toDateString();
+    }
+
+    /**
+     * Live progress for replay batches started on $date, keyed by bucket.
+     *
+     * Progress is derived rather than stored: every completed job writes a
+     * forwarding row, which removes that minute from neverAttemptedMinutes().
+     * So remaining is recomputed each poll and done is total - remaining.
+     *
+     * @param  Collection|null  $integrations  precomputed enabled LoggerIntegration list
+     */
+    public function replayProgress(Logger $logger, CarbonInterface $date, ?Collection $integrations = null): array
+    {
+        $staleAfter = (int) config('backfill.replay_stale_after', 300);
+
+        $integrations = $integrations ?? LoggerIntegration::where('logger_id', $logger->id)
+            ->where('is_enabled', true)
+            ->get();
+
+        $keys = $integrations->map(fn ($i) => (string) $i->id)->all();
+        if ($logger->ministesy_enabled) {
+            $keys[] = 'ministesy';
+        }
+
+        $result = [];
+
+        foreach ($keys as $bucketKey) {
+            $cacheKey = $this->replayCacheKey($logger, $bucketKey, $date);
+            $batch = Cache::get($cacheKey);
+            if (! $batch) {
+                continue; // no replay was started for this bucket/date
+            }
+
+            $total = (int) ($batch['total'] ?? 0);
+            $remaining = $this->neverAttemptedMinutes($logger, $bucketKey, $date)->count();
+            $done = max(0, $total - $remaining);
+
+            // A batch only advances while jobs are draining it. Remember the last
+            // remaining count we saw so a batch that stops moving can be told apart
+            // from one still working, and record when it last moved.
+            $hasSeen = array_key_exists('last_remaining', $batch);
+            $seen = $hasSeen ? (int) $batch['last_remaining'] : $total;
+            $movedAt = Carbon::parse($batch['progress_at'] ?? $batch['started_at'] ?? now());
+
+            if (! $hasSeen) {
+                // First look at this batch. remaining is already below total the
+                // moment any minute was covered — including by live forwarding — so
+                // this is not evidence a job just ran. Record the baseline and leave
+                // the clock on started_at.
+                $batch['last_remaining'] = $remaining;
+                Cache::put($cacheKey, $batch, now()->addHours(6));
+            } elseif ($remaining < $seen) {
+                $batch['last_remaining'] = $remaining;
+                $batch['progress_at'] = now()->toIso8601String();
+                Cache::put($cacheKey, $batch, now()->addHours(6));
+                $movedAt = now();
+            }
+
+            // Abandoned batch: minutes are still missing but nothing has forwarded
+            // one for a while, so no job is coming. Without this the bucket reports
+            // running forever, the UI replaces the button that would restart it with
+            // a progress label, and the only thing that could clear the batch is the
+            // drain that can no longer happen.
+            $stalled = $remaining > 0 && abs(now()->diffInSeconds($movedAt)) > $staleAfter;
+
+            if ($remaining === 0 || $stalled) {
+                // Drained, or given up on — either way stop advertising it so the UI
+                // stops polling and offers the button again.
+                Cache::forget($cacheKey);
+            }
+
+            $result[$bucketKey] = [
+                'key' => $bucketKey,
+                'total' => $total,
+                'done' => $done,
+                'remaining' => $remaining,
+                'pct' => $total > 0 ? (int) round($done / $total * 100) : 100,
+                // Two backfill workers clear roughly five minutes of data a second;
+                // deliberately conservative so the estimate does not run ahead.
+                'eta_seconds' => (int) ceil($remaining / 5),
+                'running' => $remaining > 0 && ! $stalled,
+                'stalled' => $stalled,
+            ];
+        }
+
+        return $result;
     }
 
     /** @param  Collection|null  $integrations  precomputed enabled LoggerIntegration list */

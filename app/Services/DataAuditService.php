@@ -174,7 +174,7 @@ class DataAuditService
             'pct' => (int) round($done / $total * 100),
             'counts' => $counts,
             'current' => $current,
-            'eta_seconds' => $pending * (int) config('backfill.interval', 10),
+            'eta_seconds' => $pending * (int) config('backfill.interval', 1),
             'updates' => $updates ?: (object) [],
         ];
     }
