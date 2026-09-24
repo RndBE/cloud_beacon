@@ -9,7 +9,6 @@ use App\Jobs\ResendForwarding;
 use App\Models\ForwardingLog;
 use App\Models\Logger;
 use App\Models\LoggerIntegration;
-use App\Models\SensorLog;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
@@ -86,8 +85,10 @@ class ForwardingAuditService
      * (equality pinned by ForwardingCompletenessAggregateTest).
      *
      * @param  Collection<int,Logger>  $loggers
+     * @param  Collection|null  $minutesByLogger  precomputed DataAuditService::presentMinutesForLoggers()
+     *                                            result, so the list does not scan sensor_logs twice
      */
-    public function completenessForLoggers(Collection $loggers, CarbonInterface $date): Collection
+    public function completenessForLoggers(Collection $loggers, CarbonInterface $date, ?Collection $minutesByLogger = null): Collection
     {
         if ($loggers->isEmpty()) {
             return collect();
@@ -98,16 +99,7 @@ class ForwardingAuditService
         $dayEnd = $day->copy()->endOfDay();
         $loggerIds = $loggers->pluck('id');
 
-        // Distinct present minutes per logger. substr(recorded_at, 1, 16) is the
-        // same minute key presentCountsForLoggers uses (works on MySQL + SQLite).
-        $minutesByLogger = SensorLog::query()
-            ->whereIn('logger_id', $loggerIds)
-            ->whereBetween('recorded_at', [$dayStart, $dayEnd])
-            ->selectRaw('DISTINCT logger_id, substr(recorded_at, 1, 16) as minute')
-            ->orderBy('minute')
-            ->get()
-            ->groupBy('logger_id')
-            ->map(fn ($rows) => $rows->pluck('minute')->values());
+        $minutesByLogger ??= $this->audits->presentMinutesForLoggers($loggerIds, $day);
 
         $integrationsByLogger = LoggerIntegration::query()
             ->whereIn('logger_id', $loggerIds)

@@ -41,7 +41,7 @@ it('lists exactly the missing minutes of a sparse day', function () {
         ->and($missing->contains(fn ($m) => $m->format('H:i') === '00:00'))->toBeFalse();
 });
 
-it('counts distinct present minutes per logger in one query', function () {
+it('collects distinct present minutes per logger in one query', function () {
     $a = Logger::factory()->create();
     $b = Logger::factory()->create();
 
@@ -57,13 +57,13 @@ it('counts distinct present minutes per logger in one query', function () {
     seedMinute($b, '2026-06-20 12:00:00');
     seedMinute($b, '2026-06-21 12:00:00');
 
-    $counts = app(DataAuditService::class)->presentCountsForLoggers(
+    $minutes = app(DataAuditService::class)->presentMinutesForLoggers(
         collect([$a->id, $b->id]),
         Carbon::parse('2026-06-20'),
     );
 
-    expect((int) $counts[$a->id])->toBe(2)
-        ->and((int) $counts[$b->id])->toBe(1);
+    expect($minutes[$a->id]->all())->toBe(['2026-06-20 00:00:00', '2026-06-20 00:05:00'])
+        ->and($minutes[$b->id]->all())->toBe(['2026-06-20 12:00:00']);
 });
 
 it('rescan writes a summary row', function () {

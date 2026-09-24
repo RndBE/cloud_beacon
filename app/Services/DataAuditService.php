@@ -29,12 +29,23 @@ class DataAuditService
     }
 
     /**
-     * Distinct present-minute counts for many loggers on one date, in a single
-     * grouped query. Returns [logger_id => present_minute_count]. Used by the
-     * Data Audit list to compute completeness for any chosen date without
-     * relying on the hourly scan having stored a row.
+     * Present minutes for many loggers on one date, in a single query. Returns
+     * [logger_id => Collection<'Y-m-d H:i:00'>], sorted ascending; loggers with
+     * no data that day are absent. The Data Audit list derives both its
+     * completeness counts and the forwarding due-simulation from this one
+     * result, computed live so any date can be inspected whether or not the
+     * hourly scan stored a row for it.
+     *
+     * DISTINCT runs on the raw (logger_id, recorded_at) pair, which MariaDB
+     * answers straight from sensor_logs_logger_id_recorded_at_index with a
+     * loose index scan ("Using index for group-by"): it jumps between distinct
+     * timestamps instead of reading every sensor row. A full day is ~700k rows
+     * but ~55k distinct pairs — 1767 ms as DISTINCT substr(recorded_at, 1, 16),
+     * 300 ms this way, same rows. Wrapping the column in substr() is what
+     * defeated the index. Seconds are trimmed here in PHP instead, so a reading
+     * at 00:00:30 still collapses into minute 00:00.
      */
-    public function presentCountsForLoggers(Collection $loggerIds, CarbonInterface $date): Collection
+    public function presentMinutesForLoggers(Collection $loggerIds, CarbonInterface $date): Collection
     {
         $day = Carbon::parse($date)->startOfDay();
 
@@ -42,32 +53,25 @@ class DataAuditService
             return collect();
         }
 
-        // substr(recorded_at, 1, 16) → "YYYY-MM-DD HH:MM" minute key. Works on
-        // both MySQL (casts datetime to string) and SQLite (stored as text), so
-        // production and the test DB agree.
         return SensorLog::query()
             ->whereIn('logger_id', $loggerIds)
             ->whereBetween('recorded_at', [$day, (clone $day)->endOfDay()])
-            ->selectRaw('logger_id, COUNT(DISTINCT substr(recorded_at, 1, 16)) as present')
+            ->distinct()
+            ->orderBy('logger_id')
+            ->orderBy('recorded_at')
+            ->toBase()
+            ->get(['logger_id', 'recorded_at'])
             ->groupBy('logger_id')
-            ->pluck('present', 'logger_id');
+            ->map(fn ($rows) => $rows
+                ->map(fn ($r) => substr((string) $r->recorded_at, 0, 16).':00')
+                ->unique()
+                ->values());
     }
 
     public function presentMinutes(Logger $logger, CarbonInterface $date): Collection
     {
-        $day = Carbon::parse($date)->startOfDay();
-
-        // DISTINCT minute key in SQL (same substr trick as presentCountsForLoggers):
-        // one row per minute instead of one per sensor-minute — a 10-sensor
-        // logger otherwise hydrates ~14k rows for a full day.
-        return SensorLog::query()
-            ->where('logger_id', $logger->id)
-            ->whereBetween('recorded_at', [$day, (clone $day)->endOfDay()])
-            ->selectRaw('DISTINCT substr(recorded_at, 1, 16) as minute')
-            ->orderBy('minute')
-            ->pluck('minute')
-            ->map(fn ($m) => $m.':00')
-            ->values();
+        return $this->presentMinutesForLoggers(collect([$logger->id]), $date)
+            ->get($logger->id, collect());
     }
 
     /** @param  Collection|null  $present  precomputed presentMinutes() result, to avoid re-querying */
