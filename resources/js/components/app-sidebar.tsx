@@ -5,6 +5,7 @@ import {
     ClipboardCheck,
     Factory,
     FolderKanban,
+    Inbox,
     Layers,
     LayoutGrid,
     Network,
@@ -94,6 +95,12 @@ export function AppSidebar() {
             title: 'Forwarding Logs',
             href: '/forwarding-logs',
             icon: ArrowUpDown,
+            permission: 'loggers.view',
+        },
+        {
+            title: t('nav.data_masuk'),
+            href: '/data-masuk',
+            icon: Inbox,
             permission: 'loggers.view',
         },
         {

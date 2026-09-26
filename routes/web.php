@@ -289,6 +289,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('data-audit/{id}/replay-status', [\App\Http\Controllers\DataAuditController::class, 'replayStatus'])->name('data-audit.replay-status');
     Route::get('data-audit/{id}/resend-status', [\App\Http\Controllers\DataAuditController::class, 'resendStatus'])->name('data-audit.resend-status');
 
+    // Data Masuk — raw incoming readings per logger per day
+    Route::get('data-masuk', [\App\Http\Controllers\DataMasukController::class, 'index'])
+        ->middleware('permission:loggers.view')
+        ->name('data-masuk.index');
+    Route::get('data-masuk/{id}/export', [\App\Http\Controllers\DataMasukController::class, 'export'])
+        ->middleware('permission:loggers.view')
+        ->name('data-masuk.export');
+
     // Projects CRUD
     Route::get('projects', [ProjectController::class, 'index'])
         ->name('projects.index');
