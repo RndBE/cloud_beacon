@@ -107,14 +107,23 @@ class DataAuditService
             $minutes = $minutes->filter(fn ($m) => $m->lte(Carbon::parse($to)));
         }
 
+        $keys = $minutes->map->format('Y-m-d H:i:00')->all();
+
+        // Minutes that failed / had no file are still missing, so asking for
+        // them again (e.g. clicking one cell after the SD was fixed) re-queues
+        // the existing row instead of being skipped.
+        $count = DataBackfillTask::where('logger_id', $logger->id)
+            ->whereIn('minute', $keys)
+            ->whereIn('status', [DataBackfillTask::FAILED, DataBackfillTask::NO_FILE])
+            ->update(['status' => DataBackfillTask::PENDING, 'attempts' => 0, 'error' => null]);
+
         // Minutes already queued (any status) must not be re-inserted.
         $existing = DataBackfillTask::where('logger_id', $logger->id)
-            ->whereIn('minute', $minutes->map->format('Y-m-d H:i:00')->all())
+            ->whereIn('minute', $keys)
             ->pluck('minute')
             ->map(fn ($m) => Carbon::parse($m)->format('Y-m-d H:i:00'))
             ->flip();
 
-        $count = 0;
         foreach ($minutes as $minute) {
             if ($existing->has($minute->format('Y-m-d H:i:00'))) {
                 continue;
@@ -199,13 +208,14 @@ class DataAuditService
         );
     }
 
+    /** Re-queue failed and no_file minutes (e.g. after the logger's SD card is fixed). */
     public function retryFailed(Logger $logger, CarbonInterface $date): int
     {
         $day = Carbon::parse($date);
 
         return DataBackfillTask::where('logger_id', $logger->id)
             ->whereBetween('minute', [$day->copy()->startOfDay(), $day->copy()->endOfDay()])
-            ->where('status', DataBackfillTask::FAILED)
+            ->whereIn('status', [DataBackfillTask::FAILED, DataBackfillTask::NO_FILE])
             ->update([
                 'status' => DataBackfillTask::PENDING,
                 'attempts' => 0,

@@ -29,7 +29,7 @@ it('marks a task filled when ack OK and the minute lands, then re-dispatches', f
     Bus::assertDispatched(RunLoggerBackfill::class); // one pending remains → re-dispatched
 });
 
-it('short-circuits the whole day to no_file on a NO_FILE ack', function () {
+it('marks only the requested minute no_file on a NO_FILE ack and keeps going', function () {
     Bus::fake([RunLoggerBackfill::class]);
     $logger = Logger::factory()->create(['device_identifier' => 'BL-TEST']);
     DataBackfillTask::create(['logger_id' => $logger->id, 'minute' => '2026-06-22 08:08:00', 'status' => 'pending']);
@@ -41,6 +41,7 @@ it('short-circuits the whole day to no_file on a NO_FILE ack', function () {
 
     (new RunLoggerBackfill($logger))->handle(app(MqttService::class));
 
-    expect(DataBackfillTask::where('logger_id', $logger->id)->where('status', 'no_file')->count())->toBe(2);
-    Bus::assertNotDispatched(RunLoggerBackfill::class); // nothing pending left
+    expect(DataBackfillTask::where('minute', '2026-06-22 08:08:00')->first()->status)->toBe('no_file')
+        ->and(DataBackfillTask::where('minute', '2026-06-22 08:30:00')->first()->status)->toBe('pending');
+    Bus::assertDispatched(RunLoggerBackfill::class); // 08:30 still pending → re-dispatched
 });

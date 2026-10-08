@@ -79,16 +79,11 @@ class RunLoggerBackfill implements ShouldQueue
                 break;
 
             case 'NO_FILE':
+                // Per minute only: a logger with a bad SD answers NO_FILE even for
+                // days it recorded, so one ack must not write off the rest of the
+                // day. Retryable via DataAuditService::retryFailed().
                 $task->status = DataBackfillTask::NO_FILE;
                 $task->error = null;
-                // No file for the whole day → remaining same-day pending are unrecoverable.
-                DataBackfillTask::where('logger_id', $this->logger->id)
-                    ->where('status', DataBackfillTask::PENDING)
-                    ->whereBetween('minute', [
-                        Carbon::parse($task->minute)->startOfDay(),
-                        Carbon::parse($task->minute)->endOfDay(),
-                    ])
-                    ->update(['status' => DataBackfillTask::NO_FILE, 'ack_status' => 'NO_FILE']);
                 break;
 
             case 'NOT_FOUND':
