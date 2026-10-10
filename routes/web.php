@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AssistantController;
 use App\Http\Controllers\CloudWebSessionController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceModelController;
@@ -200,6 +201,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('api.mqtt.calibration.get');
     Route::post('api/mqtt/protocol/command', [MqttController::class, 'sendProtocolCommand'])
         ->name('api.mqtt.protocol.command');
+    // SSE proxy to the LLM; the assistant's tool calls run in the browser (lib/assistant-commands.ts).
+    Route::post('assistant/chat', [AssistantController::class, 'chat'])
+        ->middleware('throttle:30,1')
+        ->name('assistant.chat');
     // SSE: listen-only live GCM status stream for the topology (EventSource → GET).
     Route::get('api/mqtt/modules/stream', [MqttController::class, 'streamModules'])
         ->name('api.mqtt.modules.stream');

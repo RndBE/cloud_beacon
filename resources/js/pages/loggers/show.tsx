@@ -129,6 +129,10 @@ import {
     setCachedSensorNames,
     subscribeDeviceCache,
 } from '@/lib/device-sync-cache';
+import {
+    EMPTY_SENSOR_FORM as EMPTY_FORM,
+    guessSensorType,
+} from '@/lib/sensor-form';
 import type { BreadcrumbItem } from '@/types';
 import { ApiDocumentation } from './components/api-documentation';
 import { apiFetch } from './components/api-fetch';
@@ -499,38 +503,6 @@ const CONFIGURATOR_MODES = new Set([
     'APMS',
 ]);
 
-const EMPTY_FORM = {
-    name: '',
-    type: 'temperature' as string,
-    unit: '°C',
-    status: 'active' as string,
-    min_value: '0' as string, // string-backed so float entry (e.g. 100.0 / 55.6) isn't clobbered
-    max_value: '100' as string,
-    connection_type: '' as string,
-    modbus_slave_id: 1,
-    device_name: '',
-    function_code: 3,
-    register_address: 0,
-    reg_count: 1,
-    baudrate: 9600,
-    serial_format: '8N1',
-    scale_factor: '1' as string, // string-backed so float entry (e.g. 0.1) isn't clobbered
-
-    channel: 1,
-    analog_mode: 1,
-    port: 1,
-    digital_mode: 0,
-    label_high: 'HIGH',
-    label_low: 'LOW',
-    debounce_ms: 50,
-    invert_logic: false,
-    pulse_submode: 0,
-    timeout_sec: 5,
-    default_state: 0,
-    failsafe: 0,
-    fast_poll: false,
-};
-
 // RS485 unified device form: one device cfg + a repeatable list of parameters (the `s` array).
 type Rs485Param = {
     id?: number;
@@ -558,22 +530,6 @@ const BLANK_RS485_PARAM: Rs485Param = {
 // raw reading (value still empty) — they must never be offered as a data SOURCE.
 function isVirtualSourceName(name: string): boolean {
     return /^(AWLR_TD|AWLR_US|ARR|GNSS)\./i.test(name);
-}
-
-// Mirror of MqttService::guessSensorType — derive a sensor `type` from name/unit so
-// RS232/Analog/Digital forms don't need to show a Type dropdown.
-function guessSensorType(name: string, unit: string): string {
-    const n = name.toLowerCase();
-    const u = unit.toLowerCase();
-    if (n.includes('temp') || u === '°c') return 'temperature';
-    if (n.includes('hum') || u === '%rh') return 'humidity';
-    if (n.includes('press') || u === 'hpa') return 'pressure';
-    if (n.includes('water') || n.includes('level')) return 'water-level';
-    if (n.includes('flow')) return 'flow-rate';
-    if (n.includes('rain')) return 'rainfall';
-    if (n.includes('volt') || u === 'v') return 'voltage';
-    if (n.includes('current') || u === 'a') return 'current';
-    return 'pressure';
 }
 
 const emptyRs485Form = () => ({

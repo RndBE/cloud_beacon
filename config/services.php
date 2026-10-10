@@ -28,6 +28,15 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    // AI assistant chat (resources/js/lib/assistant-chat.ts). Any OpenAI-compatible
+    // API; by default the 9router combo alias on Server 3, same as go-hidro Copilot.
+    'assistant' => [
+        'base_url' => env('ASSISTANT_BASE_URL', 'https://router.be-stesy.cloud/v1'),
+        'model' => env('ASSISTANT_MODEL', 'Chatbot'),
+        'api_key' => env('ASSISTANT_API_KEY'),
+        'max_tokens' => (int) env('ASSISTANT_MAX_TOKENS', 4096),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

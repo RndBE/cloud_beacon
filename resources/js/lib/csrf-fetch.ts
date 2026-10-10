@@ -19,25 +19,25 @@ export function postJson(
     url: string,
     body: Record<string, unknown>,
 ): Promise<Response> {
-    const headers: Record<string, string> = {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-    };
-    const xsrfToken = currentXsrfToken();
-
-    if (xsrfToken) {
-        headers['X-XSRF-TOKEN'] = xsrfToken;
-    } else {
-        const csrfToken = document
-            .querySelector('meta[name="csrf-token"]')
-            ?.getAttribute('content');
-        if (csrfToken) headers['X-CSRF-TOKEN'] = csrfToken;
-    }
-
     return fetch(url, {
         method: 'POST',
         credentials: 'same-origin',
-        headers,
+        headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            ...csrfHeaders(),
+        },
         body: JSON.stringify(body),
     });
+}
+
+/** Fresh XSRF cookie when present (it rotates), else the page's meta token. */
+export function csrfHeaders(): Record<string, string> {
+    const xsrfToken = currentXsrfToken();
+    if (xsrfToken) return { 'X-XSRF-TOKEN': xsrfToken };
+
+    const csrfToken = document
+        .querySelector('meta[name="csrf-token"]')
+        ?.getAttribute('content');
+    return csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {};
 }

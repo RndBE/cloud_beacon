@@ -525,5 +525,23 @@
         "language": "Language",
         "english": "English",
         "indonesian": "Indonesian"
+    },
+    "chat": {
+        "title": "Assistant",
+        "new_chat": "New chat",
+        "close": "Close assistant",
+        "empty_title": "How can I help?",
+        "empty_hint": "Ask about your loggers or tell me what to configure.",
+        "suggestion_1": "Which loggers are offline right now?",
+        "suggestion_2": "Check the health of this logger",
+        "suggestion_3": "Which sensors are on this logger?",
+        "placeholder": "Ask anything\u2026",
+        "send": "Send",
+        "thinking": "Assistant is typing",
+        "stop": "Stop",
+        "approve": "Run",
+        "deny": "Cancel",
+        "needs_approval": "Needs your approval",
+        "cancelled": "Cancelled"
     }
 }

@@ -525,5 +525,23 @@
         "language": "Bahasa",
         "english": "English",
         "indonesian": "Indonesia"
+    },
+    "chat": {
+        "title": "Asisten",
+        "new_chat": "Obrolan baru",
+        "close": "Tutup asisten",
+        "empty_title": "Ada yang bisa dibantu?",
+        "empty_hint": "Tanya soal logger, atau minta saya mengubah konfigurasinya.",
+        "suggestion_1": "Logger mana yang sedang offline?",
+        "suggestion_2": "Cek kesehatan logger ini",
+        "suggestion_3": "Sensor apa saja di logger ini?",
+        "placeholder": "Tanya apa saja\u2026",
+        "send": "Kirim",
+        "thinking": "Asisten sedang mengetik",
+        "stop": "Hentikan",
+        "approve": "Jalankan",
+        "deny": "Batal",
+        "needs_approval": "Butuh persetujuan",
+        "cancelled": "Dibatalkan"
     }
 }
