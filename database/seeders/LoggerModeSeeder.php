@@ -71,8 +71,15 @@ class LoggerModeSeeder extends Seeder
                 'slug'               => 'AWR',
                 'label'              => 'AWR (Automatic Weather Recorder)',
                 'group'              => 'AWR',
-                'has_calibration'    => false,
-                'calibration_fields' => null,
+                // Rain gauge source — {"AWR":{"cmd":"SET","arr_source":..,"arr_sensor":..}}.
+                'has_calibration'    => true,
+                'calibration_fields' => [
+                    ['key' => 'arr_source', 'label' => 'Sumber Data Curah Hujan', 'unit' => '', 'type' => 'sensor-source'],
+                    ['key' => 'arr_sensor', 'label' => 'Jenis Sensor Curah Hujan', 'unit' => '', 'type' => 'select', 'options' => [
+                        ['value' => 'TB-400-04', 'label' => 'TB-400-04'],
+                        ['value' => 'SEM400', 'label' => 'SEM400'],
+                    ]],
+                ],
                 'description'        => 'Automatic Weather Recorder - profil logger cuaca dengan rain gauge, pyranometer, weather, wind, dan illuminance.',
             ],
             [

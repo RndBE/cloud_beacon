@@ -4,9 +4,11 @@ import {
     CheckCircle2,
     Database,
     Loader2,
+    Plus,
     Radio,
     Settings2,
     ShieldAlert,
+    Trash2,
     XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -102,6 +104,8 @@ interface ProfileRole {
     role: string;
     label: string;
     required: boolean;
+    // MAP_DATA slots this sensor feeds — only sent when the role is kept.
+    mapping?: string[];
     templates: SensorTemplate[];
 }
 
@@ -127,6 +131,8 @@ interface ModeProfile {
         fields: CalibrationField[];
     } | null;
     automatic_calibration?: Record<string, string | number> | null;
+    // When set, automatic_calibration is only sent if this role is kept (AWR's rain gauge source).
+    automatic_calibration_role?: string | null;
 }
 
 interface PreviewWarning {
@@ -163,6 +169,7 @@ interface ModeProfilePreview {
         sensors: PreviewSensor[];
         mapping: string[];
         calibration: ModeProfile['calibration'];
+        automatic_calibration: Record<string, string | number> | null;
     };
     requires_confirmation: boolean;
 }
@@ -189,6 +196,12 @@ interface ModeProfileWizardProps {
         loggerMode: string | null;
         status: 'online' | 'offline' | 'warning';
         availableModes: ModeOption[];
+        // Board slot budget (boardSlotLimits); null when the board is unknown.
+        slotLimits?: {
+            variant: string;
+            sensor: number;
+            mapping: number;
+        } | null;
     };
     disabled?: boolean;
     variant?: 'card' | 'inline';
@@ -207,6 +220,10 @@ type WizardPhase =
     | 'error';
 
 const GUIDED_MODES = new Set(['ARR', 'AWR', 'AWLR_TD', 'AWLR_US', 'APMS']);
+
+// The logger stores sensor names cut to 12 characters (see ModeProfileApplyService), so a source
+// picked from the template must be cut the same way to match what the device knows.
+const LOGGER_SENSOR_NAME_MAX_LENGTH = 12;
 
 // Selector fallback for a logger that has no mode yet. An empty selector reads as "nothing chosen"
 // when the real state is "not configured", and the operator has to discover that DEFAULT is the
@@ -318,6 +335,14 @@ export function ModeProfileWizard({
     const [calibrationSending, setCalibrationSending] = useState(false);
     const [calibrationError, setCalibrationError] = useState('');
     const [inlineStep, setInlineStep] = useState<'mode' | 'sensor'>('mode');
+    // Optional roles the operator dropped — they are left out of the request, so nothing is sent
+    // to the logger for them.
+    const [removedRoles, setRemovedRoles] = useState<Record<string, boolean>>(
+        {},
+    );
+    const [sourceValues, setSourceValues] = useState<Record<string, string>>(
+        {},
+    );
 
     const groupedModes = useMemo(() => {
         const groups = new Map<string, ModeOption[]>();
@@ -345,6 +370,8 @@ export function ModeProfileWizard({
         setMessage('');
         setTemplateIds({});
         setInputValues({});
+        setRemovedRoles({});
+        setSourceValues({});
         setProfile(null);
         if (variant === 'inline') {
             setInlineStep('mode');
@@ -449,10 +476,59 @@ export function ModeProfileWizard({
         }));
     }
 
+    function setRoleRemoved(role: string, removed: boolean) {
+        setRemovedRoles((current) => ({ ...current, [role]: removed }));
+    }
+
+    const activeRoles =
+        profile?.roles.filter((role) => !removedRoles[role.role]) ?? [];
+
+    // The role whose sensor the mode command points at (AWR → rain gauge), while it is kept.
+    const sourceRole = profile?.automatic_calibration_role
+        ? activeRoles.find(
+              (role) => role.role === profile.automatic_calibration_role,
+          )
+        : undefined;
+    const sourceTemplate = sourceRole?.templates.find(
+        (candidate) => candidate.id === templateIds[sourceRole.role],
+    );
+    const sourceOptions = Array.from(
+        new Set(
+            (sourceTemplate?.parameters ?? []).map((parameter) =>
+                parameter.name.slice(0, LOGGER_SENSOR_NAME_MAX_LENGTH),
+            ),
+        ),
+    );
+
+    // Keys ending in "source" pick one of the kept sensor's parameters; keys ending in "sensor"
+    // follow the chosen template (TB-400-04, SEM400). Defaults come from the catalogue.
+    function sourceFieldValue(key: string, fallback: string | number): string {
+        if (key.endsWith('sensor'))
+            return sourceTemplate?.name ?? String(fallback);
+        const chosen = sourceValues[key];
+        if (chosen && sourceOptions.includes(chosen)) return chosen;
+        const preferred = String(fallback);
+        return sourceOptions.includes(preferred)
+            ? preferred
+            : (sourceOptions[0] ?? '');
+    }
+
+    function automaticCalibration(): Record<string, string> | null {
+        const defaults = profile?.automatic_calibration;
+        if (!defaults || !sourceRole) return null;
+
+        return Object.fromEntries(
+            Object.entries(defaults).map(([key, fallback]) => [
+                key,
+                sourceFieldValue(key, fallback),
+            ]),
+        );
+    }
+
     function selections() {
         if (!profile) return [];
 
-        return profile.roles.map((role) => ({
+        return activeRoles.map((role) => ({
             role: role.role,
             template_id: templateIds[role.role],
             inputs: Object.fromEntries(
@@ -463,10 +539,23 @@ export function ModeProfileWizard({
         }));
     }
 
-    function selectionReady(): boolean {
-        if (!profile?.enabled || profile.roles.length === 0) return false;
+    // Same order the server builds MAP_DATA in: kept roles' slots, then the shared ones.
+    const plannedMapping = Array.from(
+        new Set([
+            ...activeRoles.flatMap((role) => role.mapping ?? []),
+            ...(profile?.default_mapping ?? []),
+        ]),
+    );
+    const mappingLimit = logger.slotLimits?.mapping ?? null;
+    const mappingOverLimit =
+        mappingLimit !== null && plannedMapping.length > mappingLimit;
 
-        return profile.roles.every((role) => {
+    function selectionReady(): boolean {
+        if (!profile?.enabled || activeRoles.length === 0) return false;
+        if (sourceRole && sourceOptions.length === 0) return false;
+        if (mappingOverLimit) return false;
+
+        return activeRoles.every((role) => {
             const template = role.templates.find(
                 (candidate) => candidate.id === templateIds[role.role],
             );
@@ -495,6 +584,7 @@ export function ModeProfileWizard({
                     id_logger: logger.deviceIdentifier,
                     mode: selectedMode,
                     selections: selections(),
+                    automatic_calibration: automaticCalibration(),
                 },
             );
 
@@ -555,15 +645,15 @@ export function ModeProfileWizard({
                                   };
                           }
 
-                          const automaticCalibration =
-                              profile?.automatic_calibration;
-                          if (automaticCalibration) {
+                          const modeCommand =
+                              preview.changes.automatic_calibration;
+                          if (modeCommand) {
                               const calibrationResult = await commandTransport(
                                   selectedMode,
                                   {
                                       [selectedMode]: {
                                           cmd: 'SET',
-                                          ...automaticCalibration,
+                                          ...modeCommand,
                                       },
                                   },
                               );
@@ -592,6 +682,7 @@ export function ModeProfileWizard({
                                   id_logger: logger.deviceIdentifier,
                                   mode: selectedMode,
                                   selections: selections(),
+                                  automatic_calibration: automaticCalibration(),
                                   confirmed_warnings: confirmedWarnings,
                               },
                           );
@@ -602,6 +693,7 @@ export function ModeProfileWizard({
                               id_logger: logger.deviceIdentifier,
                               mode: selectedMode,
                               selections: selections(),
+                              automatic_calibration: automaticCalibration(),
                               confirmed_warnings: confirmedWarnings,
                           },
                       );
@@ -1003,21 +1095,85 @@ export function ModeProfileWizard({
                                             candidate.id ===
                                             templateIds[role.role],
                                     );
+                                    const blockClass = inline
+                                        ? 'space-y-3 rounded-xl border bg-card/70 p-3 shadow-sm'
+                                        : 'space-y-3 border-t pt-4';
+
+                                    if (removedRoles[role.role]) {
+                                        return (
+                                            <div
+                                                key={role.role}
+                                                className={`${blockClass} flex items-center justify-between gap-3`}
+                                            >
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-medium text-muted-foreground line-through">
+                                                        {role.label}
+                                                    </p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        {t(
+                                                            'mode_profile.sensor_removed',
+                                                        )}
+                                                    </p>
+                                                </div>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="h-8 shrink-0 gap-1.5 rounded-lg"
+                                                    disabled={
+                                                        selectionUnavailable
+                                                    }
+                                                    onClick={() =>
+                                                        setRoleRemoved(
+                                                            role.role,
+                                                            false,
+                                                        )
+                                                    }
+                                                >
+                                                    <Plus className="size-3.5" />
+                                                    {t(
+                                                        'mode_profile.add_sensor',
+                                                    )}
+                                                </Button>
+                                            </div>
+                                        );
+                                    }
+
                                     return (
                                         <div
                                             key={role.role}
-                                            className={
-                                                inline
-                                                    ? 'space-y-3 rounded-xl border bg-card/70 p-3 shadow-sm'
-                                                    : 'space-y-3 border-t pt-4'
-                                            }
+                                            className={blockClass}
                                         >
                                             <div className="grid gap-1.5">
-                                                <Label
-                                                    htmlFor={`profile-template-${role.role}`}
-                                                >
-                                                    {role.label}
-                                                </Label>
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <Label
+                                                        htmlFor={`profile-template-${role.role}`}
+                                                    >
+                                                        {role.label}
+                                                    </Label>
+                                                    {!role.required && (
+                                                        <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant="ghost"
+                                                            className="h-7 gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:text-red-600"
+                                                            disabled={
+                                                                selectionUnavailable
+                                                            }
+                                                            onClick={() =>
+                                                                setRoleRemoved(
+                                                                    role.role,
+                                                                    true,
+                                                                )
+                                                            }
+                                                        >
+                                                            <Trash2 className="size-3.5" />
+                                                            {t(
+                                                                'mode_profile.remove_sensor',
+                                                            )}
+                                                        </Button>
+                                                    )}
+                                                </div>
                                                 <Select
                                                     value={
                                                         templateIds[
@@ -1113,9 +1269,133 @@ export function ModeProfileWizard({
                                                     </div>
                                                 ),
                                             )}
+
+                                            {sourceRole?.role === role.role &&
+                                                Object.entries(
+                                                    profile.automatic_calibration ??
+                                                        {},
+                                                )
+                                                    .filter(([key]) =>
+                                                        key.endsWith('source'),
+                                                    )
+                                                    .map(([key, fallback]) => (
+                                                        <div
+                                                            key={key}
+                                                            className="grid gap-1.5"
+                                                        >
+                                                            <Label
+                                                                htmlFor={`profile-${role.role}-${key}`}
+                                                            >
+                                                                {t(
+                                                                    'mode_profile.rain_source',
+                                                                )}
+                                                            </Label>
+                                                            <Select
+                                                                value={sourceFieldValue(
+                                                                    key,
+                                                                    fallback,
+                                                                )}
+                                                                onValueChange={(
+                                                                    value,
+                                                                ) =>
+                                                                    setSourceValues(
+                                                                        (
+                                                                            current,
+                                                                        ) => ({
+                                                                            ...current,
+                                                                            [key]: value,
+                                                                        }),
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    selectionUnavailable
+                                                                }
+                                                            >
+                                                                <SelectTrigger
+                                                                    id={`profile-${role.role}-${key}`}
+                                                                >
+                                                                    <SelectValue />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    {sourceOptions.map(
+                                                                        (
+                                                                            option,
+                                                                        ) => (
+                                                                            <SelectItem
+                                                                                key={
+                                                                                    option
+                                                                                }
+                                                                                value={
+                                                                                    option
+                                                                                }
+                                                                            >
+                                                                                {
+                                                                                    option
+                                                                                }
+                                                                            </SelectItem>
+                                                                        ),
+                                                                    )}
+                                                                </SelectContent>
+                                                            </Select>
+                                                            <p className="text-xs text-muted-foreground">
+                                                                {t(
+                                                                    'mode_profile.rain_source_hint',
+                                                                    {
+                                                                        sensor:
+                                                                            sourceTemplate?.name ??
+                                                                            '-',
+                                                                    },
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                    ))}
                                         </div>
                                     );
                                 })}
+
+                            {showSensorStep &&
+                                profile.enabled &&
+                                profile.roles.length > 0 &&
+                                activeRoles.length === 0 && (
+                                    <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                                        {t('mode_profile.min_one_sensor')}
+                                    </div>
+                                )}
+
+                            {showSensorStep &&
+                                profile.enabled &&
+                                activeRoles.length > 0 &&
+                                logger.slotLimits &&
+                                plannedMapping.length > 0 && (
+                                    <div
+                                        className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
+                                            mappingOverLimit
+                                                ? 'border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-300'
+                                                : 'border-border bg-muted/30 text-muted-foreground'
+                                        }`}
+                                    >
+                                        {mappingOverLimit ? (
+                                            <XCircle className="mt-0.5 size-3.5 shrink-0" />
+                                        ) : (
+                                            <Database className="mt-0.5 size-3.5 shrink-0" />
+                                        )}
+                                        <span>
+                                            {t(
+                                                mappingOverLimit
+                                                    ? 'mode_profile.mapping_over_limit'
+                                                    : 'mode_profile.mapping_usage',
+                                                {
+                                                    used: plannedMapping.length,
+                                                    max: logger.slotLimits
+                                                        .mapping,
+                                                    board: logger.slotLimits
+                                                        .variant,
+                                                },
+                                            )}
+                                        </span>
+                                    </div>
+                                )}
                         </>
                     )}
 
@@ -1242,6 +1522,17 @@ export function ModeProfileWizard({
                                                 .length,
                                         })}
                                     </li>
+                                    {preview.changes.automatic_calibration && (
+                                        <li>
+                                            {t('mode_profile.impact_source')}{' '}
+                                            <strong className="text-foreground">
+                                                {Object.values(
+                                                    preview.changes
+                                                        .automatic_calibration,
+                                                ).join(' · ')}
+                                            </strong>
+                                        </li>
+                                    )}
                                     {preview.changes.calibration && (
                                         <li>
                                             {t(

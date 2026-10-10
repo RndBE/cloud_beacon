@@ -296,7 +296,16 @@
         "calibration_description": "Sensor dan mapping sudah berhasil diset.",
         "data_source": "Sumber Data",
         "calibration_required": "Lengkapi semua nilai kalibrasi.",
-        "offline_notice": "Mode dan sensor bisa dipilih dulu. Untuk mengirim ke logger, perangkat harus online atau gunakan Serial ON."
+        "offline_notice": "Mode dan sensor bisa dipilih dulu. Untuk mengirim ke logger, perangkat harus online atau gunakan Serial ON.",
+        "remove_sensor": "Hapus",
+        "add_sensor": "Tambah",
+        "sensor_removed": "Tidak dipakai — tidak akan dikirim ke logger.",
+        "min_one_sensor": "Sisakan minimal satu sensor.",
+        "rain_source": "Sumber Data Curah Hujan",
+        "rain_source_hint": "Logger membaca curah hujan dari parameter {{sensor}} ini.",
+        "impact_source": "Sumber data curah hujan diset ke",
+        "mapping_usage": "Slot mapping: {{used}} / {{max}} ({{board}})",
+        "mapping_over_limit": "{{board}} hanya punya {{max}} slot mapping, konfigurasi ini butuh {{used}}. Hapus sensor yang tidak dipakai."
     },
     "loggerDetail": {
         "back_to_loggers": "Kembali ke logger",

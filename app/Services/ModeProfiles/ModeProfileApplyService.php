@@ -103,7 +103,7 @@ class ModeProfileApplyService
             $completed[] = 'sync_database';
         }
 
-        $automaticCalibration = $profile['automatic_calibration'] ?? null;
+        $automaticCalibration = $preview['changes']['automatic_calibration'];
         if (is_array($automaticCalibration)) {
             $calibrationResult = $this->mqtt->sendCalibrationSet(
                 $logger->device_identifier,
@@ -131,7 +131,7 @@ class ModeProfileApplyService
             $completed[] = 'set_calibration';
         }
 
-        $mapping = $profile['default_mapping'] ?? [];
+        $mapping = $preview['changes']['mapping'];
         if ($mapping !== []) {
             $mappingResult = $this->mqtt->sendProtocolCommand(
                 $logger->device_identifier,
@@ -236,7 +236,7 @@ class ModeProfileApplyService
             $completed[] = 'sync_database';
         }
 
-        $automaticCalibration = $profile['automatic_calibration'] ?? null;
+        $automaticCalibration = $preview['changes']['automatic_calibration'];
         if (is_array($automaticCalibration)) {
             $logger->update([
                 'calibration_data' => $automaticCalibration,
@@ -245,7 +245,7 @@ class ModeProfileApplyService
             $completed[] = 'set_calibration';
         }
 
-        if (($profile['default_mapping'] ?? []) !== []) {
+        if ($preview['changes']['mapping'] !== []) {
             $completed[] = 'set_mapping';
         }
 

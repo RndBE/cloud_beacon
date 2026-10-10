@@ -296,7 +296,16 @@
         "calibration_description": "Sensor and mapping have been configured successfully.",
         "data_source": "Data Source",
         "calibration_required": "Complete all calibration values.",
-        "offline_notice": "You can choose the mode and sensor first. To send it to the logger, the device must be online or use Serial ON."
+        "offline_notice": "You can choose the mode and sensor first. To send it to the logger, the device must be online or use Serial ON.",
+        "remove_sensor": "Remove",
+        "add_sensor": "Add",
+        "sensor_removed": "Not used — it will not be sent to the logger.",
+        "min_one_sensor": "Keep at least one sensor.",
+        "rain_source": "Rainfall Data Source",
+        "rain_source_hint": "The logger reads rainfall from this {{sensor}} parameter.",
+        "impact_source": "Rainfall source is set to",
+        "mapping_usage": "Mapping slots: {{used}} / {{max}} ({{board}})",
+        "mapping_over_limit": "{{board}} only has {{max}} mapping slots, this setup needs {{used}}. Remove the sensors that are not used."
     },
     "loggerDetail": {
         "back_to_loggers": "Back to loggers",

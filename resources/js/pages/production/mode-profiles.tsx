@@ -78,6 +78,8 @@ interface Role {
     role: string;
     label: string;
     required: boolean;
+    // MAP_DATA slots this sensor feeds; the wizard only sends them when the role is kept.
+    mapping?: string[];
     templates: Template[];
 }
 
@@ -155,7 +157,7 @@ function emptyTemplate(): Template {
 }
 
 function emptyRole(): Role {
-    return { role: '', label: '', required: true, templates: [] };
+    return { role: '', label: '', required: true, mapping: [], templates: [] };
 }
 
 function blankProfile(): ProfileItem {
@@ -230,6 +232,37 @@ function Field({
             <Label className={fieldLabel}>{label}</Label>
             {children}
         </div>
+    );
+}
+
+// One MAP_DATA slot per line. The raw text is kept locally so Enter can start a new (still empty)
+// line; only the parsed, non-empty slots go back up.
+function MappingTextarea({
+    value,
+    onChange,
+    placeholder,
+}: {
+    value: string[];
+    onChange: (slots: string[]) => void;
+    placeholder: string;
+}) {
+    const [text, setText] = useState(value.join('\n'));
+
+    return (
+        <textarea
+            className="min-h-20 rounded-md border border-input bg-background p-2 font-mono text-xs"
+            value={text}
+            onChange={(e) => {
+                setText(e.target.value);
+                onChange(
+                    e.target.value
+                        .split('\n')
+                        .map((line) => line.trim())
+                        .filter(Boolean),
+                );
+            }}
+            placeholder={placeholder}
+        />
     );
 }
 
@@ -833,21 +866,20 @@ function ModeEditor({
                 </Field>
             )}
 
-            <Field label="Default mapping (satu slot per baris, urut sesuai MAP_DATA)">
-                <textarea
-                    className="min-h-20 rounded-md border border-input bg-background p-2 font-mono text-xs"
-                    value={draft.defaultMapping.join('\n')}
-                    onChange={(e) =>
-                        setDraft({
-                            ...draft,
-                            defaultMapping: e.target.value
-                                .split('\n')
-                                .map((line) => line.trim())
-                                .filter(Boolean),
-                        })
+            <Field label="Mapping umum (selalu dikirim, setelah mapping sensor — satu slot per baris)">
+                <MappingTextarea
+                    value={draft.defaultMapping}
+                    onChange={(defaultMapping) =>
+                        setDraft({ ...draft, defaultMapping })
                     }
-                    placeholder={'ARR.Rain_Day\nARR.Rain_Hour'}
+                    placeholder="ARR.Status_Modbus"
                 />
+                <p className="text-[10px] text-muted-foreground">
+                    Slot yang bukan milik satu sensor. Slot milik sensor diisi
+                    di role masing-masing, supaya sensor yang dihapus di wizard
+                    tidak ikut dikirim. Urutan MAP_DATA: mapping role (urut role
+                    yang dipakai), lalu mapping umum.
+                </p>
             </Field>
 
             {/* Roles → templates. A role is a slot the operator fills at apply time. */}
@@ -945,6 +977,20 @@ function ModeEditor({
                                 </Button>
                             </div>
                         </div>
+
+                        <Field label="Mapping sensor ini (satu slot per baris, dikirim hanya jika role dipakai)">
+                            <MappingTextarea
+                                // Remount when roles shift so the local text follows its role.
+                                key={`mapping-${roleIndex}-${draft.roles.length}`}
+                                value={role.mapping ?? []}
+                                onChange={(mapping) =>
+                                    patchRole(roleIndex, { mapping })
+                                }
+                                placeholder={
+                                    'ARR.Rainfall_Minute\nARR.Rainfall_Hour'
+                                }
+                            />
+                        </Field>
 
                         <div className="grid gap-2">
                             {role.templates.map((template, templateIndex) => (
