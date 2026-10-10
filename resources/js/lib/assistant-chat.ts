@@ -237,20 +237,13 @@ async function runToolCall(call: ToolCall): Promise<string> {
         });
     }
 
-    // Unknown names never execute (runAssistantCommand rejects them), so no approval needed.
-    const risk = commandRisk(name) ?? 'read';
+    // A call that doesn't match its schema (unknown tool, missing or extra
+    // argument) goes straight back to the model, which retries on its own;
+    // the user only ever sees calls that can actually run.
     const problem = inputProblem(name, input);
-    if (problem) {
-        push({
-            kind: 'tool',
-            name,
-            input,
-            risk,
-            status: 'failed',
-            result: problem,
-        });
-        return JSON.stringify({ ok: false, message: problem });
-    }
+    if (problem) return JSON.stringify({ ok: false, message: problem });
+
+    const risk = commandRisk(name) ?? 'read';
     const ask = needsConfirmation(risk);
     const id = push({
         kind: 'tool',
@@ -305,7 +298,8 @@ export async function sendMessage(text: string) {
                 reply += token;
                 patch(bubble, { text: reply });
             });
-            if (!message.content) remove(bubble);
+            if (message.content) patch(bubble, { text: message.content });
+            else remove(bubble);
             history.push(message);
             if (!message.tool_calls?.length) return;
 
