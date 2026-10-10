@@ -19,7 +19,7 @@ test('logger detail shows Modul AI inside the mode module tabs', () => {
     const source = readFileSync(showPath, 'utf8');
 
     assert.match(source, /remoteDevice: LoggerRemoteDevice \| null/);
-    assert.match(source, /extraTabs=\{\s*logger\.remoteDevice\s*\?\s*\[/);
+    assert.match(source, /\.\.\.\(logger\.remoteDevice\s*\?\s*\[/);
     assert.match(source, /value:\s*'module-ai'/);
     assert.match(
         source,
@@ -27,6 +27,29 @@ test('logger detail shows Modul AI inside the mode module tabs', () => {
     );
     assert.doesNotMatch(source, /<TabsTrigger value="module-ai"/);
     assert.doesNotMatch(source, /<TabsContent value="module-ai"/);
+});
+
+test('logger detail shows a Security Cam logs tab inside the module tabs', () => {
+    const source = readFileSync(showPath, 'utf8');
+    const securityCamIndex = source.indexOf("value: 'security-cam'");
+    const moduleAiIndex = source.indexOf("value: 'module-ai'");
+
+    assert.ok(securityCamIndex > -1, 'Security Cam tab must exist');
+    assert.ok(
+        securityCamIndex < moduleAiIndex,
+        'Security Cam should sit before Modul AI',
+    );
+    assert.match(source, /label:\s*'Security Cam'/);
+    assert.match(source, /<SecurityCamCard \/>/);
+    assert.ok(
+        existsSync(
+            path.resolve(
+                __dirname,
+                '../../resources/js/pages/loggers/security-cam-card.tsx',
+            ),
+        ),
+        'Security Cam card must exist',
+    );
 });
 
 test('ProtocolPanel can render extra tabs after Digital Output', () => {

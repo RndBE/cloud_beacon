@@ -149,6 +149,7 @@ import type {
     ProtocolPanelHandle,
 } from './protocol';
 import type { LeoSendConfig, ProtocolLogger } from './protocol';
+import { SecurityCamCard } from './security-cam-card';
 
 interface SensorItem {
     id: number;
@@ -9385,8 +9386,13 @@ export default function LoggerShow({
                                     ref={modulePanelRef}
                                     logger={protocolLogger}
                                     tabs={MODULE_PROTOCOL_TABS}
-                                    extraTabs={
-                                        logger.remoteDevice
+                                    extraTabs={[
+                                        {
+                                            value: 'security-cam',
+                                            label: 'Security Cam',
+                                            content: <SecurityCamCard />,
+                                        },
+                                        ...(logger.remoteDevice
                                             ? [
                                                   {
                                                       value: 'module-ai',
@@ -9400,8 +9406,8 @@ export default function LoggerShow({
                                                       ),
                                                   },
                                               ]
-                                            : []
-                                    }
+                                            : []),
+                                    ]}
                                     manualSync
                                     readOnly={readOnly}
                                     transportMode={transportMode}
