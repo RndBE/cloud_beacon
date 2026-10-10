@@ -522,3 +522,22 @@ it('resolves OTA terminal success and failure frames correctly', function () {
         ->and(MqttService::interpretOtaMessage(['OTA' => ['status' => 'ERR']])['success'])->toBeFalse()
         ->and(MqttService::interpretOtaMessage(['OTA_INSTALL' => ['status' => 'ERR']])['success'])->toBeFalse();
 });
+
+it('never reads a sibling GCM module key as the reply to its parent command', function () {
+    // A spontaneous {"GCM_AUTO":{"msg":"rule change",…}} landing while a GCM GET waits must not be
+    // taken as the GCM answer; likewise GCM_GATE_WARN / GCM_GATE_CAL replies for GCM_GATE.
+    expect(MqttService::protocolKeyMatches('GCM', 'GCM_AUTO'))->toBeFalse()
+        ->and(MqttService::protocolKeyMatches('GCM', 'GCM_GATE'))->toBeFalse()
+        ->and(MqttService::protocolKeyMatches('GCM_GATE', 'GCM_GATE_WARN'))->toBeFalse()
+        ->and(MqttService::protocolKeyMatches('GCM_GATE', 'GCM_GATE_CAL'))->toBeFalse();
+});
+
+it('still matches each module under its own key and the spaced/prefixed acks', function () {
+    expect(MqttService::protocolKeyMatches('GCM', 'GCM'))->toBeTrue()
+        ->and(MqttService::protocolKeyMatches('GCM_AUTO', 'GCM_AUTO'))->toBeTrue()
+        ->and(MqttService::protocolKeyMatches('GCM_GATE_CAL', 'GCM_GATE_CAL'))->toBeTrue()
+        ->and(MqttService::protocolKeyMatches('ROUTER', 'ROUTER SET'))->toBeTrue()
+        ->and(MqttService::protocolKeyMatches('SIM', 'SIMSET'))->toBeTrue()
+        ->and(MqttService::protocolKeyMatches('SENSORS', 'RS485 SET'))->toBeTrue()
+        ->and(MqttService::protocolKeyMatches('OTA', 'OTA_CHECK'))->toBeTrue();
+});

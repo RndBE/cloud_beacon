@@ -70,7 +70,8 @@ test('System tab shows System Information and Storage above Logger Condition wit
         storageIndex < conditionIndex,
         'Storage should render above Logger Condition',
     );
-    assert.match(systemTab, /<Tabs defaultValue="info">/);
+    // Extra props are fine (onValueChange triggers the OTA CHECK when Firmware is opened).
+    assert.match(systemTab, /<Tabs\s+defaultValue="info"/);
     assert.match(systemTab, /<FirmwareCard[\s\S]*embedded/);
 
     const conditionTail = systemTab.slice(conditionIndex);

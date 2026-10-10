@@ -1635,6 +1635,8 @@ class MqttController extends Controller
             'GCM_PUMP',     // §3.17 — pump control per module (mode PUMP)
             'GCM_GATE',     // §3.17 — water gate control per module (mode AWGC)
             'GCM_GATE_WARN', // §4 — EWS horn/speaker pre-warning before AWGC moves (mode AWGC)
+            'GCM_GATE_CAL', // AWGC gate travel limits (min_close / max_open) per module
+            'GCM_AUTO',     // logger-side automatic gate/pump control from sensor rules (fw 2.2.3+)
             'GCM_MAP',      // §3.17.1 — telemetry-slot -> GCM register mapping
             'MAP_DATA',     // name-based sensor mapping — telemetry/LCD/SD ordering (s1..s43)
             'P_OUT',         // power-output GET → {"12":x,"24":x}
@@ -1643,6 +1645,9 @@ class MqttController extends Controller
             'SENS_DOOR',
             'ALERT',
             'MODBUSTCP',
+            'ROUTER',       // cellular router signal read over RS485 Modbus RTU (SET replies {"ROUTER SET":"OK"})
+            'SENT_60S',     // 60-second telemetry publish on/off
+            'SENT_1S',      // 1-second telemetry publish on/off
             'POWER',
             'POWER_CAL',
             'FTP',
@@ -1686,9 +1691,14 @@ class MqttController extends Controller
         // FTP READLOGS scans the device's SD card for daily syslog files, which is slow on a full
         // card — give it the same 5-minute budget as the GETLOG upload behind the log viewer so the
         // whole "Log Sistem Harian" flow waits equally long instead of giving up after 15s.
-        $protocolTimeout = match ($module) {
-            'OTA' => 330,
-            'FTP' => (int) config('mqtt.ftp_timeout', 300),
+        // GCM SET makes the logger contact every bound module over Modbus (slave + serial
+        // number) before it answers, so it routinely outlasts the regular 15s wait.
+        $isGcmSet = $module === 'GCM'
+            && strtoupper((string) ($payload['GCM']['cmd'] ?? '')) === 'SET';
+        $protocolTimeout = match (true) {
+            $module === 'OTA' => 330,
+            $module === 'FTP' => (int) config('mqtt.ftp_timeout', 300),
+            $isGcmSet => (int) config('mqtt.gcm_set_timeout', 45),
             default => null,
         };
         $result = $mqtt->sendProtocolCommand($idLogger, $payload, $module, $protocolTimeout);

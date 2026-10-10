@@ -90,7 +90,10 @@ export function formatModuleResponse(
     // Accept command replies plus spontaneous module/online alarm pushes.
     const isEws =
         module === 'EWS' || module === 'EWS_EVENT' || module === 'EWS_ALARM';
-    const isGcm = module.startsWith('GCM');
+    if (module === 'GCM_AUTO') return formatGcmAutoEvent(data);
+    // GCM_GATE_CAL is excluded: the panel toasts its own result, and its error texts
+    // ("missing param min_close or max_open") would otherwise read as a "Gate Open" action below.
+    const isGcm = module.startsWith('GCM') && module !== 'GCM_GATE_CAL';
     if (!isEws && !isGcm) return null;
 
     const root = asRecord(data);
@@ -184,6 +187,73 @@ export function formatModuleResponse(
                 ? `Posisi ${pos}`
                 : undefined,
         variant: action === 'Fault' ? 'error' : variant,
+    };
+}
+
+// GCM_AUTO spontaneous events (GCM_AUTO_COMMANDS.md §12). Only these event messages toast;
+// replies to the panel's own GET/SET/ADD commands carry no such `msg` (or an error the panel
+// already toasts itself), so they return null here.
+const GCM_AUTO_EVENTS: Record<string, { text: string; variant: ToastVariant }> =
+    {
+        'rule change': { text: 'Aturan berubah', variant: 'info' },
+        'action done': { text: 'Aksi selesai', variant: 'success' },
+        retry: { text: 'Mencoba ulang aksi', variant: 'info' },
+        'target not reached': {
+            text: 'Pintu tidak mencapai target — AUTO berhenti',
+            variant: 'error',
+        },
+        'pump timeout': {
+            text: 'Pompa tidak merespons — AUTO berhenti',
+            variant: 'error',
+        },
+        'ews blocked': {
+            text: 'Pre-warning EWS gagal — aksi dibatalkan',
+            variant: 'error',
+        },
+        'source fail': { text: 'Sensor utama tak terbaca', variant: 'error' },
+        'source ok': { text: 'Sensor utama terbaca lagi', variant: 'success' },
+        'source2 fail': { text: 'Sensor kedua tak terbaca', variant: 'error' },
+        'source2 ok': { text: 'Sensor kedua terbaca lagi', variant: 'success' },
+        'module offline': { text: 'Modul GCM offline', variant: 'error' },
+        'module ok': { text: 'Modul GCM online lagi', variant: 'success' },
+        'gate fault': { text: 'Modul pintu fault', variant: 'error' },
+        'target out of range': {
+            text: 'Target di luar batas bukaan',
+            variant: 'error',
+        },
+        'paused by manual': {
+            text: 'Dijeda oleh perintah manual',
+            variant: 'info',
+        },
+    };
+
+function formatGcmAutoEvent(data: unknown): {
+    title: string;
+    description?: string;
+    variant: ToastVariant;
+} | null {
+    const root = asRecord(data);
+    const inner = asRecord(root?.GCM_AUTO) ?? root ?? {};
+    const msg = typeof inner.msg === 'string' ? inner.msg.toLowerCase() : '';
+    const event = GCM_AUTO_EVENTS[msg];
+    if (!event) return null;
+    // "target out of range" is also the ERR reply to SET enable=1, which the panel toasts itself.
+    if (msg === 'target out of range' && inner.status === 'ERR') return null;
+
+    const id = typeof inner.id === 'number' ? inner.id : undefined;
+    const details: string[] = [];
+    if (msg === 'rule change' && typeof inner.rule_to === 'number')
+        details.push(`aturan #${inner.rule_to}`);
+    if (typeof inner.target === 'number')
+        details.push(`target ${inner.target}`);
+    if (typeof inner.state === 'number')
+        details.push(inner.state === 1 ? 'pompa ON' : 'pompa OFF');
+    if (typeof inner.pos === 'number') details.push(`posisi ${inner.pos}`);
+
+    return {
+        title: `${id !== undefined ? `GCM${id}` : 'GCM'} Auto: ${event.text}`,
+        description: details.length > 0 ? details.join(' · ') : undefined,
+        variant: event.variant,
     };
 }
 

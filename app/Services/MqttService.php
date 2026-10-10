@@ -338,7 +338,7 @@ class MqttService
     public static function normalizeCalibrationData(string $modeSlug, array $data): array
     {
         $sensorKey = match (strtoupper(trim($modeSlug))) {
-            'APMS' => 'arr_sensor',
+            'APMS', 'AWR' => 'arr_sensor',
             'ARR' => 'sensor',
             default => null,
         };
@@ -2063,8 +2063,27 @@ class MqttService
         return in_array($cmd, ['CTRL', 'CHECK'], true) ? [] : ['EWS_EVENT', 'EWS_ALARM'];
     }
 
-    private static function protocolKeyMatches(string $module, string $key): bool
+    /**
+     * Reply keys that are modules in their own right. The prefix rule below would otherwise read
+     * them as a reply to their "parent" — a spontaneous {"GCM_AUTO":{"msg":"rule change",…}} push
+     * landing while a GCM GET waits would be taken as the GCM answer, as would a GCM_GATE_WARN or
+     * GCM_GATE_CAL reply for GCM_GATE. They only ever answer a command sent under their own name.
+     */
+    private const SIBLING_MODULE_KEYS = [
+        'GCM_PUMP',
+        'GCM_GATE',
+        'GCM_GATE_WARN',
+        'GCM_GATE_CAL',
+        'GCM_MAP',
+        'GCM_AUTO',
+    ];
+
+    public static function protocolKeyMatches(string $module, string $key): bool
     {
+        if ($key !== $module && in_array($key, self::SIBLING_MODULE_KEYS, true)) {
+            return false;
+        }
+
         if ($key === $module
             || str_starts_with($key, $module.' ')
             || str_starts_with($key, $module.'_')) {
@@ -2389,7 +2408,7 @@ class MqttService
                     return;
                 }
                 // Only relay module status shapes — GCM (RS485) + EWS (RS232/online alarm) — ignore sensor/INFO pushes.
-                foreach (['GCM_GATE', 'GCM_PUMP', 'EWS', 'EWS_EVENT', 'EWS_ALARM'] as $key) {
+                foreach (['GCM_GATE', 'GCM_PUMP', 'GCM_AUTO', 'EWS', 'EWS_EVENT', 'EWS_ALARM'] as $key) {
                     if (isset($data[$key]) && is_array($data[$key])) {
                         $emit('status', ['module' => $key] + $data[$key]);
                     }

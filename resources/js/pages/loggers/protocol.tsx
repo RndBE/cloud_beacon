@@ -1,6 +1,8 @@
 import { Head, Link } from '@inertiajs/react';
 import {
+    ArrowDown,
     ArrowLeft,
+    ArrowUp,
     AudioLines,
     Bell,
     Check,
@@ -14,15 +16,19 @@ import {
     ListOrdered,
     Loader2,
     Network,
+    Play,
     Plus,
     Power,
     RefreshCw,
+    Router as RouterIcon,
     Satellite,
     Send,
     Server,
     Siren,
+    Square,
     Table2,
     Terminal,
+    Timer,
     Trash2,
     TriangleAlert,
     UploadCloud,
@@ -41,6 +47,7 @@ import {
 } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import { LoggerToaster } from '@/components/logger-toaster';
+import { DtypeSelect } from '@/components/loggers/dtype-select';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -91,7 +98,60 @@ import {
     setCachedPanelState,
     subscribeDeviceCache,
 } from '@/lib/device-sync-cache';
+import {
+    GCM_AUTO_MAX_RULES,
+    GCM_AUTO_STATE_LABELS,
+    buildGcmAutoConfigSet,
+    emptyGcmAutoRule,
+    gcmAutoErrorMessage,
+    gcmAutoLastErrorLabel,
+    gcmAutoNeedsResume,
+    gcmAutoStateTone,
+    gcmAutoStatusSentence,
+    gcmAutoTargetsOutside,
+    gateOutputValue,
+    mergeGcmAutoPages,
+    parseGcmAuto,
+    validateGcmAutoRules,
+} from '@/lib/gcm-auto';
+import type {
+    GateLiveStatus,
+    GcmAutoReading,
+    GcmAutoRuleRow,
+    GcmAutoSettings,
+} from '@/lib/gcm-auto';
+import {
+    buildGcmSet,
+    gcmAuthFailures,
+    gcmSnError,
+    parseGcmBinding,
+    withoutGcmSlots,
+} from '@/lib/gcm-binding';
+import type { GcmBindingModule } from '@/lib/gcm-binding';
+import { decodeGcmFault, gcmFaultValue } from '@/lib/gcm-fault';
+import type { GcmFaultMode } from '@/lib/gcm-fault';
+import {
+    buildGateCalSet,
+    checkGateTarget,
+    gateCalErrorMessage,
+    gateTargetRejectMessage,
+    parseGateCal,
+} from '@/lib/gcm-gate-cal';
+import type { GateCalReading, GateCalSetPayload } from '@/lib/gcm-gate-cal';
 import { notifyModuleResponse, pushToast } from '@/lib/logger-toast';
+import {
+    ROUTER_BAUDRATES,
+    ROUTER_FORMATS,
+    buildRouterSet,
+    emptyRouterParam,
+    parseRouterGet,
+    routerDefaultConfig,
+} from '@/lib/router-config';
+import type {
+    RouterConfig,
+    RouterParam,
+    RouterReading,
+} from '@/lib/router-config';
 import type { BreadcrumbItem } from '@/types';
 
 type JsonValue =
@@ -105,7 +165,8 @@ export type ProtocolCommandPayload = Record<string, JsonValue>;
 type Payload = ProtocolCommandPayload;
 export type ProtocolTransportMode = 'mqtt' | 'serial';
 // Each GCM module binding: slave = Modbus RTU ID (0 = disabled), mode = 1 AWGC | 2 PUMP.
-type GcmModule = { slave: string; mode: string };
+// sn = the module's serial number; the logger requires it on SET for every bound module.
+type GcmModule = GcmBindingModule;
 type EwsOutMode = 'MODULE' | 'ONLINE' | 'BOTH';
 
 // Snapshots persisted to the device cache so the Mode tab's panels (which unmount on tab
@@ -134,6 +195,9 @@ type IoSnapshot = {
     };
     leoTimes: string[];
     rtc: { date: string; time: string; timezone: string };
+    // SENT_60S / SENT_1S enable flags ('1' | '0', '' = never read).
+    telemetry: { s60: string; s1: string };
+    router: RouterConfig;
     // false = the panel has never pulled this device's config. The manual-sync Device
     // Configuration card stays locked (fields hidden) until a sync lands at least one reply,
     // so nobody edits — or SETs — a default that was never read from the logger.
@@ -148,6 +212,8 @@ type ModuleSnapshot = {
         id4: GcmModule;
         id5: GcmModule;
     };
+    // The binding as last read from / confirmed by the logger (null = never read).
+    gcmSaved?: ModuleSnapshot['gcm'] | null;
     gcmMapRows: { reg: string; name: string }[];
     gcmMapId: string;
     // null = never read back from the device (see the state declaration below).
@@ -387,6 +453,34 @@ function firmwareSupportsEwsOut(value: string | null): boolean {
     return true;
 }
 
+// Unknown or unparseable version → unsupported, same stance as firmwareSupportsEwsOut().
+function firmwareAtLeast(value: string | null, min: number[]): boolean {
+    const parsed = parseFirmwareVersion(value);
+    if (!parsed) return false;
+    for (let i = 0; i < min.length; i++) {
+        if (parsed[i] !== min[i]) return parsed[i] > min[i];
+    }
+    return true;
+}
+
+// ROUTER and SENT_60S / SENT_1S only exist from this firmware onwards. Older firmware has no
+// handler for them, so the cards are hidden and the Device Configuration sync skips their GETs
+// instead of spending a timeout on each.
+const ROUTER_TELEMETRY_MIN_FIRMWARE = [2, 2, 3];
+
+function firmwareSupportsRouterTelemetry(value: string | null): boolean {
+    return firmwareAtLeast(value, ROUTER_TELEMETRY_MIN_FIRMWARE);
+}
+
+// GCM_AUTO (logger-side automatic gate/pump control) ships in the same firmware. Below it the
+// Auto control card is not rendered at all. The F407 builds of 2.2.3+ still answer
+// "not supported", which the card shows in place of its form.
+const GCM_AUTO_MIN_FIRMWARE = [2, 2, 3];
+
+function firmwareSupportsGcmAuto(value: string | null): boolean {
+    return firmwareAtLeast(value, GCM_AUTO_MIN_FIRMWARE);
+}
+
 // LEO must be tested before the plain BL11 check: "BL11LEO" satisfies
 // includes('BL11') too, and before this branch existed a LEO board was
 // classified as cellular — which handed it a SIM/APN card and a SIM GET it can
@@ -443,6 +537,20 @@ export function inferBoardVariant(logger: {
     return null;
 }
 
+// Spec §3.17.1 SLOT_TOTAL: 50 telemetry slots on BL1100, 16 elsewhere; the top 7 are diagnostic, so
+// MAP_DATA names s1..s43 / s1..s9. Null for an unidentified board (nothing to check against).
+// Mirror of BoardModel::slotLimits() — the server re-checks on preview/apply.
+export function boardSlotLimits(logger: {
+    model: string | null;
+    connectionType: string | null;
+    channelCount: number | null;
+}): { variant: string; sensor: number; mapping: number } | null {
+    const variant = inferBoardVariant(logger);
+    if (variant === 'BL1100') return { variant, sensor: 50, mapping: 43 };
+    if (variant === null) return null;
+    return { variant, sensor: 16, mapping: 9 };
+}
+
 // Spec §3.2.9: digital channels 1–2 (BL11/BL110), 1–4 (BL1100).
 function maxDigitalChannel(logger: ProtocolLogger): number {
     return inferBoardVariant(logger) === 'BL1100' ? 4 : 2;
@@ -485,15 +593,17 @@ function CommandCard({
     icon: Icon,
     children,
     result,
+    className,
 }: {
     title: string;
     description?: string;
     icon: ComponentType<{ className?: string }>;
     children: ReactNode;
     result?: CommandResult | null;
+    className?: string;
 }) {
     return (
-        <Card>
+        <Card className={className}>
             <CardHeader className="space-y-1">
                 <div className="flex items-start justify-between gap-3">
                     <div>
@@ -537,6 +647,99 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     return (
         <div className="space-y-1.5">
             <Label className="text-xs">{label}</Label>
+            {children}
+        </div>
+    );
+}
+
+// Supply-phase lamps for the gate status: R red, S yellow, T green, the letter inside the lamp
+// (full class names so Tailwind keeps them). Dark text on yellow for contrast. A phase that is
+// off is drawn as a grey outline with a muted letter.
+const PHASE_LAMPS = [
+    { label: 'R', on: 'bg-red-500 text-white' },
+    { label: 'S', on: 'bg-yellow-400 text-yellow-950' },
+    { label: 'T', on: 'bg-green-600 text-white' },
+] as const;
+const PHASE_LAMP_OFF = 'border bg-muted text-muted-foreground';
+
+// Fault status as badges in the status row: "Normal" when the value is 0, otherwise one red
+// badge per cause in place of a bare "Fault" (e.g. 64 → "Loop 4–20 mA putus").
+function GcmFaultBadges({
+    value,
+    mode,
+}: {
+    value: number;
+    mode: GcmFaultMode;
+}) {
+    const causes = decodeGcmFault(value, mode);
+    if (causes.length === 0)
+        return (
+            <Badge variant="outline" className="text-emerald-600">
+                Normal
+            </Badge>
+        );
+    return (
+        <>
+            {causes.map((cause) => (
+                <Badge
+                    key={cause.bit}
+                    variant="outline"
+                    className="gap-1 border-red-500/40 text-red-600"
+                    title={`Kode fault ${cause.bit}`}
+                >
+                    <TriangleAlert className="size-3" />
+                    {cause.label}
+                </Badge>
+            ))}
+        </>
+    );
+}
+
+// Latched faults (travel timeout, macet) only clear on STOP, so say so under the status row.
+function GcmFaultLatchedHint({
+    value,
+    mode,
+}: {
+    value: number;
+    mode: GcmFaultMode;
+}) {
+    if (!decodeGcmFault(value, mode).some((cause) => cause.latched))
+        return null;
+    return (
+        <p className="text-xs text-red-600">
+            Fault terkunci — tekan Stop untuk mereset.
+        </p>
+    );
+}
+
+// One function of the selected GCM module (gate control, travel limits, mapping, …): title on
+// the left, its read/status button on the right, body below. Every GCM sub-card follows this.
+function GcmSubCard({
+    title,
+    icon: Icon,
+    action,
+    className,
+    children,
+}: {
+    title: ReactNode;
+    icon: ComponentType<{ className?: string }>;
+    action?: ReactNode;
+    className?: string;
+    children: ReactNode;
+}) {
+    return (
+        <div
+            className={`min-w-0 space-y-3 rounded-lg border bg-background/40 p-3 ${className ?? ''}`}
+        >
+            <div className="flex items-center justify-between gap-2">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                    <Icon className="size-4 text-muted-foreground" />
+                    {title}
+                </p>
+                {action && (
+                    <div className="flex items-center gap-1.5">{action}</div>
+                )}
+            </div>
             {children}
         </div>
     );
@@ -1118,6 +1321,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             leoStored?.pack != null,
         );
         const [pumpState, setPumpState] = useState('1');
+        // What the pump module last reported (GCM_PUMP GET): running state + fault bitmask.
+        const [gcmPumpStatus, setGcmPumpStatus] = useState<{
+            state: number;
+            fault: number;
+        } | null>(null);
         const [out24State, setOut24State] = useState(
             ioSnapshot?.out24 ?? blank('1', ''),
         );
@@ -1134,6 +1342,18 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             ioSnapshot?.modbusTcp ??
                 blank({ enable: '1', port: '502' }, { enable: '', port: '' }),
         );
+        // Telemetry publish intervals: SENT_60S / SENT_1S, each just enable 1/0.
+        const [telemetry, setTelemetry] = useState(
+            ioSnapshot?.telemetry ??
+                blank({ s60: '1', s1: '0' }, { s60: '', s1: '' }),
+        );
+        // ROUTER: cellular router polled over RS485 Modbus RTU for signal quality.
+        const [router, setRouter] = useState<RouterConfig>(
+            ioSnapshot?.router ?? routerDefaultConfig(blank('0', '')),
+        );
+        // Live signal values from the last ROUTER GET — read-only readout, not cached.
+        const [routerReading, setRouterReading] =
+            useState<RouterReading | null>(null);
         // MODBUSTCP GETMAP register-map viewer (popup, mirrors the FTP read flow).
         const [modbusMapOpen, setModbusMapOpen] = useState(false);
         const [modbusMapLoading, setModbusMapLoading] = useState(false);
@@ -1149,7 +1369,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const [ftpLogFile, setFtpLogFile] = useState('20260502.txt');
 
         // ── Protocol v3 modules: GCM / GCM_PUMP / GCM_GATE / GCM_MAP ──
-        const gcmModuleEmpty: GcmModule = { slave: '0', mode: '1' };
+        const gcmModuleEmpty: GcmModule = { slave: '0', mode: '1', sn: '' };
         const [gcm, setGcm] = useState<{
             enable: string;
             id1: GcmModule;
@@ -1167,17 +1387,30 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 id5: { ...gcmModuleEmpty },
             },
         );
+        // `gcm` above is the Binding Slave form (what the operator is editing). `gcmSaved` is the
+        // binding the logger actually has — last read by GET, or confirmed by SET / RST. The
+        // module picker and every per-module section follow `gcmSaved`, so a module chosen in
+        // the form but not yet SET never shows controls for hardware the logger isn't bound to.
+        const [gcmSaved, setGcmSaved] = useState<typeof gcm | null>(
+            moduleSnapshot?.gcmSaved ?? null,
+        );
+        // True while a GCM SET is waiting for the logger to finish talking to the modules.
+        const [gcmSetPending, setGcmSetPending] = useState(false);
         const [gcmPumpId, setGcmPumpId] = useState('1');
         const [gcmGateId, setGcmGateId] = useState('1');
         const [gcmGateTarget, setGcmGateTarget] = useState('0');
         // Live gate status from GCM_GATE GET: pos/run/full_close/full_open/fault.
-        const [gcmGateStatus, setGcmGateStatus] = useState<{
-            pos: number;
-            run: number;
-            full_close: number;
-            full_open: number;
-            fault: number;
-        } | null>(null);
+        const [gcmGateStatus, setGcmGateStatus] =
+            useState<GateLiveStatus | null>(null);
+        // GCM_GATE_CAL: travel limits of the selected AWGC gate. The inputs are what the operator
+        // wants to write ('' = leave unchanged); gcmGateCal is what the module last reported.
+        const [gcmGateCalInput, setGcmGateCalInput] = useState({
+            minClose: '',
+            maxOpen: '',
+        });
+        const [gcmGateCal, setGcmGateCal] = useState<GateCalReading | null>(
+            null,
+        );
         // GCM_GATE_WARN (§4): EWS horn pre-warning before AWGC moves. Per-AWGC-module config + runtime.
         const [gcmWarnId, setGcmWarnId] = useState('1');
         const [gcmWarn, setGcmWarn] = useState({
@@ -1204,6 +1437,21 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             remaining_sec: number;
             last_error: string;
         } | null>(null);
+        // GCM_AUTO for the selected module. `gcmAuto` is the full reading (all pages merged) as
+        // last returned by the logger; the form below is what the operator is editing.
+        // gcmAutoUnsupported = the logger answered "not supported" (F407 build).
+        const [gcmAuto, setGcmAuto] = useState<GcmAutoReading | null>(null);
+        const [gcmAutoForm, setGcmAutoForm] = useState<GcmAutoSettings>({
+            enable: false,
+            source: '',
+            hyst: '0',
+            source2: '',
+            hyst2: '0',
+            holdSec: '60',
+            gapSec: '300',
+        });
+        const [gcmAutoRules, setGcmAutoRules] = useState<GcmAutoRuleRow[]>([]);
+        const [gcmAutoUnsupported, setGcmAutoUnsupported] = useState(false);
         const [gcmMapId, setGcmMapId] = useState(
             moduleSnapshot?.gcmMapId ?? '1',
         );
@@ -1347,6 +1595,12 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const isSatelliteBoard = variant === 'BL11LEO';
         const isCellularBoard = variant === 'BL11';
         const isEthernetBoard = variant === 'BL110' || variant === 'BL1100';
+        const routerTelemetrySupported = firmwareSupportsRouterTelemetry(
+            logger.firmwareVersion,
+        );
+        const gcmAutoSupported = firmwareSupportsGcmAuto(
+            logger.firmwareVersion,
+        );
 
         const leoV2 =
             leoV2Detected || firmwareSupportsLeoSendV2(logger.firmwareVersion);
@@ -1366,7 +1620,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const leoOverBudget = leoCredits > LEO_SEND_DAILY_CREDIT_BUDGET;
         // Read back from the last GET only, to warn that a bench session left the unit in dry mode.
         const leoDeviceInDryMode = numberValue(leoSend.dry, 0) === 1;
-        const gcmEnabled = numberValue(gcm.enable) === 1;
+        // GCM master switch as the logger reports it (not the unsaved form).
+        const gcmEnabled = numberValue(gcmSaved?.enable ?? '0') === 1;
         const gcmWarnEnabled = numberValue(gcmWarn.enable) === 1;
         // Two independent signals must agree before the output selector appears: the firmware is
         // at least v2.1.3, and the device itself reported `out` in its GET reply. Either one
@@ -1379,58 +1634,30 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             ewsOutSupported && !ewsOutFirmwareOk && ewsOutMode !== 'MODULE';
         const ewsUsesModule = !ewsOutAvailable || ewsOutMode !== 'ONLINE';
 
-        // Only modules whose slave is bound (enabled) in the Binding Slave section are
-        // selectable in Mapping Parameter / Pump Control / Gate Control.
+        // Modules the logger is actually bound to (`gcmSaved`, not the form). Only these get the
+        // module picker and their Gate / Pump / Mapping / Pre-warning / Auto sections.
         const boundGcmModules = useMemo(
             () =>
-                ([1, 2, 3, 4, 5] as const).filter(
-                    (n) =>
-                        numberValue(
-                            gcm[
-                                `id${n}` as
-                                    | 'id1'
-                                    | 'id2'
-                                    | 'id3'
-                                    | 'id4'
-                                    | 'id5'
-                            ].slave,
-                        ) > 0,
-                ),
-            [gcm],
+                gcmSaved
+                    ? ([1, 2, 3, 4, 5] as const).filter(
+                          (n) => numberValue(gcmSaved[`id${n}`].slave) > 0,
+                      )
+                    : [],
+            [gcmSaved],
         );
         const pumpModules = useMemo(
             () =>
                 boundGcmModules.filter(
-                    (n) =>
-                        numberValue(
-                            gcm[
-                                `id${n}` as
-                                    | 'id1'
-                                    | 'id2'
-                                    | 'id3'
-                                    | 'id4'
-                                    | 'id5'
-                            ].mode,
-                        ) === 2,
+                    (n) => numberValue(gcmSaved?.[`id${n}`].mode ?? '1') === 2,
                 ),
-            [gcm, boundGcmModules],
+            [gcmSaved, boundGcmModules],
         );
         const gateModules = useMemo(
             () =>
                 boundGcmModules.filter(
-                    (n) =>
-                        numberValue(
-                            gcm[
-                                `id${n}` as
-                                    | 'id1'
-                                    | 'id2'
-                                    | 'id3'
-                                    | 'id4'
-                                    | 'id5'
-                            ].mode,
-                        ) === 1,
+                    (n) => numberValue(gcmSaved?.[`id${n}`].mode ?? '1') === 1,
                 ),
-            [gcm, boundGcmModules],
+            [gcmSaved, boundGcmModules],
         );
 
         type GcmState = typeof gcm;
@@ -1463,23 +1690,25 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             if (dup) setBindingError(dup);
         }
 
-        // Snap module selectors to the first available module after binding changes.
+        // One module picker drives every per-module section: gcmMapId is the selected module (any
+        // bound one), and the gate / pre-warning / pump ids follow it whenever it is of that mode.
+        // Snap to the first bound module after a binding change drops the selected one.
         useEffect(() => {
             const mapIds = boundGcmModules.map((n) => String(n));
-            if (mapIds.length > 0 && !mapIds.includes(gcmMapId))
+            if (mapIds.length > 0 && !mapIds.includes(gcmMapId)) {
                 setGcmMapId(mapIds[0]);
+                return;
+            }
 
             const pumpIds = pumpModules.map((n) => String(n));
-            if (pumpIds.length > 0 && !pumpIds.includes(gcmPumpId))
-                setGcmPumpId(pumpIds[0]);
-
             const gateIds = gateModules.map((n) => String(n));
-            if (gateIds.length > 0 && !gateIds.includes(gcmGateId))
-                setGcmGateId(gateIds[0]);
-
+            if (pumpIds.includes(gcmMapId) && gcmPumpId !== gcmMapId)
+                setGcmPumpId(gcmMapId);
+            if (gateIds.includes(gcmMapId) && gcmGateId !== gcmMapId)
+                setGcmGateId(gcmMapId);
             // GCM_GATE_WARN hanya untuk modul AWGC (sama pool dengan gate).
-            if (gateIds.length > 0 && !gateIds.includes(gcmWarnId))
-                setGcmWarnId(gateIds[0]);
+            if (gateIds.includes(gcmMapId) && gcmWarnId !== gcmMapId)
+                setGcmWarnId(gcmMapId);
         }, [
             boundGcmModules,
             pumpModules,
@@ -1735,6 +1964,127 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     );
                 },
             );
+        }
+
+        // GCM SET: the logger contacts every bound module (slave + serial number) before it
+        // answers, which takes a while — `gcmSetPending` keeps that wait visible. The reply has
+        // no serial numbers, so the form keeps the ones it sent.
+        async function sendGcmBinding() {
+            const built = buildGcmSet(gcm);
+            if (!built.ok) return localError('GCM', built.error);
+            setGcmSetPending(true);
+            const r = await send('GCM', built.payload, 'GCM');
+            setGcmSetPending(false);
+            if (!r) return;
+            const inner = (
+                r.data as { GCM?: Record<string, unknown> } | undefined
+            )?.GCM;
+            if (!r.success) {
+                // Refused (e.g. serial-number auth failed): the logger keeps its old binding,
+                // so `gcmSaved` — and with it the per-module sections — stays as it was.
+                pushToast({
+                    title: 'Binding GCM gagal disimpan',
+                    description: r.message,
+                    variant: 'error',
+                });
+                return;
+            }
+            const next = inner ? parseGcmBinding(inner, gcm) : gcm;
+            setGcm(next);
+            // Slots whose serial number the module did not confirm stay closed.
+            const failed = inner ? gcmAuthFailures(inner, next) : [];
+            setGcmSaved(withoutGcmSlots(next, failed));
+            if (failed.length > 0) {
+                pushToast({
+                    title: 'Sebagian binding GCM gagal',
+                    description: `Autentikasi SN gagal untuk ${failed.map((n) => `GCM${n}`).join(', ')}. Cek serial number dan slave ID modulnya.`,
+                    variant: 'error',
+                });
+                return;
+            }
+            pushToast({ title: 'Binding GCM tersimpan', variant: 'success' });
+        }
+
+        // GCM RST: every slot back to [0,0] and GCM disabled.
+        async function resetGcmBinding() {
+            const r = await send('GCM', { GCM: { cmd: 'RST' } }, 'GCM');
+            if (!r) return;
+            if (!r.success) {
+                pushToast({
+                    title: 'Reset binding GCM gagal',
+                    description: r.message,
+                    variant: 'error',
+                });
+                return;
+            }
+            const inner = (
+                r.data as { GCM?: Record<string, unknown> } | undefined
+            )?.GCM;
+            const reset = inner
+                ? parseGcmBinding(inner)
+                : {
+                      enable: '0',
+                      id1: { ...gcmModuleEmpty },
+                      id2: { ...gcmModuleEmpty },
+                      id3: { ...gcmModuleEmpty },
+                      id4: { ...gcmModuleEmpty },
+                      id5: { ...gcmModuleEmpty },
+                  };
+            setGcm(reset);
+            setGcmSaved(reset);
+            setGcmGateStatus(null);
+            setGcmPumpStatus(null);
+            setGcmGateCal(null);
+            clearGcmAuto();
+            pushToast({ title: 'Binding GCM direset', variant: 'success' });
+        }
+
+        // SET target. The logger refuses a target outside the module's calibrated travel
+        // ("target out of range", with the min_close/max_open it checked against), so it is
+        // checked here first against the last limits read; a refusal that still happens (limits
+        // changed on the module) is toasted with those limits, which also refresh the card.
+        function sendGcmGateTarget(id: number) {
+            const check = checkGateTarget(gcmGateTarget, gcmGateCal);
+            if (!check.ok) return localError('GCM_GATE', check.error);
+            void send(
+                'GCM_GATE',
+                { GCM_GATE: { cmd: 'SET', id, target: check.target } },
+                'GCM_GATE',
+            ).then((result) => {
+                if (!result) return;
+                if (result.success) {
+                    pushToast({
+                        title: `GCM${id} menuju posisi ${check.target}`,
+                        variant: 'success',
+                    });
+                    return;
+                }
+                const inner = (
+                    result.data as
+                        | { GCM_GATE?: Record<string, unknown> }
+                        | undefined
+                )?.GCM_GATE;
+                const cal = inner ? parseGateCal(inner) : null;
+                if (cal) {
+                    setGcmGateCal(cal);
+                    setGcmGateCalInput((prev) =>
+                        prev.minClose === '' && prev.maxOpen === ''
+                            ? {
+                                  minClose: String(cal.minClose),
+                                  maxOpen: String(cal.maxOpen),
+                              }
+                            : prev,
+                    );
+                }
+                pushToast({
+                    title: `GCM${id} target ditolak`,
+                    description: gateTargetRejectMessage(
+                        result.message,
+                        result.data,
+                    ),
+                    variant: 'error',
+                });
+            });
         }
 
         // Client-side validation failure — nothing was sent to the device.
@@ -2237,6 +2587,66 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 });
             }
 
+            // Firmware < 2.2.3 has neither command — skip both reads rather than time out on them.
+            if (routerTelemetrySupported) {
+                steps.push({
+                    // SENT_60S GET → {"SENT_60S":{"enable":1}}, SENT_1S GET → {"SENT_1S":{"enable":1}}.
+                    // One overlay row for both; a failure of one still applies the other.
+                    label: 'Telemetry',
+                    description: 'Membaca status telemetry 60 detik & 1 detik…',
+                    icon: Timer,
+                    run: async () => {
+                        const errors: string[] = [];
+                        for (const [module, field] of [
+                            ['SENT_60S', 's60'],
+                            ['SENT_1S', 's1'],
+                        ] as const) {
+                            const r = await gcmGet(module, {
+                                [module]: { cmd: 'GET' },
+                            });
+                            const inner = (
+                                r.data as
+                                    | Record<string, { enable?: number }>
+                                    | undefined
+                            )?.[module];
+                            if (r.success && inner?.enable !== undefined) {
+                                const enable =
+                                    Number(inner.enable) === 1 ? '1' : '0';
+                                setTelemetry((prev) => ({
+                                    ...prev,
+                                    [field]: enable,
+                                }));
+                            } else if (!r.success) {
+                                errors.push(
+                                    r.message ?? `${module} read failed.`,
+                                );
+                            }
+                        }
+                        if (errors.length === 2) throw new Error(errors[0]);
+                    },
+                });
+
+                steps.push({
+                    // ROUTER GET → config (slave/function/baudrate/format/pct_range/p) + live values.
+                    label: 'Router',
+                    description: 'Membaca konfigurasi & sinyal router (RS485)…',
+                    icon: RouterIcon,
+                    run: async () => {
+                        const r = await gcmGet('ROUTER', {
+                            ROUTER: { cmd: 'GET' },
+                        });
+                        if (!r.success)
+                            throw new Error(r.message ?? 'ROUTER read failed.');
+                        // The sync overlay blocks editing, so the form captured at sync start is current.
+                        const parsed = parseRouterGet(r.data, router);
+                        if (parsed) {
+                            setRouter(parsed.config);
+                            setRouterReading(parsed.reading);
+                        }
+                    },
+                });
+            }
+
             steps.push({
                 // RTC GET → {"date":"YYYY-MM-DD","time":"HH:MM:SS","timezone":"7"} (with/without RTC wrapper).
                 label: 'RTC',
@@ -2282,22 +2692,85 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 },
             });
 
+            // The overlay shows a few grouped rows (like the Module sync) instead of one row per
+            // GET. Each group still runs its reads one at a time; it is marked failed only when
+            // every read in it failed, and partial failures are named in a toast afterwards.
+            const syncGroups: {
+                label: string;
+                icon: SyncStepIcon;
+                members: string[];
+            }[] = [
+                {
+                    label: 'I/O',
+                    icon: Zap,
+                    members: ['Power Output', 'Sensor Pintu', 'Buzzer Alert'],
+                },
+                {
+                    label: 'Jaringan',
+                    icon: Network,
+                    members: ['Modbus TCP', 'NET', 'SIM', 'LEO_SEND'],
+                },
+                {
+                    label: 'Sistem',
+                    icon: Clock,
+                    members: ['Telemetry', 'Router', 'RTC'],
+                },
+            ];
+            const failedReads: string[] = [];
+            const groupedSteps = syncGroups.flatMap((group) => {
+                const members = steps.filter((s) =>
+                    group.members.includes(s.label),
+                );
+                if (members.length === 0) return [];
+                return [
+                    {
+                        label: group.label,
+                        description: `Membaca ${members.map((m) => m.label).join(', ')}…`,
+                        icon: group.icon,
+                        run: async () => {
+                            let answered = 0;
+                            for (const member of members) {
+                                if (syncCancelRef.current) return;
+                                try {
+                                    await member.run();
+                                    answered += 1;
+                                } catch {
+                                    failedReads.push(member.label);
+                                }
+                            }
+                            if (answered === 0)
+                                throw new Error(`${group.label} gagal dibaca.`);
+                        },
+                    },
+                ];
+            });
+            // A step no group lists still runs, as its own row, rather than being dropped.
+            const grouped = new Set(syncGroups.flatMap((g) => g.members));
+            const ungroupedSteps = steps.filter((s) => !grouped.has(s.label));
+
             const outcome = await runSyncSteps(
                 'Sinkronisasi Device Configuration',
                 `Mengambil status terbaru dari ${logger.deviceIdentifier}…`,
-                steps,
+                [...groupedSteps, ...ungroupedSteps],
             );
             // Unlock only when the device actually answered something. A fully failed or
             // cancelled sync leaves the card locked so the shown values stay trustworthy.
             if (!outcome.cancelled && outcome.done > 0) setIoSynced(true);
+            if (!outcome.cancelled && failedReads.length > 0)
+                pushToast({
+                    title: 'Sebagian konfigurasi gagal dibaca',
+                    description: failedReads.join(', '),
+                    variant: 'error',
+                });
         }
 
-        // One read step per GCM sub-command, sharing a `bound` list (filled by step 1, read by 2–3)
-        // and an `errBox` that captures the first failure. Reused by the GCM-only sync and the
-        // combined Module sync (EWS + GCM).
+        // Two read steps sharing a `bound` list and the master `enabled` flag (both filled by step
+        // 1, read by step 2) and an `errBox` that captures the first failure. Reused by the
+        // GCM-only sync and the combined Module sync (EWS + GCM).
         function gcmSyncSteps(
             bound: { n: number; slave: number; mode: number }[],
             errBox: { msg: string | null },
+            ctx: { enabled: boolean } = { enabled: false },
         ): {
             label: string;
             description?: string;
@@ -2317,32 +2790,12 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                 | undefined
                         )?.GCM;
                         if (g.success && gInner) {
-                            // Response uses [slave, mode] arrays e.g. "id1":[2,1].
-                            const parseGcmModule = (v: unknown): GcmModule => {
-                                if (Array.isArray(v) && v.length >= 2) {
-                                    // mode hanya valid 1 (AWGC) / 2 (PUMP); 0 atau nilai lain → default AWGC.
-                                    // Jangan pakai `?? 1` karena `0` lolos dari nullish coalescing.
-                                    const m = Number(v[1]);
-                                    return {
-                                        slave: String(v[0] ?? 0),
-                                        mode: m === 2 ? '2' : '1',
-                                    };
-                                }
-                                return { slave: '0', mode: '1' };
-                            };
-                            const parsed = {
-                                id1: parseGcmModule(gInner.id1),
-                                id2: parseGcmModule(gInner.id2),
-                                id3: parseGcmModule(gInner.id3),
-                                id4: parseGcmModule(gInner.id4),
-                                id5: parseGcmModule(gInner.id5),
-                            };
-                            setGcm({
-                                enable: String(
-                                    (gInner.enable as number | undefined) ?? 0,
-                                ),
-                                ...parsed,
-                            });
+                            // GET answers [slave, mode, sn] per slot (see gcm-binding.ts).
+                            const parsed = parseGcmBinding(gInner);
+                            setGcm(parsed);
+                            // What GET reports is what the logger has — the panels follow it.
+                            setGcmSaved(parsed);
+                            ctx.enabled = Number(gInner.enable) === 1;
                             ([1, 2, 3, 4, 5] as const).forEach((n) => {
                                 const mod =
                                     parsed[
@@ -2369,36 +2822,22 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     },
                 },
                 {
-                    label: 'Mapping Parameter',
-                    description: 'Membaca mapping parameter modul…',
+                    label: 'Detail Modul',
+                    description:
+                        'Membaca mapping, status, batas bukaan & Auto modul…',
                     icon: ListOrdered,
                     run: async () => {
-                        // GCM_MAP berlaku untuk kedua mode, tapi modulnya wajib ke-bind. Skip kalau tidak ada.
-                        const mapId =
-                            bound.find((b) => b.n === numberValue(gcmMapId))
-                                ?.n ?? bound[0]?.n;
-                        if (mapId === undefined) return;
-                        const m = await gcmGet('GCM_MAP', {
-                            GCM_MAP: { cmd: 'GET', id: mapId },
-                        });
-                        const mInner = (
-                            m.data as
-                                | {
-                                      GCM_MAP?: {
-                                          m?: Array<[number, number | string]>;
-                                      };
-                                  }
-                                | undefined
-                        )?.GCM_MAP;
-                        if (m.success && Array.isArray(mInner?.m)) {
-                            setGcmMapRows(parseGcmMapRows(mInner.m));
-                        } else if (!m.success) {
-                            errBox.msg =
-                                errBox.msg ??
-                                m.message ??
-                                'GCM_MAP read failed.';
-                            throw new Error(errBox.msg);
-                        }
+                        // Only while GCM is enabled and a module is bound — with GCM off the
+                        // firmware answers every per-module command "disabled" anyway.
+                        if (!ctx.enabled) return;
+                        const target =
+                            bound.find(
+                                (b) =>
+                                    b.n === numberValue(gcmSelectedRef.current),
+                            ) ?? bound[0];
+                        if (!target) return;
+                        focusGcmModule(target.n);
+                        await loadGcmModuleDetails(target.n, target.mode);
                     },
                 },
             ];
@@ -2421,8 +2860,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         }
 
         // Combined Module sync (the Module card's Sync button). The overlay shows just two rows:
-        //   "Module"           → EWS read + GCM slave binding (the two GETs folded into one step)
-        //   "Mapping Parameter" → GCM_MAP read
+        //   "Module"       → EWS read + GCM slave binding (the two GETs folded into one step)
+        //   "Detail Modul" → the selected module's mapping, gate/pump status, travel limits and
+        //                    Auto config — skipped when GCM is disabled or nothing is bound
         // Logic Output is intentionally NOT read here — its config/status comes from the global
         // "Sync from Device" (synced DB sensors), so the Module sync never touches SENSORS.
         async function loadModule() {
@@ -2431,7 +2871,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             setGcmError(null);
             const bound: { n: number; slave: number; mode: number }[] = [];
             const errBox = { msg: null as string | null };
-            const [bindingStep, mappingStep] = gcmSyncSteps(bound, errBox);
+            const [bindingStep, mappingStep] = gcmSyncSteps(bound, errBox, {
+                enabled: false,
+            });
 
             const moduleStep = {
                 label: 'Module',
@@ -2535,6 +2977,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                 leoSend,
                 leoTimes,
                 rtc,
+                telemetry,
+                router,
                 synced: ioSynced,
             } satisfies IoSnapshot);
         }, [
@@ -2552,6 +2996,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             leoSend,
             leoTimes,
             rtc,
+            telemetry,
+            router,
         ]);
 
         // Same persistence for the Module (EWS + GCM) panel.
@@ -2559,6 +3005,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             if (!isModulePanel || !deviceId) return;
             setCachedPanelState(deviceId, 'module', {
                 gcm,
+                gcmSaved,
                 gcmMapRows,
                 gcmMapId,
                 ewsEnable,
@@ -2573,6 +3020,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             isModulePanel,
             deviceId,
             gcm,
+            gcmSaved,
             gcmMapRows,
             gcmMapId,
             ewsEnable,
@@ -2603,11 +3051,15 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     GCM_PUMP: { cmd: 'GET', id },
                 });
                 const pInner = (
-                    p.data as { GCM_PUMP?: Record<string, number> } | undefined
+                    p.data as { GCM_PUMP?: Record<string, unknown> } | undefined
                 )?.GCM_PUMP;
-                if (p.success && pInner && pInner.state !== undefined)
+                if (p.success && pInner && pInner.state !== undefined) {
                     setPumpState(String(pInner.state));
-                else if (!p.success)
+                    setGcmPumpStatus({
+                        state: Number(pInner.state),
+                        fault: gcmFaultValue(pInner),
+                    });
+                } else if (!p.success)
                     setGcmError(p.message ?? 'GCM_PUMP read failed.');
             } catch (e) {
                 setGcmError(e instanceof Error ? e.message : 'Request gagal.');
@@ -2616,8 +3068,11 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             }
         }
 
-        async function loadGcmGate(id: number) {
-            if (!logger.deviceIdentifier) return;
+        // Resolves true when the reply also carried the travel limits (min_close/max_open), so a
+        // caller reading the whole module can skip the separate GCM_GATE_CAL GET.
+        async function loadGcmGate(id: number): Promise<boolean> {
+            if (!logger.deviceIdentifier) return false;
+            let carriedLimits = false;
             setLoading('GCM');
             setGcmGateStatus(null);
             try {
@@ -2625,16 +3080,35 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     GCM_GATE: { cmd: 'GET', id },
                 });
                 const gInner = (
-                    g.data as { GCM_GATE?: Record<string, number> } | undefined
+                    g.data as { GCM_GATE?: Record<string, unknown> } | undefined
                 )?.GCM_GATE;
                 if (g.success && gInner && gInner.pos !== undefined) {
+                    const n = (key: string) => Number(gInner[key] ?? 0);
                     setGcmGateStatus({
-                        pos: gInner.pos ?? 0,
-                        run: gInner.run ?? 0,
-                        full_close: gInner.full_close ?? 0,
-                        full_open: gInner.full_open ?? 0,
-                        fault: gInner.fault ?? 0,
+                        pos: n('pos'),
+                        run: n('run'),
+                        full_close: n('full_close'),
+                        full_open: n('full_open'),
+                        fault: gcmFaultValue(gInner),
+                        phase: Array.isArray(gInner.phase)
+                            ? gInner.phase.map(Number)
+                            : null,
                     });
+                    // Newer firmware also reports the travel limits here — the same values
+                    // GCM_GATE_CAL GET returns, so the limits card fills without its own read.
+                    const cal = parseGateCal(gInner);
+                    if (cal) {
+                        carriedLimits = true;
+                        setGcmGateCal(cal);
+                        setGcmGateCalInput((prev) =>
+                            prev.minClose === '' && prev.maxOpen === ''
+                                ? {
+                                      minClose: String(cal.minClose),
+                                      maxOpen: String(cal.maxOpen),
+                                  }
+                                : prev,
+                        );
+                    }
                 } else if (!g.success) {
                     setGcmError(g.message ?? 'GCM_GATE read failed.');
                 }
@@ -2643,6 +3117,251 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             } finally {
                 setLoading(null);
             }
+            return carriedLimits;
+        }
+
+        // A GET/SET reply carries the limits now stored on the module: show them and put them in
+        // the inputs, so what the operator edits next starts from the device's real values.
+        function applyGateCal(result: CommandResult) {
+            const reading = parseGateCal(result.data);
+            if (!reading) return;
+            setGcmGateCal(reading);
+            setGcmGateCalInput({
+                minClose: String(reading.minClose),
+                maxOpen: String(reading.maxOpen),
+            });
+        }
+
+        // `id` is explicit: during a Module sync the gate id in state has not caught up yet.
+        async function loadGcmGateCal(id = numberValue(gcmGateId)) {
+            const result = await send(
+                'GCM_GATE_CAL',
+                { GCM_GATE_CAL: { cmd: 'GET', id } },
+                'GCM_GATE_CAL',
+            );
+            if (!result) return;
+            if (result.success) applyGateCal(result);
+            else
+                pushToast({
+                    title: `GCM${id} batas bukaan gagal dibaca`,
+                    description: gateCalErrorMessage(result.message),
+                    variant: 'error',
+                });
+        }
+
+        async function sendGcmGateCalSet(payload: GateCalSetPayload) {
+            const id = payload.GCM_GATE_CAL.id;
+            const result = await send('GCM_GATE_CAL', payload, 'GCM_GATE_CAL');
+            if (!result) return;
+            if (result.success) {
+                applyGateCal(result);
+                const reading = parseGateCal(result.data);
+                pushToast({
+                    title: `GCM${id} batas bukaan tersimpan`,
+                    description: reading
+                        ? `Min Close ${reading.minClose} · Max Open ${reading.maxOpen}`
+                        : undefined,
+                    variant: 'success',
+                });
+            } else {
+                pushToast({
+                    title: `GCM${id} batas bukaan gagal disimpan`,
+                    description: gateCalErrorMessage(result.message),
+                    variant: 'error',
+                });
+            }
+        }
+
+        // ── GCM_AUTO ──
+        // The module the Auto card belongs to, read at reply time: a slow multi-page GET must not
+        // land its rules under a module the operator has switched away from in the meantime.
+        const gcmSelectedRef = useRef(gcmMapId);
+        gcmSelectedRef.current = gcmMapId;
+
+        function clearGcmAuto() {
+            setGcmAuto(null);
+            setGcmAutoRules([]);
+            setGcmAutoUnsupported(false);
+        }
+
+        function gcmAutoFailed(id: number, result: CommandResult) {
+            if (
+                (result.message ?? '').trim().toLowerCase() === 'not supported'
+            ) {
+                setGcmAutoUnsupported(true);
+                return;
+            }
+            pushToast({
+                title: `GCM${id} Auto gagal`,
+                description: gcmAutoErrorMessage(result.message),
+                variant: 'error',
+            });
+        }
+
+        // SET / GET / RST all answer with the status object but only page 1 of the rules (8 per
+        // page). Read the remaining pages before showing anything, so the editor never holds a
+        // partial rule list that a later Save would write back as the whole set.
+        async function applyGcmAutoReply(first: CommandResult, id: number) {
+            const reading = parseGcmAuto(first.data);
+            if (!reading) return;
+            const pages = [reading];
+            for (let page = 2; page <= reading.pages; page += 1) {
+                const r = await send(
+                    'GCM_AUTO',
+                    { GCM_AUTO: { cmd: 'GET', id, page } },
+                    'GCM_AUTO',
+                );
+                const parsed = r?.success ? parseGcmAuto(r.data) : null;
+                if (!parsed) {
+                    pushToast({
+                        title: `GCM${id} Auto: aturan halaman ${page} gagal dibaca`,
+                        description: r
+                            ? gcmAutoErrorMessage(r.message)
+                            : undefined,
+                        variant: 'error',
+                    });
+                    return;
+                }
+                pages.push(parsed);
+            }
+            if (numberValue(gcmSelectedRef.current) !== id) return;
+            const merged = mergeGcmAutoPages(pages);
+            setGcmAuto(merged);
+            setGcmAutoForm(merged.settings);
+            setGcmAutoRules(merged.rules);
+            setGcmAutoUnsupported(false);
+        }
+
+        // The source pickers list the logger's own output names (SENSORS GET_NAME). Until that
+        // has been read the pool falls back to the synced DB sensors, which lack the module
+        // outputs a GCM_AUTO source usually is (e.g. "GCM1.Gate_Position"), so every stored
+        // source would show as "tidak terdaftar". Read it once before the first Auto GET.
+        async function ensureDeviceSensorNames() {
+            if (deviceSensors !== null || !logger.deviceIdentifier) return;
+            const names = await readSensorNames(logger.deviceIdentifier);
+            if (names) setDeviceSensors(names);
+        }
+
+        // withGate=false when the caller reads GCM_GATE itself (the whole-module read below).
+        async function loadGcmAuto(id: number, withGate = true) {
+            await ensureDeviceSensorNames();
+            const r = await send(
+                'GCM_AUTO',
+                { GCM_AUTO: { cmd: 'GET', id } },
+                'GCM_AUTO',
+            );
+            if (!r) return;
+            if (!r.success) return gcmAutoFailed(id, r);
+            await applyGcmAutoReply(r, id);
+            // A gate module's own outputs (GCM1.Gate_Position, …) are the usual AUTO sources, and
+            // GCM_AUTO only reports their value while it runs. GCM_GATE GET carries them (plus
+            // the travel limits the rule targets are checked against), so read it alongside.
+            if (withGate && gateModules.some((n) => n === id))
+                await loadGcmGate(id);
+        }
+
+        async function saveGcmAuto(id: number) {
+            if (!gcmAuto) return;
+            const built = buildGcmAutoConfigSet(
+                id,
+                gcmAuto.mode,
+                gcmAutoForm,
+                gcmAutoRules,
+                gcmAuto.settings.enable,
+            );
+            if (!built.ok) return localError('GCM_AUTO', built.error);
+            const r = await send('GCM_AUTO', built.payload, 'GCM_AUTO');
+            if (!r) return;
+            if (!r.success) return gcmAutoFailed(id, r);
+            pushToast({
+                title: `Konfigurasi Auto GCM${id} tersimpan`,
+                variant: 'success',
+            });
+            await applyGcmAutoReply(r, id);
+        }
+
+        async function setGcmAutoEnable(id: number, enable: boolean) {
+            const r = await send(
+                'GCM_AUTO',
+                { GCM_AUTO: { cmd: 'SET', id, enable: enable ? 1 : 0 } },
+                'GCM_AUTO',
+            );
+            if (!r) return;
+            if (!r.success) return gcmAutoFailed(id, r);
+            pushToast({
+                title: `Auto GCM${id} ${enable ? 'dinyalakan' : 'dimatikan'}`,
+                variant: 'success',
+            });
+            await applyGcmAutoReply(r, id);
+        }
+
+        // CLEAR removes every rule on the logger; source, source2 and the parameters stay. The
+        // ack carries only {status, id, count}, so the configuration is read back afterwards.
+        async function clearGcmAutoRules(id: number) {
+            const r = await send(
+                'GCM_AUTO',
+                { GCM_AUTO: { cmd: 'CLEAR', id } },
+                'GCM_AUTO',
+            );
+            if (!r) return;
+            if (!r.success) return gcmAutoFailed(id, r);
+            pushToast({
+                title: `Semua aturan Auto GCM${id} dihapus`,
+                variant: 'success',
+            });
+            await loadGcmAuto(id);
+        }
+
+        async function resetGcmAuto(id: number) {
+            const r = await send(
+                'GCM_AUTO',
+                { GCM_AUTO: { cmd: 'RST', id } },
+                'GCM_AUTO',
+            );
+            if (!r) return;
+            if (!r.success) return gcmAutoFailed(id, r);
+            pushToast({ title: `Auto GCM${id} direset`, variant: 'success' });
+            await applyGcmAutoReply(r, id);
+        }
+
+        // The single module picker. Everything shown per module is dropped on a switch so no
+        // reading of one module is ever displayed under another; the mapping is re-read (as the
+        // old per-section selector did) and, where supported, the Auto configuration too.
+        // Drop everything shown for the previously selected module and make `n` the selection.
+        function focusGcmModule(n: number) {
+            gcmSelectedRef.current = String(n);
+            setGcmMapId(String(n));
+            setGcmGateStatus(null);
+            setGcmPumpStatus(null);
+            setGcmGateCal(null);
+            setGcmGateCalInput({ minClose: '', maxOpen: '' });
+            setGcmWarnStatus(null);
+            clearGcmAuto();
+        }
+
+        // Everything shown for one module, read in one go: mapping, then the gate status (whose
+        // reply usually carries the travel limits too — else GCM_GATE_CAL is asked separately)
+        // or the pump state, then the Auto configuration where the firmware has it. `mode` is
+        // passed in because during a Module sync the binding in state is not updated yet.
+        async function loadGcmModuleDetails(n: number, mode: number) {
+            await loadGcmMap(n);
+            if (mode === 2) {
+                await loadGcmPump(n);
+            } else {
+                const carriedLimits = await loadGcmGate(n);
+                if (!carriedLimits) await loadGcmGateCal(n);
+            }
+            if (gcmAutoSupported) await loadGcmAuto(n, false);
+        }
+
+        async function selectGcmModule(n: number) {
+            if (String(n) === gcmMapId) return;
+            focusGcmModule(n);
+            if (!canSend || !gcmEnabled) return;
+            await loadGcmModuleDetails(
+                n,
+                numberValue(gcmSaved?.[`id${n}` as GcmKey].mode ?? '1'),
+            );
         }
 
         // GCM_GATE_WARN GET → config tersimpan + status runtime (ews_ready/active/phase/cycle/…).
@@ -3089,6 +3808,8 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             // Blocks a SET whose field was never read back (e.g. that step of the sync failed):
             // numberValue('') is 0, so sending it would quietly write OFF/Disable to the device.
             blockedUnread = false,
+            // Icon shown when idle (default: Send). Motor buttons use direction icons instead.
+            Icon: ComponentType<{ className?: string }> = Send,
         ) {
             const busy = loading === key;
             return (
@@ -3111,7 +3832,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                     {busy ? (
                         <Loader2 className="size-3.5 animate-spin" />
                     ) : (
-                        <Send className="size-3.5" />
+                        <Icon className="size-3.5" />
                     )}
                     {label}
                 </Button>
@@ -3564,6 +4285,93 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         const unreadOption = (value: string) =>
             value === '' ? <option value="">—</option> : null;
 
+        // GCM_GATE_CAL SET, validated up front so the confirm dialog only appears for a payload
+        // that will actually be sent, and names exactly the fields that will change.
+        const gateCalSet = buildGateCalSet(
+            numberValue(gcmGateId),
+            gcmGateCalInput.minClose,
+            gcmGateCalInput.maxOpen,
+            gcmGateCal,
+        );
+        // Checked before the confirm dialog, so an out-of-range target never gets as far as
+        // "Gerakkan pintu …?" — the button reports the problem instead.
+        const gateTargetCheck = checkGateTarget(gcmGateTarget, gcmGateCal);
+        const gateCalConfirmText = gateCalSet.ok
+            ? [
+                  gateCalSet.payload.GCM_GATE_CAL.min_close !== undefined &&
+                      `Min Close ${gateCalSet.payload.GCM_GATE_CAL.min_close}`,
+                  gateCalSet.payload.GCM_GATE_CAL.max_open !== undefined &&
+                      `Max Open ${gateCalSet.payload.GCM_GATE_CAL.max_open}`,
+              ]
+                  .filter(Boolean)
+                  .join(', ')
+            : '';
+
+        // ── Selected GCM module (the single picker) ──
+        const selectedGcm = numberValue(gcmMapId);
+        const selectedGcmModule =
+            gcmSaved && selectedGcm >= 1 && selectedGcm <= 5
+                ? gcmSaved[`id${selectedGcm}` as GcmKey]
+                : null;
+        const selectedIsGate = gateModules.some((n) => n === selectedGcm);
+        const selectedIsPump = pumpModules.some((n) => n === selectedGcm);
+
+        // ── GCM_AUTO derived state ──
+        const gcmAutoMode = gcmAuto?.mode ?? (selectedIsPump ? 'PUMP' : 'AWGC');
+        // What the logger reports, not the form: source/source2/rules are locked while it runs.
+        const gcmAutoRunning = gcmAuto?.settings.enable ?? false;
+        const gcmAutoIssues = validateGcmAutoRules(
+            gcmAutoRules,
+            gcmAutoMode,
+            gcmAutoForm.source2 !== '',
+        );
+        const gcmAutoOutside =
+            gcmAutoMode === 'AWGC'
+                ? gcmAutoTargetsOutside(gcmAutoRules, gcmGateCal)
+                : [];
+        const gcmAutoComparable = (
+            settings: GcmAutoSettings,
+            rules: GcmAutoRuleRow[],
+        ) =>
+            JSON.stringify({
+                ...settings,
+                enable: undefined,
+                rules: rules.map((rule) => ({ ...rule, no: undefined })),
+            });
+        const gcmAutoDirty =
+            gcmAuto !== null &&
+            gcmAutoComparable(gcmAutoForm, gcmAutoRules) !==
+                gcmAutoComparable(gcmAuto.settings, gcmAuto.rules);
+        // Source value for the status strip. The logger's own evaluation wins when it reports one
+        // (AUTO running); otherwise the gate's last GCM_GATE GET for its own outputs, then the
+        // value SENSORS GET_NAME last returned for any other sensor.
+        const gcmAutoSourceValue = (
+            reported: number | null,
+            sourceName: string,
+        ): number | null => {
+            if (reported !== null) return reported;
+            if (!sourceName) return null;
+            const fromGate = gateOutputValue(
+                sourceName,
+                selectedGcm,
+                gcmGateStatus,
+            );
+            if (fromGate !== null) return fromGate;
+            return (
+                deviceSensors?.find((sensor) => sensor.nama === sourceName)
+                    ?.nilai ?? null
+            );
+        };
+        const updateGcmAutoRule = (
+            index: number,
+            patch: Partial<GcmAutoRuleRow>,
+        ) =>
+            setGcmAutoRules(
+                gcmAutoRules.map((rule, i) =>
+                    i === index ? { ...rule, ...patch } : rule,
+                ),
+            );
+
         // I/O controls (Power Output, SENS_DOOR, ALERT) — shared between the standalone "I/O"
         // tab and the Mode tab's 3-across `ioRow` layout.
         const ioCards = (
@@ -3823,6 +4631,94 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
         // schedule. Independent of `dry` — TEST never transmits.
         const sendLeoTest = () =>
             void send('LEO_SEND', { LEO_SEND: 'TEST' }, 'LEO_SEND');
+        // SENT_60S / SENT_1S SET → {"SENT_60S":{"Status":"OK"}}. These simple acks carry no state,
+        // so the toast is the operator's only confirmation that the logger took the change.
+        const sendTelemetry = (
+            module: 'SENT_60S' | 'SENT_1S',
+            enable: string,
+        ) =>
+            void send(
+                module,
+                { [module]: { cmd: 'SET', enable: numberValue(enable) } },
+                module,
+            ).then((result) => {
+                if (!result) return;
+                const label =
+                    module === 'SENT_60S'
+                        ? 'Telemetry 60 detik'
+                        : 'Telemetry 1 detik';
+                pushToast(
+                    result.success
+                        ? {
+                              title: `${label} ${enable === '1' ? 'diaktifkan' : 'dimatikan'}`,
+                              variant: 'success',
+                          }
+                        : {
+                              title: `${label} gagal disimpan`,
+                              description: result.message,
+                              variant: 'error',
+                          },
+                );
+            });
+        // ROUTER SET → {"ROUTER SET":"OK"}. Disable sends only enable:0 (see router-config.ts).
+        const sendRouter = () => {
+            const built = buildRouterSet(router);
+            if (!built.ok) return localError('ROUTER', built.error);
+            void send('ROUTER', built.payload, 'ROUTER').then((result) => {
+                if (!result) return;
+                if (result.success && router.enable === '0')
+                    setRouterReading(null);
+                pushToast(
+                    result.success
+                        ? {
+                              title:
+                                  router.enable === '1'
+                                      ? 'Konfigurasi router tersimpan'
+                                      : 'Router dimatikan',
+                              variant: 'success',
+                          }
+                        : {
+                              title: 'Router gagal disimpan',
+                              description: result.message,
+                              variant: 'error',
+                          },
+                );
+            });
+        };
+        const routerEnabled = router.enable === '1';
+        const routerEnableField = (
+            <Field label="Enable">
+                <select
+                    className={`${selectClass} w-full`}
+                    value={router.enable}
+                    onChange={(event) =>
+                        setRouter({ ...router, enable: event.target.value })
+                    }
+                >
+                    {unreadOption(router.enable)}
+                    <option value="1">Enable</option>
+                    <option value="0">Disable</option>
+                </select>
+            </Field>
+        );
+        const routerSetButton = actionButton(
+            'SET',
+            'ROUTER',
+            sendRouter,
+            'outline',
+            undefined,
+            router.enable === '',
+        );
+        const updateRouterParam = (
+            index: number,
+            patch: Partial<RouterParam>,
+        ) =>
+            setRouter({
+                ...router,
+                params: router.params.map((param, i) =>
+                    i === index ? { ...param, ...patch } : param,
+                ),
+            });
         const netDhcpField = (
             <Field label="DHCP">
                 <select
@@ -3928,11 +4824,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
 
                 {/* Modbus TCP server (BL110/BL1100 only) — to the right of NET. */}
                 {isEthernetBoard && (
-                    <CommandCard
-                        title="Modbus TCP"
-                        icon={Server}
-                        result={responses.MODBUSTCP}
-                    >
+                    <CommandCard title="Modbus TCP" icon={Server}>
                         <div className="flex items-end gap-2">
                             <div className="grid flex-1 grid-cols-2 gap-2">
                                 <Field label="Enable">
@@ -3970,8 +4862,10 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                             {actionButton(
                                 'SET',
                                 'MODBUSTCP',
+                                // The raw reply is no longer printed in the card; a toast says
+                                // whether the logger took the change.
                                 () =>
-                                    send(
+                                    void send(
                                         'MODBUSTCP',
                                         {
                                             MODBUSTCP: {
@@ -3986,7 +4880,22 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                             },
                                         },
                                         'MODBUSTCP',
-                                    ),
+                                    ).then((result) => {
+                                        if (!result) return;
+                                        pushToast(
+                                            result.success
+                                                ? {
+                                                      title: 'Modbus TCP tersimpan',
+                                                      variant: 'success',
+                                                  }
+                                                : {
+                                                      title: 'Modbus TCP gagal disimpan',
+                                                      description:
+                                                          result.message,
+                                                      variant: 'error',
+                                                  },
+                                        );
+                                    }),
                                 'outline',
                                 undefined,
                                 modbusTcp.enable === '',
@@ -4367,6 +5276,355 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         </div>
                     </div>
                 </CommandCard>
+
+                {/* Telemetry publish intervals — SENT_60S and SENT_1S share one card, stacked.
+                Both this card and Router need firmware 2.2.3+. */}
+                {routerTelemetrySupported && (
+                    <CommandCard title="Telemetry" icon={Timer}>
+                        <div className="grid gap-3">
+                            {(
+                                [
+                                    ['SENT_60S', 's60', 'Telemetry 60 Detik'],
+                                    ['SENT_1S', 's1', 'Telemetry 1 Detik'],
+                                ] as const
+                            ).map(([module, field, label]) => (
+                                <div
+                                    key={module}
+                                    className="flex items-end gap-2"
+                                >
+                                    <div className="flex-1">
+                                        <Field label={label}>
+                                            <select
+                                                className={`${selectClass} w-full`}
+                                                value={telemetry[field]}
+                                                onChange={(event) =>
+                                                    setTelemetry({
+                                                        ...telemetry,
+                                                        [field]:
+                                                            event.target.value,
+                                                    })
+                                                }
+                                            >
+                                                {unreadOption(telemetry[field])}
+                                                <option value="1">
+                                                    Enable
+                                                </option>
+                                                <option value="0">
+                                                    Disable
+                                                </option>
+                                            </select>
+                                        </Field>
+                                    </div>
+                                    {actionButton(
+                                        'SET',
+                                        module,
+                                        () =>
+                                            sendTelemetry(
+                                                module,
+                                                telemetry[field],
+                                            ),
+                                        'outline',
+                                        undefined,
+                                        telemetry[field] === '',
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </CommandCard>
+                )}
+
+                {/* ROUTER — cellular router polled over RS485 Modbus RTU. Parameters use the same
+                shape and data types as an RS485 sensor. Disabled → only the Enable selector. */}
+                {routerTelemetrySupported && (
+                    <CommandCard
+                        title="Router"
+                        icon={RouterIcon}
+                        className={routerEnabled ? 'lg:col-span-3' : undefined}
+                    >
+                        {!routerEnabled ? (
+                            // Disabled / unread: a regular one-column card, SET beside the switch.
+                            <div className="flex items-end gap-2">
+                                <div className="flex-1">
+                                    {routerEnableField}
+                                </div>
+                                {routerSetButton}
+                            </div>
+                        ) : (
+                            // Enabled: full row — connection settings, then parameters, then SET.
+                            <>
+                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+                                    {routerEnableField}
+                                    <Field label="Slave ID">
+                                        <Input
+                                            className={inputClass}
+                                            type="number"
+                                            min="1"
+                                            max="247"
+                                            value={router.slave}
+                                            onChange={(event) =>
+                                                setRouter({
+                                                    ...router,
+                                                    slave: event.target.value,
+                                                })
+                                            }
+                                        />
+                                    </Field>
+                                    <Field label="Function Code">
+                                        <select
+                                            className={`${selectClass} w-full`}
+                                            value={router.fn}
+                                            onChange={(event) =>
+                                                setRouter({
+                                                    ...router,
+                                                    fn: event.target.value,
+                                                })
+                                            }
+                                        >
+                                            <option value="3">03 (HR)</option>
+                                            <option value="4">04 (IR)</option>
+                                        </select>
+                                    </Field>
+                                    <Field label="Baudrate">
+                                        <select
+                                            className={`${selectClass} w-full`}
+                                            value={router.baudrate}
+                                            onChange={(event) =>
+                                                setRouter({
+                                                    ...router,
+                                                    baudrate:
+                                                        event.target.value,
+                                                })
+                                            }
+                                        >
+                                            {ROUTER_BAUDRATES.map((rate) => (
+                                                <option key={rate} value={rate}>
+                                                    {rate}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </Field>
+                                    <Field label="Format">
+                                        <select
+                                            className={`${selectClass} w-full`}
+                                            value={router.format}
+                                            onChange={(event) =>
+                                                setRouter({
+                                                    ...router,
+                                                    format: event.target.value,
+                                                })
+                                            }
+                                        >
+                                            {ROUTER_FORMATS.map((format) => (
+                                                <option
+                                                    key={format}
+                                                    value={format}
+                                                >
+                                                    {format}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </Field>
+                                    {/* pct_range: the two reference points the firmware maps the signal onto 0–100%. */}
+                                    <Field label="Rentang % atas">
+                                        <Input
+                                            className={inputClass}
+                                            type="number"
+                                            step="any"
+                                            value={router.pctHigh}
+                                            onChange={(event) =>
+                                                setRouter({
+                                                    ...router,
+                                                    pctHigh: event.target.value,
+                                                })
+                                            }
+                                        />
+                                    </Field>
+                                    <Field label="Rentang % bawah">
+                                        <Input
+                                            className={inputClass}
+                                            type="number"
+                                            step="any"
+                                            value={router.pctLow}
+                                            onChange={(event) =>
+                                                setRouter({
+                                                    ...router,
+                                                    pctLow: event.target.value,
+                                                })
+                                            }
+                                        />
+                                    </Field>
+                                </div>
+
+                                <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-xs font-semibold text-muted-foreground uppercase">
+                                            Parameter ({router.params.length})
+                                        </p>
+                                        <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-7 gap-1"
+                                            onClick={() =>
+                                                setRouter({
+                                                    ...router,
+                                                    params: [
+                                                        ...router.params,
+                                                        emptyRouterParam(),
+                                                    ],
+                                                })
+                                            }
+                                        >
+                                            <Plus className="size-3.5" /> Tambah
+                                            parameter
+                                        </Button>
+                                    </div>
+                                    <div className="hidden gap-2 text-[11px] font-medium text-muted-foreground sm:grid sm:grid-cols-[minmax(0,1.2fr)_4.5rem_4.5rem_5rem_minmax(0,1.6fr)_2.25rem]">
+                                        <span>Nama</span>
+                                        <span>Scale</span>
+                                        <span>Satuan</span>
+                                        <span>Address</span>
+                                        <span>Tipe Data (dtype)</span>
+                                        <span />
+                                    </div>
+                                    {router.params.map((param, i) => (
+                                        <div
+                                            key={i}
+                                            className="grid grid-cols-2 gap-2 sm:grid-cols-[minmax(0,1.2fr)_4.5rem_4.5rem_5rem_minmax(0,1.6fr)_2.25rem]"
+                                        >
+                                            <Input
+                                                aria-label={`Nama parameter ${i + 1}`}
+                                                placeholder="Nama"
+                                                value={param.name}
+                                                onChange={(event) =>
+                                                    updateRouterParam(i, {
+                                                        name: event.target
+                                                            .value,
+                                                    })
+                                                }
+                                            />
+                                            <Input
+                                                aria-label={`Scale parameter ${i + 1}`}
+                                                placeholder="Scale"
+                                                inputMode="decimal"
+                                                value={param.scale}
+                                                onChange={(event) =>
+                                                    updateRouterParam(i, {
+                                                        scale: event.target
+                                                            .value,
+                                                    })
+                                                }
+                                            />
+                                            <Input
+                                                aria-label={`Satuan parameter ${i + 1}`}
+                                                placeholder="Satuan"
+                                                value={param.unit}
+                                                onChange={(event) =>
+                                                    updateRouterParam(i, {
+                                                        unit: event.target
+                                                            .value,
+                                                    })
+                                                }
+                                            />
+                                            <Input
+                                                aria-label={`Address parameter ${i + 1}`}
+                                                placeholder="Address"
+                                                type="number"
+                                                min={0}
+                                                max={65535}
+                                                value={param.address}
+                                                onChange={(event) =>
+                                                    updateRouterParam(i, {
+                                                        address:
+                                                            event.target.value,
+                                                    })
+                                                }
+                                            />
+                                            <div className="col-span-2 min-w-0 sm:col-span-1">
+                                                <DtypeSelect
+                                                    value={param.dtype}
+                                                    onChange={(code) =>
+                                                        updateRouterParam(i, {
+                                                            dtype: code,
+                                                        })
+                                                    }
+                                                />
+                                            </div>
+                                            <Button
+                                                type="button"
+                                                size="icon"
+                                                variant="ghost"
+                                                aria-label={`Hapus parameter ${i + 1}`}
+                                                className="size-9 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                disabled={
+                                                    router.params.length <= 1
+                                                }
+                                                onClick={() =>
+                                                    setRouter({
+                                                        ...router,
+                                                        params: router.params.filter(
+                                                            (_, idx) =>
+                                                                idx !== i,
+                                                        ),
+                                                    })
+                                                }
+                                            >
+                                                <Trash2 className="size-3.5" />
+                                            </Button>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Live readout on the left, SET bottom-right: it sends everything above. */}
+                                <div className="flex items-end justify-between gap-2">
+                                    <div className="flex min-w-0 flex-wrap gap-1.5 text-xs">
+                                        {routerReading && (
+                                            <>
+                                                {routerReading.values.map(
+                                                    (v) => (
+                                                        <Badge
+                                                            key={v.name}
+                                                            variant="outline"
+                                                            className="tabular-nums"
+                                                        >
+                                                            {v.name}: {v.value}{' '}
+                                                            {v.unit}
+                                                        </Badge>
+                                                    ),
+                                                )}
+                                                {routerReading.pct !== null && (
+                                                    <Badge
+                                                        variant="outline"
+                                                        className="tabular-nums"
+                                                    >
+                                                        Sinyal{' '}
+                                                        {routerReading.pct}%
+                                                    </Badge>
+                                                )}
+                                                {routerReading.valid !==
+                                                    null && (
+                                                    <Badge
+                                                        variant="outline"
+                                                        className={
+                                                            routerReading.valid
+                                                                ? 'text-emerald-600'
+                                                                : 'text-red-600'
+                                                        }
+                                                    >
+                                                        {routerReading.valid
+                                                            ? 'Data valid'
+                                                            : 'Data tidak valid'}
+                                                    </Badge>
+                                                )}
+                                            </>
+                                        )}
+                                    </div>
+                                    {routerSetButton}
+                                </div>
+                            </>
+                        )}
+                    </CommandCard>
+                )}
             </>
         );
 
@@ -5376,15 +6634,16 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                         </CommandCard>
                     </TabsContent>
 
-                    {/* ── GCM (binding + mapping parameter + gate control + pump control) ── */}
+                    {/* ── GCM: binding on top, one module picker, then that module's functions as
+                    sub-cards (gate / limits / mapping / pre-warning / pump / auto). ── */}
                     <TabsContent value="gcm" className="mt-4 grid gap-4">
                         <CommandCard title="GCM" description="" icon={Layers}>
-                            {/* ── Binding slave: each module picks a mode (Disable/AWGC/PUMP) + slave ID ── */}
+                            {/* ── 1 · Binding slave: 5 modules side by side, one SET ── */}
                             <div className="space-y-2">
                                 <Label className="text-xs font-semibold text-muted-foreground uppercase">
                                     Binding Slave
                                 </Label>
-                                <div className="grid gap-2 sm:grid-cols-2">
+                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
                                     {([1, 2, 3, 4, 5] as const).map((n) => {
                                         const key = `id${n}` as GcmKey;
                                         const mod = gcm[key];
@@ -5397,814 +6656,2037 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                                         return (
                                             <div
                                                 key={n}
-                                                className="flex items-center gap-2"
+                                                className="min-w-0 space-y-1"
                                             >
-                                                <span className="w-12 shrink-0 text-sm font-medium">
+                                                <span className="text-xs font-medium">
                                                     GCM{n}
                                                 </span>
-                                                <select
-                                                    className={`${selectClass} w-24`}
-                                                    value={modeValue}
-                                                    onChange={(event) => {
-                                                        const v =
-                                                            event.target.value;
-                                                        if (v === '0') {
-                                                            updateGcmModule(
-                                                                key,
-                                                                {
-                                                                    ...mod,
-                                                                    slave: '0',
-                                                                },
-                                                            );
-                                                        } else {
-                                                            updateGcmModule(
-                                                                key,
-                                                                {
-                                                                    ...mod,
-                                                                    mode: v,
-                                                                    slave:
-                                                                        numberValue(
-                                                                            mod.slave,
-                                                                        ) > 0
-                                                                            ? mod.slave
-                                                                            : '1',
-                                                                },
-                                                            );
-                                                        }
-                                                    }}
-                                                >
-                                                    <option value="0">
-                                                        Disable
-                                                    </option>
-                                                    <option value="1">
-                                                        AWGC
-                                                    </option>
-                                                    <option value="2">
-                                                        PUMP
-                                                    </option>
-                                                </select>
+                                                <div className="flex gap-1">
+                                                    <select
+                                                        aria-label={`Mode GCM${n}`}
+                                                        className={`${selectClass} min-w-0 flex-1 ${enabled ? '' : 'text-muted-foreground'}`}
+                                                        value={modeValue}
+                                                        onChange={(event) => {
+                                                            const v =
+                                                                event.target
+                                                                    .value;
+                                                            if (v === '0') {
+                                                                updateGcmModule(
+                                                                    key,
+                                                                    {
+                                                                        ...mod,
+                                                                        slave: '0',
+                                                                    },
+                                                                );
+                                                            } else {
+                                                                updateGcmModule(
+                                                                    key,
+                                                                    {
+                                                                        ...mod,
+                                                                        mode: v,
+                                                                        slave:
+                                                                            numberValue(
+                                                                                mod.slave,
+                                                                            ) >
+                                                                            0
+                                                                                ? mod.slave
+                                                                                : '1',
+                                                                    },
+                                                                );
+                                                            }
+                                                        }}
+                                                    >
+                                                        <option value="0">
+                                                            Disable
+                                                        </option>
+                                                        <option value="1">
+                                                            AWGC
+                                                        </option>
+                                                        <option value="2">
+                                                            PUMP
+                                                        </option>
+                                                    </select>
+                                                    {enabled && (
+                                                        <Input
+                                                            aria-label={`Slave ID GCM${n}`}
+                                                            className={`${inputClass} w-16`}
+                                                            type="number"
+                                                            min="1"
+                                                            max="247"
+                                                            value={mod.slave}
+                                                            placeholder="ID"
+                                                            onChange={(event) =>
+                                                                updateGcmModule(
+                                                                    key,
+                                                                    {
+                                                                        ...mod,
+                                                                        slave: event
+                                                                            .target
+                                                                            .value,
+                                                                    },
+                                                                )
+                                                            }
+                                                        />
+                                                    )}
+                                                </div>
+                                                {/* Serial number — required by the logger for every bound module. */}
                                                 {enabled && (
-                                                    <Input
-                                                        className={`${inputClass} w-20`}
-                                                        type="number"
-                                                        min="1"
-                                                        max="247"
-                                                        value={mod.slave}
-                                                        placeholder="Slave ID"
-                                                        onChange={(event) =>
-                                                            updateGcmModule(
-                                                                key,
-                                                                {
-                                                                    ...mod,
-                                                                    slave: event
-                                                                        .target
-                                                                        .value,
-                                                                },
-                                                            )
-                                                        }
-                                                    />
+                                                    <>
+                                                        <Input
+                                                            aria-label={`Serial number GCM${n}`}
+                                                            aria-invalid={
+                                                                gcmSnError(
+                                                                    mod.sn,
+                                                                ) !== null
+                                                            }
+                                                            className={`${inputClass} font-mono text-xs`}
+                                                            maxLength={32}
+                                                            placeholder="Serial number"
+                                                            value={mod.sn}
+                                                            onChange={(event) =>
+                                                                updateGcmModule(
+                                                                    key,
+                                                                    {
+                                                                        ...mod,
+                                                                        sn: event
+                                                                            .target
+                                                                            .value,
+                                                                    },
+                                                                )
+                                                            }
+                                                        />
+                                                        {gcmSnError(mod.sn) && (
+                                                            <p className="text-[11px] text-red-600">
+                                                                {gcmSnError(
+                                                                    mod.sn,
+                                                                )}
+                                                            </p>
+                                                        )}
+                                                    </>
                                                 )}
                                             </div>
                                         );
                                     })}
                                 </div>
-                                <ButtonRow>
-                                    {actionButton('SET', 'GCM', () => {
-                                        // Block duplicate slave IDs before sending.
-                                        const dup = duplicateSlaveMessage(gcm);
-                                        if (dup) {
-                                            setBindingError(dup);
-                                            return;
-                                        }
-                                        // A bound module (slave > 0) must carry mode 1 (AWGC) / 2 (PUMP); never send
-                                        // mode 0. An empty module (slave 0) stays [0,0].
-                                        const moduleTuple = (
-                                            mod: GcmModule,
-                                        ): [number, number] => {
-                                            const slave = numberValue(
-                                                mod.slave,
-                                            );
-                                            if (slave <= 0) return [0, 0];
-                                            return [
-                                                slave,
-                                                numberValue(mod.mode) === 2
-                                                    ? 2
-                                                    : 1,
-                                            ];
-                                        };
-                                        send(
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                    {gcmSetPending && (
+                                        <span className="mr-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+                                            <Loader2 className="size-3.5 animate-spin" />
+                                            Logger sedang menghubungi modul GCM…
+                                            bisa sampai 45 detik.
+                                        </span>
+                                    )}
+                                    {/* Only when the logger actually has a binding to reset. */}
+                                    {boundGcmModules.length > 0 &&
+                                        actionButton(
+                                            'Reset binding',
                                             'GCM',
-                                            {
-                                                GCM: {
-                                                    cmd: 'SET',
-                                                    enable:
-                                                        boundGcmModules.length >
-                                                        0
-                                                            ? 1
-                                                            : 0,
-                                                    id1: moduleTuple(gcm.id1),
-                                                    id2: moduleTuple(gcm.id2),
-                                                    id3: moduleTuple(gcm.id3),
-                                                    id4: moduleTuple(gcm.id4),
-                                                    id5: moduleTuple(gcm.id5),
-                                                },
-                                            },
-                                            'GCM',
-                                        );
-                                    })}
-                                </ButtonRow>
+                                            () => void resetGcmBinding(),
+                                            'destructive',
+                                            'Reset semua binding GCM? Semua modul jadi Disable dan GCM dimatikan.',
+                                        )}
+                                    {actionButton(
+                                        'SET binding',
+                                        'GCM',
+                                        () => {
+                                            // Duplicate slave IDs keep their own popup.
+                                            const dup =
+                                                duplicateSlaveMessage(gcm);
+                                            if (dup) {
+                                                setBindingError(dup);
+                                                return;
+                                            }
+                                            void sendGcmBinding();
+                                        },
+                                        'outline',
+                                        undefined,
+                                        // Every module bound in the form needs a valid serial number first.
+                                        ([1, 2, 3, 4, 5] as const).some(
+                                            (n) =>
+                                                numberValue(
+                                                    gcm[`id${n}` as GcmKey]
+                                                        .slave,
+                                                ) > 0 &&
+                                                gcmSnError(
+                                                    gcm[`id${n}` as GcmKey].sn,
+                                                ) !== null,
+                                        ),
+                                    )}
+                                </div>
                             </div>
 
-                            {/* ── Mapping parameter (GCM_MAP) — only once a module is bound (GCM active) ── */}
+                            {/* ── 2 · Module picker: every section below follows this choice. Only once the
+                            logger has a binding — a module chosen in the form but not yet SET has no
+                            hardware to control yet. ── */}
                             {boundGcmModules.length > 0 && (
                                 <div className="space-y-2 border-t border-border/60 pt-3">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <Label className="text-xs font-semibold text-muted-foreground uppercase">
-                                            Mapping Parameter
-                                        </Label>
-                                        <div className="flex items-center gap-1.5">
-                                            <select
-                                                className={`${selectClass} w-24`}
-                                                value={gcmMapId}
-                                                disabled={
-                                                    boundGcmModules.length === 0
-                                                }
-                                                onChange={(event) => {
-                                                    setGcmMapId(
-                                                        event.target.value,
-                                                    );
-                                                    loadGcmMap(
-                                                        numberValue(
-                                                            event.target.value,
-                                                        ),
-                                                    );
-                                                }}
-                                            >
-                                                {boundGcmModules.length ===
-                                                0 ? (
-                                                    <option value="">—</option>
-                                                ) : (
-                                                    boundGcmModules.map(
-                                                        (id) => (
-                                                            <option
-                                                                key={id}
-                                                                value={id}
-                                                            >
-                                                                GCM{id}
-                                                            </option>
-                                                        ),
-                                                    )
-                                                )}
-                                            </select>
-                                        </div>
-                                    </div>
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                        {gcmMapRows.map((row, idx) => (
-                                            <div
-                                                key={row.reg}
-                                                className="flex items-center gap-2"
-                                            >
-                                                <span className="w-20 shrink-0 text-xs text-muted-foreground">
-                                                    Param {idx + 1}
-                                                </span>
-                                                <Select
-                                                    value={row.name}
-                                                    onValueChange={(value) =>
-                                                        setGcmMapRows(
-                                                            gcmMapRows.map(
-                                                                (r, i) =>
-                                                                    i === idx
-                                                                        ? {
-                                                                              ...r,
-                                                                              name: value,
-                                                                          }
-                                                                        : r,
-                                                            ),
-                                                        )
+                                    <Label className="text-xs font-semibold text-muted-foreground uppercase">
+                                        Pilih Modul
+                                    </Label>
+
+                                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                                        {boundGcmModules.map((n) => {
+                                            // Saved binding — the picker lists what the logger has.
+                                            const mod =
+                                                gcmSaved?.[
+                                                    `id${n}` as GcmKey
+                                                ] ?? gcm[`id${n}` as GcmKey];
+                                            const active = n === selectedGcm;
+                                            return (
+                                                <button
+                                                    key={n}
+                                                    type="button"
+                                                    aria-pressed={active}
+                                                    onClick={() =>
+                                                        void selectGcmModule(n)
                                                     }
+                                                    className={`flex min-w-0 flex-col items-start rounded-lg border px-3 py-2 text-left transition-colors ${
+                                                        active
+                                                            ? 'border-primary bg-primary/5'
+                                                            : 'hover:bg-muted/50'
+                                                    }`}
                                                 >
-                                                    <SelectTrigger
-                                                        size="sm"
-                                                        className="flex-1"
-                                                    >
-                                                        <SelectValue placeholder="—" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        <SelectItem value="-">
-                                                            —
-                                                        </SelectItem>
-                                                        {sensorNamePool.map(
-                                                            (option) => (
-                                                                <SelectItem
-                                                                    key={option}
+                                                    <span className="text-sm font-medium">
+                                                        GCM{n}
+                                                    </span>
+                                                    <span className="text-xs text-muted-foreground">
+                                                        {numberValue(
+                                                            mod.mode,
+                                                        ) === 2
+                                                            ? 'PUMP'
+                                                            : 'AWGC'}{' '}
+                                                        · slave {mod.slave}
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* ── 3 · Functions of the selected module ── */}
+                            {selectedGcmModule &&
+                                (selectedIsGate || selectedIsPump) && (
+                                    <div className="space-y-3 border-t border-border/60 pt-3">
+                                        <Label className="text-xs font-semibold text-muted-foreground uppercase">
+                                            GCM{selectedGcm} —{' '}
+                                            {selectedIsGate
+                                                ? 'Pintu air (AWGC)'
+                                                : 'Pompa (PUMP)'}
+                                        </Label>
+                                        {!gcmEnabled && (
+                                            <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
+                                                GCM harus aktif agar perintah di
+                                                bawah diterima logger.
+                                            </p>
+                                        )}
+                                        {gcmAutoRunning && (
+                                            <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
+                                                AUTO sedang aktif di modul ini —
+                                                perintah manual akan menjeda
+                                                AUTO (PAUSED).
+                                            </p>
+                                        )}
+
+                                        <div className="grid gap-3 lg:grid-cols-2">
+                                            {/* Gate control (AWGC) */}
+                                            {selectedIsGate && (
+                                                <GcmSubCard
+                                                    title="Kontrol pintu"
+                                                    icon={DoorOpen}
+                                                >
+                                                    {gcmGateStatus ? (
+                                                        <div className="flex flex-wrap gap-1.5 text-xs">
+                                                            <Badge
+                                                                variant="outline"
+                                                                className="tabular-nums"
+                                                            >
+                                                                Posisi{' '}
+                                                                {
+                                                                    gcmGateStatus.pos
+                                                                }
+                                                            </Badge>
+                                                            <Badge variant="outline">
+                                                                {gcmGateStatus.run ===
+                                                                1
+                                                                    ? 'Opening'
+                                                                    : gcmGateStatus.run ===
+                                                                        2
+                                                                      ? 'Closing'
+                                                                      : 'Stop'}
+                                                            </Badge>
+                                                            {gcmGateStatus.full_close ===
+                                                                1 && (
+                                                                <Badge
+                                                                    variant="outline"
+                                                                    className="text-amber-600"
+                                                                >
+                                                                    Full Close
+                                                                </Badge>
+                                                            )}
+                                                            {gcmGateStatus.full_open ===
+                                                                1 && (
+                                                                <Badge
+                                                                    variant="outline"
+                                                                    className="text-amber-600"
+                                                                >
+                                                                    Full Open
+                                                                </Badge>
+                                                            )}
+                                                            {/* phase = [R, S, T] supply presence (1 = ada): one lamp per
+                                                            phase in its conventional colour, grey when that phase is off. */}
+                                                            {gcmGateStatus.phase && (
+                                                                <span
+                                                                    className="inline-flex h-5 items-center gap-0.5 rounded-4xl border px-0.5"
+                                                                    title="Fasa listrik R / S / T"
+                                                                >
+                                                                    {PHASE_LAMPS.map(
+                                                                        (
+                                                                            lamp,
+                                                                            i,
+                                                                        ) => {
+                                                                            const on =
+                                                                                gcmGateStatus
+                                                                                    .phase?.[
+                                                                                    i
+                                                                                ] ===
+                                                                                1;
+                                                                            return (
+                                                                                <span
+                                                                                    key={
+                                                                                        lamp.label
+                                                                                    }
+                                                                                    className={`inline-flex size-4 items-center justify-center rounded-full text-[9px] leading-none font-semibold ${on ? lamp.on : PHASE_LAMP_OFF}`}
+                                                                                >
+                                                                                    {
+                                                                                        lamp.label
+                                                                                    }
+                                                                                    <span className="sr-only">
+                                                                                        {on
+                                                                                            ? ' ada'
+                                                                                            : ' mati'}
+                                                                                    </span>
+                                                                                </span>
+                                                                            );
+                                                                        },
+                                                                    )}
+                                                                </span>
+                                                            )}
+                                                            <GcmFaultBadges
+                                                                value={
+                                                                    gcmGateStatus.fault
+                                                                }
+                                                                mode="AWGC"
+                                                            />
+                                                        </div>
+                                                    ) : (
+                                                        <p className="text-xs text-muted-foreground">
+                                                            Tekan Sync untuk
+                                                            membaca posisi
+                                                            pintu.
+                                                        </p>
+                                                    )}
+                                                    {gcmGateStatus && (
+                                                        <GcmFaultLatchedHint
+                                                            value={
+                                                                gcmGateStatus.fault
+                                                            }
+                                                            mode="AWGC"
+                                                        />
+                                                    )}
+                                                    <div className="flex items-end gap-2">
+                                                        <div className="flex-1">
+                                                            <Field label="Target posisi">
+                                                                <Input
+                                                                    className={
+                                                                        inputClass
+                                                                    }
+                                                                    type="number"
+                                                                    step="1"
+                                                                    min={
+                                                                        gcmGateCal?.minClose ??
+                                                                        -32768
+                                                                    }
+                                                                    max={
+                                                                        gcmGateCal?.maxOpen ??
+                                                                        32767
+                                                                    }
+                                                                    aria-invalid={
+                                                                        gcmGateTarget.trim() !==
+                                                                            '' &&
+                                                                        !gateTargetCheck.ok
+                                                                    }
                                                                     value={
-                                                                        option
+                                                                        gcmGateTarget
+                                                                    }
+                                                                    onChange={(
+                                                                        event,
+                                                                    ) =>
+                                                                        setGcmGateTarget(
+                                                                            event
+                                                                                .target
+                                                                                .value,
+                                                                        )
+                                                                    }
+                                                                />
+                                                            </Field>
+                                                        </div>
+                                                        {actionButton(
+                                                            'SET target',
+                                                            'GCM_GATE',
+                                                            () =>
+                                                                sendGcmGateTarget(
+                                                                    selectedGcm,
+                                                                ),
+                                                            'destructive',
+                                                            gateTargetCheck.ok
+                                                                ? `Gerakkan pintu GCM${selectedGcm} ke posisi ${gateTargetCheck.target}?`
+                                                                : undefined,
+                                                        )}
+                                                    </div>
+                                                    {gcmGateTarget.trim() !==
+                                                        '' &&
+                                                        !gateTargetCheck.ok && (
+                                                            <p className="-mt-1 text-xs text-red-600">
+                                                                {
+                                                                    gateTargetCheck.error
+                                                                }
+                                                            </p>
+                                                        )}
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {actionButton(
+                                                            'Open',
+                                                            'GCM_GATE',
+                                                            () =>
+                                                                sendGcmGate(
+                                                                    'Open',
+                                                                    '1',
+                                                                ),
+                                                            'outline',
+                                                            `Buka paksa pintu GCM${selectedGcm}?`,
+                                                            false,
+                                                            ArrowUp,
+                                                        )}
+                                                        {actionButton(
+                                                            'Close',
+                                                            'GCM_GATE',
+                                                            () =>
+                                                                sendGcmGate(
+                                                                    'Close',
+                                                                    '2',
+                                                                ),
+                                                            'outline',
+                                                            `Tutup paksa pintu GCM${selectedGcm}?`,
+                                                            false,
+                                                            ArrowDown,
+                                                        )}
+                                                        {actionButton(
+                                                            'Stop',
+                                                            'GCM_GATE',
+                                                            () =>
+                                                                sendGcmGate(
+                                                                    'Stop',
+                                                                    '4',
+                                                                ),
+                                                            'destructive',
+                                                            `Hentikan motor pintu GCM${selectedGcm}?`,
+                                                            false,
+                                                            Square,
+                                                        )}
+                                                    </div>
+                                                </GcmSubCard>
+                                            )}
+
+                                            {/* Gate travel limits (GCM_GATE_CAL). A blank field is not sent. */}
+                                            {selectedIsGate && (
+                                                <GcmSubCard
+                                                    title="Batas bukaan"
+                                                    icon={Table2}
+                                                >
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <Field label="Min close">
+                                                            <Input
+                                                                className={
+                                                                    inputClass
+                                                                }
+                                                                type="number"
+                                                                step="1"
+                                                                min="-32768"
+                                                                max="32767"
+                                                                placeholder="—"
+                                                                value={
+                                                                    gcmGateCalInput.minClose
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmGateCalInput(
+                                                                        {
+                                                                            ...gcmGateCalInput,
+                                                                            minClose:
+                                                                                event
+                                                                                    .target
+                                                                                    .value,
+                                                                        },
+                                                                    )
+                                                                }
+                                                            />
+                                                        </Field>
+                                                        <Field label="Max open">
+                                                            <Input
+                                                                className={
+                                                                    inputClass
+                                                                }
+                                                                type="number"
+                                                                step="1"
+                                                                min="-32768"
+                                                                max="32767"
+                                                                placeholder="—"
+                                                                value={
+                                                                    gcmGateCalInput.maxOpen
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmGateCalInput(
+                                                                        {
+                                                                            ...gcmGateCalInput,
+                                                                            maxOpen:
+                                                                                event
+                                                                                    .target
+                                                                                    .value,
+                                                                        },
+                                                                    )
+                                                                }
+                                                            />
+                                                        </Field>
+                                                    </div>
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <p className="text-xs text-muted-foreground tabular-nums">
+                                                            {gcmGateCal
+                                                                ? `Tersimpan${gcmGateCal.slave !== null ? ` (slave ${gcmGateCal.slave})` : ''}: ${gcmGateCal.minClose} – ${gcmGateCal.maxOpen}`
+                                                                : 'Kosongkan satu field untuk mengubah yang lain saja.'}
+                                                        </p>
+                                                        {actionButton(
+                                                            'SET',
+                                                            'GCM_GATE_CAL',
+                                                            () => {
+                                                                if (
+                                                                    !gateCalSet.ok
+                                                                ) {
+                                                                    localError(
+                                                                        'GCM_GATE_CAL',
+                                                                        gateCalSet.error,
+                                                                    );
+                                                                    return;
+                                                                }
+                                                                void sendGcmGateCalSet(
+                                                                    gateCalSet.payload,
+                                                                );
+                                                            },
+                                                            'outline',
+                                                            gateCalSet.ok
+                                                                ? `Simpan batas bukaan GCM${selectedGcm}: ${gateCalConfirmText}?`
+                                                                : undefined,
+                                                        )}
+                                                    </div>
+                                                </GcmSubCard>
+                                            )}
+
+                                            {/* Pump control (PUMP) */}
+                                            {selectedIsPump && (
+                                                <GcmSubCard
+                                                    title="Kontrol pompa"
+                                                    icon={Power}
+                                                >
+                                                    {gcmPumpStatus ? (
+                                                        <div className="flex flex-wrap gap-1.5 text-xs">
+                                                            <Badge variant="outline">
+                                                                {gcmPumpStatus.state ===
+                                                                1
+                                                                    ? 'Pompa ON'
+                                                                    : 'Pompa OFF'}
+                                                            </Badge>
+                                                            <GcmFaultBadges
+                                                                value={
+                                                                    gcmPumpStatus.fault
+                                                                }
+                                                                mode="PUMP"
+                                                            />
+                                                        </div>
+                                                    ) : (
+                                                        <p className="text-xs text-muted-foreground">
+                                                            Tekan Sync untuk
+                                                            membaca status
+                                                            pompa.
+                                                        </p>
+                                                    )}
+                                                    {gcmPumpStatus && (
+                                                        <GcmFaultLatchedHint
+                                                            value={
+                                                                gcmPumpStatus.fault
+                                                            }
+                                                            mode="PUMP"
+                                                        />
+                                                    )}
+                                                    <div className="flex items-end gap-2">
+                                                        <div className="flex-1">
+                                                            <Field label="State pompa">
+                                                                <select
+                                                                    className={`${selectClass} w-full`}
+                                                                    value={
+                                                                        pumpState
+                                                                    }
+                                                                    onChange={(
+                                                                        event,
+                                                                    ) =>
+                                                                        setPumpState(
+                                                                            event
+                                                                                .target
+                                                                                .value,
+                                                                        )
                                                                     }
                                                                 >
-                                                                    {option}
-                                                                </SelectItem>
-                                                            ),
+                                                                    <option value="1">
+                                                                        ON
+                                                                    </option>
+                                                                    <option value="0">
+                                                                        OFF
+                                                                    </option>
+                                                                </select>
+                                                            </Field>
+                                                        </div>
+                                                        {actionButton(
+                                                            'SET',
+                                                            'GCM_PUMP',
+                                                            () =>
+                                                                send(
+                                                                    'GCM_PUMP',
+                                                                    {
+                                                                        GCM_PUMP:
+                                                                            {
+                                                                                cmd: 'SET',
+                                                                                id: selectedGcm,
+                                                                                state: numberValue(
+                                                                                    pumpState,
+                                                                                ),
+                                                                            },
+                                                                    },
+                                                                    'GCM_PUMP',
+                                                                ),
+                                                            'destructive',
+                                                            `Ubah state pompa GCM${selectedGcm} ke ${pumpState === '1' ? 'ON' : 'OFF'}?`,
                                                         )}
-                                                        {row.name !== '-' &&
-                                                            !sensorNamePool.includes(
-                                                                row.name,
-                                                            ) && (
-                                                                <SelectItem
+                                                    </div>
+                                                </GcmSubCard>
+                                            )}
+
+                                            {/* Mapping parameter (GCM_MAP) — both modes. Full row when the
+                                            pre-warning card is not next to it. */}
+                                            <GcmSubCard
+                                                title="Mapping parameter"
+                                                icon={ListOrdered}
+                                                className={
+                                                    selectedIsGate && !ewsEnable
+                                                        ? 'lg:col-span-2'
+                                                        : undefined
+                                                }
+                                                action={actionButton(
+                                                    'SET',
+                                                    'GCM_MAP',
+                                                    () =>
+                                                        send(
+                                                            'GCM_MAP',
+                                                            {
+                                                                GCM_MAP: {
+                                                                    cmd: 'SET',
+                                                                    id: selectedGcm,
+                                                                    m: gcmMapRows.map(
+                                                                        (r) => [
+                                                                            numberValue(
+                                                                                r.reg,
+                                                                            ),
+                                                                            r.name ===
+                                                                            '-'
+                                                                                ? ''
+                                                                                : r.name,
+                                                                        ],
+                                                                    ),
+                                                                },
+                                                            },
+                                                            'GCM_MAP',
+                                                        ),
+                                                )}
+                                            >
+                                                <div
+                                                    className={`grid gap-2 sm:grid-cols-2 ${selectedIsGate && !ewsEnable ? 'lg:grid-cols-5' : ''}`}
+                                                >
+                                                    {gcmMapRows.map(
+                                                        (row, idx) => (
+                                                            <Field
+                                                                key={row.reg}
+                                                                label={`Parameter ${idx + 1}`}
+                                                            >
+                                                                <Select
                                                                     value={
                                                                         row.name
                                                                     }
+                                                                    onValueChange={(
+                                                                        value,
+                                                                    ) =>
+                                                                        setGcmMapRows(
+                                                                            gcmMapRows.map(
+                                                                                (
+                                                                                    r,
+                                                                                    i,
+                                                                                ) =>
+                                                                                    i ===
+                                                                                    idx
+                                                                                        ? {
+                                                                                              ...r,
+                                                                                              name: value,
+                                                                                          }
+                                                                                        : r,
+                                                                            ),
+                                                                        )
+                                                                    }
                                                                 >
-                                                                    {row.name}{' '}
-                                                                    (tidak
-                                                                    terdaftar)
-                                                                </SelectItem>
+                                                                    <SelectTrigger
+                                                                        size="sm"
+                                                                        className="w-full"
+                                                                    >
+                                                                        <SelectValue placeholder="—" />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        <SelectItem value="-">
+                                                                            —
+                                                                        </SelectItem>
+                                                                        {sensorNamePool.map(
+                                                                            (
+                                                                                option,
+                                                                            ) => (
+                                                                                <SelectItem
+                                                                                    key={
+                                                                                        option
+                                                                                    }
+                                                                                    value={
+                                                                                        option
+                                                                                    }
+                                                                                >
+                                                                                    {
+                                                                                        option
+                                                                                    }
+                                                                                </SelectItem>
+                                                                            ),
+                                                                        )}
+                                                                        {row.name !==
+                                                                            '-' &&
+                                                                            !sensorNamePool.includes(
+                                                                                row.name,
+                                                                            ) && (
+                                                                                <SelectItem
+                                                                                    value={
+                                                                                        row.name
+                                                                                    }
+                                                                                >
+                                                                                    {
+                                                                                        row.name
+                                                                                    }{' '}
+                                                                                    (tidak
+                                                                                    terdaftar)
+                                                                                </SelectItem>
+                                                                            )}
+                                                                    </SelectContent>
+                                                                </Select>
+                                                            </Field>
+                                                        ),
+                                                    )}
+                                                </div>
+                                            </GcmSubCard>
+
+                                            {/* EWS pre-warning (GCM_GATE_WARN) — AWGC only, and only while EWS
+                                            is enabled per the EWS GET. */}
+                                            {selectedIsGate && ewsEnable && (
+                                                <GcmSubCard
+                                                    title="EWS pre-warning"
+                                                    icon={Siren}
+                                                    action={
+                                                        <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant="outline"
+                                                            disabled={
+                                                                !canSend ||
+                                                                loading ===
+                                                                    'GCM_GATE_WARN'
+                                                            }
+                                                            onClick={() =>
+                                                                loadGcmWarn(
+                                                                    selectedGcm,
+                                                                )
+                                                            }
+                                                        >
+                                                            {loading ===
+                                                            'GCM_GATE_WARN' ? (
+                                                                <Loader2 className="size-3.5 animate-spin" />
+                                                            ) : (
+                                                                <RefreshCw className="size-3.5" />
                                                             )}
-                                                    </SelectContent>
-                                                </Select>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <ButtonRow>
-                                        {actionButton('SET', 'GCM_MAP', () =>
-                                            send(
-                                                'GCM_MAP',
-                                                {
-                                                    GCM_MAP: {
-                                                        cmd: 'SET',
-                                                        id: numberValue(
-                                                            gcmMapId,
-                                                        ),
-                                                        m: gcmMapRows.map(
-                                                            (r) => [
-                                                                numberValue(
-                                                                    r.reg,
+                                                            GET
+                                                        </Button>
+                                                    }
+                                                >
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Horn berbunyi sebelum
+                                                        pintu bergerak.
+                                                    </p>
+                                                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                                        <Field label="Status">
+                                                            <select
+                                                                className={`${selectClass} w-full`}
+                                                                value={
+                                                                    gcmWarn.enable
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmWarn({
+                                                                        ...gcmWarn,
+                                                                        enable: event
+                                                                            .target
+                                                                            .value,
+                                                                    })
+                                                                }
+                                                            >
+                                                                <option value="1">
+                                                                    Aktif
+                                                                </option>
+                                                                <option value="0">
+                                                                    Nonaktif
+                                                                </option>
+                                                            </select>
+                                                        </Field>
+                                                        <Field label="Level horn ON">
+                                                            <Input
+                                                                className={
+                                                                    inputClass
+                                                                }
+                                                                type="number"
+                                                                min="0"
+                                                                max="8"
+                                                                value={
+                                                                    gcmWarn.level
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmWarn({
+                                                                        ...gcmWarn,
+                                                                        level: event
+                                                                            .target
+                                                                            .value,
+                                                                    })
+                                                                }
+                                                            />
+                                                        </Field>
+                                                        <Field label="Level horn OFF">
+                                                            <Input
+                                                                className={
+                                                                    inputClass
+                                                                }
+                                                                type="number"
+                                                                min="0"
+                                                                max="8"
+                                                                value={
+                                                                    gcmWarn.clear_level
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmWarn({
+                                                                        ...gcmWarn,
+                                                                        clear_level:
+                                                                            event
+                                                                                .target
+                                                                                .value,
+                                                                    })
+                                                                }
+                                                            />
+                                                        </Field>
+                                                        <Field label="Durasi aktif (s)">
+                                                            <Input
+                                                                className={
+                                                                    inputClass
+                                                                }
+                                                                type="number"
+                                                                min="10"
+                                                                max="30"
+                                                                value={
+                                                                    gcmWarn.on_sec
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmWarn({
+                                                                        ...gcmWarn,
+                                                                        on_sec: event
+                                                                            .target
+                                                                            .value,
+                                                                    })
+                                                                }
+                                                            />
+                                                        </Field>
+                                                        <Field label="Durasi jeda (s)">
+                                                            <Input
+                                                                className={
+                                                                    inputClass
+                                                                }
+                                                                type="number"
+                                                                min="0"
+                                                                max="60"
+                                                                value={
+                                                                    gcmWarn.off_sec
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmWarn({
+                                                                        ...gcmWarn,
+                                                                        off_sec:
+                                                                            event
+                                                                                .target
+                                                                                .value,
+                                                                    })
+                                                                }
+                                                            />
+                                                        </Field>
+                                                        <Field label="Repeat">
+                                                            <Input
+                                                                className={
+                                                                    inputClass
+                                                                }
+                                                                type="number"
+                                                                min="1"
+                                                                max="5"
+                                                                value={
+                                                                    gcmWarn.repeat
+                                                                }
+                                                                onChange={(
+                                                                    event,
+                                                                ) =>
+                                                                    setGcmWarn({
+                                                                        ...gcmWarn,
+                                                                        repeat: event
+                                                                            .target
+                                                                            .value,
+                                                                    })
+                                                                }
+                                                            />
+                                                        </Field>
+                                                    </div>
+                                                    <Field label="Bila EWS gagal">
+                                                        <select
+                                                            className={`${selectClass} w-full`}
+                                                            value={
+                                                                gcmWarn.ews_fail
+                                                            }
+                                                            onChange={(event) =>
+                                                                setGcmWarn({
+                                                                    ...gcmWarn,
+                                                                    ews_fail:
+                                                                        event
+                                                                            .target
+                                                                            .value,
+                                                                })
+                                                            }
+                                                        >
+                                                            <option value="BLOCK">
+                                                                BLOCK (batalkan
+                                                                motor)
+                                                            </option>
+                                                            <option value="ALLOW">
+                                                                ALLOW (motor
+                                                                tetap jalan)
+                                                            </option>
+                                                        </select>
+                                                    </Field>
+                                                    {/* act[]: which AWGC movements trigger the pre-warning */}
+                                                    <div className="space-y-1.5">
+                                                        <Label className="text-xs text-muted-foreground">
+                                                            Aktif saat gerakan
+                                                        </Label>
+                                                        <div className="flex flex-wrap gap-x-4 gap-y-2">
+                                                            {(
+                                                                [
+                                                                    'Open',
+                                                                    'Close',
+                                                                    'Target',
+                                                                    'Stop',
+                                                                ] as const
+                                                            ).map(
+                                                                (
+                                                                    label,
+                                                                    idx,
+                                                                ) => (
+                                                                    <label
+                                                                        key={
+                                                                            label
+                                                                        }
+                                                                        className="flex items-center gap-1.5 text-xs"
+                                                                    >
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            className="rounded"
+                                                                            checked={
+                                                                                gcmWarnAct[
+                                                                                    idx
+                                                                                ] ??
+                                                                                false
+                                                                            }
+                                                                            onChange={(
+                                                                                event,
+                                                                            ) =>
+                                                                                setGcmWarnAct(
+                                                                                    gcmWarnAct.map(
+                                                                                        (
+                                                                                            v,
+                                                                                            i,
+                                                                                        ) =>
+                                                                                            i ===
+                                                                                            idx
+                                                                                                ? event
+                                                                                                      .target
+                                                                                                      .checked
+                                                                                                : v,
+                                                                                    ),
+                                                                                )
+                                                                            }
+                                                                        />
+                                                                        {label}
+                                                                    </label>
                                                                 ),
-                                                                r.name === '-'
-                                                                    ? ''
-                                                                    : r.name,
-                                                            ],
-                                                        ),
-                                                    },
-                                                },
-                                                'GCM_MAP',
-                                            ),
-                                        )}
-                                    </ButtonRow>
-                                </div>
-                            )}
-
-                            {/* ── Gate control (GCM_GATE) — only shown when an AWGC module exists ── */}
-                            {gateModules.length > 0 && (
-                                <div className="space-y-2 border-t border-border/60 pt-3">
-                                    <Label className="text-xs font-semibold text-muted-foreground uppercase">
-                                        Gate Control (AWGC)
-                                    </Label>
-                                    {!gcmEnabled && (
-                                        <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
-                                            GCM must be active for this command
-                                            to be accepted.
-                                        </p>
-                                    )}
-                                    <div className="flex flex-wrap items-end gap-3">
-                                        <div className="flex items-center gap-1.5">
-                                            <select
-                                                className={`${selectClass} w-24`}
-                                                value={gcmGateId}
-                                                onChange={(event) => {
-                                                    setGcmGateId(
-                                                        event.target.value,
-                                                    );
-                                                    setGcmGateStatus(null);
-                                                }}
-                                            >
-                                                {gateModules.map((id) => (
-                                                    <option key={id} value={id}>
-                                                        GCM{id}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div className="flex items-center gap-1.5">
-                                            <span className="text-xs text-muted-foreground">
-                                                Target
-                                            </span>
-                                            <Input
-                                                className={`${inputClass} w-20`}
-                                                type="number"
-                                                min="0"
-                                                max="65535"
-                                                value={gcmGateTarget}
-                                                onChange={(event) =>
-                                                    setGcmGateTarget(
-                                                        event.target.value,
-                                                    )
-                                                }
-                                            />
-                                        </div>
-                                        {actionButton(
-                                            'SET Target',
-                                            'GCM_GATE',
-                                            () =>
-                                                send(
-                                                    'GCM_GATE',
-                                                    {
-                                                        GCM_GATE: {
-                                                            cmd: 'SET',
-                                                            id: numberValue(
-                                                                gcmGateId,
-                                                            ),
-                                                            target: numberValue(
-                                                                gcmGateTarget,
-                                                            ),
-                                                        },
-                                                    },
-                                                    'GCM_GATE',
-                                                ),
-                                            'destructive',
-                                            `Move the GCM${gcmGateId} gate to position ${gcmGateTarget}?`,
-                                        )}
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-xs text-muted-foreground">
-                                            Manual motor:
-                                        </span>
-                                        {actionButton(
-                                            'Open',
-                                            'GCM_GATE',
-                                            () => sendGcmGate('Open', '1'),
-                                            'outline',
-                                            `Force open the GCM${gcmGateId} gate?`,
-                                        )}
-                                        {actionButton(
-                                            'Close',
-                                            'GCM_GATE',
-                                            () => sendGcmGate('Close', '2'),
-                                            'outline',
-                                            `Force close the GCM${gcmGateId} gate?`,
-                                        )}
-                                        {actionButton(
-                                            'Stop',
-                                            'GCM_GATE',
-                                            () => sendGcmGate('Stop', '4'),
-                                            'destructive',
-                                            `Stop the GCM${gcmGateId} gate motor?`,
-                                        )}
-                                        <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            disabled={
-                                                !canSend || loading === 'GCM'
-                                            }
-                                            onClick={() =>
-                                                loadGcmGate(
-                                                    numberValue(gcmGateId),
-                                                )
-                                            }
-                                        >
-                                            {loading === 'GCM' ? (
-                                                <Loader2 className="size-3.5 animate-spin" />
-                                            ) : (
-                                                <Send className="size-3.5" />
-                                            )}
-                                            GET Status
-                                        </Button>
-                                    </div>
-                                    {gcmGateStatus && (
-                                        <div className="flex flex-wrap gap-1.5 text-xs">
-                                            <Badge
-                                                variant="outline"
-                                                className="tabular-nums"
-                                            >
-                                                Position: {gcmGateStatus.pos}
-                                            </Badge>
-                                            <Badge variant="outline">
-                                                {gcmGateStatus.run === 1
-                                                    ? 'Opening'
-                                                    : gcmGateStatus.run === 2
-                                                      ? 'Closing'
-                                                      : 'Stop'}
-                                            </Badge>
-                                            {gcmGateStatus.full_close === 1 && (
-                                                <Badge
-                                                    variant="outline"
-                                                    className="text-amber-600"
-                                                >
-                                                    Full Close
-                                                </Badge>
-                                            )}
-                                            {gcmGateStatus.full_open === 1 && (
-                                                <Badge
-                                                    variant="outline"
-                                                    className="text-amber-600"
-                                                >
-                                                    Full Open
-                                                </Badge>
-                                            )}
-                                            <Badge
-                                                variant="outline"
-                                                className={
-                                                    gcmGateStatus.fault === 0
-                                                        ? 'text-emerald-600'
-                                                        : 'text-red-600'
-                                                }
-                                            >
-                                                {gcmGateStatus.fault === 0
-                                                    ? 'Normal'
-                                                    : 'Fault'}
-                                            </Badge>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* ── EWS Pre-Warning (GCM_GATE_WARN) — only shown when an AWGC module
-                                exists AND EWS is enabled (per the EWS GET); hidden when EWS is off. ── */}
-                            {gateModules.length > 0 && ewsEnable && (
-                                <div className="space-y-2 border-t border-border/60 pt-3">
-                                    <Label className="text-xs font-semibold text-muted-foreground uppercase">
-                                        EWS Pre-Warning (AWGC)
-                                    </Label>
-                                    {!gcmEnabled && (
-                                        <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
-                                            GCM must be active for this command
-                                            to be accepted.
-                                        </p>
-                                    )}
-                                    <div className="flex flex-wrap items-end gap-3">
-                                        <div className="flex items-center gap-1.5">
-                                            <select
-                                                className={`${selectClass} w-24`}
-                                                value={gcmWarnId}
-                                                onChange={(event) => {
-                                                    setGcmWarnId(
-                                                        event.target.value,
-                                                    );
-                                                    loadGcmWarn(
-                                                        numberValue(
-                                                            event.target.value,
-                                                        ),
-                                                    );
-                                                }}
-                                            >
-                                                {gateModules.map((id) => (
-                                                    <option key={id} value={id}>
-                                                        GCM{id}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div className="flex items-center gap-1.5">
-                                            <span className="text-xs text-muted-foreground">
-                                                Enable
-                                            </span>
-                                            <select
-                                                className={`${selectClass} w-24`}
-                                                value={gcmWarn.enable}
-                                                onChange={(event) =>
-                                                    setGcmWarn({
-                                                        ...gcmWarn,
-                                                        enable: event.target
-                                                            .value,
-                                                    })
-                                                }
-                                            >
-                                                <option value="1">
-                                                    Active
-                                                </option>
-                                                <option value="0">
-                                                    Inactive
-                                                </option>
-                                            </select>
-                                        </div>
-                                    </div>
-                                    {/* act[]: gerakan AWGC mana yang memicu pre-warning EWS (open/close/target/stop) */}
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs text-muted-foreground">
-                                            Aktif saat gerakan
-                                        </Label>
-                                        <div className="flex flex-wrap gap-x-4 gap-y-2">
-                                            {(
-                                                [
-                                                    'Open',
-                                                    'Close',
-                                                    'Target',
-                                                    'Stop',
-                                                ] as const
-                                            ).map((label, idx) => (
-                                                <label
-                                                    key={label}
-                                                    className="flex items-center gap-1.5 text-xs"
-                                                >
-                                                    <input
-                                                        type="checkbox"
-                                                        className="rounded"
-                                                        checked={
-                                                            gcmWarnAct[idx] ??
-                                                            false
-                                                        }
-                                                        onChange={(event) =>
-                                                            setGcmWarnAct(
-                                                                gcmWarnAct.map(
-                                                                    (v, i) =>
-                                                                        i ===
-                                                                        idx
-                                                                            ? event
-                                                                                  .target
-                                                                                  .checked
-                                                                            : v,
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    {gcmWarnStatus && (
+                                                        <div className="flex flex-wrap gap-1.5 text-xs">
+                                                            <Badge
+                                                                variant="outline"
+                                                                className={
+                                                                    gcmWarnStatus.ews_ready ===
+                                                                    1
+                                                                        ? 'text-emerald-600'
+                                                                        : 'text-amber-600'
+                                                                }
+                                                            >
+                                                                EWS{' '}
+                                                                {gcmWarnStatus.ews_ready ===
+                                                                1
+                                                                    ? 'ready'
+                                                                    : 'off'}
+                                                            </Badge>
+                                                            <Badge variant="outline">
+                                                                {gcmWarnStatus.active ===
+                                                                1
+                                                                    ? 'Active'
+                                                                    : 'Idle'}
+                                                            </Badge>
+                                                            <Badge variant="outline">
+                                                                Phase:{' '}
+                                                                {
+                                                                    gcmWarnStatus.phase
+                                                                }
+                                                            </Badge>
+                                                            <Badge
+                                                                variant="outline"
+                                                                className="tabular-nums"
+                                                            >
+                                                                Cycle:{' '}
+                                                                {
+                                                                    gcmWarnStatus.cycle
+                                                                }
+                                                            </Badge>
+                                                            <Badge
+                                                                variant="outline"
+                                                                className="tabular-nums"
+                                                            >
+                                                                Sisa:{' '}
+                                                                {
+                                                                    gcmWarnStatus.remaining_sec
+                                                                }
+                                                                s
+                                                            </Badge>
+                                                            <Badge
+                                                                variant="outline"
+                                                                className={
+                                                                    gcmWarnStatus.last_error ===
+                                                                    'NONE'
+                                                                        ? 'text-emerald-600'
+                                                                        : 'text-red-600'
+                                                                }
+                                                            >
+                                                                {
+                                                                    gcmWarnStatus.last_error
+                                                                }
+                                                            </Badge>
+                                                        </div>
+                                                    )}
+                                                    <div className="flex justify-end gap-2">
+                                                        {actionButton(
+                                                            'RST',
+                                                            'GCM_GATE_WARN',
+                                                            () =>
+                                                                send(
+                                                                    'GCM_GATE_WARN',
+                                                                    {
+                                                                        GCM_GATE_WARN:
+                                                                            {
+                                                                                cmd: 'RST',
+                                                                                id: selectedGcm,
+                                                                            },
+                                                                    },
+                                                                    'GCM_GATE_WARN',
                                                                 ),
-                                                            )
-                                                        }
-                                                    />
-                                                    {label}
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    <div className="grid gap-2 sm:grid-cols-3">
-                                        <Field label="Level Horn ON">
-                                            <Input
-                                                className={inputClass}
-                                                type="number"
-                                                min="0"
-                                                max="8"
-                                                value={gcmWarn.level}
-                                                onChange={(event) =>
-                                                    setGcmWarn({
-                                                        ...gcmWarn,
-                                                        level: event.target
-                                                            .value,
-                                                    })
-                                                }
-                                            />
-                                        </Field>
-                                        <Field label="Level Horn OFF">
-                                            <Input
-                                                className={inputClass}
-                                                type="number"
-                                                min="0"
-                                                max="8"
-                                                value={gcmWarn.clear_level}
-                                                onChange={(event) =>
-                                                    setGcmWarn({
-                                                        ...gcmWarn,
-                                                        clear_level:
-                                                            event.target.value,
-                                                    })
-                                                }
-                                            />
-                                        </Field>
-                                        <Field label="If EWS Fail">
-                                            <select
-                                                className={`${selectClass} w-full`}
-                                                value={gcmWarn.ews_fail}
-                                                onChange={(event) =>
-                                                    setGcmWarn({
-                                                        ...gcmWarn,
-                                                        ews_fail:
-                                                            event.target.value,
-                                                    })
-                                                }
-                                            >
-                                                <option value="BLOCK">
-                                                    BLOCK (cancel motor)
-                                                </option>
-                                                <option value="ALLOW">
-                                                    ALLOW (keep motor running)
-                                                </option>
-                                            </select>
-                                        </Field>
-                                        <Field label="Active Duration">
-                                            <Input
-                                                className={inputClass}
-                                                type="number"
-                                                min="10"
-                                                max="30"
-                                                value={gcmWarn.on_sec}
-                                                onChange={(event) =>
-                                                    setGcmWarn({
-                                                        ...gcmWarn,
-                                                        on_sec: event.target
-                                                            .value,
-                                                    })
-                                                }
-                                            />
-                                        </Field>
-                                        <Field label="Inactive Duration">
-                                            <Input
-                                                className={inputClass}
-                                                type="number"
-                                                min="0"
-                                                max="60"
-                                                value={gcmWarn.off_sec}
-                                                onChange={(event) =>
-                                                    setGcmWarn({
-                                                        ...gcmWarn,
-                                                        off_sec:
-                                                            event.target.value,
-                                                    })
-                                                }
-                                            />
-                                        </Field>
-                                        <Field label="Repeat">
-                                            <Input
-                                                className={inputClass}
-                                                type="number"
-                                                min="1"
-                                                max="5"
-                                                value={gcmWarn.repeat}
-                                                onChange={(event) =>
-                                                    setGcmWarn({
-                                                        ...gcmWarn,
-                                                        repeat: event.target
-                                                            .value,
-                                                    })
-                                                }
-                                            />
-                                        </Field>
-                                    </div>
-                                    <ButtonRow>
-                                        <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            disabled={
-                                                !canSend ||
-                                                loading === 'GCM_GATE_WARN'
-                                            }
-                                            onClick={() =>
-                                                loadGcmWarn(
-                                                    numberValue(gcmWarnId),
-                                                )
-                                            }
-                                        >
-                                            {loading === 'GCM_GATE_WARN' ? (
-                                                <Loader2 className="size-3.5 animate-spin" />
-                                            ) : (
-                                                <Send className="size-3.5" />
+                                                            'destructive',
+                                                            `Reset pre-warning GCM${selectedGcm} ke default (nonaktif)?`,
+                                                        )}
+                                                        {actionButton(
+                                                            'SET',
+                                                            'GCM_GATE_WARN',
+                                                            sendGcmWarnSet,
+                                                            'outline',
+                                                            numberValue(
+                                                                gcmWarn.enable,
+                                                            ) === 1
+                                                                ? `Aktifkan pre-warning EWS untuk GCM${selectedGcm}? Pastikan EWS aktif.`
+                                                                : undefined,
+                                                        )}
+                                                    </div>
+                                                </GcmSubCard>
                                             )}
-                                            GET
-                                        </Button>
-                                        {actionButton(
-                                            'SET',
-                                            'GCM_GATE_WARN',
-                                            sendGcmWarnSet,
-                                            'default',
-                                            numberValue(gcmWarn.enable) === 1
-                                                ? `Enable EWS pre-warning for GCM${gcmWarnId}? Make sure EWS is active.`
-                                                : undefined,
-                                        )}
-                                        {actionButton(
-                                            'RST',
-                                            'GCM_GATE_WARN',
-                                            () =>
-                                                send(
-                                                    'GCM_GATE_WARN',
-                                                    {
-                                                        GCM_GATE_WARN: {
-                                                            cmd: 'RST',
-                                                            id: numberValue(
-                                                                gcmWarnId,
-                                                            ),
-                                                        },
-                                                    },
-                                                    'GCM_GATE_WARN',
-                                                ),
-                                            'destructive',
-                                            `Reset GCM${gcmWarnId} pre-warning to default (inactive)?`,
-                                        )}
-                                    </ButtonRow>
-                                    {gcmWarnStatus && (
-                                        <div className="flex flex-wrap gap-1.5 text-xs">
-                                            <Badge
-                                                variant="outline"
-                                                className={
-                                                    gcmWarnStatus.ews_ready ===
-                                                    1
-                                                        ? 'text-emerald-600'
-                                                        : 'text-amber-600'
-                                                }
-                                            >
-                                                EWS{' '}
-                                                {gcmWarnStatus.ews_ready === 1
-                                                    ? 'ready'
-                                                    : 'off'}
-                                            </Badge>
-                                            <Badge variant="outline">
-                                                {gcmWarnStatus.active === 1
-                                                    ? 'Active'
-                                                    : 'Idle'}
-                                            </Badge>
-                                            <Badge variant="outline">
-                                                Phase: {gcmWarnStatus.phase}
-                                            </Badge>
-                                            <Badge
-                                                variant="outline"
-                                                className="tabular-nums"
-                                            >
-                                                Cycle: {gcmWarnStatus.cycle}
-                                            </Badge>
-                                            <Badge
-                                                variant="outline"
-                                                className="tabular-nums"
-                                            >
-                                                Remaining:{' '}
-                                                {gcmWarnStatus.remaining_sec}s
-                                            </Badge>
-                                            <Badge
-                                                variant="outline"
-                                                className={
-                                                    gcmWarnStatus.last_error ===
-                                                    'NONE'
-                                                        ? 'text-emerald-600'
-                                                        : 'text-red-600'
-                                                }
-                                            >
-                                                {gcmWarnStatus.last_error}
-                                            </Badge>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
 
-                            {/* ── PUMP control (GCM_PUMP) — only shown when a PUMP module exists ── */}
-                            {pumpModules.length > 0 && (
-                                <div className="space-y-2 border-t border-border/60 pt-3">
-                                    <Label className="text-xs font-semibold text-muted-foreground uppercase">
-                                        PUMP Control
-                                    </Label>
-                                    {!gcmEnabled && (
-                                        <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
-                                            GCM must be active for this command
-                                            to be accepted.
-                                        </p>
-                                    )}
-                                    <div className="flex flex-wrap items-end gap-3">
-                                        <div className="flex items-center gap-1.5">
-                                            <select
-                                                className={`${selectClass} w-24`}
-                                                value={gcmPumpId}
-                                                onChange={(event) => {
-                                                    setGcmPumpId(
-                                                        event.target.value,
-                                                    );
-                                                    loadGcmPump(
-                                                        numberValue(
-                                                            event.target.value,
-                                                        ),
-                                                    );
-                                                }}
-                                            >
-                                                {pumpModules.map((id) => (
-                                                    <option key={id} value={id}>
-                                                        GCM{id}
-                                                    </option>
-                                                ))}
-                                            </select>
+                                            {/* Auto control (GCM_AUTO) — firmware 2.2.3+ only. */}
+                                            {gcmAutoSupported && (
+                                                <GcmSubCard
+                                                    className="lg:col-span-2"
+                                                    title={
+                                                        <>
+                                                            Auto control
+                                                            {gcmAuto && (
+                                                                <Badge
+                                                                    variant="outline"
+                                                                    className={
+                                                                        {
+                                                                            ok: 'text-emerald-600',
+                                                                            wait: 'text-amber-600',
+                                                                            bad: 'text-red-600',
+                                                                            off: 'text-muted-foreground',
+                                                                        }[
+                                                                            gcmAutoStateTone(
+                                                                                gcmAuto
+                                                                                    .status
+                                                                                    .state,
+                                                                            )
+                                                                        ]
+                                                                    }
+                                                                >
+                                                                    {GCM_AUTO_STATE_LABELS[
+                                                                        gcmAuto
+                                                                            .status
+                                                                            .state
+                                                                    ] ??
+                                                                        gcmAuto
+                                                                            .status
+                                                                            .state}
+                                                                </Badge>
+                                                            )}
+                                                        </>
+                                                    }
+                                                    icon={Wand2}
+                                                    action={
+                                                        <>
+                                                            {/* Paused by a manual command, or faulted: enable is still 1 but
+                                                            nothing runs until another SET enable=1 restarts it (§6.6). */}
+                                                            {gcmAuto &&
+                                                                gcmAutoRunning &&
+                                                                gcmAutoNeedsResume(
+                                                                    gcmAuto
+                                                                        .status
+                                                                        .state,
+                                                                ) &&
+                                                                actionButton(
+                                                                    'Lanjutkan AUTO',
+                                                                    'GCM_AUTO',
+                                                                    () =>
+                                                                        void setGcmAutoEnable(
+                                                                            selectedGcm,
+                                                                            true,
+                                                                        ),
+                                                                    'default',
+                                                                    `Lanjutkan AUTO GCM${selectedGcm}? Logger akan kembali menggerakkan ${selectedIsPump ? 'pompa' : 'pintu'} sesuai aturan setelah hold ${gcmAuto.settings.holdSec} detik.`,
+                                                                    false,
+                                                                    Play,
+                                                                )}
+                                                            {gcmAuto &&
+                                                                actionButton(
+                                                                    gcmAutoRunning
+                                                                        ? 'Matikan AUTO'
+                                                                        : 'Nyalakan AUTO',
+                                                                    'GCM_AUTO',
+                                                                    () => {
+                                                                        if (
+                                                                            !gcmAutoRunning &&
+                                                                            gcmAutoDirty
+                                                                        ) {
+                                                                            localError(
+                                                                                'GCM_AUTO',
+                                                                                'Simpan konfigurasi dulu sebelum menyalakan AUTO.',
+                                                                            );
+                                                                            return;
+                                                                        }
+                                                                        void setGcmAutoEnable(
+                                                                            selectedGcm,
+                                                                            !gcmAutoRunning,
+                                                                        );
+                                                                    },
+                                                                    gcmAutoRunning
+                                                                        ? 'outline'
+                                                                        : 'default',
+                                                                    gcmAutoRunning
+                                                                        ? `Matikan AUTO GCM${selectedGcm}? Gerakan yang sedang berjalan tidak dibatalkan.`
+                                                                        : gcmAutoDirty
+                                                                          ? undefined
+                                                                          : `Nyalakan AUTO GCM${selectedGcm}? Logger akan menggerakkan ${selectedIsPump ? 'pompa' : 'pintu'} sendiri sesuai aturan.`,
+                                                                )}
+                                                            {gcmAuto &&
+                                                                actionButton(
+                                                                    'RST',
+                                                                    'GCM_AUTO',
+                                                                    () =>
+                                                                        void resetGcmAuto(
+                                                                            selectedGcm,
+                                                                        ),
+                                                                    'destructive',
+                                                                    `Reset Auto GCM${selectedGcm}? AUTO dimatikan, sensor dan semua aturan dihapus.`,
+                                                                )}
+                                                        </>
+                                                    }
+                                                >
+                                                    {gcmAutoUnsupported ? (
+                                                        <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                                                            Firmware logger ini
+                                                            belum mendukung Auto
+                                                            GCM (hanya varian
+                                                            F429).
+                                                        </p>
+                                                    ) : !gcmAuto ? (
+                                                        <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                                                            Tekan Sync untuk
+                                                            membaca konfigurasi
+                                                            Auto dari logger.
+                                                        </p>
+                                                    ) : (
+                                                        <>
+                                                            {/* Live status */}
+                                                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                                                                {[
+                                                                    {
+                                                                        label:
+                                                                            gcmAuto
+                                                                                .settings
+                                                                                .source ||
+                                                                            'Sensor utama',
+                                                                        value: gcmAutoSourceValue(
+                                                                            gcmAuto
+                                                                                .status
+                                                                                .nilai,
+                                                                            gcmAuto
+                                                                                .settings
+                                                                                .source,
+                                                                        ),
+                                                                    },
+                                                                    ...(gcmAuto
+                                                                        .settings
+                                                                        .source2
+                                                                        ? [
+                                                                              {
+                                                                                  label: gcmAuto
+                                                                                      .settings
+                                                                                      .source2,
+                                                                                  value: gcmAutoSourceValue(
+                                                                                      gcmAuto
+                                                                                          .status
+                                                                                          .nilai2,
+                                                                                      gcmAuto
+                                                                                          .settings
+                                                                                          .source2,
+                                                                                  ),
+                                                                              },
+                                                                          ]
+                                                                        : []),
+                                                                    {
+                                                                        label: 'Aturan aktif',
+                                                                        value:
+                                                                            gcmAuto
+                                                                                .status
+                                                                                .rule >
+                                                                            0
+                                                                                ? `#${gcmAuto.status.rule}`
+                                                                                : null,
+                                                                    },
+                                                                    {
+                                                                        label:
+                                                                            gcmAutoMode ===
+                                                                            'PUMP'
+                                                                                ? 'State terakhir'
+                                                                                : 'Target terakhir',
+                                                                        value:
+                                                                            gcmAuto
+                                                                                .status
+                                                                                .lastAction ===
+                                                                            null
+                                                                                ? null
+                                                                                : gcmAutoMode ===
+                                                                                    'PUMP'
+                                                                                  ? gcmAuto
+                                                                                        .status
+                                                                                        .lastAction ===
+                                                                                    1
+                                                                                      ? 'ON'
+                                                                                      : 'OFF'
+                                                                                  : gcmAuto
+                                                                                        .status
+                                                                                        .lastAction,
+                                                                    },
+                                                                    {
+                                                                        label: 'Hold / gap',
+                                                                        value: `${gcmAuto.status.holdRemaining}s / ${gcmAuto.status.gapRemaining}s`,
+                                                                    },
+                                                                ].map(
+                                                                    (
+                                                                        metric,
+                                                                    ) => (
+                                                                        <div
+                                                                            key={
+                                                                                metric.label
+                                                                            }
+                                                                            className="min-w-0 rounded-md bg-muted/50 px-2.5 py-1.5"
+                                                                        >
+                                                                            <p
+                                                                                className="truncate text-[11px] text-muted-foreground"
+                                                                                title={
+                                                                                    metric.label
+                                                                                }
+                                                                            >
+                                                                                {
+                                                                                    metric.label
+                                                                                }
+                                                                            </p>
+                                                                            <p className="text-sm font-medium tabular-nums">
+                                                                                {metric.value ??
+                                                                                    '—'}
+                                                                            </p>
+                                                                        </div>
+                                                                    ),
+                                                                )}
+                                                            </div>
+                                                            {(() => {
+                                                                const sentence =
+                                                                    gcmAutoStatusSentence(
+                                                                        gcmAuto.status,
+                                                                        gcmAutoMode,
+                                                                        gcmAuto.rules,
+                                                                    );
+                                                                const lastError =
+                                                                    gcmAutoLastErrorLabel(
+                                                                        gcmAuto
+                                                                            .status
+                                                                            .lastError,
+                                                                    );
+                                                                return sentence ||
+                                                                    lastError ? (
+                                                                    <div className="space-y-0.5 text-xs">
+                                                                        {sentence && (
+                                                                            <p className="text-muted-foreground">
+                                                                                {
+                                                                                    sentence
+                                                                                }
+                                                                            </p>
+                                                                        )}
+                                                                        {lastError && (
+                                                                            <p className="text-red-600">
+                                                                                Error
+                                                                                terakhir:{' '}
+                                                                                {
+                                                                                    lastError
+                                                                                }
+                                                                            </p>
+                                                                        )}
+                                                                    </div>
+                                                                ) : null;
+                                                            })()}
+
+                                                            {/* Sensors + parameters. Sources lock while AUTO runs. */}
+                                                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+                                                                <div className="col-span-2 min-w-0">
+                                                                    <Field label="Sensor utama">
+                                                                        <Select
+                                                                            value={
+                                                                                gcmAutoForm.source
+                                                                            }
+                                                                            disabled={
+                                                                                gcmAutoRunning
+                                                                            }
+                                                                            onValueChange={(
+                                                                                value,
+                                                                            ) =>
+                                                                                setGcmAutoForm(
+                                                                                    {
+                                                                                        ...gcmAutoForm,
+                                                                                        source: value,
+                                                                                    },
+                                                                                )
+                                                                            }
+                                                                        >
+                                                                            <SelectTrigger
+                                                                                size="sm"
+                                                                                className="w-full"
+                                                                            >
+                                                                                <SelectValue placeholder="Pilih sensor" />
+                                                                            </SelectTrigger>
+                                                                            <SelectContent>
+                                                                                {sensorNamePool.map(
+                                                                                    (
+                                                                                        option,
+                                                                                    ) => (
+                                                                                        <SelectItem
+                                                                                            key={
+                                                                                                option
+                                                                                            }
+                                                                                            value={
+                                                                                                option
+                                                                                            }
+                                                                                        >
+                                                                                            {
+                                                                                                option
+                                                                                            }
+                                                                                        </SelectItem>
+                                                                                    ),
+                                                                                )}
+                                                                                {gcmAutoForm.source &&
+                                                                                    !sensorNamePool.includes(
+                                                                                        gcmAutoForm.source,
+                                                                                    ) && (
+                                                                                        <SelectItem
+                                                                                            value={
+                                                                                                gcmAutoForm.source
+                                                                                            }
+                                                                                        >
+                                                                                            {
+                                                                                                gcmAutoForm.source
+                                                                                            }{' '}
+                                                                                            (tidak
+                                                                                            terdaftar)
+                                                                                        </SelectItem>
+                                                                                    )}
+                                                                            </SelectContent>
+                                                                        </Select>
+                                                                    </Field>
+                                                                </div>
+                                                                <Field label="Hyst">
+                                                                    <Input
+                                                                        className={
+                                                                            inputClass
+                                                                        }
+                                                                        type="number"
+                                                                        step="any"
+                                                                        min="0"
+                                                                        max="1000"
+                                                                        value={
+                                                                            gcmAutoForm.hyst
+                                                                        }
+                                                                        onChange={(
+                                                                            event,
+                                                                        ) =>
+                                                                            setGcmAutoForm(
+                                                                                {
+                                                                                    ...gcmAutoForm,
+                                                                                    hyst: event
+                                                                                        .target
+                                                                                        .value,
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                    />
+                                                                </Field>
+                                                                <div className="col-span-2 min-w-0">
+                                                                    <Field label="Sensor kedua (opsional)">
+                                                                        <Select
+                                                                            value={
+                                                                                gcmAutoForm.source2 ||
+                                                                                '-'
+                                                                            }
+                                                                            disabled={
+                                                                                gcmAutoRunning
+                                                                            }
+                                                                            onValueChange={(
+                                                                                value,
+                                                                            ) =>
+                                                                                setGcmAutoForm(
+                                                                                    {
+                                                                                        ...gcmAutoForm,
+                                                                                        source2:
+                                                                                            value ===
+                                                                                            '-'
+                                                                                                ? ''
+                                                                                                : value,
+                                                                                    },
+                                                                                )
+                                                                            }
+                                                                        >
+                                                                            <SelectTrigger
+                                                                                size="sm"
+                                                                                className="w-full"
+                                                                            >
+                                                                                <SelectValue />
+                                                                            </SelectTrigger>
+                                                                            <SelectContent>
+                                                                                <SelectItem value="-">
+                                                                                    Tidak
+                                                                                    dipakai
+                                                                                </SelectItem>
+                                                                                {sensorNamePool
+                                                                                    .filter(
+                                                                                        (
+                                                                                            option,
+                                                                                        ) =>
+                                                                                            option !==
+                                                                                            gcmAutoForm.source,
+                                                                                    )
+                                                                                    .map(
+                                                                                        (
+                                                                                            option,
+                                                                                        ) => (
+                                                                                            <SelectItem
+                                                                                                key={
+                                                                                                    option
+                                                                                                }
+                                                                                                value={
+                                                                                                    option
+                                                                                                }
+                                                                                            >
+                                                                                                {
+                                                                                                    option
+                                                                                                }
+                                                                                            </SelectItem>
+                                                                                        ),
+                                                                                    )}
+                                                                                {gcmAutoForm.source2 &&
+                                                                                    !sensorNamePool.includes(
+                                                                                        gcmAutoForm.source2,
+                                                                                    ) && (
+                                                                                        <SelectItem
+                                                                                            value={
+                                                                                                gcmAutoForm.source2
+                                                                                            }
+                                                                                        >
+                                                                                            {
+                                                                                                gcmAutoForm.source2
+                                                                                            }{' '}
+                                                                                            (tidak
+                                                                                            terdaftar)
+                                                                                        </SelectItem>
+                                                                                    )}
+                                                                            </SelectContent>
+                                                                        </Select>
+                                                                    </Field>
+                                                                </div>
+                                                                {gcmAutoForm.source2 ? (
+                                                                    <Field label="Hyst 2">
+                                                                        <Input
+                                                                            className={
+                                                                                inputClass
+                                                                            }
+                                                                            type="number"
+                                                                            step="any"
+                                                                            min="0"
+                                                                            max="1000"
+                                                                            value={
+                                                                                gcmAutoForm.hyst2
+                                                                            }
+                                                                            onChange={(
+                                                                                event,
+                                                                            ) =>
+                                                                                setGcmAutoForm(
+                                                                                    {
+                                                                                        ...gcmAutoForm,
+                                                                                        hyst2: event
+                                                                                            .target
+                                                                                            .value,
+                                                                                    },
+                                                                                )
+                                                                            }
+                                                                        />
+                                                                    </Field>
+                                                                ) : (
+                                                                    <div className="hidden lg:block" />
+                                                                )}
+                                                                <Field label="Hold (detik)">
+                                                                    <Input
+                                                                        className={
+                                                                            inputClass
+                                                                        }
+                                                                        type="number"
+                                                                        min="0"
+                                                                        max="3600"
+                                                                        value={
+                                                                            gcmAutoForm.holdSec
+                                                                        }
+                                                                        onChange={(
+                                                                            event,
+                                                                        ) =>
+                                                                            setGcmAutoForm(
+                                                                                {
+                                                                                    ...gcmAutoForm,
+                                                                                    holdSec:
+                                                                                        event
+                                                                                            .target
+                                                                                            .value,
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                    />
+                                                                </Field>
+                                                                <Field label="Gap (detik)">
+                                                                    <Input
+                                                                        className={
+                                                                            inputClass
+                                                                        }
+                                                                        type="number"
+                                                                        min="0"
+                                                                        max="3600"
+                                                                        value={
+                                                                            gcmAutoForm.gapSec
+                                                                        }
+                                                                        onChange={(
+                                                                            event,
+                                                                        ) =>
+                                                                            setGcmAutoForm(
+                                                                                {
+                                                                                    ...gcmAutoForm,
+                                                                                    gapSec: event
+                                                                                        .target
+                                                                                        .value,
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                    />
+                                                                </Field>
+                                                            </div>
+
+                                                            {/* Rules table */}
+                                                            <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+                                                                <p className="text-xs font-semibold text-muted-foreground uppercase">
+                                                                    Aturan (
+                                                                    {
+                                                                        gcmAutoRules.length
+                                                                    }{' '}
+                                                                    /{' '}
+                                                                    {
+                                                                        GCM_AUTO_MAX_RULES
+                                                                    }
+                                                                    )
+                                                                </p>
+                                                                {gcmAutoRules.length ===
+                                                                0 ? (
+                                                                    <p className="text-xs text-muted-foreground">
+                                                                        Belum
+                                                                        ada
+                                                                        aturan.
+                                                                    </p>
+                                                                ) : (
+                                                                    <div className="overflow-x-auto">
+                                                                        <table className="w-full min-w-[520px] text-sm">
+                                                                            <thead className="text-[11px] text-muted-foreground">
+                                                                                <tr>
+                                                                                    <th className="w-8 px-1.5 py-1 text-left font-medium">
+                                                                                        #
+                                                                                    </th>
+                                                                                    <th className="px-1.5 py-1 text-left font-medium">
+                                                                                        {gcmAutoForm.source ||
+                                                                                            'Sensor utama'}{' '}
+                                                                                        (min
+                                                                                        –
+                                                                                        max)
+                                                                                    </th>
+                                                                                    {gcmAutoForm.source2 && (
+                                                                                        <th className="px-1.5 py-1 text-left font-medium">
+                                                                                            {
+                                                                                                gcmAutoForm.source2
+                                                                                            }{' '}
+                                                                                            (min
+                                                                                            –
+                                                                                            max,
+                                                                                            kosong
+                                                                                            =
+                                                                                            semua)
+                                                                                        </th>
+                                                                                    )}
+                                                                                    <th className="w-28 px-1.5 py-1 text-left font-medium">
+                                                                                        {gcmAutoMode ===
+                                                                                        'PUMP'
+                                                                                            ? 'Pompa'
+                                                                                            : 'Target pintu'}
+                                                                                    </th>
+                                                                                    <th className="w-9" />
+                                                                                </tr>
+                                                                            </thead>
+                                                                            <tbody>
+                                                                                {gcmAutoRules.map(
+                                                                                    (
+                                                                                        rule,
+                                                                                        i,
+                                                                                    ) => {
+                                                                                        const rowIssues =
+                                                                                            gcmAutoIssues.filter(
+                                                                                                (
+                                                                                                    issue,
+                                                                                                ) =>
+                                                                                                    issue.row ===
+                                                                                                    i,
+                                                                                            );
+                                                                                        const isActive =
+                                                                                            gcmAuto
+                                                                                                .status
+                                                                                                .rule >
+                                                                                                0 &&
+                                                                                            rule.no ===
+                                                                                                gcmAuto
+                                                                                                    .status
+                                                                                                    .rule;
+                                                                                        const rangeInput =
+                                                                                            (
+                                                                                                field:
+                                                                                                    | 'min'
+                                                                                                    | 'max'
+                                                                                                    | 'min2'
+                                                                                                    | 'max2'
+                                                                                                    | 'action',
+                                                                                                label: string,
+                                                                                            ) => (
+                                                                                                <Input
+                                                                                                    aria-label={`${label} aturan ${i + 1}`}
+                                                                                                    className={`${inputClass} min-w-0`}
+                                                                                                    type="number"
+                                                                                                    step="any"
+                                                                                                    placeholder={
+                                                                                                        field ===
+                                                                                                            'min2' ||
+                                                                                                        field ===
+                                                                                                            'max2'
+                                                                                                            ? 'semua'
+                                                                                                            : label
+                                                                                                    }
+                                                                                                    disabled={
+                                                                                                        gcmAutoRunning
+                                                                                                    }
+                                                                                                    value={
+                                                                                                        rule[
+                                                                                                            field
+                                                                                                        ]
+                                                                                                    }
+                                                                                                    onChange={(
+                                                                                                        event,
+                                                                                                    ) =>
+                                                                                                        updateGcmAutoRule(
+                                                                                                            i,
+                                                                                                            {
+                                                                                                                [field]:
+                                                                                                                    event
+                                                                                                                        .target
+                                                                                                                        .value,
+                                                                                                            } as Partial<GcmAutoRuleRow>,
+                                                                                                        )
+                                                                                                    }
+                                                                                                />
+                                                                                            );
+                                                                                        return [
+                                                                                            <tr
+                                                                                                key={`r${i}`}
+                                                                                                className={`border-t ${isActive ? 'bg-emerald-500/10' : ''}`}
+                                                                                            >
+                                                                                                <td className="px-1.5 py-1 text-xs text-muted-foreground tabular-nums">
+                                                                                                    {i +
+                                                                                                        1}
+                                                                                                </td>
+                                                                                                <td className="px-1.5 py-1">
+                                                                                                    <div className="flex items-center gap-1">
+                                                                                                        {rangeInput(
+                                                                                                            'min',
+                                                                                                            'min',
+                                                                                                        )}
+                                                                                                        <span className="text-muted-foreground">
+                                                                                                            –
+                                                                                                        </span>
+                                                                                                        {rangeInput(
+                                                                                                            'max',
+                                                                                                            'max',
+                                                                                                        )}
+                                                                                                    </div>
+                                                                                                </td>
+                                                                                                {gcmAutoForm.source2 && (
+                                                                                                    <td className="px-1.5 py-1">
+                                                                                                        <div className="flex items-center gap-1">
+                                                                                                            {rangeInput(
+                                                                                                                'min2',
+                                                                                                                'min2',
+                                                                                                            )}
+                                                                                                            <span className="text-muted-foreground">
+                                                                                                                –
+                                                                                                            </span>
+                                                                                                            {rangeInput(
+                                                                                                                'max2',
+                                                                                                                'max2',
+                                                                                                            )}
+                                                                                                        </div>
+                                                                                                    </td>
+                                                                                                )}
+                                                                                                <td className="px-1.5 py-1">
+                                                                                                    {gcmAutoMode ===
+                                                                                                    'PUMP' ? (
+                                                                                                        <select
+                                                                                                            aria-label={`Aksi aturan ${i + 1}`}
+                                                                                                            className={`${selectClass} w-full`}
+                                                                                                            disabled={
+                                                                                                                gcmAutoRunning
+                                                                                                            }
+                                                                                                            value={
+                                                                                                                rule.action
+                                                                                                            }
+                                                                                                            onChange={(
+                                                                                                                event,
+                                                                                                            ) =>
+                                                                                                                updateGcmAutoRule(
+                                                                                                                    i,
+                                                                                                                    {
+                                                                                                                        action: event
+                                                                                                                            .target
+                                                                                                                            .value,
+                                                                                                                    },
+                                                                                                                )
+                                                                                                            }
+                                                                                                        >
+                                                                                                            <option value="1">
+                                                                                                                ON
+                                                                                                            </option>
+                                                                                                            <option value="0">
+                                                                                                                OFF
+                                                                                                            </option>
+                                                                                                        </select>
+                                                                                                    ) : (
+                                                                                                        rangeInput(
+                                                                                                            'action',
+                                                                                                            'target',
+                                                                                                        )
+                                                                                                    )}
+                                                                                                </td>
+                                                                                                <td className="px-1 py-1 text-right">
+                                                                                                    <Button
+                                                                                                        type="button"
+                                                                                                        size="icon"
+                                                                                                        variant="ghost"
+                                                                                                        aria-label={`Hapus aturan ${i + 1}`}
+                                                                                                        className="size-8 text-red-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950"
+                                                                                                        disabled={
+                                                                                                            gcmAutoRunning
+                                                                                                        }
+                                                                                                        onClick={() =>
+                                                                                                            setGcmAutoRules(
+                                                                                                                gcmAutoRules.filter(
+                                                                                                                    (
+                                                                                                                        _,
+                                                                                                                        idx,
+                                                                                                                    ) =>
+                                                                                                                        idx !==
+                                                                                                                        i,
+                                                                                                                ),
+                                                                                                            )
+                                                                                                        }
+                                                                                                    >
+                                                                                                        <Trash2 className="size-3.5" />
+                                                                                                    </Button>
+                                                                                                </td>
+                                                                                            </tr>,
+                                                                                            rowIssues.length >
+                                                                                                0 ||
+                                                                                            gcmAutoOutside.includes(
+                                                                                                i,
+                                                                                            ) ? (
+                                                                                                <tr
+                                                                                                    key={`m${i}`}
+                                                                                                >
+                                                                                                    <td />
+                                                                                                    <td
+                                                                                                        colSpan={
+                                                                                                            gcmAutoForm.source2
+                                                                                                                ? 4
+                                                                                                                : 3
+                                                                                                        }
+                                                                                                        className="px-1.5 pb-1 text-xs"
+                                                                                                    >
+                                                                                                        {rowIssues.map(
+                                                                                                            (
+                                                                                                                issue,
+                                                                                                            ) => (
+                                                                                                                <p
+                                                                                                                    key={
+                                                                                                                        issue.message
+                                                                                                                    }
+                                                                                                                    className="text-red-600"
+                                                                                                                >
+                                                                                                                    {
+                                                                                                                        issue.message
+                                                                                                                    }
+                                                                                                                </p>
+                                                                                                            ),
+                                                                                                        )}
+                                                                                                        {gcmAutoOutside.includes(
+                                                                                                            i,
+                                                                                                        ) &&
+                                                                                                            gcmGateCal && (
+                                                                                                                <p className="text-amber-600">
+                                                                                                                    Target
+                                                                                                                    di
+                                                                                                                    luar
+                                                                                                                    batas
+                                                                                                                    bukaan{' '}
+                                                                                                                    {
+                                                                                                                        gcmGateCal.minClose
+                                                                                                                    }
+
+                                                                                                                    –
+                                                                                                                    {
+                                                                                                                        gcmGateCal.maxOpen
+                                                                                                                    }{' '}
+                                                                                                                    —
+                                                                                                                    AUTO
+                                                                                                                    tidak
+                                                                                                                    bisa
+                                                                                                                    dinyalakan.
+                                                                                                                </p>
+                                                                                                            )}
+                                                                                                    </td>
+                                                                                                </tr>
+                                                                                            ) : null,
+                                                                                        ];
+                                                                                    },
+                                                                                )}
+                                                                            </tbody>
+                                                                        </table>
+                                                                    </div>
+                                                                )}
+                                                                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                                                                    <div className="flex flex-wrap items-center gap-2">
+                                                                        <Button
+                                                                            type="button"
+                                                                            size="sm"
+                                                                            variant="outline"
+                                                                            className="gap-1"
+                                                                            disabled={
+                                                                                gcmAutoRunning ||
+                                                                                gcmAutoRules.length >=
+                                                                                    GCM_AUTO_MAX_RULES
+                                                                            }
+                                                                            onClick={() =>
+                                                                                setGcmAutoRules(
+                                                                                    [
+                                                                                        ...gcmAutoRules,
+                                                                                        emptyGcmAutoRule(
+                                                                                            gcmAutoMode,
+                                                                                        ),
+                                                                                    ],
+                                                                                )
+                                                                            }
+                                                                        >
+                                                                            <Plus className="size-3.5" />
+                                                                            Tambah
+                                                                            aturan
+                                                                        </Button>
+                                                                        {/* CLEAR goes to the logger at once (rules only — sources and
+                                                                        parameters stay). Refused by firmware while AUTO runs. */}
+                                                                        {actionButton(
+                                                                            'Hapus semua aturan',
+                                                                            'GCM_AUTO',
+                                                                            () =>
+                                                                                void clearGcmAutoRules(
+                                                                                    selectedGcm,
+                                                                                ),
+                                                                            'destructive',
+                                                                            `Hapus semua ${gcmAuto.count} aturan Auto GCM${selectedGcm} di logger? Sensor dan parameter tetap tersimpan.`,
+                                                                            gcmAutoRunning ||
+                                                                                gcmAuto.count ===
+                                                                                    0,
+                                                                            Trash2,
+                                                                        )}
+                                                                        {gcmAutoRules.length >
+                                                                            0 &&
+                                                                            (gcmAutoIssues.length ===
+                                                                            0 ? (
+                                                                                <Badge
+                                                                                    variant="outline"
+                                                                                    className="gap-1 text-emerald-600"
+                                                                                >
+                                                                                    <Check className="size-3" />
+                                                                                    Aturan
+                                                                                    valid,
+                                                                                    tidak
+                                                                                    tumpang-tindih
+                                                                                </Badge>
+                                                                            ) : (
+                                                                                <Badge
+                                                                                    variant="outline"
+                                                                                    className="gap-1 text-red-600"
+                                                                                >
+                                                                                    <TriangleAlert className="size-3" />
+                                                                                    {
+                                                                                        gcmAutoIssues.length
+                                                                                    }{' '}
+                                                                                    masalah
+                                                                                    pada
+                                                                                    aturan
+                                                                                </Badge>
+                                                                            ))}
+                                                                        {gcmAutoDirty && (
+                                                                            <span className="text-xs text-amber-600">
+                                                                                Ada
+                                                                                perubahan
+                                                                                belum
+                                                                                disimpan
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    {actionButton(
+                                                                        gcmAutoRunning
+                                                                            ? 'Simpan parameter'
+                                                                            : 'Simpan konfigurasi',
+                                                                        'GCM_AUTO',
+                                                                        () =>
+                                                                            void saveGcmAuto(
+                                                                                selectedGcm,
+                                                                            ),
+                                                                        'outline',
+                                                                        undefined,
+                                                                        !gcmAutoDirty,
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </GcmSubCard>
+                                            )}
                                         </div>
-                                        <div className="flex items-center gap-1.5">
-                                            <span className="text-xs text-muted-foreground">
-                                                State
-                                            </span>
-                                            <select
-                                                className={`${selectClass} w-20`}
-                                                value={pumpState}
-                                                onChange={(event) =>
-                                                    setPumpState(
-                                                        event.target.value,
-                                                    )
-                                                }
-                                            >
-                                                <option value="1">ON</option>
-                                                <option value="0">OFF</option>
-                                            </select>
-                                        </div>
-                                        {actionButton(
-                                            'SET',
-                                            'GCM_PUMP',
-                                            () =>
-                                                send(
-                                                    'GCM_PUMP',
-                                                    {
-                                                        GCM_PUMP: {
-                                                            cmd: 'SET',
-                                                            id: numberValue(
-                                                                gcmPumpId,
-                                                            ),
-                                                            state: numberValue(
-                                                                pumpState,
-                                                            ),
-                                                        },
-                                                    },
-                                                    'GCM_PUMP',
-                                                ),
-                                            'destructive',
-                                            'Change the GCM pump state?',
-                                        )}
                                     </div>
-                                </div>
-                            )}
+                                )}
                         </CommandCard>
                     </TabsContent>
 

@@ -139,6 +139,7 @@ import type { LoggerRemoteDevice } from './module-ai-card';
 import {
     ProtocolPanel,
     MODULE_PROTOCOL_TABS,
+    boardSlotLimits,
     inferBoardVariant,
 } from './protocol';
 import type {
@@ -373,7 +374,28 @@ interface LoggerShowProps {
     dataHealth: DataHealthSummary;
 }
 
+// Reply keys that are modules in their own right — same list as MqttService::SIBLING_MODULE_KEYS.
+// Without it a spontaneous GCM_AUTO push would be read as the answer to a pending GCM command.
+const SIBLING_MODULE_KEYS = [
+    'GCM_PUMP',
+    'GCM_GATE',
+    'GCM_GATE_WARN',
+    'GCM_GATE_CAL',
+    'GCM_MAP',
+    'GCM_AUTO',
+];
+
+// GCM SET makes the logger contact every bound module (slave + serial number) before it answers,
+// so it gets the same longer wait as the MQTT path (config mqtt.gcm_set_timeout).
+const GCM_SET_TIMEOUT_MS = 45_000;
+
+function isGcmSet(module: string, payload: ProtocolCommandPayload): boolean {
+    const body = payload.GCM as { cmd?: unknown } | undefined;
+    return module === 'GCM' && String(body?.cmd ?? '').toUpperCase() === 'SET';
+}
+
 function serialProtocolKeyMatches(module: string, key: string): boolean {
+    if (key !== module && SIBLING_MODULE_KEYS.includes(key)) return false;
     if (
         key === module ||
         key.startsWith(`${module} `) ||
@@ -4802,6 +4824,9 @@ interface FirmwareOta {
     state: FirmwareCheck['state'];
     targetVersion: string | null | undefined;
     showPopup: boolean;
+    // Runs the OTA CHECK once per logger. Called when the Firmware tab is opened, so merely
+    // viewing a logger never publishes {"OTA":{"cmd":"CHECK"}} to it.
+    ensureChecked: () => void;
 }
 
 /**
@@ -4851,13 +4876,15 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
         setChecking(false);
     }, [deviceIdentifier]);
 
-    useEffect(() => {
-        const timer = window.setTimeout(() => {
-            void checkFirmware();
-        }, 0);
-
-        return () => window.clearTimeout(timer);
-    }, [checkFirmware]);
+    // Not run on mount: the check asks the logger over MQTT, and only the Firmware tab needs its
+    // answer. The first open of that tab triggers it; later opens reuse the result.
+    const checkedForRef = useRef<string | null>(null);
+    const ensureChecked = useCallback(() => {
+        if (!deviceIdentifier || checkedForRef.current === deviceIdentifier)
+            return;
+        checkedForRef.current = deviceIdentifier;
+        void checkFirmware();
+    }, [deviceIdentifier, checkFirmware]);
 
     // Reset the whole OTA flow when the logger changes (and on unmount): abort the in-flight
     // stream and clear the popup. Because this hook is mounted at the page level, switching
@@ -4871,6 +4898,7 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
             setProgressMsg('');
             setErrorMsg('');
             setInfo(null);
+            checkedForRef.current = null;
         };
     }, [deviceIdentifier, closeStream]);
 
@@ -5056,6 +5084,7 @@ function useFirmwareOta(deviceIdentifier: string | null): FirmwareOta {
         state,
         targetVersion,
         showPopup,
+        ensureChecked,
     };
 }
 
@@ -6518,6 +6547,7 @@ function SetModeCard({
                     loggerMode: logger.loggerMode,
                     status: logger.status,
                     availableModes: allowedModes,
+                    slotLimits: boardSlotLimits(logger),
                 }}
                 disabled={disabled}
                 transportMode={transportMode}
@@ -6720,6 +6750,9 @@ function CalibrationCard({
     // ARR's "calibration" is really just source + sensor-type selection, so it uses setting-style
     // labels ("ARR Sensor" / "Apply Setting") instead of the calibration wording other modes use.
     const isArr = logger.loggerMode === 'ARR';
+    // AWR's only setting is the rain gauge source ({"AWR":{arr_source,arr_sensor}}) — same
+    // setting-style wording as ARR.
+    const isAwr = logger.loggerMode === 'AWR';
     // AWLR Ultrasonik/Radar uses a sensor-style title ("<label> Sensor") instead of "Kalibrasi <label>".
     const isAwlrUs = logger.loggerMode === 'AWLR_US';
     // GNSS's "calibration" is just the RS232 channel its NMEA receiver is wired to — sensor/setting
@@ -6958,11 +6991,13 @@ function CalibrationCard({
                             <SlidersHorizontal className="size-5" />{' '}
                             {isArr
                                 ? 'ARR Sensor'
-                                : isAwlrUs
-                                  ? `${activeMode.label} Sensor`
-                                  : isGnss
-                                    ? 'GNSS Channel'
-                                    : `Kalibrasi ${activeMode.label}`}
+                                : isAwr
+                                  ? 'AWR Rain Gauge'
+                                  : isAwlrUs
+                                    ? `${activeMode.label} Sensor`
+                                    : isGnss
+                                      ? 'GNSS Channel'
+                                      : `Kalibrasi ${activeMode.label}`}
                         </CardTitle>
                         <CardDescription>
                             {isGnss ? (
@@ -7254,7 +7289,7 @@ function CalibrationCard({
                             onClick={handleCalibrate}
                         >
                             <SlidersHorizontal className="size-4" />{' '}
-                            {isArr
+                            {isArr || isAwr
                                 ? 'Apply Setting'
                                 : isGnss
                                   ? 'Set Channel'
@@ -7481,6 +7516,7 @@ function QuickSetupWizard({
                             loggerMode: logger.loggerMode,
                             status: logger.status,
                             availableModes: allowedModes,
+                            slotLimits: boardSlotLimits(logger),
                         }}
                         disabled={false}
                         variant="inline"
@@ -8168,7 +8204,9 @@ export default function LoggerShow({
                     ? 330_000
                     : upperModule === 'REBOOT'
                       ? 120_000
-                      : 12_000,
+                      : isGcmSet(upperModule, payload)
+                        ? GCM_SET_TIMEOUT_MS
+                        : 12_000,
             );
 
             return serialProtocolResultFromMessage(upperModule, response);
@@ -8975,7 +9013,15 @@ export default function LoggerShow({
                                     </CardTitle>
                                 </CardHeader>
                                 <CardContent>
-                                    <Tabs defaultValue="info">
+                                    <Tabs
+                                        defaultValue="info"
+                                        onValueChange={(value) => {
+                                            // OTA CHECK only goes to the logger once someone
+                                            // actually opens the Firmware tab.
+                                            if (value === 'firmware')
+                                                firmwareOta.ensureChecked();
+                                        }}
+                                    >
                                         <TabsList className="h-8 w-fit">
                                             <TabsTrigger value="info">
                                                 Information
