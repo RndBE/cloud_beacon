@@ -40,7 +40,7 @@ test('logger detail shows a Security Cam logs tab inside the module tabs', () =>
         'Security Cam should sit before Modul AI',
     );
     assert.match(source, /label:\s*'Security Cam'/);
-    assert.match(source, /<SecurityCamCard \/>/);
+    assert.match(source, /<SecurityCamCard\s+loggerId=\{logger\.id\}\s*\/>/);
     assert.ok(
         existsSync(
             path.resolve(

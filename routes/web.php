@@ -15,6 +15,7 @@ use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
+use App\Http\Controllers\SecurityDeviceController;
 use App\Http\Controllers\TopologyController;
 use App\Http\Controllers\UserManagementController;
 use Illuminate\Support\Facades\Route;
@@ -66,6 +67,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('loggers/{id}/protocol', [LoggerController::class, 'protocol'])
         ->middleware('permission:loggers.view')
         ->name('loggers.protocol');
+    Route::get('loggers/{id}/security', [SecurityDeviceController::class, 'show'])
+        ->middleware('permission:loggers.view')
+        ->name('loggers.security');
     Route::get('loggers/{id}', [LoggerController::class, 'show'])
         ->middleware('permission:loggers.view')
         ->name('loggers.show');

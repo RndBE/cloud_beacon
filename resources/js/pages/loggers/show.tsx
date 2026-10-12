@@ -9390,7 +9390,11 @@ export default function LoggerShow({
                                         {
                                             value: 'security-cam',
                                             label: 'Security Cam',
-                                            content: <SecurityCamCard />,
+                                            content: (
+                                                <SecurityCamCard
+                                                    loggerId={logger.id}
+                                                />
+                                            ),
                                         },
                                         ...(logger.remoteDevice
                                             ? [
