@@ -98,6 +98,9 @@ class ModeProfileAdminController extends Controller
             'roles.*.role' => ['required', 'string', 'max:64', 'regex:/^[a-z][a-z0-9_]*$/'],
             'roles.*.label' => ['required', 'string', 'max:255'],
             'roles.*.required' => ['required', 'boolean'],
+            // MAP_DATA slots this sensor contributes — sent only when the role is kept.
+            'roles.*.mapping' => ['sometimes', 'array', 'max:32'],
+            'roles.*.mapping.*' => ['required', 'string', 'max:100'],
 
             'roles.*.templates' => ['present', 'array', 'max:16'],
             'roles.*.templates.*.id' => ['required', 'string', 'max:100', 'regex:/^[a-z0-9][a-z0-9-]*$/'],
@@ -171,6 +174,7 @@ class ModeProfileAdminController extends Controller
                 'roles' => $validated['roles'],
                 'default_mapping' => $validated['default_mapping'],
                 'automatic_calibration' => $previous['automatic_calibration'] ?? null,
+                'automatic_calibration_role' => $previous['automatic_calibration_role'] ?? null,
                 'calibration' => $previous['calibration'] ?? null,
             ],
         ];

@@ -59,6 +59,11 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                         'role' => 'rainfall',
                         'label' => 'Sensor Curah Hujan',
                         'required' => true,
+                        'mapping' => [
+                            'ARR.Rainfall_Minute',
+                            'ARR.Rainfall_Hour',
+                            'ARR.Rainfall_Day',
+                        ],
                         'templates' => [
                             [
                                 'id' => 'tb-400-04',
@@ -125,9 +130,6 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                 ],
                 'calibration' => null,
                 'default_mapping' => [
-                    'ARR.Rainfall_Minute',
-                    'ARR.Rainfall_Hour',
-                    'ARR.Rainfall_Day',
                     'ARR.Status_Modbus',
                 ],
             ],
@@ -141,7 +143,12 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     [
                         'role' => 'rainfall',
                         'label' => 'Rain Gauge',
-                        'required' => true,
+                        'required' => false,
+                        'mapping' => [
+                            'Rainfall_Min',
+                            'Rainfall_hou',
+                            'Rainfall_Day',
+                        ],
                         'templates' => [
                             $this->rs485Template(
                                 id: 'tb-400-04',
@@ -160,7 +167,10 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     [
                         'role' => 'pyranometer',
                         'label' => 'Pyranometer',
-                        'required' => true,
+                        'required' => false,
+                        'mapping' => [
+                            'Pyranometer',
+                        ],
                         'templates' => [
                             $this->rs485Template(
                                 id: 'rk-200-03',
@@ -177,7 +187,12 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     [
                         'role' => 'weather',
                         'label' => 'Weather',
-                        'required' => true,
+                        'required' => false,
+                        'mapping' => [
+                            'Temperature',
+                            'Humidity',
+                            'Pressure',
+                        ],
                         'templates' => [
                             $this->rs485Template(
                                 id: 'rk-330-01',
@@ -196,7 +211,11 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     [
                         'role' => 'wind',
                         'label' => 'Wind',
-                        'required' => true,
+                        'required' => false,
+                        'mapping' => [
+                            'w_speed',
+                            'w_direction',
+                        ],
                         'templates' => [
                             $this->rs485Template(
                                 id: 'rk-120-01c',
@@ -214,7 +233,10 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     [
                         'role' => 'illuminance',
                         'label' => 'Illuminance',
-                        'required' => true,
+                        'required' => false,
+                        'mapping' => [
+                            'illuminance',
+                        ],
                         'templates' => [
                             $this->rs485Template(
                                 id: 'rk-210-01',
@@ -229,7 +251,13 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                         ],
                     ],
                 ],
-                'automatic_calibration' => null,
+                // Sent as {"AWR":{"cmd":"SET","arr_source":..,"arr_sensor":..}} only when the rain
+                // gauge role is kept — every AWR role is optional, so a site without one skips it.
+                'automatic_calibration' => [
+                    'arr_source' => 'Rainfall_Day',
+                    'arr_sensor' => 'TB-400-04',
+                ],
+                'automatic_calibration_role' => 'rainfall',
                 'calibration' => null,
                 'default_mapping' => [],
             ],
@@ -244,6 +272,11 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                         'role' => 'water_level',
                         'label' => 'Sensor AWLR',
                         'required' => true,
+                        'mapping' => [
+                            'AWLR_TD.TMA',
+                            'AWLR_TD.Kedalaman_Air',
+                            'AWLR_TD.Pembacaan_Sensor',
+                        ],
                         'templates' => [
                             [
                                 'id' => 'transducer',
@@ -298,9 +331,6 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                     ],
                 ],
                 'default_mapping' => [
-                    'AWLR_TD.TMA',
-                    'AWLR_TD.Kedalaman_Air',
-                    'AWLR_TD.Pembacaan_Sensor',
                     'AWLR_TD.Status_Modbus',
                 ],
             ],
@@ -326,31 +356,37 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                         'role' => 'water_level',
                         'label' => 'Sensor AWLR',
                         'required' => true,
+                        'mapping' => [
+                            'APMS.TMA',
+                            'APMS.kedalaman_air',
+                            'APMS.pembacaan_awlr',
+                        ],
                         'templates' => [],
                     ],
                     [
                         'role' => 'rainfall',
                         'label' => 'Sensor Curah Hujan',
                         'required' => true,
+                        'mapping' => [
+                            'APMS.Rainfall_Minute',
+                            'APMS.Rainfall_hour',
+                            'APMS.Rainfall_Day',
+                        ],
                         'templates' => [],
                     ],
                     [
                         'role' => 'soil_moisture',
                         'label' => 'Sensor Kelembapan Tanah',
                         'required' => true,
+                        'mapping' => [
+                            'APMS.soil_moisture',
+                        ],
                         'templates' => [],
                     ],
                 ],
                 'automatic_calibration' => null,
                 'calibration' => null,
                 'default_mapping' => [
-                    'APMS.TMA',
-                    'APMS.kedalaman_air',
-                    'APMS.pembacaan_awlr',
-                    'APMS.Rainfall_Minute',
-                    'APMS.Rainfall_hour',
-                    'APMS.Rainfall_Day',
-                    'APMS.soil_moisture',
                     'APMS.status_modbus',
                 ],
             ],

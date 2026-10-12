@@ -3,6 +3,7 @@
 namespace App\Services\ModeProfiles;
 
 use App\Models\Logger;
+use App\Support\BoardModel;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
@@ -69,6 +70,12 @@ class ModeProfilePreviewService
             }
         }
 
+        if ($resolvedSensors === [] && ($profile['roles'] ?? []) !== []) {
+            throw ValidationException::withMessages([
+                'selections' => 'Pilih minimal satu sensor.',
+            ]);
+        }
+
         $duplicateSlaveIds = collect($resolvedSensors)
             ->groupBy('slave_id')
             ->filter(fn (Collection $items) => $items->count() > 1);
@@ -84,6 +91,9 @@ class ModeProfilePreviewService
             ]);
         }
 
+        $mapping = $this->mapping($profile, $resolvedSensors);
+        $this->assertFitsBoard($logger, $resolvedSensors, $mapping);
+
         return [
             'success' => true,
             'mode' => $profile['mode'],
@@ -95,8 +105,13 @@ class ModeProfilePreviewService
                     'to' => $profile['mode'],
                 ],
                 'sensors' => $resolvedSensors,
-                'mapping' => $profile['default_mapping'] ?? [],
+                'mapping' => $mapping,
                 'calibration' => $profile['calibration'] ?? null,
+                'automatic_calibration' => $this->automaticCalibration(
+                    $profile,
+                    $resolvedSensors,
+                    $input['automatic_calibration'] ?? [],
+                ),
             ],
             'requires_confirmation' => $warnings !== [],
         ];
@@ -152,6 +167,116 @@ class ModeProfilePreviewService
             ],
             'parameters' => $template['parameters'],
         ];
+    }
+
+    /**
+     * Refuse a setup the board cannot hold, before anything is sent: a BL110 has 16 telemetry
+     * slots and only s1..s9 for MAP_DATA, so a full AWR (10 mapping slots) does not fit there.
+     *
+     * Sensor slots count what the logger ends up with — the sensors already on it, minus the ones
+     * on a Slave ID this setup replaces, plus every parameter being installed. Virtual profile
+     * outputs (ARR.*, AWLR_TD.*, …) are computed by the firmware and take no sensor slot.
+     */
+    private function assertFitsBoard(Logger $logger, array $resolvedSensors, array $mapping): void
+    {
+        $variant = BoardModel::variant(
+            $logger->model,
+            $logger->serial_number,
+            $logger->connection_type,
+            $logger->deviceModel?->channel_count,
+        );
+        $limits = BoardModel::slotLimits($variant);
+
+        if ($limits === null) {
+            return;
+        }
+
+        $replacedSlaves = collect($resolvedSensors)->pluck('slave_id')->all();
+        $kept = $logger->sensors()
+            ->get(['name', 'connection_type', 'modbus_slave_id'])
+            ->reject(fn ($sensor) => $sensor->connection_type === 'rs485'
+                && in_array((int) $sensor->modbus_slave_id, $replacedSlaves, true))
+            ->reject(fn ($sensor) => preg_match('/^(AWLR_TD|AWLR_US|ARR|GNSS|APMS|AWR)\./i', (string) $sensor->name))
+            ->count();
+        $sensorSlots = $kept + collect($resolvedSensors)->sum(fn (array $sensor) => count($sensor['parameters']));
+
+        $problems = [];
+        if (count($mapping) > $limits['mapping']) {
+            $problems[] = 'butuh '.count($mapping)." slot mapping, maksimal {$limits['mapping']}";
+        }
+        if ($sensorSlots > $limits['sensor']) {
+            $problems[] = "butuh {$sensorSlots} slot sensor (termasuk {$kept} sensor yang sudah ada), maksimal {$limits['sensor']}";
+        }
+
+        if ($problems !== []) {
+            throw ValidationException::withMessages([
+                'selections' => "Logger {$variant} tidak mendukung konfigurasi ini: ".implode('; ', $problems).'. Hapus sensor yang tidak dipakai.',
+            ]);
+        }
+    }
+
+    /**
+     * MAP_DATA slots, built from the sensors actually being installed.
+     *
+     * Each role carries the slots its sensor feeds (`roles.*.mapping`), taken in role order for the
+     * kept roles only — a removed sensor leaves no dangling slot and no gap in s1..sN. The profile's
+     * `default_mapping` holds the slots no single sensor owns (e.g. Status_Modbus) and goes last.
+     */
+    private function mapping(array $profile, array $resolvedSensors): array
+    {
+        $kept = collect($resolvedSensors)->pluck('role')->all();
+
+        return collect($profile['roles'] ?? [])
+            ->filter(fn (array $role) => in_array($role['role'] ?? null, $kept, true))
+            ->flatMap(fn (array $role) => $role['mapping'] ?? [])
+            ->concat($profile['default_mapping'] ?? [])
+            ->filter(fn (mixed $slot) => is_string($slot) && $slot !== '')
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * The mode command the apply step sends after the sensors (e.g. ARR's source + sensor type).
+     *
+     * A profile can tie it to one role via `automatic_calibration_role` — AWR's rain gauge source
+     * only makes sense when a rain gauge is actually being installed, so it is dropped when that
+     * role was removed. The wizard may override the catalogue defaults, but only for keys the
+     * profile already defines, so a request cannot smuggle extra fields into the device command.
+     */
+    private function automaticCalibration(array $profile, array $resolvedSensors, mixed $overrides): ?array
+    {
+        $defaults = $profile['automatic_calibration'] ?? null;
+
+        if (! is_array($defaults) || $defaults === []) {
+            return null;
+        }
+
+        $role = $profile['automatic_calibration_role'] ?? null;
+        if ($role !== null && ! collect($resolvedSensors)->contains('role', $role)) {
+            return null;
+        }
+
+        if (! is_array($overrides)) {
+            return $defaults;
+        }
+
+        foreach ($defaults as $key => $default) {
+            if (! array_key_exists($key, $overrides)) {
+                continue;
+            }
+
+            $value = $overrides[$key];
+            if (! is_string($value) || trim($value) === '' || mb_strlen($value) > 64) {
+                throw ValidationException::withMessages([
+                    "automatic_calibration.{$key}" => 'Nilai sumber sensor tidak valid.',
+                ]);
+            }
+
+            $defaults[$key] = trim($value);
+        }
+
+        return $defaults;
     }
 
     private function overwriteWarning(array $resolved, Collection $conflicts): array

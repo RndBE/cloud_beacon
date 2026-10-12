@@ -75,6 +75,7 @@ class ModeProfileController extends Controller
             'selections.*.role' => ['required', 'string', 'max:64'],
             'selections.*.template_id' => ['required', 'string', 'max:100'],
             'selections.*.inputs' => ['required', 'array'],
+            'automatic_calibration' => ['sometimes', 'nullable', 'array'],
         ];
 
         if ($apply) {
