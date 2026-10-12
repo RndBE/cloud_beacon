@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class SecurityEvent extends Model
 {
@@ -31,5 +32,11 @@ class SecurityEvent extends Model
     public function device(): BelongsTo
     {
         return $this->belongsTo(SecurityDevice::class, 'security_device_id');
+    }
+
+    // Hanya kejadian FOTO yang punya foto; ditautkan lewat nama berkas.
+    public function photo(): HasOne
+    {
+        return $this->hasOne(SecurityPhoto::class);
     }
 }

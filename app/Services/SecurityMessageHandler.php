@@ -19,12 +19,20 @@ use Illuminate\Support\Str;
  *   - "cmd":"event_mentah" -> baris antrean yang tidak terurai {"baris"}
  *   - "cmd":"telemetri"/"status"/"boot" -> keadaan terkini
  *   - "cmd":"foto_mulai"/"foto_data"/"foto_selesai" ("sumber":"kamera") -> potongan
- *     foto; disusun di langkah berikutnya, untuk sementara hanya menandai alat hidup.
+ *     foto, disusun SecurityPhotoAssembler jadi berkas JPEG.
  */
 class SecurityMessageHandler
 {
     // Sebelum NTP/RTC menjawab, jam alat masih di sekitar epoch 0.
     private const TAHUN_JAM_SAH = 2023;
+
+    public function __construct(private SecurityPhotoAssembler $foto = new SecurityPhotoAssembler) {}
+
+    // Pendengar memakainya untuk tick() berkala dan mengirim permintaan ulang.
+    public function foto(): SecurityPhotoAssembler
+    {
+        return $this->foto;
+    }
 
     /** @return string apa yang dilakukan, untuk log pendengar */
     public function handle(string $topic, string $message): string
@@ -52,6 +60,8 @@ class SecurityMessageHandler
             'event_mentah' => $this->simpanKejadian($device, $data, 'MENTAH',
                 isset($data['baris']) ? (string) $data['baris'] : null),
             'telemetri', 'status' => $this->simpanStatus($device, $data),
+            'foto_mulai', 'foto_data', 'foto_selesai' => $this->foto->terima($device, $data),
+            'foto_ulang' => 'balasan foto_ulang: '.(($data['ok'] ?? false) ? 'OK ' : 'DITOLAK ').($data['msg'] ?? ''),
             default => 'tanda hidup: '.($cmd !== '' ? $cmd : 'tanpa cmd'),
         };
 
@@ -94,6 +104,10 @@ class SecurityMessageHandler
         }
 
         Log::info('[Security] kejadian', ['alat' => $device->device_id, 'jenis' => $jenis, 'detail' => $detail]);
+
+        if ($jenis === 'FOTO') {
+            $this->foto->kejadianFoto($device, $event);
+        }
 
         return "kejadian disimpan: {$jenis}";
     }

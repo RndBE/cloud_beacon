@@ -71,17 +71,32 @@ class SecurityListen extends Command
                 Log::error('[Security] gagal mengolah pesan', ['topik' => $topic, 'galat' => $e->getMessage()]);
                 $hasil = 'GAGAL: '.$e->getMessage();
             }
-            if (! str_starts_with($hasil, 'tanda hidup: foto_data')) {
+            if ($hasil !== 'foto data') {
                 $this->line(now()->format('H:i:s')." {$topic}: {$hasil}");
             }
         };
         $this->segarkanLangganan($mqtt, $terima);
 
         $terakhir = microtime(true);
-        $mqtt->registerLoopEventHandler(function (MqttClient $client) use (&$terakhir, $terima, $batas, $mulai) {
+        $tickFoto = microtime(true);
+        $mqtt->registerLoopEventHandler(function (MqttClient $client) use (&$terakhir, &$tickFoto, $terima, $batas, $mulai, $handler) {
             if (microtime(true) - $terakhir >= config('security.refresh_seconds', 60)) {
                 $terakhir = microtime(true);
                 $this->segarkanLangganan($client, $terima);
+            }
+
+            // Foto macet / kejadian FOTO tanpa potongan -> minta kamera kirim
+            // ulang dari kartu SD. Diteruskan papan ke kamera, karena dalam
+            // mode satu sistem kamera tidak berlangganan sub_<id> sendiri.
+            if (microtime(true) - $tickFoto >= 5) {
+                $tickFoto = microtime(true);
+                $handler->foto()->tick();
+            }
+            foreach ($handler->foto()->ambilPermintaanUlang() as [$alat, $nama]) {
+                // UNESCAPED_SLASHES: tanpa itu nama terkirim sebagai "\/2026...jpg"
+                // dan ditolak papan sebagai nama tidak sah (terjadi 2026-10-12).
+                $client->publish('sub_'.$alat, json_encode(['cmd' => 'foto_ulang', 'name' => $nama], JSON_UNESCAPED_SLASHES));
+                $this->line(now()->format('H:i:s')." sub_{$alat}: minta kirim ulang {$nama}");
             }
             if ($batas > 0 && microtime(true) - $mulai >= $batas) {
                 $client->interrupt();

@@ -34,6 +34,11 @@ class SecurityDevice extends Model
         return $this->hasMany(SecurityEvent::class);
     }
 
+    public function photos(): HasMany
+    {
+        return $this->hasMany(SecurityPhoto::class);
+    }
+
     public function pubTopic(): string
     {
         return 'pub_'.$this->device_id;

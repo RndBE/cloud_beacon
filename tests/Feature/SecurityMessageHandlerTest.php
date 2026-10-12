@@ -72,13 +72,13 @@ it('memperbarui status terakhir dan tanda hidup dari telemetri', function () {
         ->and(SecurityEvent::count())->toBe(0);
 });
 
-it('menganggap potongan foto sebagai tanda hidup saja untuk sementara', function () {
+it('meneruskan potongan foto ke penyusun foto dan menandai alat hidup', function () {
     $hasil = $this->handler->handle('pub_SS0001', json_encode([
         'id' => 'SS0001', 'id_alat' => 'SS0001', 'sumber' => 'kamera', 'cmd' => 'foto_data',
         'name' => '/20261012_092045.jpg', 'seq' => 0, 'data' => 'AAAA',
     ]));
 
-    expect($hasil)->toBe('tanda hidup: foto_data')
+    expect($hasil)->toBe('foto data')
         ->and($this->alat->refresh()->last_seen_at)->not->toBeNull()
         ->and(SecurityEvent::count())->toBe(0);
 });
