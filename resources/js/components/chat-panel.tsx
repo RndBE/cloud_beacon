@@ -32,7 +32,7 @@ import {
     useChatState,
 } from '@/lib/assistant-chat';
 import type { ToolMessage } from '@/lib/assistant-chat';
-import type { WiringSpec } from '@/lib/logger-wiring';
+import type { Connected, WiringSpec } from '@/lib/logger-wiring';
 import { cn } from '@/lib/utils';
 
 export function ChatToggle() {
@@ -100,7 +100,18 @@ function ToolCard({ message }: { message: ToolMessage }) {
                     </span>
                 )}
             </div>
-            {diagram && <WiringDiagram spec={diagram} />}
+            {diagram && (
+                <WiringDiagram
+                    spec={diagram}
+                    connected={
+                        (
+                            message.view as
+                                | { connected?: Connected[] }
+                                | undefined
+                        )?.connected
+                    }
+                />
+            )}
             {!diagram && args && (
                 <p className="mt-1 line-clamp-3 break-words text-muted-foreground">
                     {args}

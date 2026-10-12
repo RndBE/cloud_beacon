@@ -554,6 +554,11 @@
         "cancelled": "Dibatalkan",
         "wiring_title": "Gambar pemasangan {{board}}",
         "wiring_zoom": "Perbesar gambar",
-        "wiring_note": "Warna garis hanya penanda di gambar, bukan warna kabel sensor."
+        "wiring_note": "Warna garis hanya penanda di gambar, bukan warna kabel sensor.",
+        "wiring_overview": "Peta terminal. Ketuk ikon perbesar untuk melihat lebih jelas.",
+        "wiring_connected": "Sudah terpasang",
+        "wiring_connected_none": "Belum ada sensor terdaftar di terminal sinyal.",
+        "wiring_key": "Hijau = sudah ada sensor, putih = masih kosong.",
+        "wiring_in_use": "sudah dipakai"
     }
 }

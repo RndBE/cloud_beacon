@@ -554,6 +554,11 @@
         "cancelled": "Cancelled",
         "wiring_title": "Wiring diagram {{board}}",
         "wiring_zoom": "Enlarge diagram",
-        "wiring_note": "Line colours only tell the wires apart in the picture; they are not the real sensor wire colours."
+        "wiring_note": "Line colours only tell the wires apart in the picture; they are not the real sensor wire colours.",
+        "wiring_overview": "Terminal map. Use the enlarge icon for a closer look.",
+        "wiring_connected": "Already connected",
+        "wiring_connected_none": "No sensor registered on the signal terminals yet.",
+        "wiring_key": "Green = sensor connected, white = free.",
+        "wiring_in_use": "already in use"
     }
 }

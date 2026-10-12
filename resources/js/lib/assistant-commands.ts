@@ -20,6 +20,7 @@ import {
     STEPS,
     TROUBLESHOOTING,
     WIRE_COLORS,
+    connectedTerminals,
     describeTerminals,
     terminalOf,
 } from '@/lib/logger-wiring';
@@ -27,7 +28,13 @@ import type { Board } from '@/lib/logger-wiring';
 import { EMPTY_SENSOR_FORM, guessSensorType } from '@/lib/sensor-form';
 
 export type Risk = 'read' | 'navigate' | 'config' | 'device' | 'destructive';
-export type CommandResult = { ok: boolean; message?: string; data?: unknown };
+export type CommandResult = {
+    ok: boolean;
+    message?: string;
+    data?: unknown;
+    /** Extra data for the chat card only; never sent back to the model. */
+    view?: unknown;
+};
 
 // LLM output is untyped JSON; each command's schema documents its shape.
 type Input = Record<string, any>;
@@ -505,7 +512,7 @@ const commands: AssistantCommand[] = [
     {
         name: 'get_wiring_guide',
         description:
-            "Hardware guide for connecting a sensor: terminal map of the logger board (what each pin is for, channel counts, power rails), wiring and setup recipes per sensor output type (4-20 mA, 0-10 V, RS485 Modbus, RS232, pulse, contact, relay output), the step-by-step procedure and troubleshooting. Call this FIRST when the user wants to install a sensor or asks which pin to use. Pass logger_id to get that logger's board plus the channels, ports and slave ids already in use; pass board only when no logger is involved.",
+            "Hardware guide for connecting a sensor: terminal map of the logger board (what each pin is for, channel counts, power rails), wiring and setup recipes per sensor output type (4-20 mA, 0-10 V, RS485 Modbus, RS232, pulse, contact, relay output), the step-by-step procedure and troubleshooting. Call this FIRST when the user wants to install a sensor or asks which pin to use. Pass logger_id to get that logger's board plus which terminals already carry a registered sensor (terpakai); pass board only when no logger is involved.",
         risk: 'read',
         input_schema: obj(
             {
@@ -516,19 +523,11 @@ const commands: AssistantCommand[] = [
         ),
         run: async ({ logger_id, board }) => {
             let variant: string | null = board ?? null;
-            let used: Json[] | undefined;
+            let sensors: Json[] | undefined;
             if (logger_id) {
                 const logger = await getLogger(logger_id);
                 variant ??= inferBoardVariant(logger);
-                used = (logger.sensors ?? [])
-                    .filter((s: Json) => s.connectionType)
-                    .map((s: Json) => ({
-                        name: s.name,
-                        connection: s.connectionType,
-                        channel: s.channel,
-                        port: s.port,
-                        slave_id: s.modbusSlaveId,
-                    }));
+                sensors = logger.sensors ?? [];
             }
             if (variant === 'BL11LEO')
                 return {
@@ -551,7 +550,10 @@ const commands: AssistantCommand[] = [
                         terminal: describeTerminals(variant as Board),
                         catatan: BOARDS[variant as Board].catatan,
                     },
-                    terpakai: used,
+                    terpakai:
+                        sensors && variant in BOARDS
+                            ? connectedTerminals(variant as Board, sensors)
+                            : undefined,
                     langkah: STEPS,
                     resep: RECIPES,
                     masalah_umum: TROUBLESHOOTING,
@@ -562,48 +564,62 @@ const commands: AssistantCommand[] = [
     {
         name: 'show_wiring_diagram',
         description:
-            'Show the user a wiring picture in the chat: the logger panel with the used terminals highlighted and numbered lines to a sensor box. Call it after get_wiring_guide, once per circuit, with terminal ids from that guide (e.g. "A1", "G-A1", "24V", "VIN+"). Line colours are only labels in the picture (suggest red for + supply, black for negative, other colours for signals); they are not real wire colours.',
+            'Show the user a picture in the chat: the logger panel (terminal map) and, when sensor and wires are given, the used terminals highlighted with numbered lines to a sensor box. Call it after get_wiring_guide. With only board it shows the plain terminal map: do that first when the user has not said which sensor yet. Pass logger_id (the logger being worked on) so the picture also marks which terminals already have a sensor and which are free. With wires, pass terminal ids from the guide (e.g. "A1", "G-A1", "24V", "VIN+"). Line colours are only labels in the picture (suggest red for + supply, black for negative, other colours for signals); they are not real wire colours.',
         risk: 'read',
-        input_schema: obj({
-            board: oneOf(['BL11', 'BL110', 'BL1100']),
-            sensor: str('Sensor name, e.g. "Transmitter level 4-20 mA".', {
-                maxLength: 40,
-            }),
-            wires: {
-                type: 'array',
-                minItems: 1,
-                maxItems: 8,
-                items: obj({
-                    from: str(
-                        'Sensor-side wire, e.g. "+ catu", "Sinyal", "A".',
-                        {
-                            maxLength: 20,
-                        },
-                    ),
-                    to: str('Terminal id from get_wiring_guide.'),
-                    color: oneOf(Object.keys(WIRE_COLORS)),
+        input_schema: obj(
+            {
+                board: oneOf(['BL11', 'BL110', 'BL1100']),
+                logger_id: LOGGER_ID,
+                sensor: str('Sensor name, e.g. "Transmitter level 4-20 mA".', {
+                    maxLength: 40,
                 }),
+                wires: {
+                    type: 'array',
+                    minItems: 1,
+                    maxItems: 8,
+                    items: obj({
+                        from: str(
+                            'Sensor-side wire, e.g. "+ catu", "Sinyal", "A".',
+                            {
+                                maxLength: 20,
+                            },
+                        ),
+                        to: str('Terminal id from get_wiring_guide.'),
+                        color: oneOf(Object.keys(WIRE_COLORS)),
+                    }),
+                },
             },
-        }),
+            ['logger_id', 'sensor', 'wires'],
+        ),
         check: ({ board, wires }) => {
             if (!(board in BOARDS))
                 return 'board harus BL11, BL110 atau BL1100.';
-            const unknown = (wires as Input[])
+            const unknown = ((wires ?? []) as Input[])
                 .map((w) => String(w.to))
                 .filter((id) => !terminalOf(board, id));
             return unknown.length
                 ? `Terminal ${unknown.join(', ')} tidak ada di ${board}. Pakai id dari get_wiring_guide: ${BOARDS[board as Board].terminals.map((t) => t.id).join(', ')}.`
                 : null;
         },
-        run: async ({ wires }) => ({
-            ok: true,
-            data: {
-                ditampilkan: 'Gambar sudah tampil di chat pengguna.',
-                kabel: (wires as Input[]).map(
-                    (w, i) => `${i + 1}. ${w.from} → ${w.to}`,
-                ),
-            },
-        }),
+        run: async ({ board, logger_id, wires }) => {
+            const connected = logger_id
+                ? connectedTerminals(
+                      board as Board,
+                      (await getLogger(logger_id)).sensors ?? [],
+                  )
+                : undefined;
+            return {
+                ok: true,
+                data: {
+                    ditampilkan: 'Gambar sudah tampil di chat pengguna.',
+                    kabel: ((wires ?? []) as Input[]).map(
+                        (w, i) => `${i + 1}. ${w.from} → ${w.to}`,
+                    ),
+                    terpasang: connected,
+                },
+                view: connected && { connected },
+            };
+        },
     },
     {
         name: 'read_calibration',

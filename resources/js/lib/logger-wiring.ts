@@ -291,6 +291,51 @@ export const BOARDS: Record<Board, BoardLayout> = {
     },
 };
 
+export type Connected = { terminal: string; sensors: string[] };
+
+/**
+ * Terminals that already carry a registered sensor, from the logger's sensors[]
+ * (analog/digital by channel, RS232 by port, RS485 on the shared A/B pair).
+ * Power, GND and reset terminals are not tracked.
+ */
+export function connectedTerminals(
+    board: Board,
+    sensors: Record<string, any>[],
+): Connected[] {
+    const byTerminal = new Map<string, Set<string>>();
+    const add = (id: string, name: string) => {
+        const t = terminalOf(board, id);
+        if (t)
+            byTerminal.set(t.id, (byTerminal.get(t.id) ?? new Set()).add(name));
+    };
+    for (const s of sensors) {
+        const name = String(
+            (s.connectionType === 'rs485' ? s.deviceName : null) ||
+                s.name ||
+                '?',
+        );
+        if (s.connectionType === 'analog') add(`A${s.channel}`, name);
+        else if (s.connectionType === 'digital') add(`D${s.channel}`, name);
+        else if (s.connectionType === 'rs485') {
+            add('A', name);
+            add('B', name);
+        } else if (s.connectionType === 'rs232') {
+            const port = Number(s.port) || 1;
+            // BL-11 has one port, labelled Tx/Rx; the others number theirs.
+            const n =
+                board === 'BL11' ? (port === 1 ? '' : null) : String(port);
+            if (n !== null) {
+                add(`Tx${n}`, name);
+                add(`Rx${n}`, name);
+            }
+        }
+    }
+    return [...byTerminal].map(([terminal, names]) => ({
+        terminal,
+        sensors: [...names],
+    }));
+}
+
 /** Colours only tell the lines apart in the picture; they are not real wire colours. */
 export const WIRE_COLORS = {
     red: '#dc2626',
@@ -303,8 +348,9 @@ export const WIRE_COLORS = {
 export type WireColor = keyof typeof WIRE_COLORS;
 export type WiringSpec = {
     board: Board;
-    sensor: string;
-    wires: { from: string; to: string; color: WireColor }[];
+    /** Both omitted = just the terminal map of the board. */
+    sensor?: string;
+    wires?: { from: string; to: string; color: WireColor }[];
 };
 
 export function terminalOf(board: Board, id: string): Terminal | undefined {
@@ -359,9 +405,9 @@ export const RECIPES: Record<string, string[]> = {
 
 export const STEPS = [
     '1. Tentukan logger dan papannya (pakai logger_id). Lihat kanal yang masih kosong di "terpakai".',
-    '2. Tanya sensornya: tipe, besaran yang diukur, jenis keluaran (4-20 mA, 0-10 V, RS485, RS232, pulsa, kontak) dan tegangan catunya. Jangan menebak.',
+    '2. Kalau pengguna belum menyebut sensornya, langsung panggil show_wiring_diagram hanya dengan board (peta terminal papan) supaya ada gambar di chat, lalu tanya: tipe sensor, besaran yang diukur, jenis keluaran (4-20 mA, 0-10 V, RS485, RS232, pulsa, kontak) dan tegangan catunya. Jangan menebak.',
     '3. Susun kabelnya satu per satu: "kabel X sensor ke terminal Y (blok kiri/bawah/kanan)", pakai label persis di stiker. Sebut hanya fakta dari data ini; yang belum terkonfirmasi katakan belum terkonfirmasi, jangan menjelaskan cara kerja internal terminal.',
-    '4. Panggil show_wiring_diagram (board, sensor, wires dengan id terminal dari daftar ini) supaya pengguna melihat gambarnya. Warna di gambar hanya penanda, bukan warna kabel sensor. Teksnya cukup ringkas karena gambar sudah menjelaskan.',
+    '4. Panggil show_wiring_diagram lagi dengan board, sensor, dan wires (id terminal dari daftar ini) supaya pengguna melihat gambar kabelnya. Warna di gambar hanya penanda, bukan warna kabel sensor. Teksnya cukup ringkas karena gambar sudah menjelaskan.',
     '5. Ingatkan: sambungkan saat catu logger atau rail sensor mati, cek polaritas, kencangkan sekrup terminal.',
     '6. Tunggu pengguna menjawab sudah terpasang. Jangan mengonfigurasi sebelum itu.',
     '7. Konfigurasi sesuai resep (add_sensor / add_rs485_device; set_logger_mode dan set_calibration bila mode membutuhkannya). Logger harus online.',

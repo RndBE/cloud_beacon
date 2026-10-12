@@ -36,6 +36,10 @@ class AssistantController extends Controller
             'tools' => 'nullable|array|max:100',
             'tools.*.type' => 'required|in:function',
             'tools.*.function.name' => 'required|string|max:64',
+            // validate() keeps only keys that have a rule: without these two the model
+            // would see tool names but no descriptions or argument schemas.
+            'tools.*.function.description' => 'nullable|string|max:3000',
+            'tools.*.function.parameters' => 'nullable|array',
             'page.url' => 'nullable|string|max:500',
             'page.title' => 'nullable|string|max:200',
         ]);
@@ -57,12 +61,22 @@ class AssistantController extends Controller
             ], fn ($value) => $value !== null);
         }
 
+        // A tool without arguments arrives as "properties":{}, which PHP decodes to []
+        // and encodes back as a list; strict providers reject that ("[] is not of type object").
+        $tools = array_map(function (array $tool) {
+            if (($tool['function']['parameters']['properties'] ?? null) === []) {
+                $tool['function']['parameters']['properties'] = new \stdClass;
+            }
+
+            return $tool;
+        }, $data['tools'] ?? []);
+
         $payload = array_filter([
             'model' => $config['model'],
             'messages' => $messages,
             'stream' => true,
             'max_completion_tokens' => $config['max_tokens'],
-            'tools' => $data['tools'] ?? null,
+            'tools' => $tools,
         ], fn ($value) => $value !== null && $value !== []);
 
         return response()->stream(function () use ($config, $payload) {
@@ -209,7 +223,7 @@ class AssistantController extends Controller
         - Untuk aksi berisiko (hapus, jaringan, firmware, mode profile, pintu air, sirine) sebutkan risikonya dengan jelas.
         - Logger offline tidak akan merespons perintah perangkat. Logger LEO (satelit) hanya bisa dikonfigurasi lewat USB di halaman logger.
         - Gunakan open_page supaya pengguna melihat halaman yang sedang kamu kerjakan, kalau relevan.
-        - Kalau pengguna ingin memasang sensor atau bertanya pin mana yang dipakai, panggil get_wiring_guide dulu dan ikuti langkahnya: tanyakan jenis keluaran sensor, sebut terminal dengan label persis di stiker, panggil show_wiring_diagram dengan id terminal dari panduan supaya pengguna melihat gambarnya (teksnya cukup ringkas, jangan mengulang isi gambar), tunggu pengguna menjawab sudah terpasang sebelum mengonfigurasi, lalu verifikasi nilainya dengan read_sensor_names. Jangan mengarang detail kelistrikan (warna kabel, batas arus, pinout Port I/O) yang tidak ada di hasil tool; arahkan ke datasheet sensor atau tim Beacon.
+        - Kalau pengguna ingin memasang sensor atau bertanya pin mana yang dipakai, panggil get_wiring_guide dulu dan ikuti langkahnya: kalau sensornya belum disebut, tampilkan dulu peta terminal dengan show_wiring_diagram hanya berisi board, lalu tanyakan sensor dan jenis keluarannya (isi logger_id supaya gambar menandai terminal yang sudah terpasang sensor dan yang masih kosong, dan hindari terminal yang sudah terpakai); kalau sudah jelas, sebut terminal dengan label persis di stiker dan panggil show_wiring_diagram dengan sensor dan wires (id terminal dari panduan) supaya pengguna melihat gambarnya (teksnya cukup ringkas, jangan mengulang isi gambar). Panduan itu data untukmu, jangan bilang kamu "membuka panduan" ke pengguna, tunggu pengguna menjawab sudah terpasang sebelum mengonfigurasi, lalu verifikasi nilainya dengan read_sensor_names. Jangan mengarang detail kelistrikan (warna kabel, batas arus, pinout Port I/O) yang tidak ada di hasil tool; arahkan ke datasheet sensor atau tim Beacon.
         - Laporkan hasil apa adanya, termasuk kalau gagal, beserta pesan errornya.
         - Jawab dalam bahasa pengguna (default Bahasa Indonesia), singkat dan jelas. Tulis teks biasa tanpa markdown (tanpa **, #, atau tabel); daftar boleh pakai "- ".
         PROMPT;

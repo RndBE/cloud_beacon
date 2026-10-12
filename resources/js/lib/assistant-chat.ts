@@ -26,6 +26,8 @@ export type ToolMessage = {
     status: ToolStatus;
     loggerName?: string;
     result?: string;
+    /** Card-only extra from CommandResult.view. */
+    view?: unknown;
 };
 export type ChatMessage =
     | { id: number; kind: 'user'; text: string }
@@ -273,8 +275,9 @@ async function runToolCall(call: ToolCall): Promise<string> {
     patch(id, {
         status: result.ok ? 'done' : 'failed',
         result: result.message,
+        view: result.view,
     });
-    const text = JSON.stringify(result);
+    const text = JSON.stringify({ ...result, view: undefined });
     return text.length > MAX_RESULT_CHARS
         ? `${text.slice(0, MAX_RESULT_CHARS)}…(dipotong)`
         : text;

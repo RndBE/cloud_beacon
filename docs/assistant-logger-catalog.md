@@ -242,6 +242,8 @@ Dua command `read` memandu user dari memilih pin sampai nilai sensor terbaca:
 - `show_wiring_diagram`: gambar di chat.
   - Panel logger (dari stiker November 2025) dengan terminal yang dipakai disorot dan diberi nomor, kabel bergaris siku ke kotak sensor, legenda di bawahnya, dan tombol perbesar (dialog).
   - Warna garis hanya penanda; bukan warna kabel sensor.
+  - Tanpa sensor (hanya `board`) gambar menampilkan peta terminal saja: dipakai asisten sebagai langkah pertama kalau user belum menyebut sensornya.
+  - Dengan `logger_id`, terminal yang sudah punya sensor terdaftar ditandai hijau dengan nama sensornya di legenda; kabel baru ke terminal yang sudah terpakai diberi peringatan "sudah dipakai". Pemetaannya (`connectedTerminals`): analog/digital per kanal, RS232 per port, RS485 di pasangan A/B. Daya, GND dan RST tidak dilacak. Datanya dari sensor yang terdaftar di cloud, bukan pembacaan langsung dari perangkat.
   - Argumen tool itu sendiri yang menjadi sumber gambar: id terminal yang salah ditolak sebelum tampil (`check` di registry), jadi tidak ada kartu merah.
 
 Data dan koordinat ada di [`lib/logger-wiring.ts`](../resources/js/lib/logger-wiring.ts), gambarnya di [`components/wiring-diagram.tsx`](../resources/js/components/wiring-diagram.tsx), pengenal papan di [`lib/logger-board.ts`](../resources/js/lib/logger-board.ts) (dipakai bersama halaman logger).
@@ -260,7 +262,13 @@ Data dan koordinat ada di [`lib/logger-wiring.ts`](../resources/js/lib/logger-wi
 - **Cek uji:** model sungguhan memanggil kedua tool dengan id terminal yang benar untuk "pasang sensor 4-20 mA di BL-110". Gambar dicek di browser untuk tiga papan (tema gelap dan terang) dan dialog perbesar. Belum dicoba di panel chat dengan logger asli.
 - **Bukan isometrik penuh:** panel digambar tampak depan dengan sisi atas dan kanan sebagai ketebalan kotak, supaya label terminal tetap terbaca. Isometrik penuh butuh aset 3D per papan.
 
-## 10. Langkah berikutnya
+## 10. Catatan teknis chat
+
+- `AssistantController` meneruskan deskripsi dan skema argumen tool ke model. Sebelumnya validasi Laravel hanya meninggalkan `type` dan `function.name`, sehingga model tidak pernah melihat skema (penyebab salah nama argumen seperti `id` untuk `logger_id`). Ada tes yang memastikan `parameters` ikut terkirim.
+- Tool tanpa argumen (`properties: {}`) dikirim ke provider sebagai objek kosong, bukan list kosong, karena provider ketat seperti OpenAI menolak `[]`.
+- `CommandResult.view` membawa data khusus kartu chat (mis. terminal terpasang) tanpa ikut dikirim ke model.
+
+## 11. Langkah berikutnya
 
 - Tab detail logger dibuat bisa diakses lewat URL (`?tab=mode`), supaya `open_page` bisa membuka tab yang relevan.
 - Jalur USB serial untuk logger LEO lewat `commandTransport` halaman logger, kalau dongle sedang tersambung.
