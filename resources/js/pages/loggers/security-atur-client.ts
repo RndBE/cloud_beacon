@@ -6,6 +6,10 @@ export interface AturResult {
     op: string;
     message: string;
     uid: string | null;
+    // sirine_nyala: seconds until the device silences the siren itself.
+    maxSeconds: number | null;
+    // sirine_nyala: the siren was already sounding for a breach; nothing changed.
+    breach: boolean;
 }
 
 /**

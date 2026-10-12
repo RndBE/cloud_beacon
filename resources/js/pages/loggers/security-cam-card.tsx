@@ -58,10 +58,9 @@ function formatTime(iso: string | null): string {
     return iso ? new Date(iso).toLocaleString('id-ID') : '—';
 }
 
-// Two controls. On/Off: "on" is the signed sirine_nyala op (the siren keeps sounding
-// until switched off); "off" is CTRL SIREN_OFF, which needs no password because the
-// firmware lets anyone silence but never disarm. Uji sirine: the signed sirine_uji op
-// sounds it for 1-30 s and the device switches it off by itself.
+// On is the signed sirine_nyala op (sounds until switched off, at most the device's
+// safety limit); Off is CTRL SIREN_OFF, which needs no password because the firmware
+// lets anyone silence but never disarm.
 function SirenControl({
     loggerId,
     siren,
@@ -73,8 +72,7 @@ function SirenControl({
     password: string;
     onDone: () => void;
 }) {
-    const [busy, setBusy] = useState<null | 'on' | 'off' | 'test'>(null);
-    const [seconds, setSeconds] = useState('5');
+    const [busy, setBusy] = useState<null | 'on' | 'off'>(null);
     const [message, setMessage] = useState<string | null>(null);
     const [failed, setFailed] = useState(false);
     // Telemetry only arrives once a minute, so after a command the controls follow what
@@ -94,6 +92,18 @@ function SirenControl({
     }, [override]);
 
     const on = override ? override.on : siren;
+
+    // When the device will silence a siren switched on from here (its safety limit).
+    const [autoOffAt, setAutoOffAt] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (autoOffAt === null) return;
+        const timeout = setTimeout(
+            () => setAutoOffAt(null),
+            Math.max(0, autoOffAt - Date.now()),
+        );
+        return () => clearTimeout(timeout);
+    }, [autoOffAt]);
 
     function report(text: string, ok: boolean) {
         setFailed(!ok);
@@ -115,24 +125,25 @@ function SirenControl({
             const data = (await response.json()) as { message?: string };
             report(data.message ?? 'Sirine dimatikan.', true);
             setOverride({ on: false, until: Date.now() + 60_000 });
+            setAutoOffAt(null);
             onDone();
         } finally {
             setBusy(null);
         }
     }
 
-    async function signed(
-        state: 'on' | 'test',
-        op: string,
-        arg: string,
-        onFor: number,
-    ) {
-        setBusy(state);
+    async function switchOn() {
+        setBusy('on');
         setMessage(null);
         try {
-            const result = await sendAtur(loggerId, password, op, arg);
+            const result = await sendAtur(loggerId, password, 'sirine_nyala');
             report(`${result.message}.`, true);
-            setOverride({ on: true, until: Date.now() + onFor });
+            // Until the next telemetry (once a minute) confirms it.
+            setOverride({ on: true, until: Date.now() + 60_000 });
+            // A siren already sounding for a breach gets no limit and keeps going.
+            if (result.maxSeconds && !result.breach) {
+                setAutoOffAt(Date.now() + result.maxSeconds * 1000);
+            }
             onDone();
         } catch (e) {
             report(e instanceof Error ? e.message : String(e), false);
@@ -179,10 +190,7 @@ function SirenControl({
                         variant={on === true ? 'destructive' : 'ghost'}
                         className="gap-1.5 rounded-none"
                         disabled={busy !== null || on === true}
-                        onClick={() =>
-                            // Stays on until switched off; the telemetry then confirms it.
-                            void signed('on', 'sirine_nyala', '', 60_000)
-                        }
+                        onClick={() => void switchOn()}
                     >
                         {busy === 'on' ? (
                             spinner
@@ -208,54 +216,20 @@ function SirenControl({
                         Off
                     </Button>
                 </div>
+                {on === true && autoOffAt !== null && (
+                    <p className="text-sm text-amber-700 dark:text-amber-300">
+                        Mati otomatis sekitar pukul{' '}
+                        {new Date(autoOffAt).toLocaleTimeString('id-ID', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                        })}{' '}
+                        (batas pengaman alat).
+                    </p>
+                )}
                 <p className="text-xs text-muted-foreground">
-                    On menyalakan sirine sampai di-Off-kan (perlu password
-                    alat). Off membungkam sirine dan melepas kunci pembobolan;
-                    alarm tetap siaga.
-                </p>
-            </div>
-
-            <div className="space-y-1.5">
-                <p className="text-xs font-semibold text-muted-foreground uppercase">
-                    Uji sirine
-                </p>
-                <div className="flex flex-wrap items-center gap-2">
-                    <Input
-                        type="number"
-                        min={1}
-                        max={30}
-                        value={seconds}
-                        onChange={(e) => setSeconds(e.target.value)}
-                        className="h-8 w-20"
-                        aria-label="Lama uji sirine (detik)"
-                    />
-                    <span className="text-sm text-muted-foreground">detik</span>
-                    <Button
-                        size="sm"
-                        variant="outline"
-                        className="gap-1.5"
-                        disabled={busy !== null || on === true}
-                        onClick={() =>
-                            void signed(
-                                'test',
-                                'sirine_uji',
-                                seconds,
-                                Number(seconds || 5) * 1000,
-                            )
-                        }
-                    >
-                        {busy === 'test' ? (
-                            spinner
-                        ) : (
-                            <BellRing className="size-4" />
-                        )}
-                        Uji sirine
-                    </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                    Sirine berbunyi 1-30 detik lalu mati sendiri (perlu password
-                    alat). Ditolak alat kalau sirine sedang berbunyi karena
-                    pembobolan.
+                    On menyalakan sirine sampai di-Off-kan, paling lama 10 menit
+                    lalu mati sendiri (perlu password alat). Off membungkam
+                    sirine dan melepas kunci pembobolan; alarm tetap siaga.
                 </p>
             </div>
 

@@ -124,7 +124,7 @@ it('reads the card list from the device without changing anything', function () 
     $this->actingAs($user)
         ->getJson(route('production.security-devices.cards', 'SS0001'))
         ->assertOk()
-        ->assertExactJson(['cards' => ['97:6F:BD:62'], 'maxCards' => 32]);
+        ->assertExactJson(['cards' => [['uid' => '97:6F:BD:62', 'name' => null]], 'maxCards' => 32]);
 });
 
 it('returns the paired device status and its events newest first', function () {
@@ -280,4 +280,41 @@ it('sorts events logged before the device clock synced by when they arrived', fu
         ->assertOk()
         ->assertJsonPath('events.0.type', 'TAMPER_BUKA')
         ->assertJsonPath('events.1.type', 'PINTU_TUTUP');
+});
+
+it('credits a door opening to the last valid card tap before it', function () {
+    $user = securityTabViewer();
+    [, $device] = pairedSecurityDevice($user);
+    securityEvent($device, 'KARTU_SAH', '2026-10-12 14:20:00', ['detail' => 'FC:E1:4F:07']);
+    securityEvent($device, 'KARTU_SAH', '2026-10-12 14:28:24', ['detail' => '97:6F:BD:62']);
+    securityEvent($device, 'PINTU_BUKA_SAH', '2026-10-12 14:28:40');
+    securityEvent($device, 'PINTU_BUKA_SAH', '2026-10-12 15:00:00'); // no tap in the 10 min before
+
+    $events = collect($this->actingAs($user)
+        ->getJson(route('production.security-devices.data', 'SS0001'))
+        ->assertOk()
+        ->json('events'))->where('type', 'PINTU_BUKA_SAH')->values();
+
+    expect($events[0]['openedBy'])->toBeNull()
+        ->and($events[1]['openedBy']['uid'])->toBe('97:6F:BD:62')
+        ->and($events[1]['openedBy']['tappedAt'])->toStartWith('2026-10-12T14:28:24');
+});
+
+it('shows card holder names on card events and door openings', function () {
+    $user = securityTabViewer();
+    [, $device] = pairedSecurityDevice($user);
+    \App\Models\SecurityCard::create(['security_device_id' => $device->id, 'uid' => '97:6F:BD:62', 'holder_name' => 'Budi']);
+    securityEvent($device, 'KARTU_SAH', '2026-10-12 14:28:24', ['detail' => '97:6F:BD:62']);
+    securityEvent($device, 'KARTU_DITOLAK', '2026-10-12 14:27:00', ['detail' => '04:11:22:33']);
+    securityEvent($device, 'PINTU_BUKA_SAH', '2026-10-12 14:28:40');
+
+    $events = collect($this->actingAs($user)
+        ->getJson(route('production.security-devices.data', 'SS0001'))
+        ->assertOk()
+        ->json('events'))->keyBy('type');
+
+    expect($events['KARTU_SAH']['holderName'])->toBe('Budi')
+        ->and($events['KARTU_DITOLAK']['holderName'])->toBeNull()
+        ->and($events['PINTU_BUKA_SAH']['openedBy']['name'])->toBe('Budi')
+        ->and($events['PINTU_BUKA_SAH']['holderName'])->toBeNull();
 });

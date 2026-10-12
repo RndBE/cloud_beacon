@@ -38,6 +38,9 @@ class SecurityDeviceStatusController extends Controller
 
     private const BREACH_PHOTO_AFTER_SECONDS = 60;
 
+    // A door opening is credited to a valid card tap at most this long before it.
+    private const TAP_BEFORE_OPENING_SECONDS = 600;
+
     public function show(string $deviceId): Response
     {
         $device = $this->device($deviceId);
@@ -74,6 +77,9 @@ class SecurityDeviceStatusController extends Controller
             ->first();
 
         $eventPhotos = $this->photosForEvents($device, $events);
+        $openedBy = $this->tapsForDoorOpenings($device, $events);
+        // KARTU_* events carry the card UID (already in the normalized form) as detail.
+        $holders = $device->cards()->pluck('holder_name', 'uid');
 
         return response()->json([
             'device' => [
@@ -87,12 +93,21 @@ class SecurityDeviceStatusController extends Controller
                 'id' => $event->id,
                 'type' => $event->type,
                 'detail' => $event->detail,
+                'holderName' => str_starts_with($event->type, 'KARTU_')
+                    ? ($holders[$event->detail] ?? null)
+                    : null,
                 'occurredAt' => $event->occurred_at?->toIso8601String(),
                 'timeValid' => $event->time_valid,
                 'receivedAt' => $event->received_at->toIso8601String(),
                 'photo' => isset($eventPhotos[$event->id])
                     ? $this->photoJson($device, $eventPhotos[$event->id])
                     : null,
+                // PINTU_BUKA_SAH only: the card tap that let the door open.
+                'openedBy' => isset($openedBy[$event->id]) ? [
+                    'uid' => $openedBy[$event->id]->detail,
+                    'name' => $holders[$openedBy[$event->id]->detail] ?? null,
+                    'tappedAt' => $openedBy[$event->id]->occurred_at->toIso8601String(),
+                ] : null,
             ]),
             'latestPhoto' => $latestPhoto ? $this->photoJson($device, $latestPhoto) : null,
         ]);
@@ -115,7 +130,7 @@ class SecurityDeviceStatusController extends Controller
         }
 
         return response()->json([
-            'cards' => array_values((array) ($reply['kartu_uid'] ?? [])),
+            'cards' => SecurityCardController::withHolders($device, (array) ($reply['kartu_uid'] ?? [])),
             'maxCards' => $reply['maks_kartu'] ?? null,
         ]);
     }
@@ -132,6 +147,45 @@ class SecurityDeviceStatusController extends Controller
         }
 
         return $device;
+    }
+
+    /**
+     * PINTU_BUKA_SAH carries no card UID, but the firmware only lets the door open after
+     * a valid tap (KARTU_SAH) and re-arms once it closes, so the opening belongs to the
+     * last valid tap shortly before it. Unsynced clocks cannot be ordered, so skipped.
+     *
+     * @param  Collection<int, SecurityEvent>  $events
+     * @return array<int, SecurityEvent> the KARTU_SAH event, keyed by door-opening event id
+     */
+    private function tapsForDoorOpenings(SecurityDevice $device, Collection $events): array
+    {
+        $openings = $events->where('type', 'PINTU_BUKA_SAH')
+            ->filter(fn (SecurityEvent $e) => $e->time_valid && $e->occurred_at);
+        if ($openings->isEmpty()) {
+            return [];
+        }
+
+        // Fetched separately: the tap can fall outside the 50 events on screen.
+        $taps = $device->events()
+            ->where('type', 'KARTU_SAH')
+            ->where('time_valid', true)
+            ->whereBetween('occurred_at', [
+                $openings->min('occurred_at')->copy()->subSeconds(self::TAP_BEFORE_OPENING_SECONDS),
+                $openings->max('occurred_at'),
+            ])
+            ->orderByDesc('occurred_at')
+            ->get();
+
+        $result = [];
+        foreach ($openings as $opening) {
+            $from = $opening->occurred_at->copy()->subSeconds(self::TAP_BEFORE_OPENING_SECONDS);
+            $tap = $taps->first(fn (SecurityEvent $t) => $t->occurred_at->between($from, $opening->occurred_at));
+            if ($tap) {
+                $result[$opening->id] = $tap;
+            }
+        }
+
+        return $result;
     }
 
     /**

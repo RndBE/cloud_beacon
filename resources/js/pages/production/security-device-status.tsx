@@ -54,6 +54,15 @@ interface SecurityEvent {
     timeValid: boolean;
     receivedAt: string;
     photo: SecurityPhoto | null;
+    // KARTU_* only: the holder of the card in detail, when it was named.
+    holderName: string | null;
+    // PINTU_BUKA_SAH only: the valid card tap that let the door open.
+    openedBy: { uid: string; name: string | null; tappedAt: string } | null;
+}
+
+interface CardRow {
+    uid: string;
+    name: string | null;
 }
 
 interface SecurityResponse {
@@ -335,8 +344,31 @@ function EventsTable({ events }: { events: SecurityEvent[] }) {
                                         {event.type.replaceAll('_', ' ')}
                                     </Badge>
                                 </TableCell>
-                                <TableCell className="font-mono text-xs text-muted-foreground">
-                                    {event.detail || '—'}
+                                <TableCell className="text-xs text-muted-foreground">
+                                    {event.openedBy ? (
+                                        <span>
+                                            Dibuka oleh{' '}
+                                            <CardHolder
+                                                uid={event.openedBy.uid}
+                                                name={event.openedBy.name}
+                                            />{' '}
+                                            (tap{' '}
+                                            {new Date(
+                                                event.openedBy.tappedAt,
+                                            ).toLocaleTimeString('id-ID')}
+                                            )
+                                        </span>
+                                    ) : event.type.startsWith('KARTU_') &&
+                                      event.detail ? (
+                                        <CardHolder
+                                            uid={event.detail}
+                                            name={event.holderName}
+                                        />
+                                    ) : (
+                                        <span className="font-mono">
+                                            {event.detail || '—'}
+                                        </span>
+                                    )}
                                 </TableCell>
                                 <TableCell className="py-1 text-right">
                                     {event.photo?.url ? (
@@ -356,10 +388,22 @@ function EventsTable({ events }: { events: SecurityEvent[] }) {
     );
 }
 
+// "Budi Santoso (97:6F:BD:62)", or just the UID for a card nobody named.
+function CardHolder({ uid, name }: { uid: string; name: string | null }) {
+    return name ? (
+        <span>
+            <span className="font-medium text-foreground">{name}</span>{' '}
+            <span className="font-mono">({uid})</span>
+        </span>
+    ) : (
+        <span className="font-mono">{uid}</span>
+    );
+}
+
 // Read-only: adding or removing cards needs the device password and is done from
 // the Security Cam tab of the logger the device is installed on.
 function CardList({ deviceId }: { deviceId: string }) {
-    const [cards, setCards] = useState<string[] | null>(null);
+    const [cards, setCards] = useState<CardRow[] | null>(null);
     const [maxCards, setMaxCards] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -373,7 +417,7 @@ function CardList({ deviceId }: { deviceId: string }) {
                 { headers: { Accept: 'application/json' } },
             );
             const data = (await response.json().catch(() => null)) as {
-                cards?: string[];
+                cards?: CardRow[];
                 maxCards?: number | null;
                 message?: string;
             } | null;
@@ -421,17 +465,27 @@ function CardList({ deviceId }: { deviceId: string }) {
                         Belum ada kartu terdaftar.
                     </p>
                 ) : (
-                    <div className="flex flex-wrap gap-1.5">
+                    <ul className="divide-y divide-border/60 rounded-md border border-border/60">
                         {cards.map((card) => (
-                            <Badge
-                                key={card}
-                                variant="secondary"
-                                className="font-mono"
+                            <li
+                                key={card.uid}
+                                className="flex items-baseline gap-2 px-3 py-1.5 text-sm"
                             >
-                                {card}
-                            </Badge>
+                                {card.name ? (
+                                    <span className="font-medium">
+                                        {card.name}
+                                    </span>
+                                ) : (
+                                    <span className="text-amber-600">
+                                        Belum bernama
+                                    </span>
+                                )}
+                                <span className="font-mono text-xs text-muted-foreground">
+                                    {card.uid}
+                                </span>
+                            </li>
                         ))}
-                    </div>
+                    </ul>
                 ))}
         </div>
     );

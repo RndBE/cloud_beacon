@@ -95,6 +95,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('loggers/{id}/security/cards/set', [SecurityCardController::class, 'set'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.cards.set');
+    Route::post('loggers/{id}/security/cards/holder', [SecurityCardController::class, 'holder'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.holder');
     Route::post('loggers/{id}/security/siren-off', [SecurityCardController::class, 'sirenOff'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.siren-off');
@@ -144,6 +147,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/security-devices', [SecurityStockController::class, 'store'])
         ->middleware('permission:production.create')
         ->name('production.security-devices.store');
+    Route::post('production/security-devices/import', [SecurityStockController::class, 'import'])
+        ->middleware('permission:production.import')
+        ->name('production.security-devices.import');
+    Route::put('production/security-devices/{deviceId}', [SecurityStockController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.security-devices.update');
+    Route::delete('production/security-devices/{deviceId}', [SecurityStockController::class, 'destroy'])
+        ->middleware('permission:production.delete')
+        ->name('production.security-devices.destroy');
+    Route::put('production/security-devices/{deviceId}/qc', [SecurityStockController::class, 'updateQc'])
+        ->middleware('permission:production.create')
+        ->name('production.security-devices.qc');
     // Device status pages: reachable from the list (production.view) and from the logger
     // tab (loggers.view); the controller then checks the device's logger is visible.
     Route::get('production/security-devices/{deviceId}', [SecurityDeviceStatusController::class, 'show'])

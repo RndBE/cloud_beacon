@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\SecurityCommandException;
 use App\Models\Logger;
+use App\Models\SecurityCard;
 use App\Models\SecurityDevice;
 use App\Services\IdHasher;
 use App\Services\SecurityCommandService;
@@ -37,9 +38,52 @@ class SecurityCardController extends Controller
         }
 
         return response()->json([
-            'cards' => array_values((array) ($reply['kartu_uid'] ?? [])),
+            'cards' => self::withHolders($device, (array) ($reply['kartu_uid'] ?? [])),
             'maxCards' => $reply['maks_kartu'] ?? null,
         ]);
+    }
+
+    /**
+     * Name the holder of a card on this device. Called right after the device confirms
+     * a new card (the name is required when registering one), and to rename later.
+     * Changes only the server's record, so no device password is involved.
+     */
+    public function holder(Request $request, string $hash): JsonResponse
+    {
+        $data = $request->validate([
+            'uid' => ['required', 'string', 'max:32'],
+            'name' => ['required', 'string', 'max:100'],
+        ]);
+        $device = $this->device($hash);
+
+        $uid = SecurityCard::normalizeUid($data['uid']);
+        if ($uid === null) {
+            return response()->json(['message' => 'UID kartu harus 4 atau 7 byte.'], 422);
+        }
+
+        SecurityCard::updateOrCreate(
+            ['security_device_id' => $device->id, 'uid' => $uid],
+            ['holder_name' => trim($data['name'])],
+        );
+
+        return response()->json(['uid' => $uid, 'name' => trim($data['name'])]);
+    }
+
+    /**
+     * The device's card UIDs with their holders' names (null when never named).
+     *
+     * @param  array<int, string>  $uids  as reported by the device
+     * @return list<array{uid: string, name: string|null}>
+     */
+    public static function withHolders(SecurityDevice $device, array $uids): array
+    {
+        $names = $device->cards()->pluck('holder_name', 'uid');
+
+        return array_values(array_map(function (string $uid) use ($names) {
+            $normal = SecurityCard::normalizeUid($uid) ?? $uid;
+
+            return ['uid' => $normal, 'name' => $names[$normal] ?? null];
+        }, $uids));
     }
 
     public function challenge(string $hash): JsonResponse
@@ -81,6 +125,10 @@ class SecurityCardController extends Controller
             'uid' => $reply['uid'] ?? null,
             // Present on the "baca" op.
             'cards' => isset($reply['kartu']) && is_array($reply['kartu']) ? $reply['kartu'] : null,
+            // sirine_nyala: safety limit after which the device silences the siren itself,
+            // and whether the siren was already sounding for a breach (then no limit applies).
+            'maxSeconds' => isset($reply['maks_detik']) ? (int) $reply['maks_detik'] : null,
+            'breach' => (bool) ($reply['pembobolan'] ?? false),
         ]);
     }
 

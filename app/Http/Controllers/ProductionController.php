@@ -60,6 +60,8 @@ class ProductionController extends Controller
         return Inertia::render('production/index', [
             'devices' => $devices,
             'deviceModels' => $deviceModels,
+            // Module units (Security System for now) for the page's Modul view.
+            'modules' => SecurityStockController::rows(),
         ]);
     }
 

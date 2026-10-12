@@ -38,14 +38,18 @@ beforeEach(function () {
     $this->actingAs($this->user);
 });
 
-it('lists the cards the device reports', function () {
+it('lists the cards the device reports with their holders', function () {
+    \App\Models\SecurityCard::create(['security_device_id' => $this->device->id, 'uid' => '97:6F:BD:62', 'holder_name' => 'Budi']);
     $this->mock(SecurityCommandService::class)->shouldReceive('request')
         ->withArgs(fn ($device, $payload) => $device->is($this->device) && $payload === ['SECURITY' => ['cmd' => 'GET']])
         ->andReturn(['status' => 'OK', 'cmd' => 'GET', 'kartu' => 2, 'kartu_uid' => ['97:6F:BD:62', '04:11:22:33'], 'maks_kartu' => 50]);
 
     $this->getJson(route('loggers.security.cards.index', $this->hash))
         ->assertOk()
-        ->assertExactJson(['cards' => ['97:6F:BD:62', '04:11:22:33'], 'maxCards' => 50]);
+        ->assertExactJson([
+            'cards' => [['uid' => '97:6F:BD:62', 'name' => 'Budi'], ['uid' => '04:11:22:33', 'name' => null]],
+            'maxCards' => 50,
+        ]);
 });
 
 it('hands the browser a challenge to sign', function () {
@@ -165,5 +169,56 @@ it('keeps read-only users from silencing the siren', function () {
 
     $this->actingAs($viewer)
         ->postJson(route('loggers.security.siren-off', IdHasher::encode($logger->id)))
+        ->assertForbidden();
+});
+
+it('passes on the safety limit of a siren switched on from the web', function () {
+    $this->mock(SecurityCommandService::class)->shouldReceive('request')
+        ->andReturn(['status' => 'OK', 'cmd' => 'SET', 'op' => 'sirine_nyala', 'msg' => 'sirine menyala', 'maks_detik' => 600]);
+
+    $this->postJson(route('loggers.security.cards.set', $this->hash), signedSet())
+        ->assertOk()
+        ->assertJson(['ok' => true, 'op' => 'sirine_nyala', 'maxSeconds' => 600, 'breach' => false]);
+});
+
+it('reports a siren already sounding for a breach', function () {
+    $this->mock(SecurityCommandService::class)->shouldReceive('request')
+        ->andReturn(['status' => 'OK', 'cmd' => 'SET', 'op' => 'sirine_nyala', 'msg' => 'sirine sudah menyala karena pembobolan', 'pembobolan' => true]);
+
+    $this->postJson(route('loggers.security.cards.set', $this->hash), signedSet())
+        ->assertOk()
+        ->assertJson(['maxSeconds' => null, 'breach' => true]);
+});
+
+it('names a card holder, normalizing the UID like the firmware', function () {
+    $this->postJson(route('loggers.security.cards.holder', $this->hash), ['uid' => '97 6f bd 62', 'name' => ' Budi '])
+        ->assertOk()
+        ->assertExactJson(['uid' => '97:6F:BD:62', 'name' => 'Budi']);
+
+    $this->postJson(route('loggers.security.cards.holder', $this->hash), ['uid' => '97:6F:BD:62', 'name' => 'Budi Santoso'])
+        ->assertOk();
+
+    expect(\App\Models\SecurityCard::sole())
+        ->uid->toBe('97:6F:BD:62')
+        ->holder_name->toBe('Budi Santoso');
+});
+
+it('requires a holder name and a 4 or 7 byte UID', function () {
+    $this->postJson(route('loggers.security.cards.holder', $this->hash), ['uid' => '97:6F:BD:62', 'name' => ''])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('name');
+
+    $this->postJson(route('loggers.security.cards.holder', $this->hash), ['uid' => '97:6F:BD', 'name' => 'Budi'])
+        ->assertUnprocessable()
+        ->assertJsonPath('message', 'UID kartu harus 4 atau 7 byte.');
+});
+
+it('keeps read-only users from naming cards', function () {
+    $viewer = cardUser(['loggers.view']);
+    $logger = Logger::factory()->create(['user_id' => $viewer->id]);
+    SecurityDevice::create(['device_id' => 'SS0003', 'logger_id' => $logger->id]);
+
+    $this->actingAs($viewer)
+        ->postJson(route('loggers.security.cards.holder', IdHasher::encode($logger->id)), ['uid' => '97:6F:BD:62', 'name' => 'X'])
         ->assertForbidden();
 });

@@ -1,15 +1,36 @@
-import { CreditCard, LoaderCircle, Plus, RefreshCw } from 'lucide-react';
+import {
+    CreditCard,
+    LoaderCircle,
+    Pencil,
+    Plus,
+    RefreshCw,
+} from 'lucide-react';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { postJson } from '@/lib/csrf-fetch';
 import { sendAtur } from './security-atur-client';
 import type { AturResult } from './security-atur-client';
 import { errorMessage } from './security-pairing-panel';
 
-type Busy = null | 'load' | 'tap' | 'add' | string; // string = UID being removed
+interface Card {
+    uid: string;
+    // Kept on the server per device; the device itself only knows the UID.
+    name: string | null;
+}
+
+type Busy = null | 'load' | 'tap' | 'add' | string; // string = UID being changed
 
 const TAP_SECONDS = 15;
+
+// Same rule as SecurityCard::normalizeUid: 4 or 7 bytes, the device stores at most 7.
+function validUid(uid: string): boolean {
+    return /^(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{14})$/.test(
+        uid.replace(/[:\s-]/g, ''),
+    );
+}
 
 export function SecurityCardsPanel({
     loggerId,
@@ -21,10 +42,15 @@ export function SecurityCardsPanel({
     // Typed once in the configurator; only ever used to sign in this browser.
     password: string;
 }) {
-    const [cards, setCards] = useState<string[] | null>(null);
+    const [cards, setCards] = useState<Card[] | null>(null);
     const [maxCards, setMaxCards] = useState<number | null>(null);
+    const [holder, setHolder] = useState('');
     const [uid, setUid] = useState('');
     const [confirmUid, setConfirmUid] = useState<string | null>(null);
+    const [editing, setEditing] = useState<{
+        uid: string;
+        name: string;
+    } | null>(null);
     const [busy, setBusy] = useState<Busy>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -43,7 +69,7 @@ export function SecurityCardsPanel({
                 return;
             }
             const data = (await response.json()) as {
-                cards: string[];
+                cards: Card[];
                 maxCards: number | null;
             };
             setCards(data.cards);
@@ -51,6 +77,18 @@ export function SecurityCardsPanel({
         } finally {
             setBusy(null);
         }
+    }
+
+    async function saveHolder(cardUid: string, name: string): Promise<boolean> {
+        const response = await postJson(`${base}/holder`, {
+            uid: cardUid,
+            name,
+        });
+        if (!response.ok) {
+            setError(await errorMessage(response));
+            return false;
+        }
+        return true;
     }
 
     async function atur(
@@ -63,9 +101,7 @@ export function SecurityCardsPanel({
         setNotice(null);
         try {
             const tap = op === 'kartu_tambah' && a === '';
-            const result = await sendAtur(loggerId, password, op, a, tap);
-            await load();
-            return result;
+            return await sendAtur(loggerId, password, op, a, tap);
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
             return null;
@@ -74,25 +110,63 @@ export function SecurityCardsPanel({
         }
     }
 
-    async function addByTap() {
-        const result = await atur('kartu_tambah', '', 'tap');
-        if (result) setNotice(`Kartu ${result.uid ?? ''} ditambahkan.`);
+    // The holder name is required up front and saved once the device has confirmed
+    // the card (by tap, the UID is only known from the device's reply).
+    async function add(cardUid: string) {
+        const name = holder.trim();
+        if (name === '') {
+            setError('Isi nama pemegang kartu dulu.');
+            return;
+        }
+        if (cardUid !== '' && !validUid(cardUid)) {
+            setError('UID kartu harus 4 atau 7 byte, mis. 04:A1:B2:C3.');
+            return;
+        }
+        const result = await atur(
+            'kartu_tambah',
+            cardUid,
+            cardUid === '' ? 'tap' : 'add',
+        );
+        if (!result) return;
+
+        const added = result.uid ?? cardUid;
+        if (await saveHolder(added, name)) {
+            setNotice(`Kartu ${added} milik ${name} ditambahkan.`);
+            setHolder('');
+            setUid('');
+        }
+        await load();
     }
 
-    async function addByUid(e: FormEvent) {
+    function addByUid(e: FormEvent) {
         e.preventDefault();
-        if (uid.trim() === '') return;
-        const result = await atur('kartu_tambah', uid.trim(), 'add');
-        if (result) {
-            setNotice(`Kartu ${result.uid ?? uid.trim()} ditambahkan.`);
-            setUid('');
+        if (uid.trim() !== '') void add(uid.trim());
+    }
+
+    async function rename(e: FormEvent) {
+        e.preventDefault();
+        if (!editing || editing.name.trim() === '') return;
+        setBusy(editing.uid);
+        setError(null);
+        try {
+            if (await saveHolder(editing.uid, editing.name.trim())) {
+                setEditing(null);
+                await load();
+            }
+        } finally {
+            setBusy(null);
         }
     }
 
-    async function remove(card: string) {
+    async function remove(card: Card) {
         setConfirmUid(null);
-        const result = await atur('kartu_hapus', card, card);
-        if (result) setNotice(`Kartu ${result.uid ?? card} dihapus.`);
+        const result = await atur('kartu_hapus', card.uid, card.uid);
+        if (result) {
+            setNotice(
+                `Kartu ${card.name ? `milik ${card.name} ` : ''}(${card.uid}) dihapus.`,
+            );
+            await load();
+        }
     }
 
     if (cards === null) {
@@ -158,48 +232,68 @@ export function SecurityCardsPanel({
             {busy === 'tap' ? (
                 <div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-3 text-sm">
                     <LoaderCircle className="size-4 animate-spin text-primary" />
-                    Tempelkan kartu BARU ke pembaca alat {deviceId} dalam{' '}
-                    {TAP_SECONDS} detik…
+                    Tempelkan kartu BARU milik {holder.trim()} ke pembaca alat{' '}
+                    {deviceId} dalam {TAP_SECONDS} detik…
                 </div>
             ) : (
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                    <Button
-                        size="sm"
-                        className="gap-1.5"
-                        disabled={busy !== null}
-                        onClick={() => void addByTap()}
-                    >
-                        <CreditCard className="size-4" /> Tambah lewat tap
-                    </Button>
-                    <span className="text-xs text-muted-foreground sm:pb-2">
-                        atau
-                    </span>
-                    <form
-                        onSubmit={addByUid}
-                        className="flex flex-1 gap-2 sm:max-w-sm"
-                    >
+                <div className="space-y-2 rounded-md bg-muted/40 p-3">
+                    <div className="space-y-1.5">
+                        <Label htmlFor="security-card-holder">
+                            Nama pemegang kartu baru
+                        </Label>
                         <Input
-                            value={uid}
-                            onChange={(e) => setUid(e.target.value)}
-                            placeholder="UID, mis. 04:A1:B2:C3"
-                            className="h-8 font-mono"
+                            id="security-card-holder"
+                            value={holder}
+                            onChange={(e) => setHolder(e.target.value)}
+                            placeholder="mis. Budi Santoso"
+                            maxLength={100}
+                            className="h-8 max-w-sm"
                             autoComplete="off"
                         />
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <Button
-                            type="submit"
                             size="sm"
-                            variant="outline"
                             className="gap-1.5"
-                            disabled={busy !== null || uid.trim() === ''}
+                            disabled={busy !== null || holder.trim() === ''}
+                            onClick={() => void add('')}
                         >
-                            {busy === 'add' ? (
-                                <LoaderCircle className="size-4 animate-spin" />
-                            ) : (
-                                <Plus className="size-4" />
-                            )}
-                            Tambah UID
+                            <CreditCard className="size-4" /> Tambah lewat tap
                         </Button>
-                    </form>
+                        <span className="text-xs text-muted-foreground">
+                            atau
+                        </span>
+                        <form
+                            onSubmit={addByUid}
+                            className="flex flex-1 gap-2 sm:max-w-sm"
+                        >
+                            <Input
+                                value={uid}
+                                onChange={(e) => setUid(e.target.value)}
+                                placeholder="UID, mis. 04:A1:B2:C3"
+                                className="h-8 font-mono"
+                                autoComplete="off"
+                            />
+                            <Button
+                                type="submit"
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5"
+                                disabled={
+                                    busy !== null ||
+                                    holder.trim() === '' ||
+                                    uid.trim() === ''
+                                }
+                            >
+                                {busy === 'add' ? (
+                                    <LoaderCircle className="size-4 animate-spin" />
+                                ) : (
+                                    <Plus className="size-4" />
+                                )}
+                                Tambah UID
+                            </Button>
+                        </form>
+                    </div>
                 </div>
             )}
 
@@ -222,45 +316,120 @@ export function SecurityCardsPanel({
                 <ul className="divide-y divide-border/60 rounded-md border border-border/60">
                     {cards.map((card) => (
                         <li
-                            key={card}
-                            className="flex items-center justify-between gap-2 px-3 py-1.5"
+                            key={card.uid}
+                            className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5"
                         >
-                            <span className="font-mono text-sm">{card}</span>
-                            {confirmUid === card ? (
-                                <span className="flex items-center gap-1">
-                                    <span className="text-xs text-muted-foreground">
-                                        Hapus kartu ini?
-                                    </span>
+                            {editing?.uid === card.uid ? (
+                                <form
+                                    onSubmit={rename}
+                                    className="flex flex-1 items-center gap-2"
+                                >
+                                    <Input
+                                        value={editing.name}
+                                        onChange={(e) =>
+                                            setEditing({
+                                                uid: card.uid,
+                                                name: e.target.value,
+                                            })
+                                        }
+                                        placeholder="Nama pemegang"
+                                        maxLength={100}
+                                        className="h-8 max-w-xs"
+                                        autoFocus
+                                    />
                                     <Button
+                                        type="submit"
                                         size="sm"
-                                        variant="destructive"
-                                        onClick={() => void remove(card)}
+                                        disabled={
+                                            busy !== null ||
+                                            editing.name.trim() === ''
+                                        }
                                     >
-                                        Hapus
+                                        Simpan
                                     </Button>
                                     <Button
+                                        type="button"
                                         size="sm"
                                         variant="ghost"
-                                        onClick={() => setConfirmUid(null)}
+                                        onClick={() => setEditing(null)}
                                     >
                                         Batal
                                     </Button>
-                                </span>
+                                </form>
                             ) : (
-                                <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="text-muted-foreground"
-                                    disabled={busy !== null}
-                                    onClick={() => setConfirmUid(card)}
-                                >
-                                    {busy === card ? (
-                                        <LoaderCircle className="size-4 animate-spin" />
+                                <span className="flex min-w-0 items-baseline gap-2">
+                                    {card.name ? (
+                                        <span className="text-sm font-medium">
+                                            {card.name}
+                                        </span>
                                     ) : (
-                                        'Hapus'
+                                        <span className="text-sm text-amber-600">
+                                            Belum bernama
+                                        </span>
                                     )}
-                                </Button>
+                                    <span className="font-mono text-xs text-muted-foreground">
+                                        {card.uid}
+                                    </span>
+                                </span>
                             )}
+
+                            {editing?.uid !== card.uid &&
+                                (confirmUid === card.uid ? (
+                                    <span className="flex items-center gap-1">
+                                        <span className="text-xs text-muted-foreground">
+                                            Hapus kartu ini?
+                                        </span>
+                                        <Button
+                                            size="sm"
+                                            variant="destructive"
+                                            onClick={() => void remove(card)}
+                                        >
+                                            Hapus
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => setConfirmUid(null)}
+                                        >
+                                            Batal
+                                        </Button>
+                                    </span>
+                                ) : (
+                                    <span className="flex items-center gap-1">
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="gap-1.5 text-muted-foreground"
+                                            disabled={busy !== null}
+                                            onClick={() =>
+                                                setEditing({
+                                                    uid: card.uid,
+                                                    name: card.name ?? '',
+                                                })
+                                            }
+                                        >
+                                            <Pencil className="size-3.5" />
+                                            {card.name
+                                                ? 'Ubah nama'
+                                                : 'Beri nama'}
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="text-muted-foreground"
+                                            disabled={busy !== null}
+                                            onClick={() =>
+                                                setConfirmUid(card.uid)
+                                            }
+                                        >
+                                            {busy === card.uid ? (
+                                                <LoaderCircle className="size-4 animate-spin" />
+                                            ) : (
+                                                'Hapus'
+                                            )}
+                                        </Button>
+                                    </span>
+                                ))}
                         </li>
                     ))}
                 </ul>
