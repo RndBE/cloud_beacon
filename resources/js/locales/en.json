@@ -565,6 +565,7 @@
         "delete": "Delete chat",
         "untitled": "Untitled chat",
         "compacting": "Summarizing older context…",
-        "compacted": "Older context was summarized to save tokens."
+        "compacted": "Older context was summarized to save tokens.",
+        "resize": "Drag to resize (double-click to reset)"
     }
 }

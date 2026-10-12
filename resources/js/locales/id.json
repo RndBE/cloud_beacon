@@ -565,6 +565,7 @@
         "delete": "Hapus obrolan",
         "untitled": "Obrolan tanpa judul",
         "compacting": "Meringkas konteks lama…",
-        "compacted": "Konteks lama diringkas untuk menghemat token."
+        "compacted": "Konteks lama diringkas untuk menghemat token.",
+        "resize": "Geser untuk mengubah lebar (klik dua kali untuk mengembalikan)"
     }
 }

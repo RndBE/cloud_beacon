@@ -56,6 +56,8 @@ export type ConversationInfo = {
 
 type ChatState = {
     open: boolean;
+    /** Desktop panel width in px, set by dragging its left edge. */
+    width: number;
     busy: boolean;
     messages: ChatMessage[];
     /** Saved chat being shown; null until the first save of a new one. */
@@ -65,12 +67,28 @@ type ChatState = {
 type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never;
 
 const STORAGE_KEY = 'cloud-beacon.chat-open';
+const WIDTH_KEY = 'cloud-beacon.chat-width';
+export const CHAT_MIN_WIDTH = 320;
+export const CHAT_MAX_WIDTH = 900;
+export const CHAT_DEFAULT_WIDTH = 352; // w-88
 const MAX_ROUNDS = 10; // model turns per user message
 const MAX_HISTORY = 60; // messages sent per request
 const MAX_RESULT_CHARS = 12000;
 const COMPACT_AT = 36000; // chars of history (~10k tokens) before older turns are summarized
 const KEEP_RECENT = 12000; // chars of the newest turns kept verbatim when summarizing
 const RESUME_WITHIN_MS = 12 * 60 * 60 * 1000; // reopen the last chat if it is this fresh
+
+const clampWidth = (w: number) =>
+    Math.round(Math.min(CHAT_MAX_WIDTH, Math.max(CHAT_MIN_WIDTH, w)));
+
+function readWidth(): number {
+    try {
+        const saved = Number(localStorage.getItem(WIDTH_KEY));
+        return saved ? clampWidth(saved) : CHAT_DEFAULT_WIDTH;
+    } catch {
+        return CHAT_DEFAULT_WIDTH;
+    }
+}
 
 function readOpen(): boolean {
     try {
@@ -82,6 +100,7 @@ function readOpen(): boolean {
 
 let state: ChatState = {
     open: readOpen(),
+    width: readWidth(),
     busy: false,
     messages: [],
     conversationId: null,
@@ -143,6 +162,17 @@ export function setChatOpen(open: boolean) {
 }
 
 export const toggleChat = () => setChatOpen(!state.open);
+
+export function setChatWidth(width: number) {
+    const next = clampWidth(width);
+    if (next === state.width) return;
+    try {
+        localStorage.setItem(WIDTH_KEY, String(next));
+    } catch {
+        // storage blocked: width just won't be remembered
+    }
+    update({ width: next });
+}
 
 /** Stop streaming and decline any action still waiting for approval. */
 export function stopChat() {
