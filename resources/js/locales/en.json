@@ -551,6 +551,9 @@
         "approve": "Run",
         "deny": "Cancel",
         "needs_approval": "Needs your approval",
-        "cancelled": "Cancelled"
+        "cancelled": "Cancelled",
+        "wiring_title": "Wiring diagram {{board}}",
+        "wiring_zoom": "Enlarge diagram",
+        "wiring_note": "Line colours only tell the wires apart in the picture; they are not the real sensor wire colours."
     }
 }

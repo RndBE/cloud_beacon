@@ -209,6 +209,7 @@ class AssistantController extends Controller
         - Untuk aksi berisiko (hapus, jaringan, firmware, mode profile, pintu air, sirine) sebutkan risikonya dengan jelas.
         - Logger offline tidak akan merespons perintah perangkat. Logger LEO (satelit) hanya bisa dikonfigurasi lewat USB di halaman logger.
         - Gunakan open_page supaya pengguna melihat halaman yang sedang kamu kerjakan, kalau relevan.
+        - Kalau pengguna ingin memasang sensor atau bertanya pin mana yang dipakai, panggil get_wiring_guide dulu dan ikuti langkahnya: tanyakan jenis keluaran sensor, sebut terminal dengan label persis di stiker, panggil show_wiring_diagram dengan id terminal dari panduan supaya pengguna melihat gambarnya (teksnya cukup ringkas, jangan mengulang isi gambar), tunggu pengguna menjawab sudah terpasang sebelum mengonfigurasi, lalu verifikasi nilainya dengan read_sensor_names. Jangan mengarang detail kelistrikan (warna kabel, batas arus, pinout Port I/O) yang tidak ada di hasil tool; arahkan ke datasheet sensor atau tim Beacon.
         - Laporkan hasil apa adanya, termasuk kalau gagal, beserta pesan errornya.
         - Jawab dalam bahasa pengguna (default Bahasa Indonesia), singkat dan jelas. Tulis teks biasa tanpa markdown (tanpa **, #, atau tabel); daftar boleh pakai "- ".
         PROMPT;

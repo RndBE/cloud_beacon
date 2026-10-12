@@ -1,0 +1,455 @@
+import { Maximize2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Button } from '@/components/ui/button';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { BOARDS, WIRE_COLORS, terminalOf } from '@/lib/logger-wiring';
+import type { Terminal, WiringSpec } from '@/lib/logger-wiring';
+import { cn } from '@/lib/utils';
+
+const GAP = 6; // between wire lanes
+const DEPTH = 8; // cabinet thickness drawn on the top and right
+const BOX_H = 56;
+const PANEL = '#f3f4f6';
+const INK = '#111827';
+
+type Placed = {
+    n: number; // 1-based, the order the assistant listed them in
+    from: string;
+    color: string;
+    t: Terminal;
+    path: string;
+    stub: { x: number; y: number };
+    end: { x: number; y: number }; // where the badge sits on the terminal side
+};
+
+/**
+ * Orthogonal routing from a sensor box under the panel to each terminal.
+ * Wires are ordered so the lanes of a side never cross (leftmost stub goes to
+ * the highest terminal on the left, mirrored on the right); the bottom row
+ * puts the longest horizontal runs on the highest lanes.
+ */
+function layout(spec: WiringSpec) {
+    const b = BOARDS[spec.board];
+    const items = spec.wires.flatMap((w, i) => {
+        const t = terminalOf(spec.board, w.to);
+        return t ? [{ w, n: i + 1, t }] : [];
+    });
+    const left = items
+        .filter((x) => x.t.side === 'left')
+        .sort((p, q) => p.t.cy - q.t.cy);
+    const bottom = items
+        .filter((x) => x.t.side === 'bottom')
+        .sort((p, q) => p.t.cx - q.t.cx);
+    const right = items
+        .filter((x) => x.t.side === 'right')
+        .sort((p, q) => q.t.cy - p.t.cy);
+    const ordered = [...left, ...bottom, ...right];
+
+    // Neighbouring bottom terminals sit closer than a badge is wide: drop every
+    // second badge of a close pair a little lower.
+    const lowered = new Set<(typeof bottom)[number]>();
+    bottom.forEach((x, j) => {
+        const prev = bottom[j - 1];
+        if (prev && x.t.cx - prev.t.cx < 16 && !lowered.has(prev))
+            lowered.add(x);
+    });
+    const count = Math.max(ordered.length, 1);
+
+    const bodyRight = b.body.x + b.body.w;
+    const bodyBottom = b.body.y + b.body.h;
+    const baseY = bodyBottom + 8 + (count - 1) * GAP;
+    const boxTop = baseY + 12;
+    const boxW = Math.max(150, count * 46);
+    const boxX = b.body.x + b.body.w / 2 - boxW / 2;
+    const slot = boxW / count;
+    const stubX = (k: number) => boxX + (k + 0.5) * slot;
+
+    // Longest horizontal runs first on the bottom lanes.
+    const rank = new Map(
+        bottom
+            .map((x, j) => ({
+                x,
+                run: Math.abs(x.t.cx - stubX(left.length + j)),
+            }))
+            .sort((p, q) => q.run - p.run)
+            .map((e, r) => [e.x, r]),
+    );
+
+    const placed: Placed[] = ordered.map((x, k) => {
+        const { t } = x;
+        const sx = stubX(k);
+        let laneY: number;
+        let path: string;
+        let end: { x: number; y: number };
+        if (t.side === 'left') {
+            const j = left.indexOf(x);
+            laneY = baseY - j * GAP;
+            const laneX = b.body.x - 10 - (left.length - 1 - j) * GAP;
+            const edge = t.cx - (t.round ? t.h : t.w) / 2;
+            path = `M${sx},${boxTop} V${laneY} H${laneX} V${t.cy} H${edge}`;
+            end = { x: laneX, y: t.cy };
+        } else if (t.side === 'right') {
+            const j = right.indexOf(x);
+            laneY =
+                baseY -
+                (left.length + bottom.length + (right.length - 1 - j)) * GAP;
+            const laneX = bodyRight + DEPTH + 8 + j * GAP;
+            const edge = t.cx + (t.round ? t.h : t.w) / 2;
+            path = `M${sx},${boxTop} V${laneY} H${laneX} V${t.cy} H${edge}`;
+            end = { x: laneX, y: t.cy };
+        } else {
+            laneY =
+                baseY -
+                (left.length + (bottom.length - 1 - (rank.get(x) ?? 0))) * GAP;
+            const edge = t.cy + t.h / 2;
+            path = `M${sx},${boxTop} V${laneY} H${t.cx} V${edge}`;
+            end = { x: t.cx, y: edge + 9 + (lowered.has(x) ? 12 : 0) };
+        }
+        return {
+            n: x.n,
+            from: x.w.from,
+            color: WIRE_COLORS[x.w.color] ?? WIRE_COLORS.blue,
+            t,
+            path,
+            stub: { x: sx, y: boxTop },
+            end,
+        };
+    });
+
+    const xMin = Math.min(
+        b.body.x,
+        boxX,
+        b.body.x - 10 - Math.max(left.length - 1, 0) * GAP - 8,
+    );
+    const xMax = Math.max(
+        bodyRight + DEPTH,
+        boxX + boxW,
+        bodyRight + DEPTH + 8 + right.length * GAP + 8,
+    );
+    const yMin = b.body.y - DEPTH;
+    const yMax = boxTop + BOX_H;
+    return {
+        board: b,
+        placed,
+        boxX,
+        boxW,
+        boxTop,
+        view: [xMin - 6, yMin - 4, xMax - xMin + 12, yMax - yMin + 10] as const,
+    };
+}
+
+const clip = (text: string, max: number) =>
+    text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
+function Panel({ spec, className }: { spec: WiringSpec; className?: string }) {
+    const {
+        board: b,
+        placed,
+        boxX,
+        boxW,
+        boxTop,
+        view,
+    } = useMemo(() => layout(spec), [spec]);
+    const { x, y, w, h } = b.body;
+    const active = new Map(placed.map((p) => [p.t.id, p]));
+
+    return (
+        <svg
+            viewBox={view.join(' ')}
+            role="img"
+            aria-label={b.nama}
+            className={cn('h-auto w-full', className)}
+            fontFamily="ui-sans-serif, system-ui, sans-serif"
+        >
+            {/* cabinet: top and right faces, then the front */}
+            <polygon
+                points={`${x},${y} ${x + w},${y} ${x + w + DEPTH},${y - DEPTH} ${x + DEPTH},${y - DEPTH}`}
+                fill="#e5e7eb"
+                stroke="#9ca3af"
+            />
+            <polygon
+                points={`${x + w},${y} ${x + w + DEPTH},${y - DEPTH} ${x + w + DEPTH},${y + h - DEPTH} ${x + w},${y + h}`}
+                fill="#d1d5db"
+                stroke="#9ca3af"
+            />
+            <rect
+                x={x}
+                y={y}
+                width={w}
+                height={h}
+                rx={8}
+                fill={PANEL}
+                stroke="#9ca3af"
+            />
+
+            <text
+                x={b.title.x}
+                y={b.title.y}
+                fontSize={b.title.size}
+                fontWeight={800}
+                fill={INK}
+                textLength={b.title.w}
+                lengthAdjust="spacingAndGlyphs"
+            >
+                {b.title.text}
+            </text>
+            <text
+                x={b.model.x}
+                y={b.model.y}
+                fontSize={8}
+                fontWeight={700}
+                fill={INK}
+            >
+                {b.model.text}
+            </text>
+            <rect
+                x={b.display.x}
+                y={b.display.y}
+                width={b.display.w}
+                height={b.display.h}
+                rx={6}
+                fill="#d9f99d"
+                stroke="#374151"
+                strokeWidth={1.2}
+            />
+
+            {b.ports.map((p) =>
+                p.w ? (
+                    <g key={p.text}>
+                        <rect
+                            x={p.cx - p.w / 2}
+                            y={p.cy - (p.h ?? 12) / 2}
+                            width={p.w}
+                            height={p.h ?? 12}
+                            fill="#fff"
+                            stroke="#374151"
+                            strokeWidth={0.8}
+                        />
+                        <text
+                            x={p.cx}
+                            y={p.cy}
+                            fontSize={Math.min(8, p.w * 0.4)}
+                            fontWeight={700}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            fill={INK}
+                        >
+                            {p.text}
+                        </text>
+                    </g>
+                ) : (
+                    <text
+                        key={p.text}
+                        x={p.cx}
+                        y={p.cy}
+                        fontSize={7.5}
+                        fontWeight={700}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fill="#4b5563"
+                    >
+                        {p.text}
+                    </text>
+                ),
+            )}
+
+            {b.terminals.map((t) => {
+                const on = active.get(t.id);
+                const fs = Math.min(8, t.h * 0.55, t.w * 0.55);
+                const fill =
+                    t.tone === 'redfill'
+                        ? '#b91c1c'
+                        : t.tone === 'dark'
+                          ? INK
+                          : '#fff';
+                const ink =
+                    t.tone === 'redfill' || t.tone === 'dark'
+                        ? '#fff'
+                        : t.tone === 'red'
+                          ? '#dc2626'
+                          : INK;
+                const common = {
+                    fill: on ? on.color : fill,
+                    fillOpacity: on ? 0.3 : 1,
+                    stroke: on ? on.color : INK,
+                    strokeWidth: on ? 2.4 : 0.8,
+                };
+                return (
+                    <g key={t.id}>
+                        {t.round ? (
+                            <circle
+                                cx={t.cx}
+                                cy={t.cy}
+                                r={t.h / 2}
+                                {...common}
+                            />
+                        ) : (
+                            <rect
+                                x={t.cx - t.w / 2}
+                                y={t.cy - t.h / 2}
+                                width={t.w}
+                                height={t.h}
+                                {...common}
+                            />
+                        )}
+                        <text
+                            x={t.cx}
+                            y={t.cy}
+                            fontSize={fs}
+                            fontWeight={700}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            fill={ink}
+                        >
+                            {t.label === '-' ? '−' : t.label}
+                        </text>
+                    </g>
+                );
+            })}
+
+            {/* sensor */}
+            <rect
+                x={boxX}
+                y={boxTop}
+                width={boxW}
+                height={BOX_H}
+                rx={6}
+                className="fill-card stroke-border"
+            />
+            <text
+                x={boxX + boxW / 2}
+                y={boxTop + BOX_H - 8}
+                fontSize={8.5}
+                fontWeight={600}
+                textAnchor="middle"
+                className="fill-foreground"
+            >
+                {clip(spec.sensor, Math.floor(boxW / 5))}
+            </text>
+
+            {placed.map((p) => (
+                <g key={p.n}>
+                    <path
+                        d={p.path}
+                        fill="none"
+                        stroke="#fff"
+                        strokeOpacity={0.85}
+                        strokeWidth={4.8}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                    />
+                    <path
+                        d={p.path}
+                        fill="none"
+                        stroke={p.color}
+                        strokeWidth={2.4}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                    />
+                    {[{ x: p.stub.x, y: p.stub.y + 12 }, p.end].map((at, i) => (
+                        <g key={i}>
+                            <circle
+                                cx={at.x}
+                                cy={at.y}
+                                r={5.5}
+                                fill={p.color}
+                                stroke="#fff"
+                                strokeWidth={1}
+                            />
+                            <text
+                                x={at.x}
+                                y={at.y}
+                                fontSize={7.5}
+                                fontWeight={700}
+                                textAnchor="middle"
+                                dominantBaseline="central"
+                                fill="#fff"
+                            >
+                                {p.n}
+                            </text>
+                        </g>
+                    ))}
+                    <text
+                        x={p.stub.x}
+                        y={p.stub.y + 30}
+                        fontSize={7}
+                        textAnchor="middle"
+                        className="fill-muted-foreground"
+                    >
+                        {clip(p.from, 11)}
+                    </text>
+                </g>
+            ))}
+        </svg>
+    );
+}
+
+function Legend({ spec }: { spec: WiringSpec }) {
+    const rows = spec.wires.flatMap((w, i) => {
+        const t = terminalOf(spec.board, w.to);
+        return t ? [{ n: i + 1, w, t }] : [];
+    });
+    return (
+        <ol className="flex flex-col gap-1 text-xs">
+            {rows.map(({ n, w, t }) => (
+                <li key={n} className="flex items-start gap-1.5">
+                    <span
+                        style={{ background: WIRE_COLORS[w.color] }}
+                        className="mt-px inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                    >
+                        {n}
+                    </span>
+                    <span className="min-w-0 break-words">
+                        {w.from} → <b>{t.label === '-' ? '−' : t.label}</b>{' '}
+                        <span className="text-muted-foreground">{t.use}</span>
+                    </span>
+                </li>
+            ))}
+        </ol>
+    );
+}
+
+export function WiringDiagram({ spec }: { spec: WiringSpec }) {
+    const { t } = useTranslation();
+    const [zoom, setZoom] = useState(false);
+    const title = t('chat.wiring_title', { board: BOARDS[spec.board].nama });
+
+    return (
+        <div className="mt-2 flex flex-col gap-2">
+            <div className="relative overflow-hidden rounded-md border bg-background p-1">
+                <Panel spec={spec} />
+                <Button
+                    variant="secondary"
+                    size="icon-sm"
+                    className="absolute top-1 right-1"
+                    aria-label={t('chat.wiring_zoom')}
+                    title={t('chat.wiring_zoom')}
+                    onClick={() => setZoom(true)}
+                >
+                    <Maximize2 />
+                </Button>
+            </div>
+            <Legend spec={spec} />
+            <p className="text-[11px] text-muted-foreground">
+                {t('chat.wiring_note')}
+            </p>
+
+            <Dialog open={zoom} onOpenChange={setZoom}>
+                <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
+                    <DialogTitle>{title}</DialogTitle>
+                    <DialogDescription>
+                        {t('chat.wiring_note')}
+                    </DialogDescription>
+                    <Panel spec={spec} className="max-h-[62vh]" />
+                    <Legend spec={spec} />
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}

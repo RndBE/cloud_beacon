@@ -551,6 +551,9 @@
         "approve": "Jalankan",
         "deny": "Batal",
         "needs_approval": "Butuh persetujuan",
-        "cancelled": "Dibatalkan"
+        "cancelled": "Dibatalkan",
+        "wiring_title": "Gambar pemasangan {{board}}",
+        "wiring_zoom": "Perbesar gambar",
+        "wiring_note": "Warna garis hanya penanda di gambar, bukan warna kabel sensor."
     }
 }

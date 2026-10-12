@@ -231,7 +231,36 @@ Untuk tipe dengan beberapa kode, urutannya BE / LE / BE swap / LE swap.
   - Pesan `system` dari client ditolak (422).
   - Tool berjalan dengan session user sendiri, jadi izin server tetap berlaku.
 
-## 9. Langkah berikutnya
+## 9. Panduan pemasangan sensor
+
+Dua command `read` memandu user dari memilih pin sampai nilai sensor terbaca:
+
+- `get_wiring_guide`: teks untuk model.
+  - Daftar terminal papan (id = fungsi, per blok) dan kanal/port/slave id yang sudah terpakai di logger itu.
+  - Resep kabel dan setup per jenis keluaran: 4-20 mA, 0-10 V, RS485 Modbus, RS232, pulsa, kontak, sensor pintu, relay.
+  - 9 langkah prosedur dan daftar masalah umum.
+- `show_wiring_diagram`: gambar di chat.
+  - Panel logger (dari stiker November 2025) dengan terminal yang dipakai disorot dan diberi nomor, kabel bergaris siku ke kotak sensor, legenda di bawahnya, dan tombol perbesar (dialog).
+  - Warna garis hanya penanda; bukan warna kabel sensor.
+  - Argumen tool itu sendiri yang menjadi sumber gambar: id terminal yang salah ditolak sebelum tampil (`check` di registry), jadi tidak ada kartu merah.
+
+Data dan koordinat ada di [`lib/logger-wiring.ts`](../resources/js/lib/logger-wiring.ts), gambarnya di [`components/wiring-diagram.tsx`](../resources/js/components/wiring-diagram.tsx), pengenal papan di [`lib/logger-board.ts`](../resources/js/lib/logger-board.ts) (dipakai bersama halaman logger).
+
+- **Sumber kebenaran:** file `Penjelasan singkat Pin Logger.txt` milik user. Posisi terminal dari stiker `BL-11.pdf`, `BL-110.pdf`, `BL-1100.pdf` (revisi November 2025).
+- **Alur yang diminta system prompt:**
+  1. Tanya jenis keluaran sensor.
+  2. Sebut terminal persis seperti label di stiker, lalu tampilkan gambar.
+  3. Tunggu user menjawab "sudah terpasang".
+  4. Konfigurasi dengan `add_sensor` / `add_rs485_device`.
+  5. Verifikasi nilai langsung dengan `read_sensor_names`.
+- **Dikonfirmasi user:**
+  - Negatif input analog dan digital pada BL-11 dan BL-1100 = terminal G (GND) di blok kiri.
+  - Kanal analog 2 BL-110 adalah A2. Stiker BL-110 yang masih mencetak A3 perlu dikoreksi; gambar sudah memakai A2.
+- **Belum ada datanya (asisten diminta mengatakannya, bukan menebak):** batas arus terminal D (output relay), warna kabel, pinout Port I/O, dan fungsi label NET/GSM/GPS pada BL-11.
+- **Cek uji:** model sungguhan memanggil kedua tool dengan id terminal yang benar untuk "pasang sensor 4-20 mA di BL-110". Gambar dicek di browser untuk tiga papan (tema gelap dan terang) dan dialog perbesar. Belum dicoba di panel chat dengan logger asli.
+- **Bukan isometrik penuh:** panel digambar tampak depan dengan sisi atas dan kanan sebagai ketebalan kotak, supaya label terminal tetap terbaca. Isometrik penuh butuh aset 3D per papan.
+
+## 10. Langkah berikutnya
 
 - Tab detail logger dibuat bisa diakses lewat URL (`?tab=mode`), supaya `open_page` bisa membuka tab yang relevan.
 - Jalur USB serial untuk logger LEO lewat `commandTransport` halaman logger, kalau dongle sedang tersambung.

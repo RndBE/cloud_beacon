@@ -13,6 +13,17 @@ import type { Page, RequestPayload } from '@inertiajs/core';
 import { getInitialPageFromDOM } from '@inertiajs/core';
 import { router } from '@inertiajs/react';
 import { csrfHeaders } from '@/lib/csrf-fetch';
+import { inferBoardVariant } from '@/lib/logger-board';
+import {
+    BOARDS,
+    RECIPES,
+    STEPS,
+    TROUBLESHOOTING,
+    WIRE_COLORS,
+    describeTerminals,
+    terminalOf,
+} from '@/lib/logger-wiring';
+import type { Board } from '@/lib/logger-wiring';
 import { EMPTY_SENSOR_FORM, guessSensorType } from '@/lib/sensor-form';
 
 export type Risk = 'read' | 'navigate' | 'config' | 'device' | 'destructive';
@@ -28,6 +39,8 @@ type AssistantCommand = {
     description: string;
     risk: Risk;
     input_schema: Schema;
+    /** Semantic validation beyond the schema; a returned problem is bounced to the model like a schema error. */
+    check?: (input: Input) => string | null;
     run: (input: Input) => Promise<CommandResult>;
 };
 
@@ -488,6 +501,109 @@ const commands: AssistantCommand[] = [
         input_schema: forLogger(),
         run: ({ logger_id }) =>
             deviceApi(logger_id, '/api/mqtt/sensors/get-name', {}, false),
+    },
+    {
+        name: 'get_wiring_guide',
+        description:
+            "Hardware guide for connecting a sensor: terminal map of the logger board (what each pin is for, channel counts, power rails), wiring and setup recipes per sensor output type (4-20 mA, 0-10 V, RS485 Modbus, RS232, pulse, contact, relay output), the step-by-step procedure and troubleshooting. Call this FIRST when the user wants to install a sensor or asks which pin to use. Pass logger_id to get that logger's board plus the channels, ports and slave ids already in use; pass board only when no logger is involved.",
+        risk: 'read',
+        input_schema: obj(
+            {
+                logger_id: LOGGER_ID,
+                board: oneOf(['BL11', 'BL110', 'BL1100']),
+            },
+            ['logger_id', 'board'],
+        ),
+        run: async ({ logger_id, board }) => {
+            let variant: string | null = board ?? null;
+            let used: Json[] | undefined;
+            if (logger_id) {
+                const logger = await getLogger(logger_id);
+                variant ??= inferBoardVariant(logger);
+                used = (logger.sensors ?? [])
+                    .filter((s: Json) => s.connectionType)
+                    .map((s: Json) => ({
+                        name: s.name,
+                        connection: s.connectionType,
+                        channel: s.channel,
+                        port: s.port,
+                        slave_id: s.modbusSlaveId,
+                    }));
+            }
+            if (variant === 'BL11LEO')
+                return {
+                    ok: false,
+                    message:
+                        'Logger LEO (satelit) belum punya panduan pin di sini. Minta pengguna melihat label di casing dan menghubungi tim Beacon.',
+                };
+            if (!variant || !(variant in BOARDS))
+                return {
+                    ok: false,
+                    message:
+                        'Tipe papan tidak diketahui. Tanyakan ke pengguna apakah logger mereka BL-11, BL-110 atau BL-1100, lalu panggil lagi dengan board.',
+                };
+            return {
+                ok: true,
+                data: {
+                    board: {
+                        nama: BOARDS[variant as Board].nama,
+                        kanal: BOARDS[variant as Board].kanal,
+                        terminal: describeTerminals(variant as Board),
+                        catatan: BOARDS[variant as Board].catatan,
+                    },
+                    terpakai: used,
+                    langkah: STEPS,
+                    resep: RECIPES,
+                    masalah_umum: TROUBLESHOOTING,
+                },
+            };
+        },
+    },
+    {
+        name: 'show_wiring_diagram',
+        description:
+            'Show the user a wiring picture in the chat: the logger panel with the used terminals highlighted and numbered lines to a sensor box. Call it after get_wiring_guide, once per circuit, with terminal ids from that guide (e.g. "A1", "G-A1", "24V", "VIN+"). Line colours are only labels in the picture (suggest red for + supply, black for negative, other colours for signals); they are not real wire colours.',
+        risk: 'read',
+        input_schema: obj({
+            board: oneOf(['BL11', 'BL110', 'BL1100']),
+            sensor: str('Sensor name, e.g. "Transmitter level 4-20 mA".', {
+                maxLength: 40,
+            }),
+            wires: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 8,
+                items: obj({
+                    from: str(
+                        'Sensor-side wire, e.g. "+ catu", "Sinyal", "A".',
+                        {
+                            maxLength: 20,
+                        },
+                    ),
+                    to: str('Terminal id from get_wiring_guide.'),
+                    color: oneOf(Object.keys(WIRE_COLORS)),
+                }),
+            },
+        }),
+        check: ({ board, wires }) => {
+            if (!(board in BOARDS))
+                return 'board harus BL11, BL110 atau BL1100.';
+            const unknown = (wires as Input[])
+                .map((w) => String(w.to))
+                .filter((id) => !terminalOf(board, id));
+            return unknown.length
+                ? `Terminal ${unknown.join(', ')} tidak ada di ${board}. Pakai id dari get_wiring_guide: ${BOARDS[board as Board].terminals.map((t) => t.id).join(', ')}.`
+                : null;
+        },
+        run: async ({ wires }) => ({
+            ok: true,
+            data: {
+                ditampilkan: 'Gambar sudah tampil di chat pengguna.',
+                kabel: (wires as Input[]).map(
+                    (w, i) => `${i + 1}. ${w.from} → ${w.to}`,
+                ),
+            },
+        }),
     },
     {
         name: 'read_calibration',
@@ -1776,6 +1892,15 @@ export const assistantTools = commands.map(
 export const commandRisk = (name: string): Risk | undefined =>
     byName.get(name)?.risk;
 
+// The model can send any JSON, so a check must never take the chat loop down.
+function checkProblem(command: AssistantCommand, input: Input): string | null {
+    try {
+        return command.check?.(input) ?? null;
+    } catch {
+        return `Argumen ${command.name} tidak valid. Perbaiki lalu panggil lagi.`;
+    }
+}
+
 /**
  * Top-level check of LLM arguments against the command schema (required keys,
  * no unknown keys), so a mixed-up call is bounced back to the model before the
@@ -1798,7 +1923,7 @@ export function inputProblem(name: string, input: Input): string | null {
     ].filter(Boolean);
     return problems.length
         ? `Argumen ${name} tidak sesuai schema (${problems.join('; ')}). Perbaiki lalu panggil lagi.`
-        : null;
+        : checkProblem(command, input);
 }
 
 /** Execute one tool call. Never throws: failures come back as { ok: false }. */

@@ -20,6 +20,7 @@ import {
     SheetTitle,
 } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
+import { WiringDiagram } from '@/components/wiring-diagram';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
     answerApproval,
@@ -31,6 +32,7 @@ import {
     useChatState,
 } from '@/lib/assistant-chat';
 import type { ToolMessage } from '@/lib/assistant-chat';
+import type { WiringSpec } from '@/lib/logger-wiring';
 import { cn } from '@/lib/utils';
 
 export function ChatToggle() {
@@ -64,6 +66,11 @@ const TOOL_ICON = {
 
 function ToolCard({ message }: { message: ToolMessage }) {
     const { t } = useTranslation();
+    // The wiring picture replaces the raw arguments: they are its source.
+    const diagram =
+        message.name === 'show_wiring_diagram' && message.status === 'done'
+            ? (message.input as WiringSpec)
+            : null;
     const args = Object.entries(message.input)
         .filter(([key]) => key !== 'logger_id')
         .map(
@@ -93,12 +100,13 @@ function ToolCard({ message }: { message: ToolMessage }) {
                     </span>
                 )}
             </div>
-            {args && (
+            {diagram && <WiringDiagram spec={diagram} />}
+            {!diagram && args && (
                 <p className="mt-1 line-clamp-3 break-words text-muted-foreground">
                     {args}
                 </p>
             )}
-            {message.result && (
+            {!diagram && message.result && (
                 <p
                     className={cn(
                         'mt-1 break-words',

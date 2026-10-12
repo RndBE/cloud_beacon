@@ -48,6 +48,7 @@ it('streams text and merges tool call fragments into one assistant message', fun
         && $request['model'] === 'Chatbot'
         && $request['messages'][0]['role'] === 'system'
         && str_contains($request['messages'][0]['content'], '/loggers/aNX7q1VY')
+        && str_contains($request['messages'][0]['content'], 'get_wiring_guide')
         && $request['messages'][1] === ['role' => 'user', 'content' => 'logger mana yang offline?']
         && $request['tools'][0]['function']['name'] === 'list_loggers');
 });
