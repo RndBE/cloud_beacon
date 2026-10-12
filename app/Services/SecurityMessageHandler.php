@@ -55,6 +55,14 @@ class SecurityMessageHandler
         }
 
         $device->last_seen_at = now();
+
+        // Balasan modul SECURITY milik SecurityCommandService (kelola kartu
+        // dari website): sudah ditangani pengirimnya, di sini cukup tanda hidup.
+        if (array_key_exists('SECURITY', $data)) {
+            $device->save();
+
+            return 'balasan modul SECURITY';
+        }
         $cmd = (string) ($data['cmd'] ?? '');
 
         $hasil = match ($cmd) {
