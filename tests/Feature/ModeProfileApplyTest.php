@@ -38,15 +38,18 @@ function modeProfileApplyPayload(
     ];
 }
 
-function awrModeProfileApplyPayload(Logger $logger, array $slaveIds = [1, 2, 3, 4, 5]): array
-{
-    $roles = [
+function awrModeProfileApplyPayload(
+    Logger $logger,
+    array $slaveIds = [1, 2, 3, 4, 5],
+    array $only = ['rainfall', 'pyranometer', 'weather', 'wind', 'illuminance'],
+): array {
+    $roles = array_values(array_filter([
         ['rainfall', 'tb-400-04'],
         ['pyranometer', 'rk-200-03'],
         ['weather', 'rk-330-01'],
         ['wind', 'rk-120-01c'],
         ['illuminance', 'rk-210-01'],
-    ];
+    ], fn (array $role) => in_array($role[0], $only, true)));
 
     return [
         'id_logger' => $logger->device_identifier,
@@ -381,8 +384,28 @@ it('applies AWR with all RS485 weather recorder templates', function () {
             ->andReturn(['success' => true]);
     }
 
-    $mqtt->shouldNotReceive('sendCalibrationSet');
-    $mqtt->shouldNotReceive('sendProtocolCommand');
+    $mqtt->shouldReceive('sendCalibrationSet')
+        ->once()->ordered()
+        ->with('AWR-APPLY-1', 'AWR', ['arr_source' => 'Rainfall_Day', 'arr_sensor' => 'TB-400-04'])
+        ->andReturn(['success' => true, 'data' => ['arr_source' => 'Rainfall_Day', 'arr_sensor' => 'TB-400-04']]);
+    $mqtt->shouldReceive('sendProtocolCommand')
+        ->once()->ordered()
+        ->with('AWR-APPLY-1', [
+            'MAP_DATA' => [
+                'cmd' => 'SET',
+                's1' => 'Rainfall_Min',
+                's2' => 'Rainfall_hou',
+                's3' => 'Rainfall_Day',
+                's4' => 'Pyranometer',
+                's5' => 'Temperature',
+                's6' => 'Humidity',
+                's7' => 'Pressure',
+                's8' => 'w_speed',
+                's9' => 'w_direction',
+                's10' => 'illuminance',
+            ],
+        ], 'MAP_DATA')
+        ->andReturn(['success' => true]);
     bindModeProfileMqttMock($mqtt);
 
     $this->actingAs($user)
@@ -415,4 +438,164 @@ it('rejects AWR setup when selected sensors reuse the same slave id', function (
         ->postJson(route('api.mqtt.mode-profile.apply'), awrModeProfileApplyPayload($logger, [1, 1, 3, 4, 5]))
         ->assertStatus(422)
         ->assertJsonValidationErrors(['selections']);
+});
+
+it('applies AWR with only the kept sensors and skips the rain source without a rain gauge', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-PART-1']);
+
+    $mqtt = Mockery::mock(MqttService::class);
+    $mqtt->shouldReceive('sendSystemSetMode')->once()->andReturn(['success' => true]);
+    $mqtt->shouldReceive('sendSensorSet')
+        ->twice()
+        ->withArgs(fn (string $id, array $payload) => in_array(
+            $payload['SENSORS']['d'][0]['cfg'][1],
+            ['weather', 'wind'],
+            true,
+        ))
+        ->andReturn(['success' => true]);
+    $mqtt->shouldNotReceive('sendCalibrationSet');
+    $mqtt->shouldReceive('sendProtocolCommand')
+        ->once()
+        ->with('AWR-PART-1', [
+            'MAP_DATA' => [
+                'cmd' => 'SET',
+                's1' => 'Temperature',
+                's2' => 'Humidity',
+                's3' => 'Pressure',
+                's4' => 'w_speed',
+                's5' => 'w_direction',
+            ],
+        ], 'MAP_DATA')
+        ->andReturn(['success' => true]);
+    bindModeProfileMqttMock($mqtt);
+
+    $this->actingAs($user)
+        ->postJson(
+            route('api.mqtt.mode-profile.apply'),
+            awrModeProfileApplyPayload($logger, [3, 4], ['weather', 'wind']),
+        )
+        ->assertOk()
+        ->assertJsonPath('success', true);
+
+    expect($logger->sensors()->where('connection_type', 'rs485')->pluck('modbus_slave_id')->unique()->sort()->values()->all())
+        ->toBe([3, 4]);
+});
+
+it('sends the chosen AWR rain source when the rain gauge is kept', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-RAIN-1']);
+
+    $mqtt = Mockery::mock(MqttService::class);
+    $mqtt->shouldReceive('sendSystemSetMode')->once()->andReturn(['success' => true]);
+    $mqtt->shouldReceive('sendSensorSet')->once()->andReturn(['success' => true]);
+    $mqtt->shouldReceive('sendCalibrationSet')
+        ->once()
+        ->with('AWR-RAIN-1', 'AWR', ['arr_source' => 'Rainfall_Min', 'arr_sensor' => 'TB-400-04'])
+        ->andReturn(['success' => true, 'data' => []]);
+    $mqtt->shouldReceive('sendProtocolCommand')
+        ->once()
+        ->with('AWR-RAIN-1', [
+            'MAP_DATA' => [
+                'cmd' => 'SET',
+                's1' => 'Rainfall_Min',
+                's2' => 'Rainfall_hou',
+                's3' => 'Rainfall_Day',
+            ],
+        ], 'MAP_DATA')
+        ->andReturn(['success' => true]);
+    bindModeProfileMqttMock($mqtt);
+
+    $payload = awrModeProfileApplyPayload($logger, [1], ['rainfall']);
+    $payload['automatic_calibration'] = [
+        'arr_source' => 'Rainfall_Min',
+        'arr_sensor' => 'TB-400-04',
+        'injected' => 'ignored',
+    ];
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.mode-profile.apply'), $payload)
+        ->assertOk()
+        ->assertJsonPath('success', true);
+
+    expect($logger->fresh()->calibration_data)->toMatchArray([
+        'arr_source' => 'Rainfall_Min',
+        'arr_sensor' => 'TB-400-04',
+    ]);
+});
+
+it('rejects an AWR setup with every sensor removed', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-NONE-1']);
+
+    $mqtt = Mockery::mock(MqttService::class);
+    $mqtt->shouldNotReceive('sendSystemSetMode');
+    bindModeProfileMqttMock($mqtt);
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.mode-profile.apply'), awrModeProfileApplyPayload($logger, [], []))
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['selections']);
+});
+
+it('rejects a full AWR on a BL110 because it needs more mapping slots than the board has', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-BL110-1', 'model' => 'BL110']);
+
+    $mqtt = Mockery::mock(MqttService::class);
+    $mqtt->shouldNotReceive('sendSystemSetMode');
+    $mqtt->shouldNotReceive('sendSensorSet');
+    bindModeProfileMqttMock($mqtt);
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.mode-profile.apply'), awrModeProfileApplyPayload($logger))
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['selections'])
+        ->assertJsonPath('errors.selections.0', fn (string $message) => str_contains($message, 'BL110')
+            && str_contains($message, 'butuh 10 slot mapping, maksimal 9'));
+});
+
+it('accepts an AWR on a BL110 once unused sensors are removed', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-BL110-2', 'model' => 'BL110']);
+
+    $this->actingAs($user)
+        ->postJson(
+            route('api.mqtt.mode-profile.preview'),
+            awrModeProfileApplyPayload($logger, [1, 3, 4], ['rainfall', 'weather', 'wind']),
+        )
+        ->assertOk()
+        ->assertJsonCount(8, 'changes.mapping');
+});
+
+it('counts the sensors already on a BL110 against its 16 sensor slots', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-BL110-3', 'model' => 'BL110']);
+
+    // 14 sensors on other slaves stay on the logger; a weather sensor (3 parameters) would make 17.
+    foreach (range(1, 14) as $index) {
+        createExistingRs485Sensor($logger, [
+            'name' => "Old_{$index}",
+            'modbus_slave_id' => 7,
+            'register_address' => $index,
+        ]);
+    }
+
+    $this->actingAs($user)
+        ->postJson(
+            route('api.mqtt.mode-profile.preview'),
+            awrModeProfileApplyPayload($logger, [3], ['weather']),
+        )
+        ->assertStatus(422)
+        ->assertJsonPath('errors.selections.0', fn (string $message) => str_contains($message, 'butuh 17 slot sensor'));
+});
+
+it('allows a full AWR on a BL1100', function () {
+    $user = User::factory()->create();
+    $logger = createModeProfileApplyLogger($user, ['device_identifier' => 'AWR-BL1100-1', 'model' => 'BL1100']);
+
+    $this->actingAs($user)
+        ->postJson(route('api.mqtt.mode-profile.preview'), awrModeProfileApplyPayload($logger))
+        ->assertOk()
+        ->assertJsonCount(10, 'changes.mapping');
 });

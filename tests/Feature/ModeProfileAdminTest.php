@@ -77,6 +77,7 @@ function samplePayload(array $overrides = []): array
             'role' => 'rainfall',
             'label' => 'Sensor Curah Hujan',
             'required' => true,
+            'mapping' => ['TESTMODE.Rain_Hour'],
             'templates' => [sampleTemplate()],
         ]],
     ], $overrides);
@@ -138,6 +139,8 @@ it('creates a profile the catalogue can immediately serve', function () {
 
     expect($profile)->not->toBeNull()
         ->and($profile['label'])->toBe('Test Mode')
+        ->and($profile['roles'][0]['mapping'])->toBe(['TESTMODE.Rain_Hour'])
+        ->and($profile['default_mapping'])->toBe(['TESTMODE.Rain_Day'])
         ->and($profile['roles'][0]['templates'][0]['device']['baudrate'])->toBe(9600)
         ->and($profile['roles'][0]['templates'][0]['parameters'][0]['scale_factor'])->toBe(0.1);
 });
