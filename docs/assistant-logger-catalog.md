@@ -268,7 +268,21 @@ Data dan koordinat ada di [`lib/logger-wiring.ts`](../resources/js/lib/logger-wi
 - Tool tanpa argumen (`properties: {}`) dikirim ke provider sebagai objek kosong, bukan list kosong, karena provider ketat seperti OpenAI menolak `[]`.
 - `CommandResult.view` membawa data khusus kartu chat (mis. terminal terpasang) tanpa ikut dikirim ke model.
 
-## 11. Langkah berikutnya
+## 11. Riwayat obrolan dan compact konteks
+
+- **Riwayat per user:**
+  - Tabel `assistant_conversations` menyimpan tiap obrolan milik satu user: `ui` (yang tampil di panel, termasuk kartu tool), `api` (pesan untuk model) dan `summary`.
+  - Endpoint `GET/POST /assistant/conversations`, `GET/PUT/DELETE /assistant/conversations/{id}`. Semua query dibatasi ke user yang login, jadi obrolan orang lain tidak bisa dibaca atau diubah. Maksimal 50 obrolan per user (yang tertua dihapus) dan 1,5 MB per obrolan.
+  - Browser menyimpan otomatis ±1 detik setelah tiap giliran. Setelah reload, obrolan terakhir dibuka lagi kalau umurnya kurang dari 12 jam; yang lain ada di tombol **Riwayat** di header panel (buka, hapus). Ganti akun di tab yang sama memulai dari kosong dan tidak menyimpan apa pun dari akun sebelumnya.
+  - Obrolan yang terputus saat tool menunggu persetujuan diperbaiki saat dimuat: kartu jadi "dibatalkan" dan tiap panggilan tool tanpa hasil diberi hasil "Dihentikan", supaya provider tidak menolaknya.
+- **Hemat token, dua tahap** ([`lib/assistant-memory.ts`](../resources/js/lib/assistant-memory.ts)):
+  1. Hasil tool dari giliran sebelumnya dipotong jadi 800 karakter (sisanya bisa dibaca ulang lewat tool). Gratis.
+  2. Kalau riwayat masih lebih dari ±36 rb karakter (±10 rb token), giliran tertua diringkas lewat `POST /assistant/compact`, sisa ±12 rb karakter terbaru tetap utuh. Pemotongan selalu di pesan user, jadi hasil tool tidak terpisah dari panggilannya. Ringkasan panjang dilipat per potongan 24 rb karakter, tertua dulu, supaya tidak ada bagian yang hilang tanpa diringkas.
+  - Ringkasan ikut di setiap request sebagai bagian system prompt dan muncul sebagai catatan "Konteks lama diringkas" di chat. Kalau peringkasan gagal, chat tetap jalan (batas 60 pesan tetap berlaku) dan tidak dicoba lagi pada pesan yang sama.
+  - System prompt disusun aturan dulu, lalu konteks yang berubah (waktu, halaman, ringkasan) di akhir, supaya provider yang menyimpan cache awalan prompt bisa memakainya ulang.
+- **Diuji:** 15 tes Pest (CRUD dan isolasi antar user, batas ukuran dan jumlah, peringkasan satu dan beberapa potongan, urutan system prompt). Di browser dengan model asli: simpan, reload lalu nyambung, daftar riwayat, dan obrolan 30 giliran (±176 rb karakter) yang diringkas jadi ±19 rb dengan jawaban yang tetap mengingat fakta dari giliran awal.
+
+## 12. Langkah berikutnya
 
 - Tab detail logger dibuat bisa diakses lewat URL (`?tab=mode`), supaya `open_page` bisa membuka tab yang relevan.
 - Jalur USB serial untuk logger LEO lewat `commandTransport` halaman logger, kalau dongle sedang tersambung.

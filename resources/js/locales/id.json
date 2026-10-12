@@ -559,6 +559,12 @@
         "wiring_connected": "Sudah terpasang",
         "wiring_connected_none": "Belum ada sensor terdaftar di terminal sinyal.",
         "wiring_key": "Hijau = sudah ada sensor, putih = masih kosong.",
-        "wiring_in_use": "sudah dipakai"
+        "wiring_in_use": "sudah dipakai",
+        "history": "Riwayat",
+        "history_empty": "Belum ada riwayat obrolan.",
+        "delete": "Hapus obrolan",
+        "untitled": "Obrolan tanpa judul",
+        "compacting": "Meringkas konteks lama…",
+        "compacted": "Konteks lama diringkas untuk menghemat token."
     }
 }

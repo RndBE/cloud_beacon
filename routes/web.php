@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AssistantController;
+use App\Http\Controllers\AssistantConversationController;
 use App\Http\Controllers\CloudWebSessionController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceModelController;
@@ -205,6 +206,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('assistant/chat', [AssistantController::class, 'chat'])
         ->middleware('throttle:30,1')
         ->name('assistant.chat');
+    // Older messages get summarized to keep the model's context (and token bill) small.
+    Route::post('assistant/compact', [AssistantController::class, 'compact'])
+        ->middleware('throttle:20,1')
+        ->name('assistant.compact');
+    // Chat history, per signed-in user.
+    Route::get('assistant/conversations', [AssistantConversationController::class, 'index'])->name('assistant.conversations.index');
+    Route::post('assistant/conversations', [AssistantConversationController::class, 'store'])
+        ->middleware('throttle:60,1')->name('assistant.conversations.store');
+    Route::get('assistant/conversations/{conversation}', [AssistantConversationController::class, 'show'])->whereNumber('conversation')->name('assistant.conversations.show');
+    Route::put('assistant/conversations/{conversation}', [AssistantConversationController::class, 'update'])
+        ->middleware('throttle:60,1')->whereNumber('conversation')->name('assistant.conversations.update');
+    Route::delete('assistant/conversations/{conversation}', [AssistantConversationController::class, 'destroy'])->whereNumber('conversation')->name('assistant.conversations.destroy');
     // SSE: listen-only live GCM status stream for the topology (EventSource → GET).
     Route::get('api/mqtt/modules/stream', [MqttController::class, 'streamModules'])
         ->name('api.mqtt.modules.stream');

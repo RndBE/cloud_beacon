@@ -1,12 +1,15 @@
+import { usePage } from '@inertiajs/react';
 import {
     ArrowUp,
     Ban,
     Check,
+    History,
     Loader2,
     ShieldAlert,
     Sparkles,
     Square,
     SquarePen,
+    Trash2,
     X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -24,14 +27,18 @@ import { WiringDiagram } from '@/components/wiring-diagram';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
     answerApproval,
+    bootstrapChat,
+    deleteConversation,
+    loadConversations,
     newChat,
+    openConversation,
     sendMessage,
     setChatOpen,
     stopChat,
     toggleChat,
     useChatState,
 } from '@/lib/assistant-chat';
-import type { ToolMessage } from '@/lib/assistant-chat';
+import type { ConversationInfo, ToolMessage } from '@/lib/assistant-chat';
 import type { Connected, WiringSpec } from '@/lib/logger-wiring';
 import { cn } from '@/lib/utils';
 
@@ -161,10 +168,72 @@ function ToolCard({ message }: { message: ToolMessage }) {
     );
 }
 
+function HistoryList({
+    items,
+    activeId,
+    onOpen,
+}: {
+    items: ConversationInfo[];
+    activeId: number | null;
+    onOpen: () => void;
+}) {
+    const { t, i18n } = useTranslation();
+    if (!items.length)
+        return (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+                {t('chat.history_empty')}
+            </p>
+        );
+    return (
+        <ul className="flex flex-col gap-1">
+            {items.map((c) => (
+                <li key={c.id} className="group flex items-center gap-1">
+                    <button
+                        type="button"
+                        className={cn(
+                            'flex min-w-0 flex-1 flex-col rounded-md px-2 py-1.5 text-left hover:bg-muted',
+                            c.id === activeId && 'bg-muted',
+                        )}
+                        onClick={() => {
+                            void openConversation(c.id).then(onOpen);
+                        }}
+                    >
+                        <span className="truncate text-sm">
+                            {c.title || t('chat.untitled')}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                            {new Date(c.updated_at).toLocaleString(
+                                i18n.language,
+                                {
+                                    day: 'numeric',
+                                    month: 'short',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                },
+                            )}
+                        </span>
+                    </button>
+                    <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="shrink-0 opacity-60 hover:opacity-100"
+                        aria-label={t('chat.delete')}
+                        title={t('chat.delete')}
+                        onClick={() => void deleteConversation(c.id)}
+                    >
+                        <Trash2 />
+                    </Button>
+                </li>
+            ))}
+        </ul>
+    );
+}
+
 function ChatBody() {
     const { t } = useTranslation();
-    const { messages, busy } = useChatState();
+    const { messages, busy, conversations, conversationId } = useChatState();
     const [draft, setDraft] = useState('');
+    const [showHistory, setShowHistory] = useState(false);
     const listRef = useRef<HTMLDivElement>(null);
     const last = messages.at(-1);
     const thinking =
@@ -184,6 +253,7 @@ function ChatBody() {
 
     function submit(text: string) {
         if (!text.trim() || busy) return;
+        setShowHistory(false);
         void sendMessage(text);
         setDraft('');
     }
@@ -202,12 +272,28 @@ function ChatBody() {
                 <span className="text-sm font-medium">{t('chat.title')}</span>
                 <div className="ml-auto flex items-center gap-1">
                     <Button
+                        variant={showHistory ? 'secondary' : 'ghost'}
+                        size="icon-sm"
+                        aria-pressed={showHistory}
+                        aria-label={t('chat.history')}
+                        title={t('chat.history')}
+                        onClick={() => {
+                            if (!showHistory) void loadConversations();
+                            setShowHistory(!showHistory);
+                        }}
+                    >
+                        <History />
+                    </Button>
+                    <Button
                         variant="ghost"
                         size="icon-sm"
                         disabled={messages.length === 0}
                         aria-label={t('chat.new_chat')}
                         title={t('chat.new_chat')}
-                        onClick={newChat}
+                        onClick={() => {
+                            newChat();
+                            setShowHistory(false);
+                        }}
                     >
                         <SquarePen />
                     </Button>
@@ -224,7 +310,13 @@ function ChatBody() {
             </div>
 
             <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4">
-                {messages.length === 0 ? (
+                {showHistory ? (
+                    <HistoryList
+                        items={conversations}
+                        activeId={conversationId}
+                        onOpen={() => setShowHistory(false)}
+                    />
+                ) : messages.length === 0 ? (
                     <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
                         <Sparkles className="size-6 text-muted-foreground" />
                         <p className="font-medium">{t('chat.empty_title')}</p>
@@ -250,6 +342,13 @@ function ChatBody() {
                         {messages.map((message) =>
                             message.kind === 'tool' ? (
                                 <ToolCard key={message.id} message={message} />
+                            ) : message.kind === 'note' ? (
+                                <p
+                                    key={message.id}
+                                    className="text-center text-xs text-muted-foreground"
+                                >
+                                    {t(message.key)}
+                                </p>
                             ) : (
                                 <div
                                     key={message.id}
@@ -337,6 +436,14 @@ export function ChatPanel() {
     const { t } = useTranslation();
     const isMobile = useIsMobile();
     const { open } = useChatState();
+    const { auth } = usePage<{ auth: { user?: { id: number } | null } }>()
+        .props;
+    const userId = auth?.user?.id;
+
+    // Pick up this user's saved chats once per sign-in (the store outlives page visits).
+    useEffect(() => {
+        if (userId) void bootstrapChat(userId);
+    }, [userId]);
 
     if (isMobile) {
         return (

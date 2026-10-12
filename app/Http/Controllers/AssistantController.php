@@ -42,6 +42,7 @@ class AssistantController extends Controller
             'tools.*.function.parameters' => 'nullable|array',
             'page.url' => 'nullable|string|max:500',
             'page.title' => 'nullable|string|max:200',
+            'summary' => 'nullable|string|max:20000',
         ]);
 
         $config = config('services.assistant');
@@ -49,7 +50,7 @@ class AssistantController extends Controller
             return response()->json(['message' => 'Asisten belum dikonfigurasi (ASSISTANT_API_KEY kosong).'], 503);
         }
 
-        $messages = [['role' => 'system', 'content' => $this->systemPrompt($request->user(), $data['page'] ?? [])]];
+        $messages = [['role' => 'system', 'content' => $this->systemPrompt($request->user(), $data['page'] ?? [], $data['summary'] ?? '')]];
         foreach ($data['messages'] as $message) {
             $messages[] = array_filter([
                 'role' => $message['role'],
@@ -93,15 +94,7 @@ class AssistantController extends Controller
                 flush();
             };
 
-            $result = $this->streamTurn($config, $payload, fn (string $token) => $emit(['token' => $token]));
-
-            // A combo alias can land on a provider that wants the other token-limit
-            // field; swap once if it was refused before any text was streamed.
-            if ($result['status'] === 400 && $result['content'] === '' && str_contains($result['error'], 'max_tokens')) {
-                $payload['max_tokens'] = $payload['max_completion_tokens'];
-                unset($payload['max_completion_tokens']);
-                $result = $this->streamTurn($config, $payload, fn (string $token) => $emit(['token' => $token]));
-            }
+            $result = $this->turn($config, $payload, fn (string $token) => $emit(['token' => $token]));
 
             if ($result['error'] !== '') {
                 Log::warning('Assistant LLM error', ['status' => $result['status'], 'error' => mb_substr($result['error'], 0, 500)]);
@@ -125,6 +118,103 @@ class AssistantController extends Controller
             'Cache-Control' => 'no-cache',
             'X-Accel-Buffering' => 'no',
         ]);
+    }
+
+    /**
+     * One model turn. A combo alias can land on a provider that wants the other
+     * token-limit field, so it is swapped once if refused before any text came.
+     *
+     * @return array{content: string, reasoning: string, tool_calls: array, status: int, error: string}
+     */
+    private function turn(array $config, array $payload, callable $onToken): array
+    {
+        $result = $this->streamTurn($config, $payload, $onToken);
+
+        if ($result['status'] === 400 && $result['content'] === '' && str_contains($result['error'], 'max_tokens')) {
+            $payload['max_tokens'] = $payload['max_completion_tokens'];
+            unset($payload['max_completion_tokens']);
+            $result = $this->streamTurn($config, $payload, $onToken);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Fold the oldest part of a conversation (plus the previous summary) into a short
+     * note. The browser then drops those messages and sends the note with each request.
+     */
+    public function compact(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'summary' => 'nullable|string|max:20000',
+            'messages' => 'required|array|min:1|max:200',
+            'messages.*.role' => 'required|in:user,assistant,tool',
+            'messages.*.content' => 'nullable|string|max:30000',
+            'messages.*.tool_calls' => 'nullable|array|max:20',
+        ]);
+
+        $config = config('services.assistant');
+        if (empty($config['api_key'])) {
+            return response()->json(['message' => 'Asisten belum dikonfigurasi (ASSISTANT_API_KEY kosong).'], 503);
+        }
+
+        // A long batch is folded in chunks, oldest first, each chunk into the running
+        // summary, so nothing that is about to be dropped goes unsummarized.
+        $chunks = [];
+        $current = '';
+        foreach ($data['messages'] as $message) {
+            $text = mb_substr((string) ($message['content'] ?? ''), 0, $message['role'] === 'tool' ? 600 : 1500);
+            foreach ($message['tool_calls'] ?? [] as $call) {
+                $text .= ' [memanggil '.($call['function']['name'] ?? '?').' '.mb_substr((string) ($call['function']['arguments'] ?? ''), 0, 300).']';
+            }
+            $line = match ($message['role']) {
+                'user' => 'Pengguna: '.$text,
+                'assistant' => 'Asisten: '.trim($text),
+                default => 'Hasil tool: '.$text,
+            };
+            if ($current !== '' && mb_strlen($current) + mb_strlen($line) > 24000) {
+                $chunks[] = $current;
+                $current = '';
+            }
+            $current .= $line."\n";
+        }
+        if ($current !== '') {
+            $chunks[] = $current;
+        }
+
+        $summary = trim((string) ($data['summary'] ?? ''));
+        foreach (array_slice($chunks, -4) as $chunk) {
+            $summary = $this->foldSummary($config, $summary, $chunk);
+            if ($summary === null) {
+                return response()->json(['message' => 'Gagal meringkas percakapan.'], 502);
+            }
+        }
+
+        return response()->json(['summary' => mb_substr($summary, 0, 4000)]);
+    }
+
+    /** One summarizing call: previous summary + new transcript in, merged summary out (null on failure). */
+    private function foldSummary(array $config, string $previous, string $transcript): ?string
+    {
+        $payload = [
+            'model' => $config['model'],
+            'stream' => true,
+            'max_completion_tokens' => 800,
+            'messages' => [
+                ['role' => 'system', 'content' => 'Kamu meringkas riwayat percakapan antara pengguna dan asisten Beacon Logger Cloud supaya percakapan bisa dilanjutkan tanpa riwayat lengkap. Tulis catatan ringkas (maksimal 200 kata, teks biasa, daftar dengan "- ") berisi: tujuan dan permintaan pengguna, logger dan sensor yang dibahas (nama beserta kode logger_id-nya supaya bisa dipakai lagi), perubahan yang SUDAH dijalankan beserta hasilnya, yang dibatalkan atau gagal, dan hal yang masih menunggu. Jangan menyalin data mentah yang panjang. Kalau ada ringkasan sebelumnya, gabungkan ke dalam catatan yang sama.'],
+                ['role' => 'user', 'content' => ($previous !== '' ? "Ringkasan sebelumnya:\n{$previous}\n\n" : '')."Percakapan yang perlu diringkas:\n{$transcript}"],
+            ],
+        ];
+
+        $result = $this->turn($config, $payload, fn () => null);
+        $text = trim($result['content']);
+        if ($result['error'] !== '' || $text === '') {
+            Log::warning('Assistant compact failed', ['status' => $result['status'], 'error' => mb_substr($result['error'], 0, 500)]);
+
+            return null;
+        }
+
+        return $text;
     }
 
     /**
@@ -201,21 +291,26 @@ class AssistantController extends Controller
         return $result;
     }
 
-    private function systemPrompt(User $user, array $page): string
+    /**
+     * Static rules come first and everything that changes between requests (time,
+     * page, summary) last, so providers that cache by prompt prefix can reuse the rules.
+     */
+    private function systemPrompt(User $user, array $page, string $summary = ''): string
     {
         $now = now('Asia/Jakarta')->locale('id')->translatedFormat('l, d F Y H:i');
         $roles = $user->isSuperAdmin() ? 'superadmin' : ($user->roles->pluck('name')->join(', ') ?: '-');
         $pageUrl = $page['url'] ?? '-';
         $pageTitle = $page['title'] ?? '-';
+        $memory = trim($summary) !== ''
+            ? "\n\nRingkasan percakapan sebelumnya (riwayat lengkapnya sudah tidak ada; anggap ini yang sudah dibahas):\n".trim($summary)
+            : '';
 
         return <<<PROMPT
         Kamu adalah asisten Beacon Logger Cloud, aplikasi web untuk memantau dan mengonfigurasi data logger hidrologi (AWLR, ARR, AWR, GNSS, APMS) milik Beacon Engineering.
         Kamu bisa mengoperasikan website atas nama pengguna lewat tools: membaca data logger, mengubah konfigurasi, dan mengirim perintah ke perangkat.
 
-        Pengguna: {$user->name} (peran: {$roles}). Waktu sekarang: {$now} WIB.
-        Halaman yang sedang dibuka pengguna: {$pageTitle} ({$pageUrl}). Kalau URL-nya /loggers/<id>, "logger ini" berarti logger_id <id> itu.
-
         Aturan:
+        - Kalau URL halaman pengguna /loggers/<id>, "logger ini" berarti logger_id <id> itu.
         - Jangan menebak id. Cari logger_id dengan list_loggers, dan id sensor/integrasi dengan get_logger. Id itu untuk tools saja; sebut logger dengan namanya ke pengguna.
         - Baca dulu kondisi sekarang sebelum mengubah (get_logger, read_device_module, read_sensor_names).
         - Setiap tool yang mengubah sesuatu akan dimintakan persetujuan ke pengguna oleh aplikasi. Sebelum memanggilnya, jelaskan singkat apa yang akan diubah dan akibatnya. Jangan bertanya "yakin?" lagi; tombol persetujuan sudah ada.
@@ -226,6 +321,10 @@ class AssistantController extends Controller
         - Kalau pengguna ingin memasang sensor atau bertanya pin mana yang dipakai, panggil get_wiring_guide dulu dan ikuti langkahnya: kalau sensornya belum disebut, tampilkan dulu peta terminal dengan show_wiring_diagram hanya berisi board, lalu tanyakan sensor dan jenis keluarannya (isi logger_id supaya gambar menandai terminal yang sudah terpasang sensor dan yang masih kosong, dan hindari terminal yang sudah terpakai); kalau sudah jelas, sebut terminal dengan label persis di stiker dan panggil show_wiring_diagram dengan sensor dan wires (id terminal dari panduan) supaya pengguna melihat gambarnya (teksnya cukup ringkas, jangan mengulang isi gambar). Panduan itu data untukmu, jangan bilang kamu "membuka panduan" ke pengguna, tunggu pengguna menjawab sudah terpasang sebelum mengonfigurasi, lalu verifikasi nilainya dengan read_sensor_names. Jangan mengarang detail kelistrikan (warna kabel, batas arus, pinout Port I/O) yang tidak ada di hasil tool; arahkan ke datasheet sensor atau tim Beacon.
         - Laporkan hasil apa adanya, termasuk kalau gagal, beserta pesan errornya.
         - Jawab dalam bahasa pengguna (default Bahasa Indonesia), singkat dan jelas. Tulis teks biasa tanpa markdown (tanpa **, #, atau tabel); daftar boleh pakai "- ".
+
+        Konteks saat ini:
+        Pengguna: {$user->name} (peran: {$roles}). Waktu sekarang: {$now} WIB.
+        Halaman yang sedang dibuka pengguna: {$pageTitle} ({$pageUrl}).{$memory}
         PROMPT;
     }
 }

@@ -99,3 +99,83 @@ it('sends a tool with no arguments as an empty JSON object, not an empty list', 
     // Providers like OpenAI reject "properties":[] ("[] is not of type object").
     Http::assertSent(fn ($request) => str_contains($request->body(), '"properties":{}'));
 });
+
+it('puts the rules first and the changing context and summary last in the system prompt', function () {
+    Http::fake(['router.test/*' => Http::response(assistantSse([['choices' => [['delta' => ['content' => 'OK']]]]]))]);
+
+    assistantChat(['summary' => 'Logger Bendungan sudah dicek: online.', 'page' => ['url' => '/loggers/abc', 'title' => 'Bendungan']])->streamedContent();
+
+    Http::assertSent(function ($request) {
+        $system = $request['messages'][0]['content'];
+
+        return strpos($system, 'Aturan:') < strpos($system, 'Konteks saat ini:')
+            && strpos($system, 'Konteks saat ini:') < strpos($system, 'Logger Bendungan sudah dicek: online.')
+            && str_contains($system, '/loggers/abc');
+    });
+});
+
+it('summarizes the oldest messages together with the previous summary', function () {
+    Http::fake(['router.test/*' => Http::response(assistantSse([['choices' => [['delta' => ['content' => '- Logger Bendungan (id aNX7q1VY) dicek, online.']]]]]))]);
+
+    $response = test()->actingAs(User::factory()->create())->postJson('/assistant/compact', [
+        'summary' => 'Pengguna ingin memasang sensor level.',
+        'messages' => [
+            ['role' => 'user', 'content' => 'cek logger bendungan'],
+            ['role' => 'assistant', 'content' => '', 'tool_calls' => [['id' => 'c1', 'type' => 'function', 'function' => ['name' => 'get_logger', 'arguments' => '{"logger_id":"aNX7q1VY"}']]]],
+            ['role' => 'tool', 'content' => str_repeat('data ', 400)],
+        ],
+    ]);
+
+    $response->assertOk()->assertJsonPath('summary', '- Logger Bendungan (id aNX7q1VY) dicek, online.');
+
+    Http::assertSent(function ($request) {
+        $input = $request['messages'][1]['content'];
+
+        return $request['messages'][0]['role'] === 'system'
+            && ! isset($request['tools'])
+            && str_contains($input, 'Pengguna ingin memasang sensor level.')
+            && str_contains($input, 'Pengguna: cek logger bendungan')
+            && str_contains($input, '[memanggil get_logger')
+            // Tool output is clipped so one big result cannot blow up the summarizer input.
+            && strlen($input) < 2500;
+    });
+});
+
+it('folds a long batch in chunks so the tail is summarized too', function () {
+    Http::fakeSequence('router.test/*')
+        ->push(assistantSse([['choices' => [['delta' => ['content' => 'RINGKASAN-1']]]]]))
+        ->push(assistantSse([['choices' => [['delta' => ['content' => 'RINGKASAN-2']]]]]))
+        ->push(assistantSse([['choices' => [['delta' => ['content' => 'RINGKASAN-3']]]]]));
+
+    // 48 messages of ~1400 chars is ~68k: three summarizer inputs of at most 24k.
+    $messages = [];
+    foreach (range(1, 24) as $i) {
+        $messages[] = ['role' => 'user', 'content' => "pertanyaan {$i} ".str_repeat('a', 1400)];
+        $messages[] = ['role' => 'assistant', 'content' => "jawaban {$i} ".str_repeat('b', 1400)];
+    }
+
+    test()->actingAs(User::factory()->create())
+        ->postJson('/assistant/compact', ['summary' => 'AWAL', 'messages' => $messages])
+        ->assertOk()->assertJsonPath('summary', 'RINGKASAN-3');
+
+    $inputs = Http::recorded()->map(fn ($pair) => $pair[0]['messages'][1]['content'])->values();
+    expect($inputs)->toHaveCount(3)
+        ->and($inputs[0])->toContain('AWAL')->toContain('pertanyaan 1 ')
+        ->and($inputs[1])->toContain('RINGKASAN-1')
+        ->and($inputs[2])->toContain('RINGKASAN-2')->toContain('jawaban 24 ');
+    foreach ($inputs as $input) {
+        expect(mb_strlen($input))->toBeLessThan(26000);
+    }
+});
+
+it('reports a failed summary instead of an empty one', function () {
+    Http::fake(['router.test/*' => Http::response(['error' => ['message' => 'down']], 500)]);
+
+    test()->actingAs(User::factory()->create())
+        ->postJson('/assistant/compact', ['messages' => [['role' => 'user', 'content' => 'halo']]])
+        ->assertStatus(502);
+});
+
+it('only lets signed-in users summarize', function () {
+    test()->postJson('/assistant/compact', ['messages' => [['role' => 'user', 'content' => 'halo']]])->assertUnauthorized();
+});

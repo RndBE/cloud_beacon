@@ -4,6 +4,11 @@
  * browser via runAssistantCommand (changes wait for the user's click), and the
  * results go back in the next turn. Module-level so the conversation survives
  * Inertia page visits (pages wrap themselves in AppLayout, which remounts).
+ *
+ * Each conversation is also saved per user (/assistant/conversations) so it can be
+ * continued after a reload, and its context is kept small: old tool output is
+ * clipped and, past a size, the oldest messages are summarized (/assistant/compact)
+ * into `summary`, which rides along with every request.
  */
 import { useSyncExternalStore } from 'react';
 import {
@@ -14,6 +19,14 @@ import {
     runAssistantCommand,
 } from '@/lib/assistant-commands';
 import type { CommandResult, Risk } from '@/lib/assistant-commands';
+import {
+    estimateChars,
+    pickCut,
+    repairApi,
+    repairCards,
+    shrinkOldResults,
+} from '@/lib/assistant-memory';
+import type { ApiMessage, ToolCall } from '@/lib/assistant-memory';
 import { csrfHeaders } from '@/lib/csrf-fetch';
 
 export type ToolStatus = 'awaiting' | 'running' | 'done' | 'failed' | 'denied';
@@ -32,27 +45,32 @@ export type ToolMessage = {
 export type ChatMessage =
     | { id: number; kind: 'user'; text: string }
     | { id: number; kind: 'assistant'; text: string; error?: string }
+    /** Small muted line, e.g. "older context was summarized"; `key` is a chat.* locale key. */
+    | { id: number; kind: 'note'; key: string }
     | ToolMessage;
+export type ConversationInfo = {
+    id: number;
+    title: string | null;
+    updated_at: string;
+};
 
-type ToolCall = {
-    id: string;
-    type: 'function';
-    function: { name: string; arguments: string };
+type ChatState = {
+    open: boolean;
+    busy: boolean;
+    messages: ChatMessage[];
+    /** Saved chat being shown; null until the first save of a new one. */
+    conversationId: number | null;
+    conversations: ConversationInfo[];
 };
-type ApiMessage = {
-    role: 'user' | 'assistant' | 'tool';
-    content: string;
-    tool_calls?: ToolCall[];
-    tool_call_id?: string;
-    reasoning_content?: string;
-};
-type ChatState = { open: boolean; busy: boolean; messages: ChatMessage[] };
 type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never;
 
 const STORAGE_KEY = 'cloud-beacon.chat-open';
 const MAX_ROUNDS = 10; // model turns per user message
 const MAX_HISTORY = 60; // messages sent per request
 const MAX_RESULT_CHARS = 12000;
+const COMPACT_AT = 36000; // chars of history (~10k tokens) before older turns are summarized
+const KEEP_RECENT = 12000; // chars of the newest turns kept verbatim when summarizing
+const RESUME_WITHIN_MS = 12 * 60 * 60 * 1000; // reopen the last chat if it is this fresh
 
 function readOpen(): boolean {
     try {
@@ -62,9 +80,17 @@ function readOpen(): boolean {
     }
 }
 
-let state: ChatState = { open: readOpen(), busy: false, messages: [] };
+let state: ChatState = {
+    open: readOpen(),
+    busy: false,
+    messages: [],
+    conversationId: null,
+    conversations: [],
+};
 let nextId = 1;
 let history: ApiMessage[] = [];
+// Memory of the messages that were compacted away; sent with every request.
+let summary = '';
 let abort: AbortController | null = null;
 const approvals = new Map<number, (approved: boolean) => void>();
 // Logger names seen in tool results, so approval cards can say which logger.
@@ -125,10 +151,191 @@ export function stopChat() {
     approvals.clear();
 }
 
+// ------------------------------------------------------------ saved history
+
+async function call<T>(
+    method: string,
+    url: string,
+    body?: unknown,
+    signal?: AbortSignal,
+): Promise<T> {
+    const res = await fetch(url, {
+        method,
+        credentials: 'same-origin',
+        signal,
+        headers: {
+            Accept: 'application/json',
+            ...(body === undefined
+                ? {}
+                : { 'Content-Type': 'application/json' }),
+            ...csrfHeaders(),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+}
+
+// One object per conversation being shown. A save that finishes after "new chat"
+// resolves its server id through this object, so it cannot attach to the wrong chat.
+let session: { id: number | null } = { id: null };
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let saving: Promise<void> = Promise.resolve();
+
+const scheduleSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(flushSave, 800);
+};
+
+function flushSave() {
+    clearTimeout(saveTimer);
+    const first = state.messages.find((m) => m.kind === 'user');
+    if (first?.kind !== 'user') return;
+    const mine = session;
+    const body = {
+        title: first.text.slice(0, 60),
+        summary,
+        ui: state.messages.slice(-300),
+        api: trimmedHistory(),
+    };
+    saving = saving.then(async () => {
+        try {
+            if (mine.id) {
+                await call('PUT', `/assistant/conversations/${mine.id}`, body);
+            } else {
+                const created = await call<{ id: number }>(
+                    'POST',
+                    '/assistant/conversations',
+                    body,
+                );
+                mine.id = created.id;
+                if (session === mine) update({ conversationId: created.id });
+            }
+        } catch {
+            // saving is a convenience; the chat itself keeps working
+        }
+    });
+}
+
+/** Empty chat. Never saves: callers flush first when the old one should be kept. */
+function startFresh() {
+    clearTimeout(saveTimer);
+    session = { id: null };
+    history = [];
+    summary = '';
+    update({ messages: [], busy: false, conversationId: null });
+}
+
 export function newChat() {
     stopChat();
-    history = [];
-    update({ messages: [], busy: false });
+    flushSave();
+    startFresh();
+}
+
+export async function loadConversations() {
+    try {
+        update({
+            conversations: await call<ConversationInfo[]>(
+                'GET',
+                '/assistant/conversations',
+            ),
+        });
+    } catch {
+        // list stays as it was
+    }
+}
+
+export async function openConversation(id: number) {
+    const saved = await call<{
+        id: number;
+        summary: string | null;
+        ui: ChatMessage[];
+        api: ApiMessage[];
+    }>('GET', `/assistant/conversations/${id}`);
+    stopChat();
+    flushSave();
+    session = { id: saved.id };
+    history = repairApi(saved.api);
+    summary = saved.summary ?? '';
+    update({
+        // Fresh ids: an aborted turn of the previous chat may still hold an old one.
+        messages: repairCards(saved.ui).map((m) => ({ ...m, id: nextId++ })),
+        busy: false,
+        conversationId: saved.id,
+    });
+}
+
+export async function deleteConversation(id: number) {
+    await call('DELETE', `/assistant/conversations/${id}`);
+    update({ conversations: state.conversations.filter((c) => c.id !== id) });
+    if (state.conversationId === id) {
+        stopChat();
+        startFresh();
+    }
+}
+
+let owner: number | null = null;
+
+/**
+ * Once per signed-in user: fetch their chat list and pick up the last chat when it
+ * is recent. A different account in the same tab starts clean and nothing of the
+ * previous account is saved under the new one.
+ */
+export async function bootstrapChat(userId: number) {
+    if (owner === userId) return;
+    const switched = owner !== null;
+    owner = userId;
+    if (switched) {
+        stopChat();
+        startFresh();
+        update({ conversations: [] });
+    }
+    await loadConversations();
+    const latest = state.conversations[0];
+    if (
+        latest &&
+        !state.messages.length &&
+        Date.now() - Date.parse(latest.updated_at) < RESUME_WITHIN_MS
+    ) {
+        try {
+            await openConversation(latest.id);
+        } catch {
+            // start empty
+        }
+    }
+}
+
+// ------------------------------------------------------------ context size
+
+let compactFailed = false;
+
+/**
+ * Keep the context the model receives small: clip old tool output, and once the
+ * history is big summarize its oldest turns into `summary`. A failed summary is
+ * not retried within the same message; the plain MAX_HISTORY trim still applies.
+ */
+async function compactIfNeeded(signal: AbortSignal) {
+    history = shrinkOldResults(history);
+    if (compactFailed || estimateChars(history) + summary.length < COMPACT_AT)
+        return;
+    const cut = pickCut(history, KEEP_RECENT);
+    if (cut <= 0) return;
+
+    const note = push({ kind: 'note', key: 'chat.compacting' });
+    try {
+        const res = await call<{ summary: string }>(
+            'POST',
+            '/assistant/compact',
+            { summary, messages: history.slice(0, cut) },
+            signal,
+        );
+        summary = res.summary;
+        history = history.slice(cut);
+        patch(note, { key: 'chat.compacted' });
+    } catch {
+        compactFailed = true;
+        remove(note);
+    }
 }
 
 export function answerApproval(id: number, approved: boolean) {
@@ -166,6 +373,7 @@ async function streamTurn(
         body: JSON.stringify({
             messages: trimmedHistory(),
             tools: assistantTools,
+            summary,
             page: {
                 url: location.pathname + location.search,
                 title: document.title,
@@ -289,12 +497,14 @@ export async function sendMessage(text: string) {
 
     push({ kind: 'user', text: value });
     history.push({ role: 'user', content: value });
+    compactFailed = false;
     const controller = (abort = new AbortController());
     update({ busy: true });
     let bubble = 0;
 
     try {
         for (let round = 0; round < MAX_ROUNDS; round++) {
+            await compactIfNeeded(controller.signal);
             let reply = '';
             bubble = push({ kind: 'assistant', text: '' });
             const message = await streamTurn(controller.signal, (token) => {
@@ -304,6 +514,7 @@ export async function sendMessage(text: string) {
             if (message.content) patch(bubble, { text: message.content });
             else remove(bubble);
             history.push(message);
+            scheduleSave();
             if (!message.tool_calls?.length) return;
 
             // Every tool call needs a result in the history, even when stopped.
@@ -337,5 +548,6 @@ export async function sendMessage(text: string) {
     } finally {
         if (abort === controller) abort = null;
         update({ busy: false });
+        scheduleSave();
     }
 }
