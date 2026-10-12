@@ -36,11 +36,11 @@ const POLL_MS = 1_500;
 
 // Errors other than 422 come back as an HTML error page (bootstrap/app.php), so map
 // the status instead of reading the body.
-async function errorMessage(response: Response): Promise<string> {
+export async function errorMessage(response: Response): Promise<string> {
     if (response.status === 419)
         return 'Sesi login sudah kedaluwarsa. Muat ulang halaman lalu coba lagi.';
     if (response.status === 403)
-        return 'Anda tidak punya izin memasang atau melepas alat di logger ini.';
+        return 'Anda tidak punya izin mengelola alat Security System di logger ini.';
     if (response.status === 404)
         return 'Logger atau percobaan pemasangan tidak ditemukan.';
     const data = (await response.json().catch(() => null)) as {

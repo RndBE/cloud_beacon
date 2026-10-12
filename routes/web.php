@@ -15,7 +15,9 @@ use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
+use App\Http\Controllers\SecurityCardController;
 use App\Http\Controllers\SecurityDeviceController;
+use App\Http\Controllers\SecurityDeviceStatusController;
 use App\Http\Controllers\SecurityPairingController;
 use App\Http\Controllers\SecurityStockController;
 use App\Http\Controllers\TopologyController;
@@ -84,6 +86,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('loggers/{id}/security/device', [SecurityPairingController::class, 'unpair'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.unpair');
+    Route::get('loggers/{id}/security/cards', [SecurityCardController::class, 'index'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.index');
+    Route::post('loggers/{id}/security/cards/challenge', [SecurityCardController::class, 'challenge'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.challenge');
+    Route::post('loggers/{id}/security/cards/set', [SecurityCardController::class, 'set'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.set');
+    Route::post('loggers/{id}/security/siren-off', [SecurityCardController::class, 'sirenOff'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.siren-off');
     Route::get('loggers/{id}', [LoggerController::class, 'show'])
         ->middleware('permission:loggers.view')
         ->name('loggers.show');
@@ -130,6 +144,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/security-devices', [SecurityStockController::class, 'store'])
         ->middleware('permission:production.create')
         ->name('production.security-devices.store');
+    // Device status pages: reachable from the list (production.view) and from the logger
+    // tab (loggers.view); the controller then checks the device's logger is visible.
+    Route::get('production/security-devices/{deviceId}', [SecurityDeviceStatusController::class, 'show'])
+        ->middleware('permission:loggers.view,production.view')
+        ->name('production.security-devices.show');
+    Route::get('production/security-devices/{deviceId}/data', [SecurityDeviceStatusController::class, 'data'])
+        ->middleware('permission:loggers.view,production.view')
+        ->name('production.security-devices.data');
+    Route::get('production/security-devices/{deviceId}/cards', [SecurityDeviceStatusController::class, 'cards'])
+        ->middleware('permission:loggers.view,production.view')
+        ->name('production.security-devices.cards');
 
     Route::get('production/models', [DeviceModelController::class, 'index'])
         ->middleware('permission:production.view')

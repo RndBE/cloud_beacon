@@ -1,5 +1,15 @@
-import { Cctv, Download, LoaderCircle, RefreshCw } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from '@inertiajs/react';
+import {
+    Activity,
+    BellOff,
+    BellRing,
+    Cctv,
+    KeyRound,
+    LoaderCircle,
+    RefreshCw,
+    Siren,
+} from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -9,353 +19,286 @@ import {
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { postJson } from '@/lib/csrf-fetch';
+import { sendAtur } from './security-atur-client';
+import { SecurityCardsPanel } from './security-cards-panel';
 import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from '@/components/ui/table';
-import { SecurityPairingPanel, UnpairButton } from './security-pairing-panel';
+    errorMessage,
+    SecurityPairingPanel,
+    UnpairButton,
+} from './security-pairing-panel';
 import type { PairingState, StockDevice } from './security-pairing-panel';
 
-// Last telemetry/status message from the device, stored as-is (see SecurityMessageHandler).
-type SecurityStatus = Record<string, string | number | boolean | null>;
+// The Security Cam tab is the device's configurator: pair/unpair and access cards.
+// Its state, photos and event log live on Production > Security System > <ID>.
 
 interface SecurityDevice {
     deviceId: string;
     name: string | null;
     online: boolean;
     lastSeenAt: string | null;
-    status: SecurityStatus | null;
-}
-
-interface SecurityPhoto {
-    id: number;
-    name: string;
-    downloadName: string;
-    size: number | null;
-    complete: boolean;
-    chunksReceived: number;
-    chunksExpected: number | null;
-    capturedAt: string | null;
-    // Signed, valid for 10 minutes; null while the photo is still incomplete.
-    url: string | null;
-}
-
-interface SecurityEvent {
-    id: number;
-    type: string;
-    detail: string | null;
-    occurredAt: string | null;
-    timeValid: boolean;
-    receivedAt: string;
-    photo: SecurityPhoto | null;
+    // From the last telemetry; null before the first one.
+    siren: boolean | null;
 }
 
 interface SecurityResponse {
     device: SecurityDevice | null;
-    events: SecurityEvent[];
-    photos: SecurityPhoto[];
-    // May pair/unpair: loggers.create plus manage access to this logger.
+    // May configure: loggers.create plus manage access to this logger.
     canManage: boolean;
     // Only while no device is installed.
     stock?: StockDevice[];
     pairing?: PairingState | null;
 }
 
-type Tone = 'red' | 'amber' | 'green';
-
 const POLL_MS = 15_000;
-
-// Every poll re-signs the photo URLs. Reusing a URL for a while keeps the thumbnails from
-// being re-downloaded every 15 seconds. Must stay below PHOTO_URL_MINUTES (10) in
-// SecurityDeviceController, or a reused URL can expire before it is replaced.
-const URL_REUSE_MS = 8 * 60_000;
-
-type UrlCache = Map<number, { url: string; at: number }>;
-
-function stableUrl(cache: UrlCache, photo: SecurityPhoto): SecurityPhoto {
-    if (!photo.url) return photo;
-    const now = Date.now();
-    const hit = cache.get(photo.id);
-    if (hit && now - hit.at < URL_REUSE_MS) return { ...photo, url: hit.url };
-    cache.set(photo.id, { url: photo.url, at: now });
-    return photo;
-}
-
-function withStableUrls(
-    data: SecurityResponse,
-    cache: UrlCache,
-): SecurityResponse {
-    return {
-        ...data,
-        photos: data.photos.map((photo) => stableUrl(cache, photo)),
-        events: data.events.map((event) => ({
-            ...event,
-            photo: event.photo && stableUrl(cache, event.photo),
-        })),
-    };
-}
-
-const BADGE_TONE: Record<Tone, string> = {
-    red: 'border-red-200 text-red-600 dark:border-red-900',
-    amber: 'border-amber-200 text-amber-600 dark:border-amber-900',
-    green: 'border-emerald-200 text-emerald-600 dark:border-emerald-900',
-};
-
-const TEXT_TONE: Record<Tone, string> = {
-    red: 'text-red-600',
-    amber: 'text-amber-600',
-    green: 'text-emerald-600',
-};
-
-// Event severity as defined by the device firmware; anything unlisted is plain info.
-const EVENT_TONE: Record<string, Tone> = {
-    PEMBOBOLAN: 'red',
-    TAMPER_BUKA: 'red',
-    LISTRIK_PADAM: 'red',
-    KAMERA_HILANG: 'amber',
-    KAMERA_ULANG: 'amber',
-    BATERAI_LEMAH: 'amber',
-    KARTU_DITOLAK: 'amber',
-    FOTO_GAGAL: 'amber',
-    FOTO_ULANG_GAGAL: 'amber',
-    WIFI_GAGAL: 'amber',
-    ATUR_DITOLAK: 'amber',
-    ALARM_RESET_MQTT: 'amber', // siren silenced remotely
-    KARTU_SAH: 'green',
-    PINTU_BUKA_SAH: 'green',
-    KAMERA_KEMBALI: 'green',
-    LISTRIK_PULIH: 'green',
-    BATERAI_NORMAL: 'green',
-    TAMPER_TUTUP: 'green',
-};
 
 function formatTime(iso: string | null): string {
     return iso ? new Date(iso).toLocaleString('id-ID') : '—';
 }
 
-function formatUptime(seconds: number): string {
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes} mnt`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours} jam ${minutes % 60} mnt`;
-    return `${Math.floor(hours / 24)} hari ${hours % 24} jam`;
-}
+// Two controls. On/Off: "on" is the signed sirine_nyala op (the siren keeps sounding
+// until switched off); "off" is CTRL SIREN_OFF, which needs no password because the
+// firmware lets anyone silence but never disarm. Uji sirine: the signed sirine_uji op
+// sounds it for 1-30 s and the device switches it off by itself.
+function SirenControl({
+    loggerId,
+    siren,
+    password,
+    onDone,
+}: {
+    loggerId: string;
+    siren: boolean | null;
+    password: string;
+    onDone: () => void;
+}) {
+    const [busy, setBusy] = useState<null | 'on' | 'off' | 'test'>(null);
+    const [seconds, setSeconds] = useState('5');
+    const [message, setMessage] = useState<string | null>(null);
+    const [failed, setFailed] = useState(false);
+    // Telemetry only arrives once a minute, so after a command the controls follow what
+    // we just told the device until `until`, then fall back to the reported state.
+    const [override, setOverride] = useState<{
+        on: boolean;
+        until: number;
+    } | null>(null);
 
-function yesNo(value: unknown): string {
-    if (value === true) return 'Ya';
-    if (value === false) return 'Tidak';
-    return '—';
-}
-
-function text(value: unknown, unit = ''): string {
-    if (value === null || value === undefined || value === '') return '—';
-    if (value === 'ok') return 'OK';
-    return `${value}${unit}`;
-}
-
-function statusItems(
-    s: SecurityStatus,
-): { label: string; value: string; tone?: Tone }[] {
-    return [
-        {
-            // 'siaga' (armed) is the normal state; a disarmed alarm is what needs attention.
-            label: 'Alarm',
-            value: text(s.alarm),
-            tone: s.alarm === 'nonaktif' ? 'amber' : undefined,
-        },
-        {
-            label: 'Pintu',
-            value: text(s.pintu),
-            tone: s.pintu === 'terbuka' ? 'amber' : undefined,
-        },
-        { label: 'Terkunci', value: yesNo(s.terkunci) },
-        {
-            label: 'Sirine',
-            value:
-                s.sirine === true ? 'Bunyi' : s.sirine === false ? 'Mati' : '—',
-            tone: s.sirine === true ? 'red' : undefined,
-        },
-        {
-            label: 'Kamera',
-            value: text(s.kamera),
-            tone: s.kamera === 'ok' ? 'green' : s.kamera ? 'amber' : undefined,
-        },
-        {
-            label: 'Pembaca Kartu',
-            value: text(s.pembaca),
-            tone: s.pembaca === 'ok' ? 'green' : s.pembaca ? 'red' : undefined,
-        },
-        {
-            label: 'Pembobolan',
-            value: text(s.pembobolan),
-            tone: Number(s.pembobolan) > 0 ? 'red' : undefined,
-        },
-        { label: 'Kartu Terdaftar', value: text(s.kartu) },
-        { label: 'Sinyal', value: text(s.rssi, ' dBm') },
-        { label: 'Antrean', value: text(s.antrean) },
-        { label: 'VIN', value: text(s.vin, ' V') },
-        { label: 'VBAT', value: text(s.vbat, ' V') },
-        {
-            // Casing tamper switch; null on boards built without one.
-            label: 'Tamper',
-            value:
-                s.tamper === true
-                    ? 'Terbuka'
-                    : s.tamper === false
-                      ? 'Tertutup'
-                      : '—',
-            tone: s.tamper === true ? 'red' : undefined,
-        },
-        { label: 'Jam Sinkron', value: yesNo(s.jam_sinkron) },
-        {
-            label: 'Uptime',
-            value: typeof s.uptime === 'number' ? formatUptime(s.uptime) : '—',
-        },
-    ];
-}
-
-// The URL is same-origin, so the download attribute saves the file instead of opening it.
-function PhotoDownload({ photo }: { photo: SecurityPhoto }) {
-    if (!photo.url) return null;
-    return (
-        <Button
-            asChild
-            size="icon-sm"
-            variant="ghost"
-            className="shrink-0"
-            title="Unduh foto"
-        >
-            <a href={photo.url} download={photo.downloadName}>
-                <Download className="size-4" />
-                <span className="sr-only">Unduh foto</span>
-            </a>
-        </Button>
-    );
-}
-
-function PhotoGallery({ photos }: { photos: SecurityPhoto[] }) {
-    if (photos.length === 0) {
-        return (
-            <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
-                Belum ada foto dari kamera.
-            </p>
+    useEffect(() => {
+        if (!override) return;
+        const timeout = setTimeout(
+            () => setOverride(null),
+            Math.max(0, override.until - Date.now()),
         );
+        return () => clearTimeout(timeout);
+    }, [override]);
+
+    const on = override ? override.on : siren;
+
+    function report(text: string, ok: boolean) {
+        setFailed(!ok);
+        setMessage(`${text.charAt(0).toUpperCase()}${text.slice(1)}`);
     }
 
+    async function switchOff() {
+        setBusy('off');
+        setMessage(null);
+        try {
+            const response = await postJson(
+                `/loggers/${loggerId}/security/siren-off`,
+                {},
+            );
+            if (!response.ok) {
+                report(await errorMessage(response), false);
+                return;
+            }
+            const data = (await response.json()) as { message?: string };
+            report(data.message ?? 'Sirine dimatikan.', true);
+            setOverride({ on: false, until: Date.now() + 60_000 });
+            onDone();
+        } finally {
+            setBusy(null);
+        }
+    }
+
+    async function signed(
+        state: 'on' | 'test',
+        op: string,
+        arg: string,
+        onFor: number,
+    ) {
+        setBusy(state);
+        setMessage(null);
+        try {
+            const result = await sendAtur(loggerId, password, op, arg);
+            report(`${result.message}.`, true);
+            setOverride({ on: true, until: Date.now() + onFor });
+            onDone();
+        } catch (e) {
+            report(e instanceof Error ? e.message : String(e), false);
+        } finally {
+            setBusy(null);
+        }
+    }
+
+    const spinner = <LoaderCircle className="size-4 animate-spin" />;
+
     return (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            {photos.map((photo) => (
-                <div
-                    key={photo.id}
-                    className="overflow-hidden rounded-md border border-border/60"
+        <div className="space-y-4 rounded-md border border-border/60 p-4">
+            <p className="flex items-center gap-2 text-sm font-semibold">
+                <Siren className="size-4" /> Sirine
+                <Badge
+                    variant="outline"
+                    className={
+                        on
+                            ? 'border-red-200 text-red-600 dark:border-red-900'
+                            : ''
+                    }
                 >
-                    {photo.url ? (
-                        <a
-                            href={photo.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="Buka ukuran penuh"
-                        >
-                            <img
-                                src={photo.url}
-                                alt={photo.name}
-                                loading="lazy"
-                                className="aspect-[4/3] w-full bg-muted object-cover"
-                            />
-                        </a>
-                    ) : (
-                        <div className="flex aspect-[4/3] items-center justify-center bg-muted px-2 text-center text-xs text-muted-foreground">
-                            Belum lengkap
-                            {photo.chunksExpected
-                                ? ` · ${photo.chunksReceived}/${photo.chunksExpected} potongan`
-                                : ''}
-                        </div>
-                    )}
-                    <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-                        <div className="min-w-0">
-                            <p className="truncate text-xs font-medium">
-                                {formatTime(photo.capturedAt)}
-                            </p>
-                            <p className="text-[11px] text-muted-foreground">
-                                {photo.size
-                                    ? `${Math.max(1, Math.round(photo.size / 1024))} KB`
-                                    : '—'}
-                            </p>
-                        </div>
-                        <PhotoDownload photo={photo} />
-                    </div>
+                    {on === true
+                        ? 'Bunyi'
+                        : on === false
+                          ? 'Mati'
+                          : 'Belum diketahui'}
+                </Badge>
+            </p>
+
+            <div className="space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground uppercase">
+                    Kondisi
+                </p>
+                <div
+                    role="radiogroup"
+                    aria-label="Kondisi sirine"
+                    className="inline-flex overflow-hidden rounded-md border border-input"
+                >
+                    <Button
+                        role="radio"
+                        aria-checked={on === true}
+                        size="sm"
+                        variant={on === true ? 'destructive' : 'ghost'}
+                        className="gap-1.5 rounded-none"
+                        disabled={busy !== null || on === true}
+                        onClick={() =>
+                            // Stays on until switched off; the telemetry then confirms it.
+                            void signed('on', 'sirine_nyala', '', 60_000)
+                        }
+                    >
+                        {busy === 'on' ? (
+                            spinner
+                        ) : (
+                            <BellRing className="size-4" />
+                        )}
+                        On
+                    </Button>
+                    <Button
+                        role="radio"
+                        aria-checked={on === false}
+                        size="sm"
+                        variant={on === false ? 'secondary' : 'ghost'}
+                        className="gap-1.5 rounded-none border-l border-input"
+                        disabled={busy !== null || on === false}
+                        onClick={() => void switchOff()}
+                    >
+                        {busy === 'off' ? (
+                            spinner
+                        ) : (
+                            <BellOff className="size-4" />
+                        )}
+                        Off
+                    </Button>
                 </div>
-            ))}
+                <p className="text-xs text-muted-foreground">
+                    On menyalakan sirine sampai di-Off-kan (perlu password
+                    alat). Off membungkam sirine dan melepas kunci pembobolan;
+                    alarm tetap siaga.
+                </p>
+            </div>
+
+            <div className="space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground uppercase">
+                    Uji sirine
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={seconds}
+                        onChange={(e) => setSeconds(e.target.value)}
+                        className="h-8 w-20"
+                        aria-label="Lama uji sirine (detik)"
+                    />
+                    <span className="text-sm text-muted-foreground">detik</span>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        disabled={busy !== null || on === true}
+                        onClick={() =>
+                            void signed(
+                                'test',
+                                'sirine_uji',
+                                seconds,
+                                Number(seconds || 5) * 1000,
+                            )
+                        }
+                    >
+                        {busy === 'test' ? (
+                            spinner
+                        ) : (
+                            <BellRing className="size-4" />
+                        )}
+                        Uji sirine
+                    </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                    Sirine berbunyi 1-30 detik lalu mati sendiri (perlu password
+                    alat). Ditolak alat kalau sirine sedang berbunyi karena
+                    pembobolan.
+                </p>
+            </div>
+
+            {message && (
+                <p
+                    className={`text-sm ${failed ? 'text-destructive' : 'text-emerald-700 dark:text-emerald-300'}`}
+                >
+                    {message}
+                </p>
+            )}
         </div>
     );
 }
 
-function EventsTable({ events }: { events: SecurityEvent[] }) {
-    if (events.length === 0) {
-        return (
-            <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
-                Belum ada kejadian tercatat.
-            </p>
-        );
-    }
-
+function PasswordField({
+    value,
+    onChange,
+}: {
+    value: string;
+    onChange: (value: string) => void;
+}) {
     return (
-        <Table>
-            <TableHeader>
-                <TableRow>
-                    <TableHead>Waktu</TableHead>
-                    <TableHead>Jenis</TableHead>
-                    <TableHead>Detail</TableHead>
-                    <TableHead className="text-right">Foto</TableHead>
-                </TableRow>
-            </TableHeader>
-            <TableBody>
-                {events.map((event) => {
-                    const tone = EVENT_TONE[event.type];
-                    return (
-                        <TableRow key={event.id}>
-                            {/* Before the device clock syncs its event time is near 1970, so show when it arrived. */}
-                            <TableCell className="whitespace-nowrap">
-                                {formatTime(
-                                    event.timeValid
-                                        ? event.occurredAt
-                                        : event.receivedAt,
-                                )}
-                                {!event.timeValid && (
-                                    <span className="ml-1 text-xs text-muted-foreground">
-                                        (jam diterima)
-                                    </span>
-                                )}
-                            </TableCell>
-                            <TableCell>
-                                <Badge
-                                    variant="outline"
-                                    className={tone && BADGE_TONE[tone]}
-                                >
-                                    {event.type.replaceAll('_', ' ')}
-                                </Badge>
-                            </TableCell>
-                            <TableCell className="font-mono text-xs text-muted-foreground">
-                                {event.detail || '—'}
-                            </TableCell>
-                            <TableCell className="py-1 text-right">
-                                {event.photo?.url ? (
-                                    <PhotoDownload photo={event.photo} />
-                                ) : (
-                                    <span className="text-muted-foreground">
-                                        —
-                                    </span>
-                                )}
-                            </TableCell>
-                        </TableRow>
-                    );
-                })}
-            </TableBody>
-        </Table>
+        <div className="space-y-1.5 rounded-md border border-border/60 p-4">
+            <Label
+                htmlFor="security-device-password"
+                className="flex items-center gap-1.5"
+            >
+                <KeyRound className="size-3.5" /> Password alat
+            </Label>
+            <Input
+                id="security-device-password"
+                type="password"
+                autoComplete="off"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="max-w-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+                Untuk uji sirine dan mengubah kartu. Dipakai menandatangani
+                perintah di browser ini; tidak dikirim ke server dan tidak
+                disimpan.
+            </p>
+        </div>
     );
 }
 
@@ -364,7 +307,8 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
-    const urlCache = useRef<UrlCache>(new Map());
+    // Device password, only in this tab's memory.
+    const [password, setPassword] = useState('');
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -373,12 +317,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                 headers: { Accept: 'application/json' },
             });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            setData(
-                withStableUrls(
-                    (await response.json()) as SecurityResponse,
-                    urlCache.current,
-                ),
-            );
+            setData((await response.json()) as SecurityResponse);
             setError(null);
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
@@ -435,41 +374,49 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     } else {
         body = (
             <>
-                {device.status ? (
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                        {statusItems(device.status).map((item) => (
-                            <div
-                                key={item.label}
-                                className="rounded-md border border-border/60 px-3 py-2"
-                            >
-                                <p className="text-[11px] font-semibold text-muted-foreground uppercase">
-                                    {item.label}
-                                </p>
-                                <p
-                                    className={`text-sm font-medium capitalize ${item.tone ? TEXT_TONE[item.tone] : ''}`}
-                                >
-                                    {item.value}
-                                </p>
-                            </div>
-                        ))}
-                    </div>
-                ) : (
+                <div className="flex flex-col gap-2 rounded-md border border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-sm text-muted-foreground">
-                        Alat belum mengirim telemetri.
+                        Keadaan alat, foto terakhir dan log kejadian ada di
+                        halaman Security System.
+                    </p>
+                    <Button
+                        asChild
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                    >
+                        <Link
+                            href={`/production/security-devices/${device.deviceId}`}
+                        >
+                            <Activity className="size-4" /> Lihat status &amp;
+                            log
+                        </Link>
+                    </Button>
+                </div>
+                {data.canManage ? (
+                    <>
+                        <PasswordField
+                            value={password}
+                            onChange={setPassword}
+                        />
+                        <SirenControl
+                            loggerId={loggerId}
+                            siren={device.siren}
+                            password={password}
+                            onDone={() => void load()}
+                        />
+                        <SecurityCardsPanel
+                            loggerId={loggerId}
+                            deviceId={device.deviceId}
+                            password={password}
+                        />
+                    </>
+                ) : (
+                    <p className="text-xs text-muted-foreground">
+                        Mengubah kartu akses hanya untuk pengguna yang boleh
+                        mengelola logger ini.
                     </p>
                 )}
-                <div className="space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase">
-                        Foto terbaru
-                    </p>
-                    <PhotoGallery photos={data.photos} />
-                </div>
-                <div className="space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase">
-                        Kejadian terbaru
-                    </p>
-                    <EventsTable events={data.events} />
-                </div>
             </>
         );
     }
@@ -491,9 +438,9 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                                     <Badge
                                         variant="outline"
                                         className={
-                                            BADGE_TONE[
-                                                device.online ? 'green' : 'red'
-                                            ]
+                                            device.online
+                                                ? 'border-emerald-200 text-emerald-600 dark:border-emerald-900'
+                                                : 'border-red-200 text-red-600 dark:border-red-900'
                                         }
                                     >
                                         {device.online ? 'Online' : 'Offline'}
@@ -503,8 +450,8 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                         </CardTitle>
                         <CardDescription>
                             {device
-                                ? `Terakhir terlihat ${formatTime(device.lastSeenAt)} · diperbarui tiap ${POLL_MS / 1000} detik`
-                                : 'Status dan riwayat kejadian alat Security System yang dipasang di logger ini.'}
+                                ? `Konfigurator alat · terakhir terlihat ${formatTime(device.lastSeenAt)}`
+                                : 'Pasang alat Security System ke logger ini.'}
                         </CardDescription>
                     </div>
                     <div className="flex items-start gap-1">

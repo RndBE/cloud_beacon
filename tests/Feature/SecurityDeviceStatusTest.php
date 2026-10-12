@@ -8,7 +8,9 @@ use App\Models\SecurityEvent;
 use App\Models\SecurityPhoto;
 use App\Models\User;
 use App\Services\IdHasher;
+use App\Services\SecurityCommandService;
 use Illuminate\Support\Facades\Storage;
+use Inertia\Testing\AssertableInertia as Assert;
 
 function securityTabViewer(): User
 {
@@ -72,12 +74,57 @@ it('returns no device when nothing is paired with the logger', function () {
         ->assertOk()
         ->assertExactJson([
             'device' => null,
-            'events' => [],
-            'photos' => [],
             'canManage' => false, // view-only role
             'stock' => [],
             'pairing' => null,
         ]);
+});
+
+it('gives the logger tab only a summary of the installed device', function () {
+    $user = securityTabViewer();
+    [$logger] = pairedSecurityDevice($user);
+
+    $this->actingAs($user)
+        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->assertOk()
+        ->assertJsonPath('device.deviceId', 'SS0001')
+        ->assertJsonPath('canManage', false)
+        ->assertJsonMissingPath('events')
+        ->assertJsonMissingPath('device.status');
+});
+
+it('renders the device status page for a device on a visible logger', function () {
+    $user = securityTabViewer();
+    [$logger] = pairedSecurityDevice($user);
+
+    $this->actingAs($user)
+        ->get(route('production.security-devices.show', 'SS0001'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('production/security-device')
+            ->where('deviceId', 'SS0001')
+            ->where('logger.id', IdHasher::encode($logger->id)));
+});
+
+it('keeps stock units to production.view holders', function () {
+    SecurityDevice::create(['device_id' => 'SS0009']);
+
+    $this->actingAs(securityTabViewer())
+        ->getJson(route('production.security-devices.data', 'SS0009'))
+        ->assertForbidden();
+});
+
+it('reads the card list from the device without changing anything', function () {
+    $user = securityTabViewer();
+    pairedSecurityDevice($user);
+    $this->mock(SecurityCommandService::class)->shouldReceive('request')
+        ->withArgs(fn ($device, $payload) => $payload === ['SECURITY' => ['cmd' => 'GET']])
+        ->andReturn(['status' => 'OK', 'kartu_uid' => ['97:6F:BD:62'], 'maks_kartu' => 32]);
+
+    $this->actingAs($user)
+        ->getJson(route('production.security-devices.cards', 'SS0001'))
+        ->assertOk()
+        ->assertExactJson(['cards' => ['97:6F:BD:62'], 'maxCards' => 32]);
 });
 
 it('returns the paired device status and its events newest first', function () {
@@ -94,7 +141,7 @@ it('returns the paired device status and its events newest first', function () {
     securityEvent($device, 'PEMBOBOLAN', '2026-10-12 09:19:34', ['detail' => 'Pintu dibuka TANPA tap kartu']);
 
     $response = $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertOk()
         ->assertJsonPath('device.deviceId', 'SS0001')
         ->assertJsonPath('device.online', true)
@@ -118,7 +165,7 @@ it('reports a device as offline once it stops reporting', function () {
     ]);
 
     $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertOk()
         ->assertJsonPath('device.online', false);
 });
@@ -129,7 +176,7 @@ it('hides the security data of loggers the user cannot see', function () {
     SecurityDevice::create(['device_id' => 'SS0001', 'logger_id' => $logger->id]);
 
     $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertNotFound();
 });
 
@@ -142,11 +189,10 @@ it('links FOTO events to their photo but not resends of it', function () {
     securityEvent($device, 'FOTO_ULANG', '2026-10-12 09:52:51', ['detail' => '/20261012_093025.jpg']);
 
     $response = $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertOk()
-        ->assertJsonCount(1, 'photos')
-        ->assertJsonPath('photos.0.id', $photo->id)
-        ->assertJsonPath('photos.0.downloadName', 'SS0001_20261012_093025.jpg');
+        ->assertJsonPath('latestPhoto.id', $photo->id)
+        ->assertJsonPath('latestPhoto.downloadName', 'SS0001_20261012_093025.jpg');
 
     $events = collect($response->json('events'))->keyBy('type');
     expect($events['FOTO']['photo']['id'])->toBe($photo->id)
@@ -154,21 +200,37 @@ it('links FOTO events to their photo but not resends of it', function () {
         ->and($events['FOTO_ULANG']['photo'])->toBeNull();
 });
 
+it('shows only the newest photo on its own and leaves older ones on their events', function () {
+    Storage::fake('local');
+    $user = securityTabViewer();
+    [$logger, $device] = pairedSecurityDevice($user);
+    $older = securityPhoto($device, '/20261012_090000.jpg', '2026-10-12 09:00:00');
+    $newest = securityPhoto($device, '/20261012_100000.jpg', '2026-10-12 10:00:00');
+    securityEvent($device, 'FOTO', '2026-10-12 09:00:01', ['detail' => '/20261012_090000.jpg']);
+    securityEvent($device, 'FOTO', '2026-10-12 10:00:01', ['detail' => '/20261012_100000.jpg']);
+
+    $this->actingAs($user)
+        ->getJson(route('production.security-devices.data', 'SS0001'))
+        ->assertOk()
+        ->assertJsonPath('latestPhoto.id', $newest->id)
+        ->assertJsonPath('events.0.photo.id', $newest->id)
+        ->assertJsonPath('events.1.photo.id', $older->id);
+});
+
 it('gives no link for a photo that is still incomplete', function () {
     Storage::fake('local');
     $user = securityTabViewer();
     [$logger, $device] = pairedSecurityDevice($user);
+    $complete = securityPhoto($device, '/20261012_090000.jpg', '2026-10-12 09:00:00');
     securityPhoto($device, '/20261012_100000.jpg', '2026-10-12 10:00:00', [
         'path' => null, 'complete' => false, 'chunks_expected' => 9, 'chunks_received' => 4,
     ]);
     securityEvent($device, 'FOTO', '2026-10-12 10:00:01', ['detail' => '/20261012_100000.jpg']);
 
     $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertOk()
-        ->assertJsonPath('photos.0.complete', false)
-        ->assertJsonPath('photos.0.url', null)
-        ->assertJsonPath('photos.0.chunksReceived', 4)
+        ->assertJsonPath('latestPhoto.id', $complete->id) // the newer one is not complete yet
         ->assertJsonPath('events.0.photo', null);
 });
 
@@ -183,7 +245,7 @@ it('links a breach to the photo taken closest to it within its window', function
     securityEvent($device, 'PEMBOBOLAN', '2026-10-12 09:25:00'); // nothing within a minute
 
     $events = $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertOk()
         ->json('events');
 
@@ -200,7 +262,7 @@ it('links a breach to a photo whose camera clock runs a few seconds behind the b
     securityEvent($device, 'PEMBOBOLAN', '2026-10-12 09:19:34');
 
     $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertOk()
         ->assertJsonPath('events.0.photo.id', $skewed->id);
 });
@@ -214,7 +276,7 @@ it('sorts events logged before the device clock synced by when they arrived', fu
     ]);
 
     $this->actingAs($user)
-        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->getJson(route('production.security-devices.data', 'SS0001'))
         ->assertOk()
         ->assertJsonPath('events.0.type', 'TAMPER_BUKA')
         ->assertJsonPath('events.1.type', 'PINTU_TUTUP');

@@ -199,7 +199,12 @@ export default function SecurityDevicesIndex({
                                     {devices.map((device) => (
                                         <TableRow key={device.deviceId}>
                                             <TableCell className="font-mono font-medium">
-                                                {device.deviceId}
+                                                <Link
+                                                    href={`/production/security-devices/${device.deviceId}`}
+                                                    className="text-primary hover:underline"
+                                                >
+                                                    {device.deviceId}
+                                                </Link>
                                             </TableCell>
                                             <TableCell>
                                                 {device.name ?? (
