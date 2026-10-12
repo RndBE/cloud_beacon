@@ -92,7 +92,13 @@ class SecurityListen extends Command
                 $tickFoto = microtime(true);
                 $handler->foto()->tick();
             }
+            $mintaUlang = config('security.resend_enabled', true);
             foreach ($handler->foto()->ambilPermintaanUlang() as [$alat, $nama]) {
+                if (! $mintaUlang) {
+                    $this->line(now()->format('H:i:s')." {$alat}: {$nama} tidak lengkap (SECURITY_RESEND mati, tidak diminta ulang)");
+
+                    continue;
+                }
                 // UNESCAPED_SLASHES: tanpa itu nama terkirim sebagai "\/2026...jpg"
                 // dan ditolak papan sebagai nama tidak sah (terjadi 2026-10-12).
                 $client->publish('sub_'.$alat, json_encode(['cmd' => 'foto_ulang', 'name' => $nama], JSON_UNESCAPED_SLASHES));

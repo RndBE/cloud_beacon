@@ -168,6 +168,29 @@ it('menolak nama berkas yang bisa keluar dari folder penyimpanan', function () {
         ->and(SecurityPhoto::count())->toBe(0);
 });
 
+it('menolak jumlah potongan dan nomor urut yang tidak wajar', function () {
+    $nama = '/20261012_093025.jpg';
+    expect($this->h->handle('pub_SS0001', json_encode(['cmd' => 'foto_mulai', 'name' => $nama, 'n' => SecurityPhotoAssembler::MAKS_POTONGAN + 1])))
+        ->toContain('tidak wajar');
+
+    $this->h->handle('pub_SS0001', json_encode(['cmd' => 'foto_mulai', 'name' => $nama, 'n' => 3]));
+    foreach ([-1, 3, 999999] as $seq) {
+        expect($this->h->handle('pub_SS0001', json_encode(['cmd' => 'foto_data', 'name' => $nama, 'seq' => $seq, 'data' => 'AAAA'])))
+            ->toContain('potongan rusak');
+    }
+});
+
+it('membuang foto yang melebihi batas ukuran', function () {
+    $nama = '/20261012_093025.jpg';
+    $this->h->handle('pub_SS0001', json_encode(['cmd' => 'foto_mulai', 'name' => $nama, 'n' => 2]));
+    $besar = base64_encode(str_repeat('x', SecurityPhotoAssembler::MAKS_BYTE / 2 + 1));
+    $this->h->handle('pub_SS0001', json_encode(['cmd' => 'foto_data', 'name' => $nama, 'seq' => 0, 'data' => $besar]));
+    $hasil = $this->h->handle('pub_SS0001', json_encode(['cmd' => 'foto_data', 'name' => $nama, 'seq' => 1, 'data' => $besar]));
+
+    expect($hasil)->toContain('melebihi')
+        ->and(SecurityPhoto::count())->toBe(0);
+});
+
 it('tidak menyimpan potongan lengkap yang isinya bukan JPEG', function () {
     $hasil = kirimFoto($this->h, '/20261012_093025.jpg', potongan(str_repeat('x', 90), 3));
 

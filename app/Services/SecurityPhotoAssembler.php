@@ -33,6 +33,14 @@ class SecurityPhotoAssembler
 
     public const MAKS_KIRIM_ULANG = 2;
 
+    // Batas wajar satu foto. Kamera memotong per 768 byte dan fotonya 10-40 KB
+    // (VGA), jadi 400 potongan / 512 KB sudah jauh di atas foto sungguhan.
+    // Pesan di luar batas ini ditolak: tanpa batas, satu pengirim di broker
+    // bersama bisa membuat pendengar menimbun memori tanpa ujung.
+    public const MAKS_POTONGAN = 400;
+
+    public const MAKS_BYTE = 512 * 1024;
+
     /** @var array<string, array{device:int, name:string, n:?int, ts:?string, potong:array<int,string>, terakhir:int}> */
     private array $buffer = [];
 
@@ -55,25 +63,44 @@ class SecurityPhotoAssembler
 
         switch ($data['cmd'] ?? '') {
             case 'foto_mulai':
+                $n = isset($data['n']) ? (int) $data['n'] : null;
+                if ($n !== null && ($n < 1 || $n > self::MAKS_POTONGAN)) {
+                    unset($this->buffer[$kunci]);
+
+                    return "foto: jumlah potongan tidak wajar ({$n}) {$nama}";
+                }
                 // Kiriman ulang foto yang sama dimulai dari nol.
                 $b['potong'] = [];
-                $b['n'] = isset($data['n']) ? (int) $data['n'] : null;
+                $b['n'] = $n;
                 $b['ts'] = isset($data['ts']) ? (string) $data['ts'] : null;
 
                 return "foto mulai: {$nama} ({$b['n']} potongan)";
 
             case 'foto_data':
                 $isi = base64_decode((string) ($data['data'] ?? ''), true);
-                if ($isi === false || ! isset($data['seq'])) {
+                $seq = isset($data['seq']) && is_numeric($data['seq']) ? (int) $data['seq'] : -1;
+                if ($isi === false || $seq < 0 || $seq >= ($b['n'] ?? self::MAKS_POTONGAN)) {
                     return "foto: potongan rusak {$nama}";
                 }
-                $b['potong'][(int) $data['seq']] = $isi;
+                $b['potong'][$seq] = $isi;
+                if (array_sum(array_map('strlen', $b['potong'])) > self::MAKS_BYTE) {
+                    unset($this->buffer[$kunci]);
+                    Log::warning('[Security] foto melebihi batas ukuran, dibuang', ['alat' => $device->device_id, 'berkas' => $nama]);
+
+                    return "foto: melebihi ".(self::MAKS_BYTE / 1024)." KB, dibuang {$nama}";
+                }
 
                 return 'foto data';
 
             case 'foto_selesai':
                 if (isset($data['n'])) {
-                    $b['n'] = (int) $data['n'];
+                    $n = (int) $data['n'];
+                    if ($n < 1 || $n > self::MAKS_POTONGAN) {
+                        unset($this->buffer[$kunci]);
+
+                        return "foto: jumlah potongan tidak wajar ({$n}) {$nama}";
+                    }
+                    $b['n'] = $n;
                 }
                 $b['ts'] ??= isset($data['ts']) ? (string) $data['ts'] : null;
 

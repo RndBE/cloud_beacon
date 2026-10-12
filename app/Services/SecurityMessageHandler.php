@@ -26,7 +26,10 @@ class SecurityMessageHandler
     // Sebelum NTP/RTC menjawab, jam alat masih di sekitar epoch 0.
     private const TAHUN_JAM_SAH = 2023;
 
-    public function __construct(private SecurityPhotoAssembler $foto = new SecurityPhotoAssembler) {}
+    public function __construct(
+        private SecurityPhotoAssembler $foto = new SecurityPhotoAssembler,
+        private SecurityPairingService $pasang = new SecurityPairingService,
+    ) {}
 
     // Pendengar memakainya untuk tick() berkala dan mengirim permintaan ulang.
     public function foto(): SecurityPhotoAssembler
@@ -109,7 +112,10 @@ class SecurityMessageHandler
             $this->foto->kejadianFoto($device, $event);
         }
 
-        return "kejadian disimpan: {$jenis}";
+        // Tap kartu bisa menjadi konfirmasi pemasangan alat ke logger.
+        $pasang = $this->pasang->konfirmasi($device, $event);
+
+        return "kejadian disimpan: {$jenis}".($pasang ? " - {$pasang}" : '');
     }
 
     /** @return array{0: ?CarbonImmutable, 1: bool} */

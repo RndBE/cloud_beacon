@@ -24,6 +24,15 @@ return [
     // baru didaftarkan langsung didengar tanpa me-restart pendengar.
     'refresh_seconds' => (int) env('SECURITY_REFRESH_SECONDS', 60),
 
+    // Meminta kamera mengirim ulang foto yang tidak lengkap. Hanya SATU
+    // pendengar per broker yang boleh menyalakannya: pendengar lokal saat
+    // pengembangan dan pendengar server sama-sama akan meminta, sehingga
+    // kamera mengirim dua kali. Matikan di .env lokal: SECURITY_RESEND=false.
+    'resend_enabled' => (bool) env('SECURITY_RESEND', true),
+
+    // Lama teknisi boleh menempelkan kartu setelah menekan "Pasang alat".
+    'pairing_seconds' => (int) env('SECURITY_PAIRING_SECONDS', 30),
+
     // Alat mengirim telemetri tiap 60 detik. Tiga kali terlewat = offline.
     'offline_after_seconds' => (int) env('SECURITY_OFFLINE_AFTER', 180),
 ];
