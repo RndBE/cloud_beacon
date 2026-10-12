@@ -62,8 +62,9 @@ type Tone = 'red' | 'amber' | 'green';
 
 const POLL_MS = 15_000;
 
-// Every poll re-signs the photo URLs. Reusing a URL for a while (it stays valid for 10 min)
-// keeps the thumbnails from being re-downloaded every 15 seconds.
+// Every poll re-signs the photo URLs. Reusing a URL for a while keeps the thumbnails from
+// being re-downloaded every 15 seconds. Must stay below PHOTO_URL_MINUTES (10) in
+// SecurityDeviceController, or a reused URL can expire before it is replaced.
 const URL_REUSE_MS = 8 * 60_000;
 
 type UrlCache = Map<number, { url: string; at: number }>;
@@ -116,6 +117,7 @@ const EVENT_TONE: Record<string, Tone> = {
     FOTO_ULANG_GAGAL: 'amber',
     WIFI_GAGAL: 'amber',
     ATUR_DITOLAK: 'amber',
+    ALARM_RESET_MQTT: 'amber', // siren silenced remotely
     KARTU_SAH: 'green',
     PINTU_BUKA_SAH: 'green',
     KAMERA_KEMBALI: 'green',
@@ -153,9 +155,10 @@ function statusItems(
 ): { label: string; value: string; tone?: Tone }[] {
     return [
         {
+            // 'siaga' (armed) is the normal state; a disarmed alarm is what needs attention.
             label: 'Alarm',
             value: text(s.alarm),
-            tone: s.alarm === 'siaga' ? 'amber' : undefined,
+            tone: s.alarm === 'nonaktif' ? 'amber' : undefined,
         },
         {
             label: 'Pintu',
@@ -189,7 +192,17 @@ function statusItems(
         { label: 'Antrean', value: text(s.antrean) },
         { label: 'VIN', value: text(s.vin, ' V') },
         { label: 'VBAT', value: text(s.vbat, ' V') },
-        { label: 'Tamper', value: text(s.tamper) },
+        {
+            // Casing tamper switch; null on boards built without one.
+            label: 'Tamper',
+            value:
+                s.tamper === true
+                    ? 'Terbuka'
+                    : s.tamper === false
+                      ? 'Tertutup'
+                      : '—',
+            tone: s.tamper === true ? 'red' : undefined,
+        },
         { label: 'Jam Sinkron', value: yesNo(s.jam_sinkron) },
         {
             label: 'Uptime',

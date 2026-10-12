@@ -24,8 +24,15 @@ class SecurityDeviceController extends Controller
 
     private const PHOTO_LIMIT = 12;
 
+    // The tab reuses a signed URL for 8 minutes (URL_REUSE_MS in security-cam-card.tsx),
+    // so this must stay longer than that.
+    private const PHOTO_URL_MINUTES = 10;
+
     // Kamera memotret sesudah pembobolan terdeteksi; foto dalam jendela ini dianggap fotonya.
-    private const BREACH_PHOTO_WINDOW_SECONDS = 60;
+    // Jendela dimulai sedikit sebelum kejadian karena jam papan dan jam kamera bisa selisih.
+    private const BREACH_PHOTO_BEFORE_SECONDS = 10;
+
+    private const BREACH_PHOTO_AFTER_SECONDS = 60;
 
     public function show(string $hash): JsonResponse
     {
@@ -39,8 +46,10 @@ class SecurityDeviceController extends Controller
             return response()->json(['device' => null, 'events' => [], 'photos' => []]);
         }
 
+        // Sort by the time the tab shows: an event logged before the device clock synced
+        // has occurred_at near 1970 and would otherwise sink below the limit.
         $events = $device->events()
-            ->orderByDesc('occurred_at')
+            ->orderByRaw('CASE WHEN time_valid THEN occurred_at ELSE received_at END DESC')
             ->orderByDesc('id')
             ->limit(self::EVENT_LIMIT)
             ->get();
@@ -78,7 +87,7 @@ class SecurityDeviceController extends Controller
 
     /**
      * FOTO events carry the photo's file name as detail. A PEMBOBOLAN event gets the
-     * first photo taken within the window after it. FOTO_ULANG is only a resend of an
+     * photo taken closest to it within its window. FOTO_ULANG is only a resend of an
      * existing photo, so it gets none.
      *
      * @param  Collection<int, SecurityEvent>  $events
@@ -108,14 +117,17 @@ class SecurityDeviceController extends Controller
             $candidates = $device->photos()
                 ->where('complete', true)
                 ->whereBetween('captured_at', [
-                    $breaches->min('occurred_at'),
-                    $breaches->max('occurred_at')->copy()->addSeconds(self::BREACH_PHOTO_WINDOW_SECONDS),
+                    $breaches->min('occurred_at')->copy()->subSeconds(self::BREACH_PHOTO_BEFORE_SECONDS),
+                    $breaches->max('occurred_at')->copy()->addSeconds(self::BREACH_PHOTO_AFTER_SECONDS),
                 ])
-                ->orderBy('captured_at')
                 ->get();
             foreach ($breaches as $event) {
-                $until = $event->occurred_at->copy()->addSeconds(self::BREACH_PHOTO_WINDOW_SECONDS);
-                $photo = $candidates->first(fn (SecurityPhoto $p) => $p->captured_at->between($event->occurred_at, $until));
+                $from = $event->occurred_at->copy()->subSeconds(self::BREACH_PHOTO_BEFORE_SECONDS);
+                $until = $event->occurred_at->copy()->addSeconds(self::BREACH_PHOTO_AFTER_SECONDS);
+                $photo = $candidates
+                    ->filter(fn (SecurityPhoto $p) => $p->captured_at->between($from, $until))
+                    ->sortBy(fn (SecurityPhoto $p) => abs($p->captured_at->diffInSeconds($event->occurred_at)))
+                    ->first();
                 if ($photo) {
                     $result[$event->id] = $photo;
                 }
@@ -136,7 +148,7 @@ class SecurityDeviceController extends Controller
             'chunksReceived' => $photo->chunks_received,
             'chunksExpected' => $photo->chunks_expected,
             'capturedAt' => $photo->captured_at?->toIso8601String(),
-            'url' => $photo->temporaryUrl(),
+            'url' => $photo->temporaryUrl(self::PHOTO_URL_MINUTES),
         ];
     }
 }

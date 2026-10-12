@@ -165,11 +165,11 @@ it('gives no link for a photo that is still incomplete', function () {
         ->assertJsonPath('events.0.photo', null);
 });
 
-it('links a breach to the first photo taken within a minute after it', function () {
+it('links a breach to the photo taken closest to it within its window', function () {
     Storage::fake('local');
     $user = securityTabViewer();
     [$logger, $device] = pairedSecurityDevice($user);
-    securityPhoto($device, '/20261012_091900.jpg', '2026-10-12 09:19:00'); // before the breach
+    securityPhoto($device, '/20261012_091900.jpg', '2026-10-12 09:19:00'); // 34 s before: too early
     $breachPhoto = securityPhoto($device, '/20261012_091950.jpg', '2026-10-12 09:19:50');
     securityPhoto($device, '/20261012_092100.jpg', '2026-10-12 09:21:00'); // too late
     securityEvent($device, 'PEMBOBOLAN', '2026-10-12 09:19:34');
@@ -182,4 +182,33 @@ it('links a breach to the first photo taken within a minute after it', function 
 
     expect($events[0]['photo'])->toBeNull()
         ->and($events[1]['photo']['id'])->toBe($breachPhoto->id);
+});
+
+it('links a breach to a photo whose camera clock runs a few seconds behind the board', function () {
+    Storage::fake('local');
+    $user = securityTabViewer();
+    [$logger, $device] = pairedSecurityDevice($user);
+    $skewed = securityPhoto($device, '/20261012_091928.jpg', '2026-10-12 09:19:28');
+    securityPhoto($device, '/20261012_092020.jpg', '2026-10-12 09:20:20'); // also in window, but further
+    securityEvent($device, 'PEMBOBOLAN', '2026-10-12 09:19:34');
+
+    $this->actingAs($user)
+        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->assertOk()
+        ->assertJsonPath('events.0.photo.id', $skewed->id);
+});
+
+it('sorts events logged before the device clock synced by when they arrived', function () {
+    $user = securityTabViewer();
+    [$logger, $device] = pairedSecurityDevice($user);
+    securityEvent($device, 'PINTU_TUTUP', '2026-10-12 09:00:00', ['received_at' => '2026-10-12 09:00:01']);
+    securityEvent($device, 'TAMPER_BUKA', '1970-01-01 07:00:12', [
+        'time_valid' => false, 'received_at' => '2026-10-12 09:30:00',
+    ]);
+
+    $this->actingAs($user)
+        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->assertOk()
+        ->assertJsonPath('events.0.type', 'TAMPER_BUKA')
+        ->assertJsonPath('events.1.type', 'PINTU_TUTUP');
 });
