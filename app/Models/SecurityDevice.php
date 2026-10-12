@@ -39,6 +39,12 @@ class SecurityDevice extends Model
         return $this->hasMany(SecurityPhoto::class);
     }
 
+    // Nama pemegang per UID kartu di alat ini (lihat SecurityCard).
+    public function cards(): HasMany
+    {
+        return $this->hasMany(SecurityCard::class);
+    }
+
     public function pubTopic(): string
     {
         return 'pub_'.$this->device_id;
