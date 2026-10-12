@@ -14,6 +14,36 @@ import { cn } from '@/lib/utils';
 
 const GAP = 6; // between wire lanes
 const DEPTH = 8; // cabinet thickness drawn on the top and right
+const RADIUS = 8; // corner radius of the cabinet
+
+/**
+ * Outline of the rounded front plus its depth: the hull of the front and the
+ * same shape shifted up-right, so the back follows the rounded corners and
+ * nothing is left unconnected.
+ */
+function cabinetPath(x: number, y: number, w: number, h: number): string {
+    const r = RADIUS;
+    const d = DEPTH;
+    const a = r * Math.SQRT1_2; // tangent point of a 45deg edge on a corner arc
+    const arc = `A${r},${r} 0 0 1`;
+
+    return [
+        `M${x + r - a},${y + r - a}`,
+        `L${x + r - a + d},${y + r - a - d}`,
+        `${arc} ${x + d + r},${y - d}`,
+        `H${x + d + w - r}`,
+        `${arc} ${x + d + w},${y - d + r}`,
+        `V${y - d + h - r}`,
+        `${arc} ${x + d + w - r + a},${y - d + h - r + a}`,
+        `L${x + w - r + a},${y + h - r + a}`,
+        `${arc} ${x + w - r},${y + h}`,
+        `H${x + r}`,
+        `${arc} ${x},${y + h - r}`,
+        `V${y + r}`,
+        `${arc} ${x + r - a},${y + r - a}`,
+        'Z',
+    ].join(' ');
+}
 const BOX_H = 56;
 const PANEL = '#f3f4f6';
 const INK = '#111827';
@@ -184,23 +214,14 @@ function Panel({
             className={cn('h-auto w-full', className)}
             fontFamily="ui-sans-serif, system-ui, sans-serif"
         >
-            {/* cabinet: top and right faces, then the front */}
-            <polygon
-                points={`${x},${y} ${x + w},${y} ${x + w + DEPTH},${y - DEPTH} ${x + DEPTH},${y - DEPTH}`}
-                fill="#e5e7eb"
-                stroke="#9ca3af"
-            />
-            <polygon
-                points={`${x + w},${y} ${x + w + DEPTH},${y - DEPTH} ${x + w + DEPTH},${y + h - DEPTH} ${x + w},${y + h}`}
-                fill="#d1d5db"
-                stroke="#9ca3af"
-            />
+            {/* cabinet: rounded depth behind, then the rounded front */}
+            <path d={cabinetPath(x, y, w, h)} fill="#d9dde3" stroke="#9ca3af" />
             <rect
                 x={x}
                 y={y}
                 width={w}
                 height={h}
-                rx={8}
+                rx={RADIUS}
                 fill={PANEL}
                 stroke="#9ca3af"
             />
