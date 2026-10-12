@@ -16,6 +16,8 @@ use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\SecurityDeviceController;
+use App\Http\Controllers\SecurityPairingController;
+use App\Http\Controllers\SecurityStockController;
 use App\Http\Controllers\TopologyController;
 use App\Http\Controllers\UserManagementController;
 use Illuminate\Support\Facades\Route;
@@ -70,6 +72,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('loggers/{id}/security', [SecurityDeviceController::class, 'show'])
         ->middleware('permission:loggers.view')
         ->name('loggers.security');
+    Route::post('loggers/{id}/security/pairings', [SecurityPairingController::class, 'start'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.pairings.start');
+    Route::get('loggers/{id}/security/pairings/{pairing}', [SecurityPairingController::class, 'status'])
+        ->middleware('permission:loggers.view')
+        ->name('loggers.security.pairings.status');
+    Route::delete('loggers/{id}/security/pairings/{pairing}', [SecurityPairingController::class, 'cancel'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.pairings.cancel');
+    Route::delete('loggers/{id}/security/device', [SecurityPairingController::class, 'unpair'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.unpair');
     Route::get('loggers/{id}', [LoggerController::class, 'show'])
         ->middleware('permission:loggers.view')
         ->name('loggers.show');
@@ -109,6 +123,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('production/{id}', [ProductionController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.destroy');
+
+    Route::get('production/security-devices', [SecurityStockController::class, 'index'])
+        ->middleware('permission:production.view')
+        ->name('production.security-devices.index');
+    Route::post('production/security-devices', [SecurityStockController::class, 'store'])
+        ->middleware('permission:production.create')
+        ->name('production.security-devices.store');
 
     Route::get('production/models', [DeviceModelController::class, 'index'])
         ->middleware('permission:production.view')

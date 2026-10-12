@@ -5,15 +5,19 @@ namespace App\Http\Controllers;
 use App\Models\Logger;
 use App\Models\SecurityDevice;
 use App\Models\SecurityEvent;
+use App\Models\SecurityPairing;
 use App\Models\SecurityPhoto;
 use App\Services\IdHasher;
+use App\Services\SecurityPairingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Collection;
 
 /**
  * Data tab Security Cam di halaman logger: alat Security System yang dipasang
- * di logger ini (lihat php artisan security:device) beserta kejadian dan foto
- * terbarunya. Hanya membaca; data ditulis oleh pendengar security:listen.
+ * di logger ini beserta kejadian dan foto terbarunya. Selama logger belum punya
+ * alat, isinya bahan formulir pemasangan: unit stok dan percobaan yang sedang
+ * menunggu tap kartu (lihat SecurityPairingController). Hanya membaca; data
+ * ditulis oleh pendengar security:listen.
  *
  * Foto dibuka lewat URL bertanda tangan dari SecurityPhoto::temporaryUrl(),
  * yang hanya diberikan setelah akses ke logger ini lolos dicek.
@@ -34,16 +38,35 @@ class SecurityDeviceController extends Controller
 
     private const BREACH_PHOTO_AFTER_SECONDS = 60;
 
-    public function show(string $hash): JsonResponse
+    public function show(string $hash, SecurityPairingService $pairing): JsonResponse
     {
         $id = IdHasher::decode($hash);
         abort_unless($id, 404);
 
-        $logger = Logger::query()->visibleTo(auth()->user())->findOrFail($id);
+        $user = auth()->user();
+        $logger = Logger::query()->visibleTo($user)->findOrFail($id);
         $device = SecurityDevice::where('logger_id', $logger->id)->first();
+        // Same rule as SecurityPairingController's routes: permission plus manage access.
+        $canManage = $user->hasPermission('loggers.create')
+            && Logger::query()->manageableBy($user)->whereKey($logger->id)->exists();
 
         if ($device === null) {
-            return response()->json(['device' => null, 'events' => [], 'photos' => []]);
+            $active = SecurityPairing::aktif()->where('logger_id', $logger->id)->latest('id')->first();
+
+            return response()->json([
+                'device' => null,
+                'events' => [],
+                'photos' => [],
+                'canManage' => $canManage,
+                'stock' => $canManage
+                    ? $pairing->stock()->map(fn (SecurityDevice $d) => [
+                        'deviceId' => $d->device_id,
+                        'name' => $d->name,
+                        'online' => $d->isOnline(),
+                    ])->values()
+                    : [],
+                'pairing' => $active ? SecurityPairingController::pairingJson($active) : null,
+            ]);
         }
 
         // Sort by the time the tab shows: an event logged before the device clock synced
@@ -82,6 +105,7 @@ class SecurityDeviceController extends Controller
                     : null,
             ]),
             'photos' => $photos->map(fn (SecurityPhoto $photo) => $this->photoJson($device, $photo)),
+            'canManage' => $canManage,
         ]);
     }
 

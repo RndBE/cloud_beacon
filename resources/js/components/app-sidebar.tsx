@@ -2,6 +2,7 @@ import { Link, usePage } from '@inertiajs/react';
 import {
     ArrowUpDown,
     Box,
+    Cctv,
     ClipboardCheck,
     Factory,
     FlaskConical,
@@ -135,6 +136,12 @@ export function AppSidebar() {
             href: '/production/mode-profiles',
             icon: Layers,
             permission: 'production.mode-profiles',
+        },
+        {
+            title: 'Security System',
+            href: '/production/security-devices',
+            icon: Cctv,
+            permission: 'production.view',
         },
     ]);
 

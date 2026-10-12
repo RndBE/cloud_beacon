@@ -15,9 +15,10 @@ function currentXsrfToken(): string | null {
     }
 }
 
-export function postJson(
+function sendJson(
+    method: 'POST' | 'DELETE',
     url: string,
-    body: Record<string, unknown>,
+    body?: Record<string, unknown>,
 ): Promise<Response> {
     const headers: Record<string, string> = {
         Accept: 'application/json',
@@ -35,9 +36,20 @@ export function postJson(
     }
 
     return fetch(url, {
-        method: 'POST',
+        method,
         credentials: 'same-origin',
         headers,
-        body: JSON.stringify(body),
+        body: body === undefined ? undefined : JSON.stringify(body),
     });
+}
+
+export function postJson(
+    url: string,
+    body: Record<string, unknown>,
+): Promise<Response> {
+    return sendJson('POST', url, body);
+}
+
+export function deleteJson(url: string): Promise<Response> {
+    return sendJson('DELETE', url);
 }

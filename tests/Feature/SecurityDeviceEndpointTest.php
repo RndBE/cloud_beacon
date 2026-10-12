@@ -70,7 +70,14 @@ it('returns no device when nothing is paired with the logger', function () {
     $this->actingAs($user)
         ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
         ->assertOk()
-        ->assertExactJson(['device' => null, 'events' => [], 'photos' => []]);
+        ->assertExactJson([
+            'device' => null,
+            'events' => [],
+            'photos' => [],
+            'canManage' => false, // view-only role
+            'stock' => [],
+            'pairing' => null,
+        ]);
 });
 
 it('returns the paired device status and its events newest first', function () {

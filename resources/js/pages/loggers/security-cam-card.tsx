@@ -17,6 +17,8 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import { SecurityPairingPanel, UnpairButton } from './security-pairing-panel';
+import type { PairingState, StockDevice } from './security-pairing-panel';
 
 // Last telemetry/status message from the device, stored as-is (see SecurityMessageHandler).
 type SecurityStatus = Record<string, string | number | boolean | null>;
@@ -56,6 +58,11 @@ interface SecurityResponse {
     device: SecurityDevice | null;
     events: SecurityEvent[];
     photos: SecurityPhoto[];
+    // May pair/unpair: loggers.create plus manage access to this logger.
+    canManage: boolean;
+    // Only while no device is installed.
+    stock?: StockDevice[];
+    pairing?: PairingState | null;
 }
 
 type Tone = 'red' | 'amber' | 'green';
@@ -356,6 +363,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     const [data, setData] = useState<SecurityResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
+    const [notice, setNotice] = useState<string | null>(null);
     const urlCache = useRef<UrlCache>(new Map());
 
     const load = useCallback(async () => {
@@ -386,12 +394,30 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
         return () => clearInterval(interval);
     }, [load]);
 
+    useEffect(() => {
+        if (!notice) return;
+        const timeout = setTimeout(() => setNotice(null), 8_000);
+        return () => clearTimeout(timeout);
+    }, [notice]);
+
     const device = data?.device ?? null;
 
     let body;
     if (data === null) {
         body = error ? null : (
             <p className="text-sm text-muted-foreground">Memuat…</p>
+        );
+    } else if (device === null && data.canManage) {
+        body = (
+            <SecurityPairingPanel
+                loggerId={loggerId}
+                stock={data.stock ?? []}
+                initialPairing={data.pairing ?? null}
+                onPaired={(deviceId) => {
+                    setNotice(`Alat ${deviceId} berhasil dipasang.`);
+                    void load();
+                }}
+            />
         );
     } else if (device === null) {
         body = (
@@ -401,12 +427,8 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                     Belum ada alat Security System di logger ini
                 </p>
                 <p className="max-w-md text-xs text-muted-foreground">
-                    Pasangkan alat lewat perintah di bawah, lalu status dan
-                    kejadiannya tampil di sini.
-                    <code className="mt-1 block font-mono whitespace-nowrap">
-                        php artisan security:device &lt;ID&gt;
-                        --logger=&lt;serial&gt;
-                    </code>
+                    Pemasangan alat dilakukan oleh pengguna yang boleh mengelola
+                    logger ini.
                 </p>
             </div>
         );
@@ -485,23 +507,42 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                                 : 'Status dan riwayat kejadian alat Security System yang dipasang di logger ini.'}
                         </CardDescription>
                     </div>
-                    <Button
-                        size="sm"
-                        variant="outline"
-                        className="gap-1.5"
-                        disabled={loading}
-                        onClick={() => void load()}
-                    >
-                        {loading ? (
-                            <LoaderCircle className="size-4 animate-spin" />
-                        ) : (
-                            <RefreshCw className="size-4" />
+                    <div className="flex items-start gap-1">
+                        {device && data?.canManage && (
+                            <UnpairButton
+                                loggerId={loggerId}
+                                deviceId={device.deviceId}
+                                onDone={() => {
+                                    setNotice(
+                                        `Alat ${device.deviceId} dilepas dan kembali menjadi stok.`,
+                                    );
+                                    void load();
+                                }}
+                            />
                         )}
-                        Muat ulang
-                    </Button>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1.5"
+                            disabled={loading}
+                            onClick={() => void load()}
+                        >
+                            {loading ? (
+                                <LoaderCircle className="size-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="size-4" />
+                            )}
+                            Muat ulang
+                        </Button>
+                    </div>
                 </div>
             </CardHeader>
             <CardContent className="space-y-4">
+                {notice && (
+                    <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+                        {notice}
+                    </p>
+                )}
                 {error && (
                     <p className="text-sm text-destructive">
                         Gagal memuat data Security Cam: {error}
