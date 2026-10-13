@@ -48,6 +48,8 @@ class DeviceModelController extends Controller
 
         return Inertia::render('production/models', [
             'models' => $models,
+            // Module models (Security System, EWS, GCM) and their OTA firmware.
+            'moduleFirmwares' => ModuleFirmwareController::rows(),
         ]);
     }
 

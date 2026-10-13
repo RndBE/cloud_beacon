@@ -41,6 +41,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem } from '@/types';
+import { ModuleModelsSection } from './module-models';
+import type { ModuleFirmware } from './production-modules';
 
 interface DeviceModelItem {
     id: number;
@@ -71,6 +73,8 @@ interface DeviceModelFirmwareLogItem {
 
 interface ModelsPageProps {
     models: DeviceModelItem[];
+    // Module models' OTA firmware, keyed by model name.
+    moduleFirmwares: Record<string, ModuleFirmware>;
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -87,7 +91,10 @@ function formatBytes(bytes: number | null) {
     return `${(kb / 1024).toFixed(1)} MB`;
 }
 
-export default function ModelsIndex({ models }: ModelsPageProps) {
+export default function ModelsIndex({
+    models,
+    moduleFirmwares,
+}: ModelsPageProps) {
     const { t } = useTranslation();
     const { flash } = usePage<{ flash: { success?: string; error?: string } }>().props;
     const [search, setSearch] = useState('');
@@ -369,6 +376,8 @@ export default function ModelsIndex({ models }: ModelsPageProps) {
                         ))}
                     </div>
                 )}
+
+                <ModuleModelsSection firmwares={moduleFirmwares} />
 
                 {/* ═══ Add Model Dialog ═══ */}
                 <Dialog open={addOpen} onOpenChange={(open) => { setAddOpen(open); if (!open) { createForm.reset(); setAddPreview(null); } }}>

@@ -5,6 +5,7 @@ import {
     CheckCircle2,
     ChevronDown,
     Cpu,
+    Download,
     FileUp,
     Loader2,
     Pencil,
@@ -72,8 +73,13 @@ import { Textarea } from '@/components/ui/textarea';
 type QcStatus = 'pending' | 'passed' | 'failed';
 
 export interface ProductionModule {
-    // MQTT ID (sub_/pub_<ID>); usually equal to the serial number.
-    deviceId: string;
+    key: string;
+    // security = Security System (an MQTT device); ews / gcm = production record only.
+    kind: 'security' | 'ews' | 'gcm';
+    // production_modules id, EWS / GCM only.
+    id: number | null;
+    // MQTT ID (sub_/pub_<ID>), Security System only; usually equal to the serial number.
+    deviceId: string | null;
     serialNumber: string;
     name: string | null;
     model: string | null;
@@ -83,14 +89,23 @@ export interface ProductionModule {
     // Production QC, recorded on the website only (like a logger's QC).
     qcStatus: QcStatus;
     notes: string | null;
-    online: boolean;
+    // Security System only.
+    online: boolean | null;
     lastSeenAt: string | null;
     // "Registered" for a module means installed on a logger.
     logger: { id: string; name: string; serialNumber: string } | null;
 }
 
 // Module kinds with a registry so far.
-const MODULE_MODELS = ['Security System'];
+const MODULE_MODELS = ['Security System', 'EWS', 'GCM'];
+const SECURITY_MODEL = 'Security System';
+
+// EWS / GCM talk through their logger, so they are production records only.
+function moduleUrl(m: ProductionModule): string {
+    return m.kind === 'security'
+        ? `/production/security-devices/${m.deviceId}`
+        : `/production/modules/${m.id}`;
+}
 
 // Same look as the logger list's QC badge.
 function QcBadge({ status }: { status: QcStatus }) {
@@ -164,24 +179,14 @@ export function AddDeviceMenu({
                     <ChevronDown className="size-4 opacity-70" />
                 </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={onLogger} className="gap-2">
                     <Cpu className="size-4" />
-                    <div>
-                        <p className="font-medium">Logger</p>
-                        <p className="text-xs text-muted-foreground">
-                            Serial number logger (BL-110, BL-11, …)
-                        </p>
-                    </div>
+                    Logger
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={onModule} className="gap-2">
                     <Boxes className="size-4" />
-                    <div>
-                        <p className="font-medium">Modul</p>
-                        <p className="text-xs text-muted-foreground">
-                            Modul tambahan logger (Security System)
-                        </p>
-                    </div>
+                    Modul
                 </DropdownMenuItem>
             </DropdownMenuContent>
         </DropdownMenu>
@@ -208,13 +213,22 @@ function AddModuleDialog({
 
     function submit(e: FormEvent) {
         e.preventDefault();
-        form.post('/production/security-devices', {
-            preserveScroll: true,
-            onSuccess: () => {
-                form.reset();
-                onOpenChange(false);
+        const security = form.data.model === SECURITY_MODEL;
+        form.transform((data) =>
+            security
+                ? data
+                : { ...data, type: data.model.toLowerCase(), device_id: '' },
+        );
+        form.post(
+            security ? '/production/security-devices' : '/production/modules',
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    form.reset();
+                    onOpenChange(false);
+                },
             },
-        });
+        );
     }
 
     return (
@@ -250,11 +264,20 @@ function AddModuleDialog({
                             <Label htmlFor="module_device_id">Device ID</Label>
                             <Input
                                 id="module_device_id"
-                                value={form.data.device_id}
+                                value={
+                                    form.data.model === SECURITY_MODEL
+                                        ? form.data.device_id
+                                        : ''
+                                }
                                 onChange={(e) =>
                                     form.setData('device_id', e.target.value)
                                 }
-                                placeholder="Sama dengan serial number"
+                                placeholder={
+                                    form.data.model === SECURITY_MODEL
+                                        ? 'Sama dengan serial number'
+                                        : 'Tidak dipakai (lewat logger)'
+                                }
+                                disabled={form.data.model !== SECURITY_MODEL}
                                 maxLength={31}
                                 className="font-mono"
                             />
@@ -371,7 +394,7 @@ function EditModuleDialog({
     function submit(e: FormEvent) {
         e.preventDefault();
         if (!target) return;
-        form.put(`/production/security-devices/${target.deviceId}`, {
+        form.put(moduleUrl(target), {
             preserveScroll: true,
             onSuccess: onClose,
         });
@@ -383,9 +406,17 @@ function EditModuleDialog({
                 <DialogHeader>
                     <DialogTitle>Edit Production Module</DialogTitle>
                     <DialogDescription>
-                        Device ID{' '}
-                        <span className="font-mono">{target?.deviceId}</span>{' '}
-                        (alamat MQTT) tidak bisa diubah.
+                        {target?.kind === 'security' ? (
+                            <>
+                                Device ID{' '}
+                                <span className="font-mono">
+                                    {target.deviceId}
+                                </span>{' '}
+                                (alamat MQTT) tidak bisa diubah.
+                            </>
+                        ) : (
+                            'Model modul tidak bisa diubah.'
+                        )}
                     </DialogDescription>
                 </DialogHeader>
                 <form onSubmit={submit} className="grid gap-4 py-2">
@@ -409,10 +440,8 @@ function EditModuleDialog({
                         </div>
                         <div className="grid gap-2">
                             <Label>Model</Label>
-                            <ModelSelect
-                                value={form.data.model}
-                                onChange={(v) => form.setData('model', v)}
-                            />
+                            {/* A module stays its kind: the kinds live in different tables. */}
+                            <Input value={form.data.model} disabled />
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="edit_module_hw">
@@ -475,6 +504,15 @@ function EditModuleDialog({
             </DialogContent>
         </Dialog>
     );
+}
+
+export interface ModuleFirmware {
+    model: string;
+    version: string;
+    fileName: string;
+    fileUrl: string;
+    fileSize: number | null;
+    uploadedAt: string | null;
 }
 
 function ImportModulesDialog() {
@@ -591,11 +629,14 @@ const SUMMARY: {
 
 export function ProductionModules({
     modules,
+    firmwares,
     addOpen,
     onAddOpenChange,
     onAddLogger,
 }: {
     modules: ProductionModule[];
+    // Latest firmware per module model, keyed by model name.
+    firmwares: Record<string, ModuleFirmware>;
     addOpen: boolean;
     onAddOpenChange: (open: boolean) => void;
     onAddLogger: () => void;
@@ -740,39 +781,56 @@ export function ProductionModules({
                         </TableHeader>
                         <TableBody>
                             {filtered.map((m) => (
-                                <TableRow key={m.deviceId}>
+                                <TableRow key={m.key}>
                                     <TableCell className="font-mono text-sm font-medium">
-                                        <span className="flex items-center gap-2">
-                                            <span
-                                                className={`size-2 shrink-0 rounded-full ${m.online ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`}
-                                                title={
-                                                    m.online
-                                                        ? 'Online'
-                                                        : 'Offline'
-                                                }
-                                            />
-                                            <Link
-                                                href={`/production/security-devices/${m.deviceId}`}
-                                                className="hover:underline"
-                                            >
-                                                {m.serialNumber}
-                                            </Link>
-                                        </span>
+                                        {m.kind === 'security' ? (
+                                            <span className="flex items-center gap-2">
+                                                <span
+                                                    className={`size-2 shrink-0 rounded-full ${m.online ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`}
+                                                    title={
+                                                        m.online
+                                                            ? 'Online'
+                                                            : 'Offline'
+                                                    }
+                                                />
+                                                <Link
+                                                    href={`/production/security-devices/${m.deviceId}`}
+                                                    className="hover:underline"
+                                                >
+                                                    {m.serialNumber}
+                                                </Link>
+                                            </span>
+                                        ) : (
+                                            m.serialNumber
+                                        )}
                                     </TableCell>
                                     <TableCell className="hidden font-mono text-sm text-muted-foreground md:table-cell">
-                                        {m.deviceId}
+                                        {m.deviceId ?? '—'}
                                     </TableCell>
                                     <TableCell className="hidden text-sm lg:table-cell">
                                         {m.model || '—'}
                                     </TableCell>
                                     <TableCell>
+                                        {/* Same as a logger row: the model's latest firmware. */}
                                         <div className="flex flex-col gap-1">
                                             <span className="font-mono text-xs">
-                                                —
+                                                {(m.model &&
+                                                    firmwares[m.model]
+                                                        ?.version) ||
+                                                    '—'}
                                             </span>
-                                            <span className="text-xs text-muted-foreground">
-                                                No OTA file
-                                            </span>
+                                            {m.model && firmwares[m.model] ? (
+                                                <span className="max-w-[170px] truncate text-xs text-muted-foreground">
+                                                    {
+                                                        firmwares[m.model]
+                                                            .fileName
+                                                    }
+                                                </span>
+                                            ) : (
+                                                <span className="text-xs text-muted-foreground">
+                                                    No OTA file
+                                                </span>
+                                            )}
                                         </div>
                                     </TableCell>
                                     <TableCell>
@@ -795,10 +853,14 @@ export function ProductionModules({
                                                     {m.logger.name}
                                                 </Link>
                                             </div>
-                                        ) : (
+                                        ) : m.kind === 'security' ? (
                                             <Badge variant="secondary">
                                                 No
                                             </Badge>
+                                        ) : (
+                                            <span className="text-muted-foreground">
+                                                —
+                                            </span>
                                         )}
                                     </TableCell>
                                     <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
@@ -806,6 +868,25 @@ export function ProductionModules({
                                     </TableCell>
                                     <TableCell>
                                         <div className="flex items-center justify-end gap-1">
+                                            {m.model && firmwares[m.model] && (
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon-sm"
+                                                    asChild
+                                                >
+                                                    <a
+                                                        href={
+                                                            firmwares[m.model]
+                                                                .fileUrl
+                                                        }
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        aria-label={`Download firmware ${m.serialNumber}`}
+                                                    >
+                                                        <Download className="size-4" />
+                                                    </a>
+                                                </Button>
+                                            )}
                                             <Button
                                                 variant="ghost"
                                                 size="icon-sm"
@@ -853,7 +934,7 @@ export function ProductionModules({
             <AddModuleDialog open={addOpen} onOpenChange={onAddOpenChange} />
             {/* Keyed so the form starts from the chosen module each time. */}
             <EditModuleDialog
-                key={editTarget?.deviceId ?? 'none'}
+                key={editTarget?.key ?? 'none'}
                 target={editTarget}
                 onClose={() => setEditTarget(null)}
             />
@@ -868,9 +949,9 @@ export function ProductionModules({
                             Delete module {deleteTarget?.serialNumber}?
                         </AlertDialogTitle>
                         <AlertDialogDescription>
-                            Catatan produksi, riwayat kejadian, foto, dan nama
-                            kartu modul ini ikut terhapus dan tidak bisa
-                            dikembalikan.
+                            {deleteTarget?.kind === 'security'
+                                ? 'Catatan produksi, riwayat kejadian, foto, dan nama kartu modul ini ikut terhapus dan tidak bisa dikembalikan.'
+                                : 'Catatan produksi modul ini dihapus dan tidak bisa dikembalikan.'}
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
@@ -879,10 +960,9 @@ export function ProductionModules({
                             className="bg-red-600 text-white hover:bg-red-700"
                             onClick={() => {
                                 if (!deleteTarget) return;
-                                router.delete(
-                                    `/production/security-devices/${deleteTarget.deviceId}`,
-                                    { preserveScroll: true },
-                                );
+                                router.delete(moduleUrl(deleteTarget), {
+                                    preserveScroll: true,
+                                });
                                 setDeleteTarget(null);
                             }}
                         >

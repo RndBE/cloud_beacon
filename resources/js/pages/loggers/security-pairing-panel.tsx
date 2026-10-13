@@ -303,7 +303,7 @@ export function SecurityPairingPanel({
                     <p className="text-xs text-muted-foreground">
                         Tidak ada alat stok yang online. Nyalakan alat dan
                         pastikan tersambung WiFi, atau daftarkan unit baru di
-                        Production › Security System.
+                        Production › Modul.
                     </p>
                 ) : (
                     <div className="flex flex-wrap gap-2">

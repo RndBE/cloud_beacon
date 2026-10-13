@@ -35,12 +35,9 @@ function validUid(uid: string): boolean {
 export function SecurityCardsPanel({
     loggerId,
     deviceId,
-    password,
 }: {
     loggerId: string;
     deviceId: string;
-    // Typed once in the configurator; only ever used to sign in this browser.
-    password: string;
 }) {
     const [cards, setCards] = useState<Card[] | null>(null);
     const [maxCards, setMaxCards] = useState<number | null>(null);
@@ -100,8 +97,7 @@ export function SecurityCardsPanel({
         setError(null);
         setNotice(null);
         try {
-            const tap = op === 'kartu_tambah' && a === '';
-            return await sendAtur(loggerId, password, op, a, tap);
+            return await sendAtur(loggerId, op, { uid: a });
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
             return null;

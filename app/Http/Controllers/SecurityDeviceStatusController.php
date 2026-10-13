@@ -15,7 +15,7 @@ use Inertia\Inertia;
 use Inertia\Response;
 
 /**
- * Halaman Production > Security System > <ID>: keadaan alat, foto terakhir,
+ * Halaman status modul (dari Production > Modul): keadaan alat, foto terakhir,
  * log kejadian, dan kartu terdaftar. Konfigurasinya (pasang/lepas, kelola
  * kartu) ada di tab Security Cam halaman logger.
  *

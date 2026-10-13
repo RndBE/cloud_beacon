@@ -14,7 +14,7 @@ use Illuminate\Http\JsonResponse;
  * alat yang dipasang di logger ini (ringkas), atau - selama belum ada - bahan
  * formulir pemasangan: unit stok dan percobaan yang sedang menunggu tap kartu
  * (lihat SecurityPairingController). Keadaan, foto dan log kejadian alat ada
- * di halaman Production > Security System (SecurityDeviceStatusController).
+ * di halaman status modulnya (SecurityDeviceStatusController).
  */
 class SecurityDeviceController extends Controller
 {
@@ -37,8 +37,14 @@ class SecurityDeviceController extends Controller
                     'name' => $device->name,
                     'online' => $device->isOnline(),
                     'lastSeenAt' => $device->last_seen_at?->toIso8601String(),
-                    // From the last telemetry, for the siren control.
+                    // From the last telemetry, for the siren, door sensor and flash controls.
                     'siren' => $device->last_status['sirine'] ?? null,
+                    'sensor' => $device->last_status['sensor'] ?? null,
+                    // AUTO | ON | OFF, null while the camera has never reported.
+                    'flash' => $device->last_status['flash'] ?? null,
+                    'doorOpen' => isset($device->last_status['pintu'])
+                        ? $device->last_status['pintu'] === 'terbuka'
+                        : null,
                 ],
                 'canManage' => $canManage,
             ]);

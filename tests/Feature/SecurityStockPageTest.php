@@ -20,37 +20,30 @@ function stockPageUser(array $permissions): User
     return $user;
 }
 
-it('lists every unit with its online state and where it is installed', function () {
+it('lists every module unit on the Production page with its online state and logger', function () {
     $logger = Logger::factory()->create(['name' => 'BL110 RND', 'serial_number' => 'SN-110']);
     SecurityDevice::create(['device_id' => 'SS0002', 'logger_id' => $logger->id, 'last_seen_at' => now()]);
     SecurityDevice::create(['device_id' => 'SS0001', 'name' => 'Uji meja']);
 
-    $this->actingAs(stockPageUser(['production.view']))
-        ->get(route('production.security-devices.index'))
+    $modules = collect($this->actingAs(stockPageUser(['production.view']))
+        ->get(route('production.index'))
         ->assertOk()
-        ->assertInertia(fn (Assert $page) => $page
-            ->component('production/security-devices')
-            ->has('devices', 2)
-            ->where('devices.0.deviceId', 'SS0001')
-            ->where('devices.0.name', 'Uji meja')
-            ->where('devices.0.online', false)
-            ->where('devices.0.logger', null)
-            ->where('devices.1.online', true)
-            ->where('devices.1.logger.id', IdHasher::encode($logger->id))
-            ->where('devices.1.logger.name', 'BL110 RND'));
-});
+        ->viewData('page')['props']['modules'])->keyBy('deviceId');
 
-it('needs production.view to see the list', function () {
-    $this->actingAs(stockPageUser(['loggers.view']))
-        ->get(route('production.security-devices.index'))
-        ->assertForbidden();
+    expect($modules['SS0001'])
+        ->name->toBe('Uji meja')
+        ->online->toBeFalse()
+        ->logger->toBeNull()
+        ->and($modules['SS0002']['online'])->toBeTrue()
+        ->and($modules['SS0002']['logger']['id'])->toBe(IdHasher::encode($logger->id))
+        ->and($modules['SS0002']['logger']['name'])->toBe('BL110 RND');
 });
 
 it('registers a new stock unit', function () {
     $this->actingAs(stockPageUser(['production.view', 'production.create']))
-        ->from(route('production.security-devices.index'))
+        ->from(route('production.index'))
         ->post(route('production.security-devices.store'), ['device_id' => 'SS0003', 'name' => 'Batch 1'])
-        ->assertRedirect(route('production.security-devices.index'))
+        ->assertRedirect(route('production.index'))
         ->assertSessionHas('success', 'Modul SS0003 didaftarkan sebagai stok.');
 
     expect(SecurityDevice::where('device_id', 'SS0003')->first())

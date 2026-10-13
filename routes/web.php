@@ -10,9 +10,11 @@ use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MaintenanceTicketController;
 use App\Http\Controllers\ModeProfileAdminController;
 use App\Http\Controllers\ModeProfileController;
+use App\Http\Controllers\ModuleFirmwareController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
+use App\Http\Controllers\ProductionModuleController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\SecurityCardController;
@@ -89,18 +91,30 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('loggers/{id}/security/cards', [SecurityCardController::class, 'index'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.cards.index');
-    Route::post('loggers/{id}/security/cards/challenge', [SecurityCardController::class, 'challenge'])
+    Route::post('loggers/{id}/security/command', [SecurityCardController::class, 'command'])
         ->middleware('permission:loggers.create')
-        ->name('loggers.security.cards.challenge');
-    Route::post('loggers/{id}/security/cards/set', [SecurityCardController::class, 'set'])
-        ->middleware('permission:loggers.create')
-        ->name('loggers.security.cards.set');
+        ->name('loggers.security.command');
     Route::post('loggers/{id}/security/cards/holder', [SecurityCardController::class, 'holder'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.cards.holder');
     Route::post('loggers/{id}/security/siren-off', [SecurityCardController::class, 'sirenOff'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.siren-off');
+    Route::post('loggers/{id}/security/snap', [SecurityCardController::class, 'snap'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.snap');
+    Route::post('loggers/{id}/security/ping', [SecurityCardController::class, 'ping'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.ping');
+    Route::get('loggers/{id}/security/wifi', [SecurityCardController::class, 'wifi'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.wifi');
+    Route::get('loggers/{id}/security/wifi/result', [SecurityCardController::class, 'wifiResult'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.wifi.result');
+    Route::get('loggers/{id}/security/photo', [SecurityCardController::class, 'photo'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.photo');
     Route::get('loggers/{id}', [LoggerController::class, 'show'])
         ->middleware('permission:loggers.view')
         ->name('loggers.show');
@@ -141,12 +155,21 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware('permission:production.delete')
         ->name('production.destroy');
 
-    Route::get('production/security-devices', [SecurityStockController::class, 'index'])
-        ->middleware('permission:production.view')
-        ->name('production.security-devices.index');
     Route::post('production/security-devices', [SecurityStockController::class, 'store'])
         ->middleware('permission:production.create')
         ->name('production.security-devices.store');
+    Route::post('production/module-firmware', [ModuleFirmwareController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.module-firmware.update');
+    Route::post('production/modules', [ProductionModuleController::class, 'store'])
+        ->middleware('permission:production.create')
+        ->name('production.modules.store');
+    Route::put('production/modules/{module}', [ProductionModuleController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.modules.update');
+    Route::delete('production/modules/{module}', [ProductionModuleController::class, 'destroy'])
+        ->middleware('permission:production.delete')
+        ->name('production.modules.destroy');
     Route::post('production/security-devices/import', [SecurityStockController::class, 'import'])
         ->middleware('permission:production.import')
         ->name('production.security-devices.import');

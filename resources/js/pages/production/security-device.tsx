@@ -14,7 +14,7 @@ export default function SecurityDeviceShow({ deviceId, name, logger }: Props) {
     const breadcrumbs: BreadcrumbItem[] = [
         { title: 'Dashboard', href: '/dashboard' },
         { title: 'Production', href: '/production' },
-        { title: 'Security System', href: '/production/security-devices' },
+        { title: 'Modul', href: '/production?view=modul' },
         { title: deviceId, href: `/production/security-devices/${deviceId}` },
     ];
 
@@ -24,10 +24,10 @@ export default function SecurityDeviceShow({ deviceId, name, logger }: Props) {
             <div className="flex flex-col gap-6 p-4 md:p-6">
                 <div className="flex flex-col gap-1">
                     <Link
-                        href="/production/security-devices"
+                        href="/production?view=modul"
                         className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
                     >
-                        <ArrowLeft className="size-4" /> Semua alat
+                        <ArrowLeft className="size-4" /> Semua modul
                     </Link>
                     <h1 className="flex items-center gap-2 text-xl font-semibold">
                         <Cctv className="size-5" />

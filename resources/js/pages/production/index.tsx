@@ -72,7 +72,7 @@ import {
 import type { BreadcrumbItem } from '@/types';
 import { paginateItems } from './pagination';
 import { AddDeviceMenu, ProductionModules } from './production-modules';
-import type { ProductionModule } from './production-modules';
+import type { ModuleFirmware, ProductionModule } from './production-modules';
 
 interface ProductionDeviceItem {
     id: number;
@@ -98,6 +98,7 @@ interface ProductionPageProps {
     devices: ProductionDeviceItem[];
     deviceModels: string[];
     modules: ProductionModule[];
+    moduleFirmwares: Record<string, ModuleFirmware>;
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -134,6 +135,7 @@ export default function ProductionIndex({
     devices,
     deviceModels,
     modules,
+    moduleFirmwares,
 }: ProductionPageProps) {
     const { flash } = usePage<{
         flash: { success?: string; error?: string };
@@ -162,7 +164,13 @@ export default function ProductionIndex({
     );
     const [addOpen, setAddOpen] = useState(false);
     // Production registers two kinds of hardware: loggers and their modules.
-    const [kind, setKind] = useState<'logger' | 'module'>('logger');
+    // ?view=modul opens the Modul view, e.g. when coming back from a module's status page.
+    const [kind, setKind] = useState<'logger' | 'module'>(() =>
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('view') === 'modul'
+            ? 'module'
+            : 'logger',
+    );
     const [moduleAddOpen, setModuleAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const [editTarget, setEditTarget] = useState<ProductionDeviceItem | null>(
@@ -354,6 +362,7 @@ export default function ProductionIndex({
                 {kind === 'module' ? (
                     <ProductionModules
                         modules={modules}
+                        firmwares={moduleFirmwares}
                         addOpen={moduleAddOpen}
                         onAddOpenChange={setModuleAddOpen}
                         onAddLogger={() => {

@@ -93,6 +93,20 @@ it('gives the logger tab only a summary of the installed device', function () {
         ->assertJsonMissingPath('device.status');
 });
 
+it('tells the configurator the door sensor mode and door from the last telemetry', function () {
+    $user = securityTabViewer();
+    [$logger, $device] = pairedSecurityDevice($user);
+    $device->update(['last_status' => ['sensor' => 'NC', 'pintu' => 'tertutup', 'sirine' => false, 'flash' => 'AUTO']]);
+
+    $this->actingAs($user)
+        ->getJson(route('loggers.security', IdHasher::encode($logger->id)))
+        ->assertOk()
+        ->assertJsonPath('device.sensor', 'NC')
+        ->assertJsonPath('device.doorOpen', false)
+        ->assertJsonPath('device.siren', false)
+        ->assertJsonPath('device.flash', 'AUTO');
+});
+
 it('renders the device status page for a device on a visible logger', function () {
     $user = securityTabViewer();
     [$logger] = pairedSecurityDevice($user);

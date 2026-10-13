@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\SecurityPairingException;
+use App\Models\ProductionModule;
 use App\Models\SecurityDevice;
 use App\Services\IdHasher;
 use App\Services\SecurityPairingService;
@@ -10,8 +11,6 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\Rule;
-use Inertia\Inertia;
-use Inertia\Response;
 
 /**
  * Unit modul Security System dari sisi produksi: dicatat seperti logger di
@@ -29,11 +28,6 @@ class SecurityStockController extends Controller
     // Columns the production form and CSV import fill, besides the ID.
     private const PRODUCTION_FIELDS = ['serial_number', 'model', 'hardware_version', 'production_date', 'tested_by', 'qc_status', 'notes'];
 
-    public function index(): Response
-    {
-        return Inertia::render('production/security-devices', ['devices' => self::rows()]);
-    }
-
     /**
      * Every unit with its production record, online state and installed logger;
      * listed on the Production page's Modul view.
@@ -47,6 +41,9 @@ class SecurityStockController extends Controller
             ->orderBy('device_id')
             ->get()
             ->map(fn (SecurityDevice $device) => [
+                'key' => 'security:'.$device->device_id,
+                'kind' => 'security',
+                'id' => null,
                 'deviceId' => $device->device_id,
                 'serialNumber' => $device->serial_number ?? $device->device_id,
                 'name' => $device->name,
@@ -152,6 +149,28 @@ class SecurityStockController extends Controller
             $serial = $data['serial_number'] ?? '';
             $deviceId = ($data['device_id'] ?? '') ?: $serial;
             $qc = in_array($data['qc_status'] ?? '', self::QC_STATUSES, true) ? $data['qc_status'] : 'pending';
+
+            // EWS / GCM rows are production records only (no MQTT identity).
+            $type = array_search(strtoupper($data['model'] ?? ''), ProductionModule::TYPES, true);
+            if ($type !== false) {
+                if ($serial === '' || ProductionModule::where('serial_number', $serial)->exists()) {
+                    $skipped++;
+
+                    continue;
+                }
+                ProductionModule::create(array_filter([
+                    'type' => $type,
+                    'serial_number' => $serial,
+                    'hardware_version' => $data['hardware_version'] ?? null,
+                    'production_date' => ($data['production_date'] ?? '') ?: null,
+                    'tested_by' => $data['tested_by'] ?? null,
+                    'qc_status' => $qc,
+                    'notes' => $data['notes'] ?? null,
+                ], fn ($value) => $value !== null && $value !== ''));
+                $imported++;
+
+                continue;
+            }
 
             if ($serial === '' || SecurityDevice::where('serial_number', $serial)->orWhere('device_id', $deviceId)->exists()) {
                 $skipped++;

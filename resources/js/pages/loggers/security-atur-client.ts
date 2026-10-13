@@ -1,5 +1,4 @@
 import { postJson } from '@/lib/csrf-fetch';
-import { signAtur } from '@/lib/security-atur';
 import { errorMessage } from './security-pairing-panel';
 
 export interface AturResult {
@@ -10,42 +9,49 @@ export interface AturResult {
     maxSeconds: number | null;
     // sirine_nyala: the siren was already sounding for a breach; nothing changed.
     breach: boolean;
+    // The newest event before the command; set_wifi's outcome is an event after it.
+    afterEventId: number;
+}
+
+export interface AturParams {
+    // kartu_tambah / kartu_hapus
+    uid?: string;
+    // set_sensor: the door sensor's contact.
+    mode?: 'NO' | 'NC';
+    // set_flash: AUTO (night only), ON or OFF.
+    flash?: 'AUTO' | 'ON' | 'OFF';
+    // set_wifi
+    ssid?: string;
+    wifi_password?: string;
 }
 
 /**
- * One signed "atur" command to the device installed on a logger: fetch a fresh
- * challenge (the nonce is single-use and lives 60 s), sign it in the browser with
- * the device password, and relay it. Throws an Error with a message for the user
- * when anything along the way fails or the device rejects the command.
+ * One setting change on the device installed on a logger. The server signs it with
+ * the device password (the user never handles it) and relays it. Throws an Error with
+ * a message for the user when anything fails or the device rejects the command.
  */
 export async function sendAtur(
     loggerId: string,
-    password: string,
-    op: string,
-    a = '',
-    tap = false,
+    op:
+        | 'kartu_tambah'
+        | 'kartu_hapus'
+        | 'sirine_nyala'
+        | 'set_sensor'
+        | 'set_flash'
+        | 'set_wifi'
+        | 'restart',
+    params: AturParams = {},
 ): Promise<AturResult> {
-    if (password === '') throw new Error('Isi password alat dulu.');
-
-    const base = `/loggers/${loggerId}/security/cards`;
-    const challenge = await postJson(`${base}/challenge`, {});
-    if (!challenge.ok) throw new Error(await errorMessage(challenge));
-    const { salt, nonce } = (await challenge.json()) as {
-        salt: string;
-        nonce: string;
-    };
-
-    const signed = await signAtur(salt, nonce, password, op, a);
-    const response = await postJson(`${base}/set`, { ...signed, tap });
+    const response = await postJson(`/loggers/${loggerId}/security/command`, {
+        op,
+        ...params,
+    });
     if (!response.ok) throw new Error(await errorMessage(response));
 
     const result = (await response.json()) as AturResult & { ok: boolean };
     if (!result.ok) {
-        // An empty op means the device could not verify the signature.
         throw new Error(
-            result.op === ''
-                ? 'Password alat salah. Setelah 5 kali salah, alat menolak perubahan selama 10 menit.'
-                : `Ditolak alat: ${result.message}${result.uid ? ` (${result.uid})` : ''}.`,
+            `Ditolak alat: ${result.message}${result.uid ? ` (${result.uid})` : ''}.`,
         );
     }
     return result;

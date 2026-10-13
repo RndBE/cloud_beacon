@@ -4,7 +4,6 @@ import {
     BellOff,
     BellRing,
     Cctv,
-    KeyRound,
     LoaderCircle,
     RefreshCw,
     Siren,
@@ -12,16 +11,13 @@ import {
 import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { postJson } from '@/lib/csrf-fetch';
+import { CameraControl } from './camera-control';
+import type { FlashMode } from './camera-control';
+import { DoorSensorControl } from './door-sensor-control';
+import { PingButton } from './ping-button';
+import { RestartButton } from './restart-button';
 import { sendAtur } from './security-atur-client';
 import { SecurityCardsPanel } from './security-cards-panel';
 import {
@@ -30,9 +26,11 @@ import {
     UnpairButton,
 } from './security-pairing-panel';
 import type { PairingState, StockDevice } from './security-pairing-panel';
+import { WifiControl } from './wifi-control';
 
-// The Security Cam tab is the device's configurator: pair/unpair and access cards.
-// Its state, photos and event log live on Production > Security System > <ID>.
+// The Security Cam tab is the device's configurator: pair/unpair, siren, door sensor,
+// photo on demand, WiFi and access cards.
+// Its state, photos and event log live on the module's status page (Production > Modul).
 
 interface SecurityDevice {
     deviceId: string;
@@ -41,6 +39,10 @@ interface SecurityDevice {
     lastSeenAt: string | null;
     // From the last telemetry; null before the first one.
     siren: boolean | null;
+    sensor: 'NO' | 'NC' | null;
+    // null while the camera has never reported.
+    flash: FlashMode | null;
+    doorOpen: boolean | null;
 }
 
 interface SecurityResponse {
@@ -54,27 +56,23 @@ interface SecurityResponse {
 
 const POLL_MS = 15_000;
 
-function formatTime(iso: string | null): string {
-    return iso ? new Date(iso).toLocaleString('id-ID') : '—';
-}
-
 // On is the signed sirine_nyala op (sounds until switched off, at most the device's
-// safety limit); Off is CTRL SIREN_OFF, which needs no password because the firmware
+// safety limit), signed by the server; Off is CTRL SIREN_OFF, which needs no signature because the firmware
 // lets anyone silence but never disarm.
 function SirenControl({
     loggerId,
     siren,
-    password,
     onDone,
 }: {
     loggerId: string;
     siren: boolean | null;
-    password: string;
     onDone: () => void;
 }) {
     const [busy, setBusy] = useState<null | 'on' | 'off'>(null);
     const [message, setMessage] = useState<string | null>(null);
     const [failed, setFailed] = useState(false);
+    // The message is the success of switching on, which no longer holds once it is off.
+    const [messageFromOn, setMessageFromOn] = useState(false);
     // Telemetry only arrives once a minute, so after a command the controls follow what
     // we just told the device until `until`, then fall back to the reported state.
     const [override, setOverride] = useState<{
@@ -105,8 +103,9 @@ function SirenControl({
         return () => clearTimeout(timeout);
     }, [autoOffAt]);
 
-    function report(text: string, ok: boolean) {
+    function report(text: string, ok: boolean, fromOn = false) {
         setFailed(!ok);
+        setMessageFromOn(fromOn);
         setMessage(`${text.charAt(0).toUpperCase()}${text.slice(1)}`);
     }
 
@@ -136,8 +135,8 @@ function SirenControl({
         setBusy('on');
         setMessage(null);
         try {
-            const result = await sendAtur(loggerId, password, 'sirine_nyala');
-            report(`${result.message}.`, true);
+            const result = await sendAtur(loggerId, 'sirine_nyala');
+            report(`${result.message}.`, true, true);
             // Until the next telemetry (once a minute) confirms it.
             setOverride({ on: true, until: Date.now() + 60_000 });
             // A siren already sounding for a breach gets no limit and keeps going.
@@ -189,8 +188,8 @@ function SirenControl({
                         size="sm"
                         variant={on === true ? 'destructive' : 'ghost'}
                         className="gap-1.5 rounded-none"
-                        disabled={busy !== null || on === true}
-                        onClick={() => void switchOn()}
+                        disabled={busy !== null}
+                        onClick={() => on !== true && void switchOn()}
                     >
                         {busy === 'on' ? (
                             spinner
@@ -205,8 +204,8 @@ function SirenControl({
                         size="sm"
                         variant={on === false ? 'secondary' : 'ghost'}
                         className="gap-1.5 rounded-none border-l border-input"
-                        disabled={busy !== null || on === false}
-                        onClick={() => void switchOff()}
+                        disabled={busy !== null}
+                        onClick={() => on !== false && void switchOff()}
                     >
                         {busy === 'off' ? (
                             spinner
@@ -216,24 +215,26 @@ function SirenControl({
                         Off
                     </Button>
                 </div>
-                {on === true && autoOffAt !== null && (
-                    <p className="text-sm text-amber-700 dark:text-amber-300">
-                        Mati otomatis sekitar pukul{' '}
-                        {new Date(autoOffAt).toLocaleTimeString('id-ID', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                        })}{' '}
-                        (batas pengaman alat).
-                    </p>
-                )}
-                <p className="text-xs text-muted-foreground">
-                    On menyalakan sirine sampai di-Off-kan, paling lama 10 menit
-                    lalu mati sendiri (perlu password alat). Off membungkam
-                    sirine dan melepas kunci pembobolan; alarm tetap siaga.
-                </p>
+                {/* Only while sounding: the time when known, otherwise the limit itself. */}
+                {on === true &&
+                    (autoOffAt !== null ? (
+                        <p className="text-sm text-amber-700 dark:text-amber-300">
+                            Mati otomatis sekitar pukul{' '}
+                            {new Date(autoOffAt).toLocaleTimeString('id-ID', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                            })}{' '}
+                            (batas pengaman alat).
+                        </p>
+                    ) : (
+                        <p className="text-xs text-muted-foreground">
+                            Mati sendiri setelah 10 menit.
+                        </p>
+                    ))}
             </div>
 
-            {message && (
+            {/* "Sirine menyala" goes stale once the siren is off again. */}
+            {message && !(messageFromOn && on !== true) && (
                 <p
                     className={`text-sm ${failed ? 'text-destructive' : 'text-emerald-700 dark:text-emerald-300'}`}
                 >
@@ -244,45 +245,11 @@ function SirenControl({
     );
 }
 
-function PasswordField({
-    value,
-    onChange,
-}: {
-    value: string;
-    onChange: (value: string) => void;
-}) {
-    return (
-        <div className="space-y-1.5 rounded-md border border-border/60 p-4">
-            <Label
-                htmlFor="security-device-password"
-                className="flex items-center gap-1.5"
-            >
-                <KeyRound className="size-3.5" /> Password alat
-            </Label>
-            <Input
-                id="security-device-password"
-                type="password"
-                autoComplete="off"
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                className="max-w-xs"
-            />
-            <p className="text-xs text-muted-foreground">
-                Untuk uji sirine dan mengubah kartu. Dipakai menandatangani
-                perintah di browser ini; tidak dikirim ke server dan tidak
-                disimpan.
-            </p>
-        </div>
-    );
-}
-
 export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     const [data, setData] = useState<SecurityResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
-    // Device password, only in this tab's memory.
-    const [password, setPassword] = useState('');
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -369,20 +336,28 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                 </div>
                 {data.canManage ? (
                     <>
-                        <PasswordField
-                            value={password}
-                            onChange={setPassword}
-                        />
-                        <SirenControl
-                            loggerId={loggerId}
-                            siren={device.siren}
-                            password={password}
-                            onDone={() => void load()}
-                        />
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                            <SirenControl
+                                loggerId={loggerId}
+                                siren={device.siren}
+                                onDone={() => void load()}
+                            />
+                            <DoorSensorControl
+                                loggerId={loggerId}
+                                sensor={device.sensor}
+                                doorOpen={device.doorOpen}
+                                onDone={() => void load()}
+                            />
+                            <CameraControl
+                                loggerId={loggerId}
+                                flash={device.flash}
+                                onDone={() => void load()}
+                            />
+                            <WifiControl loggerId={loggerId} />
+                        </div>
                         <SecurityCardsPanel
                             loggerId={loggerId}
                             deviceId={device.deviceId}
-                            password={password}
                         />
                     </>
                 ) : (
@@ -422,13 +397,28 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                                 </>
                             )}
                         </CardTitle>
-                        <CardDescription>
-                            {device
-                                ? `Konfigurator alat · terakhir terlihat ${formatTime(device.lastSeenAt)}`
-                                : 'Pasang alat Security System ke logger ini.'}
-                        </CardDescription>
                     </div>
                     <div className="flex items-start gap-1">
+                        {device && data?.canManage && (
+                            <PingButton
+                                loggerId={loggerId}
+                                deviceId={device.deviceId}
+                                onDone={(message) => {
+                                    setNotice(message);
+                                    void load();
+                                }}
+                            />
+                        )}
+                        {device && data?.canManage && (
+                            <RestartButton
+                                loggerId={loggerId}
+                                deviceId={device.deviceId}
+                                onDone={(message) => {
+                                    setNotice(message);
+                                    void load();
+                                }}
+                            />
+                        )}
                         {device && data?.canManage && (
                             <UnpairButton
                                 loggerId={loggerId}
