@@ -101,20 +101,20 @@ it('uploads firmware per module model and offers it on the Production page', fun
 
     $this->actingAs($user)
         ->post(route('production.module-firmware.update'), [
-            'model' => 'EWS',
+            'model' => 'Security System',
             'firmware_version' => 'v1.2.0',
-            'firmware_file' => \Illuminate\Http\UploadedFile::fake()->create('ews-v1.2.0.bin', 10),
+            'firmware_file' => \Illuminate\Http\UploadedFile::fake()->create('ss-v1.2.0.bin', 10),
         ])
-        ->assertSessionHas('success', 'Firmware EWS v1.2.0 di-upload.');
+        ->assertSessionHas('success', 'Firmware Security System v1.2.0 di-upload.');
 
     $firmware = \App\Models\ModuleFirmware::sole();
-    expect($firmware->file_name)->toBe('EWS-ews-v1.2.0.bin')
+    expect($firmware->file_name)->toBe('Security-System-ss-v1.2.0.bin')
         ->and(file_exists(public_path($firmware->file_path)))->toBeTrue();
 
     $this->get(route('production.index'))
         ->assertInertia(fn (Assert $page) => $page
-            ->where('moduleFirmwares.EWS.version', 'v1.2.0')
-            ->where('moduleFirmwares.EWS.fileName', 'EWS-ews-v1.2.0.bin'));
+            ->where('moduleFirmwares.Security System.version', 'v1.2.0')
+            ->where('moduleFirmwares.Security System.fileName', 'Security-System-ss-v1.2.0.bin'));
 
     @unlink(public_path($firmware->file_path));
 });
@@ -122,13 +122,13 @@ it('uploads firmware per module model and offers it on the Production page', fun
 it('accepts only .bin firmware for a known module model', function () {
     $this->actingAs(productionModuleUser(['production.view', 'production.create']))
         ->post(route('production.module-firmware.update'), [
-            'model' => 'LoRa', 'firmware_version' => 'v1',
+            'model' => 'EWS', 'firmware_version' => 'v1',
             'firmware_file' => \Illuminate\Http\UploadedFile::fake()->create('x.bin', 1),
         ])
         ->assertSessionHasErrors('model');
 
     $this->post(route('production.module-firmware.update'), [
-        'model' => 'GCM', 'firmware_version' => 'v1',
+        'model' => 'Security System', 'firmware_version' => 'v1',
         'firmware_file' => \Illuminate\Http\UploadedFile::fake()->create('x.zip', 1),
     ])->assertSessionHasErrors('firmware_file');
 
@@ -137,7 +137,7 @@ it('accepts only .bin firmware for a known module model', function () {
 
 it('shows module models with their OTA firmware on the Models page', function () {
     \App\Models\ModuleFirmware::create([
-        'model' => 'GCM', 'firmware_version' => 'v3', 'file_path' => 'firmware/modules/GCM-g.bin', 'file_name' => 'GCM-g.bin',
+        'model' => 'Security System', 'firmware_version' => 'v3', 'file_path' => 'firmware/modules/Security-System-g.bin', 'file_name' => 'Security-System-g.bin',
     ]);
 
     $this->actingAs(productionModuleUser(['production.view']))
@@ -145,6 +145,6 @@ it('shows module models with their OTA firmware on the Models page', function ()
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->component('production/models')
-            ->where('moduleFirmwares.GCM.version', 'v3')
-            ->where('moduleFirmwares.GCM.fileName', 'GCM-g.bin'));
+            ->where('moduleFirmwares.Security System.version', 'v3')
+            ->where('moduleFirmwares.Security System.fileName', 'Security-System-g.bin'));
 });

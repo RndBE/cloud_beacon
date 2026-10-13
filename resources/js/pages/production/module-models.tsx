@@ -16,8 +16,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { ModuleFirmware } from './production-modules';
 
-// Fixed list: the module kinds the Production page's Modul view knows.
-const MODULE_MODELS = ['Security System', 'EWS', 'GCM'];
+// The module models that take OTA updates (ModuleFirmware::MODELS); EWS and GCM have none.
+const MODULE_MODELS = ['Security System'];
 
 function formatBytes(bytes: number | null): string {
     if (!bytes) return '—';
