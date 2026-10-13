@@ -94,6 +94,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('loggers/{id}/security/command', [SecurityCardController::class, 'command'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.command');
+    Route::post('loggers/{id}/security/sign', [SecurityCardController::class, 'sign'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.sign');
+    Route::put('loggers/{id}/security/serial-log/{log}', [SecurityCardController::class, 'serialResult'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.serial-result');
+    Route::post('loggers/{id}/security/serial-log', [SecurityCardController::class, 'serialLog'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.serial-log');
+    Route::get('loggers/{id}/security/cards/holders', [SecurityCardController::class, 'holders'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.holders');
     Route::post('loggers/{id}/security/cards/holder', [SecurityCardController::class, 'holder'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.cards.holder');

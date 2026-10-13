@@ -12,6 +12,7 @@ import {
     Plus,
     Search,
     Trash2,
+    Usb,
     XCircle,
 } from 'lucide-react';
 import { useRef, useState } from 'react';
@@ -69,6 +70,7 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { SecuritySetupDialog } from './security-setup-dialog';
 
 type QcStatus = 'pending' | 'passed' | 'failed';
 
@@ -644,6 +646,10 @@ export function ProductionModules({
     const [search, setSearch] = useState('');
     const [qcFilter, setQcFilter] = useState<QcStatus | 'all'>('all');
     const [editTarget, setEditTarget] = useState<ProductionModule | null>(null);
+    // Security System unit being set up over USB / Bluetooth.
+    const [setupTarget, setSetupTarget] = useState<ProductionModule | null>(
+        null,
+    );
     const [deleteTarget, setDeleteTarget] = useState<ProductionModule | null>(
         null,
     );
@@ -887,6 +893,19 @@ export function ProductionModules({
                                                     </a>
                                                 </Button>
                                             )}
+                                            {m.kind === 'security' && (
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon-sm"
+                                                    onClick={() =>
+                                                        setSetupTarget(m)
+                                                    }
+                                                    aria-label={`Setup ${m.serialNumber} lewat USB atau Bluetooth`}
+                                                    title="Setup alat (USB / Bluetooth)"
+                                                >
+                                                    <Usb className="size-4" />
+                                                </Button>
+                                            )}
                                             <Button
                                                 variant="ghost"
                                                 size="icon-sm"
@@ -932,6 +951,11 @@ export function ProductionModules({
             </Card>
 
             <AddModuleDialog open={addOpen} onOpenChange={onAddOpenChange} />
+            <SecuritySetupDialog
+                deviceId={setupTarget?.deviceId ?? null}
+                serialNumber={setupTarget?.serialNumber ?? ''}
+                onClose={() => setSetupTarget(null)}
+            />
             {/* Keyed so the form starts from the chosen module each time. */}
             <EditModuleDialog
                 key={editTarget?.key ?? 'none'}

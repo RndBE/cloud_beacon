@@ -8,18 +8,25 @@ import {
     RefreshCw,
     Siren,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { postJson } from '@/lib/csrf-fetch';
+import { openBluetoothLink, openUsbLink } from '@/lib/security-setup-link';
+import { CableConnect } from './cable-connect';
 import { CameraControl } from './camera-control';
 import type { FlashMode } from './camera-control';
 import { DeviceActionsMenu } from './device-actions-menu';
 import { DoorSensorControl } from './door-sensor-control';
-import { sendAtur } from './security-atur-client';
 import { SecurityCardsPanel } from './security-cards-panel';
-import { errorMessage, SecurityPairingPanel } from './security-pairing-panel';
+import {
+    cableChannel,
+    internetChannel,
+    SecurityChannelProvider,
+    useSecurityChannel,
+} from './security-channel';
+import type { CableChannel } from './security-channel';
+import { SecurityPairingPanel } from './security-pairing-panel';
 import type { PairingState, StockDevice } from './security-pairing-panel';
 import { WifiControl } from './wifi-control';
 
@@ -55,14 +62,13 @@ const POLL_MS = 15_000;
 // safety limit), signed by the server; Off is CTRL SIREN_OFF, which needs no signature because the firmware
 // lets anyone silence but never disarm.
 function SirenControl({
-    loggerId,
     siren,
     onDone,
 }: {
-    loggerId: string;
     siren: boolean | null;
     onDone: () => void;
 }) {
+    const channel = useSecurityChannel();
     const [busy, setBusy] = useState<null | 'on' | 'off'>(null);
     const [message, setMessage] = useState<string | null>(null);
     const [failed, setFailed] = useState(false);
@@ -108,19 +114,13 @@ function SirenControl({
         setBusy('off');
         setMessage(null);
         try {
-            const response = await postJson(
-                `/loggers/${loggerId}/security/siren-off`,
-                {},
-            );
-            if (!response.ok) {
-                report(await errorMessage(response), false);
-                return;
-            }
-            const data = (await response.json()) as { message?: string };
-            report(data.message ?? 'Sirine dimatikan.', true);
+            const result = await channel.ctrl('SIREN_OFF');
+            report(result.message || 'Sirine dimatikan.', true);
             setOverride({ on: false, until: Date.now() + 60_000 });
             setAutoOffAt(null);
             onDone();
+        } catch (e) {
+            report(e instanceof Error ? e.message : String(e), false);
         } finally {
             setBusy(null);
         }
@@ -130,7 +130,7 @@ function SirenControl({
         setBusy('on');
         setMessage(null);
         try {
-            const result = await sendAtur(loggerId, 'sirine_nyala');
+            const result = await channel.atur('sirine_nyala');
             report(`${result.message}.`, true, true);
             // Until the next telemetry (once a minute) confirms it.
             setOverride({ on: true, until: Date.now() + 60_000 });
@@ -247,6 +247,67 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     const [notice, setNotice] = useState<string | null>(null);
     // A failed action from the device menu (connection test, restart, unpair).
     const [actionError, setActionError] = useState<string | null>(null);
+    // Set while the configurator talks to the device over a USB cable / Bluetooth.
+    const [cable, setCable] = useState<CableChannel | null>(null);
+    const [cableBusy, setCableBusy] = useState(false);
+    const cableRef = useRef<CableChannel | null>(null);
+    const internet = useMemo(() => internetChannel(loggerId), [loggerId]);
+    const channel = cable ?? internet;
+
+    useEffect(() => () => void cableRef.current?.close(), []);
+
+    function dropCable() {
+        void cableRef.current?.close();
+        cableRef.current = null;
+        setCable(null);
+    }
+
+    async function connectCable(kind: 'usb' | 'bluetooth', deviceId: string) {
+        setCableBusy(true);
+        setActionError(null);
+        try {
+            const handlers = {
+                onReply: () => undefined,
+                onSecurity: (reply: Record<string, unknown> | string) =>
+                    cableRef.current?.handle(reply),
+                onLine: () => undefined,
+                onClosed: () => {
+                    cableRef.current = null;
+                    setCable(null);
+                    setActionError(
+                        'Sambungan kabel/Bluetooth ke alat terputus.',
+                    );
+                },
+            };
+            const link =
+                kind === 'usb'
+                    ? await openUsbLink(handlers)
+                    : await openBluetoothLink(handlers);
+            if (!link) return;
+            const opened = cableChannel(loggerId, link);
+            cableRef.current = opened;
+            // Only this logger's device: another board on the cable is refused here,
+            // and the server refuses to sign for it as well.
+            const id = await opened.identify().catch(async (e) => {
+                dropCable();
+                throw e;
+            });
+            if (id !== deviceId) {
+                dropCable();
+                throw new Error(
+                    `Alat yang tersambung adalah ${id || 'alat tanpa ID'}, bukan ${deviceId}.`,
+                );
+            }
+            setCable(opened);
+            setNotice(
+                `Tersambung ke ${deviceId} lewat ${kind === 'usb' ? 'USB' : 'Bluetooth'}. Pengaturan dikirim lewat sambungan ini.`,
+            );
+        } catch (e) {
+            setActionError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setCableBusy(false);
+        }
+    }
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -314,29 +375,46 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
             <>
                 {data.canManage ? (
                     <>
-                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                            <SirenControl
+                        {!device.online && !cable && (
+                            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+                                Alat offline
+                                {device.lastSeenAt
+                                    ? ` sejak ${new Date(device.lastSeenAt).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })}`
+                                    : ''}
+                                . Pengaturan bisa dikirim lagi setelah alat
+                                tersambung, atau sambungkan lewat kabel USB /
+                                Bluetooth.
+                            </p>
+                        )}
+                        {/* A disabled fieldset disables every control inside: commands
+                            to an offline device would only time out. A cable reaches it
+                            anyway. */}
+                        <fieldset
+                            disabled={!device.online && !cable}
+                            className="m-0 min-w-0 space-y-4 border-0 p-0 disabled:opacity-60"
+                        >
+                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                                <SirenControl
+                                    siren={device.siren}
+                                    onDone={() => void load()}
+                                />
+                                <DoorSensorControl
+                                    sensor={device.sensor}
+                                    doorOpen={device.doorOpen}
+                                    onDone={() => void load()}
+                                />
+                                <CameraControl
+                                    loggerId={loggerId}
+                                    flash={device.flash}
+                                    onDone={() => void load()}
+                                />
+                                <WifiControl loggerId={loggerId} />
+                            </div>
+                            <SecurityCardsPanel
                                 loggerId={loggerId}
-                                siren={device.siren}
-                                onDone={() => void load()}
+                                deviceId={device.deviceId}
                             />
-                            <DoorSensorControl
-                                loggerId={loggerId}
-                                sensor={device.sensor}
-                                doorOpen={device.doorOpen}
-                                onDone={() => void load()}
-                            />
-                            <CameraControl
-                                loggerId={loggerId}
-                                flash={device.flash}
-                                onDone={() => void load()}
-                            />
-                            <WifiControl loggerId={loggerId} />
-                        </div>
-                        <SecurityCardsPanel
-                            loggerId={loggerId}
-                            deviceId={device.deviceId}
-                        />
+                        </fieldset>
                     </>
                 ) : (
                     <p className="text-xs text-muted-foreground">
@@ -349,92 +427,115 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     }
 
     return (
-        <Card>
-            <CardHeader className="space-y-1">
-                <div className="flex items-start justify-between gap-3">
-                    <div>
-                        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-                            <Cctv className="size-4" />
-                            Security Cam
+        <SecurityChannelProvider value={channel}>
+            <Card>
+                <CardHeader className="space-y-1">
+                    <div className="flex items-start justify-between gap-3">
+                        <div>
+                            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+                                <Cctv className="size-4" />
+                                Security Cam
+                                {device && (
+                                    <>
+                                        <span className="font-mono text-sm text-muted-foreground">
+                                            {device.deviceId}
+                                            {device.name
+                                                ? ` · ${device.name}`
+                                                : ''}
+                                        </span>
+                                        <Badge
+                                            variant="outline"
+                                            className={
+                                                device.online
+                                                    ? 'border-emerald-200 text-emerald-600 dark:border-emerald-900'
+                                                    : 'border-red-200 text-red-600 dark:border-red-900'
+                                            }
+                                        >
+                                            {device.online
+                                                ? 'Online'
+                                                : 'Offline'}
+                                        </Badge>
+                                    </>
+                                )}
+                            </CardTitle>
+                        </div>
+                        <div className="flex items-center gap-1">
                             {device && (
-                                <>
-                                    <span className="font-mono text-sm text-muted-foreground">
-                                        {device.deviceId}
-                                        {device.name ? ` · ${device.name}` : ''}
-                                    </span>
-                                    <Badge
-                                        variant="outline"
-                                        className={
-                                            device.online
-                                                ? 'border-emerald-200 text-emerald-600 dark:border-emerald-900'
-                                                : 'border-red-200 text-red-600 dark:border-red-900'
-                                        }
-                                    >
-                                        {device.online ? 'Online' : 'Offline'}
-                                    </Badge>
-                                </>
-                            )}
-                        </CardTitle>
-                    </div>
-                    <div className="flex items-center gap-1">
-                        {device && (
-                            <Button
-                                asChild
-                                size="sm"
-                                variant="outline"
-                                className="gap-1.5"
-                            >
-                                <Link
-                                    href={`/production/security-devices/${device.deviceId}`}
+                                <Button
+                                    asChild
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1.5"
                                 >
-                                    <Activity className="size-4" /> Lihat status
-                                    &amp; log
-                                </Link>
-                            </Button>
-                        )}
-                        <Button
-                            size="icon"
-                            variant="ghost"
-                            className="size-8"
-                            aria-label="Muat ulang"
-                            title="Muat ulang"
-                            disabled={loading}
-                            onClick={() => void load()}
-                        >
-                            {loading ? (
-                                <LoaderCircle className="size-4 animate-spin" />
-                            ) : (
-                                <RefreshCw className="size-4" />
+                                    <Link
+                                        href={`/production/security-devices/${device.deviceId}`}
+                                    >
+                                        <Activity className="size-4" /> Lihat
+                                        status &amp; log
+                                    </Link>
+                                </Button>
                             )}
-                        </Button>
-                        {device && data?.canManage && (
-                            <DeviceActionsMenu
-                                loggerId={loggerId}
-                                deviceId={device.deviceId}
-                                onNotice={setNotice}
-                                onError={setActionError}
-                                onChanged={() => void load()}
-                            />
-                        )}
+                            <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-8"
+                                aria-label="Muat ulang"
+                                title="Muat ulang"
+                                disabled={loading}
+                                onClick={() => void load()}
+                            >
+                                {loading ? (
+                                    <LoaderCircle className="size-4 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="size-4" />
+                                )}
+                            </Button>
+                            {device && data?.canManage && (
+                                <CableConnect
+                                    via={channel.via}
+                                    busy={cableBusy}
+                                    onConnect={(kind) =>
+                                        void connectCable(kind, device.deviceId)
+                                    }
+                                    onDisconnect={() => {
+                                        dropCable();
+                                        setNotice(
+                                            'Sambungan kabel diputus; pengaturan kembali lewat internet.',
+                                        );
+                                    }}
+                                />
+                            )}
+                            {device && data?.canManage && (
+                                <DeviceActionsMenu
+                                    loggerId={loggerId}
+                                    deviceId={device.deviceId}
+                                    onNotice={setNotice}
+                                    onError={setActionError}
+                                    onChanged={() => void load()}
+                                />
+                            )}
+                        </div>
                     </div>
-                </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-                {notice && (
-                    <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
-                        {notice}
-                    </p>
-                )}
-                {actionError && (
-                    <p className="text-sm text-destructive">{actionError}</p>
-                )}
-                {error && (
-                    <p className="text-sm text-destructive">
-                        Gagal memuat data Security Cam: {error}
-                    </p>
-                )}
-                {body}
-            </CardContent>
-        </Card>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {notice && (
+                        <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+                            {notice}
+                        </p>
+                    )}
+                    {actionError && (
+                        <p className="text-sm text-destructive">
+                            {actionError}
+                        </p>
+                    )}
+                    {error && (
+                        <p className="text-sm text-destructive">
+                            Gagal memuat data Security Cam: {error}
+                        </p>
+                    )}
+                    {body}
+                </CardContent>
+            </Card>
+        </SecurityChannelProvider>
     );
 }

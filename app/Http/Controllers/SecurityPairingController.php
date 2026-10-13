@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\SecurityPairingException;
 use App\Models\Logger;
+use App\Models\SecurityConfigLog;
+use App\Models\SecurityDevice;
 use App\Models\SecurityPairing;
 use App\Services\IdHasher;
 use App\Services\SecurityPairingService;
@@ -56,7 +58,12 @@ class SecurityPairingController extends Controller
 
     public function unpair(string $hash): JsonResponse
     {
-        $this->pairing->unpair($this->manageableLogger($hash));
+        $logger = $this->manageableLogger($hash);
+        $device = SecurityDevice::where('logger_id', $logger->id)->first();
+        $this->pairing->unpair($logger);
+        if ($device !== null) {
+            SecurityConfigLog::record($device, 'lepas', "Lepas dari logger {$logger->name}", true);
+        }
 
         return response()->json(['ok' => true]);
     }

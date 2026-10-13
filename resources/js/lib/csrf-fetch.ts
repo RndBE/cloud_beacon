@@ -16,7 +16,7 @@ function currentXsrfToken(): string | null {
 }
 
 function sendJson(
-    method: 'POST' | 'DELETE',
+    method: 'POST' | 'PUT' | 'DELETE',
     url: string,
     body?: Record<string, unknown>,
 ): Promise<Response> {
@@ -48,6 +48,13 @@ export function postJson(
     body: Record<string, unknown>,
 ): Promise<Response> {
     return sendJson('POST', url, body);
+}
+
+export function putJson(
+    url: string,
+    body: Record<string, unknown>,
+): Promise<Response> {
+    return sendJson('PUT', url, body);
 }
 
 export function deleteJson(url: string): Promise<Response> {

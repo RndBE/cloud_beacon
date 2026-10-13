@@ -25,6 +25,11 @@ declare global {
         open(options: SerialOptions): Promise<void>;
         close(): Promise<void>;
         getInfo(): SerialPortInfo;
+        setSignals(signals: {
+            dataTerminalReady?: boolean;
+            requestToSend?: boolean;
+            break?: boolean;
+        }): Promise<void>;
     }
 
     interface Serial extends EventTarget {

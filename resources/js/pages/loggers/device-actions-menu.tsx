@@ -24,8 +24,8 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { deleteJson, postJson } from '@/lib/csrf-fetch';
-import { sendAtur } from './security-atur-client';
+import { deleteJson } from '@/lib/csrf-fetch';
+import { useSecurityChannel } from './security-channel';
 import { errorMessage } from './security-pairing-panel';
 
 /**
@@ -47,6 +47,7 @@ export function DeviceActionsMenu({
     // The device's state changed (restarted, unpaired): reload the card.
     onChanged: () => void;
 }) {
+    const channel = useSecurityChannel();
     const [busy, setBusy] = useState(false);
     const [confirm, setConfirm] = useState<'restart' | 'unpair' | null>(null);
 
@@ -65,19 +66,14 @@ export function DeviceActionsMenu({
 
     const ping = () =>
         run(async () => {
-            const response = await postJson(
-                `/loggers/${loggerId}/security/ping`,
-                {},
-            );
-            if (!response.ok) throw new Error(await errorMessage(response));
-            const data = (await response.json()) as { milliseconds: number };
+            const data = await channel.ctrl('PING');
             onChanged();
-            return `Alat ${deviceId} menjawab dalam ${(data.milliseconds / 1000).toLocaleString('id-ID', { maximumFractionDigits: 1 })} detik.`;
+            return `Alat ${deviceId} menjawab${channel.via === 'internet' ? '' : ` lewat ${channel.via === 'usb' ? 'USB' : 'Bluetooth'}`} dalam ${((data.milliseconds ?? 0) / 1000).toLocaleString('id-ID', { maximumFractionDigits: 1 })} detik.`;
         });
 
     const restart = () =>
         run(async () => {
-            const result = await sendAtur(loggerId, 'restart');
+            const result = await channel.atur('restart');
             onChanged();
             return `Alat ${deviceId}: ${result.message}. Online lagi dalam sekitar satu menit.`;
         });

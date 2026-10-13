@@ -4,6 +4,7 @@ use App\Exceptions\SecurityCommandException;
 use App\Models\Logger;
 use App\Models\Permission;
 use App\Models\Role;
+use App\Models\SecurityConfigLog;
 use App\Models\SecurityDevice;
 use App\Models\SecurityEvent;
 use App\Models\SecurityPhoto;
@@ -11,6 +12,7 @@ use App\Models\User;
 use App\Services\IdHasher;
 use App\Services\SecurityAturSigner;
 use App\Services\SecurityCommandService;
+use Illuminate\Support\Facades\Cache;
 
 function cardUser(array $permissions = ['loggers.view', 'loggers.create']): User
 {
@@ -441,4 +443,108 @@ it('asks the device which WiFi it is on', function () {
     $this->getJson(route('loggers.security.wifi', $this->hash))
         ->assertOk()
         ->assertJson(['ssid' => 'Kantor']);
+});
+
+it('records who changed what on the device', function () {
+    fakeDevice($this, ['status' => 'OK', 'cmd' => 'SET', 'op' => 'set_sensor', 'msg' => 'mode sensor NC, pintu terbaca TERTUTUP']);
+    $this->postJson(route('loggers.security.command', $this->hash), ['op' => 'set_sensor', 'mode' => 'NC'])->assertOk();
+
+    expect(SecurityConfigLog::sole()->only(['user_id', 'action', 'description', 'ok', 'message']))->toBe([
+        'user_id' => $this->user->id,
+        'action' => 'set_sensor',
+        'description' => 'Mode sensor pintu NC',
+        'ok' => true,
+        'message' => 'mode sensor NC, pintu terbaca TERTUTUP',
+    ]);
+});
+
+it('records a change the device refused, with the reason', function () {
+    fakeDevice($this, ['status' => 'ERR', 'cmd' => 'SET', 'op' => '', 'msg' => 'autentikasi gagal: password salah']);
+    $this->postJson(route('loggers.security.command', $this->hash), ['op' => 'restart'])->assertUnprocessable();
+
+    $log = SecurityConfigLog::sole();
+    expect($log->only(['action', 'description', 'ok']))->toBe(['action' => 'restart', 'description' => 'Restart alat', 'ok' => false])
+        ->and($log->message)->toContain('password alat di server tidak cocok');
+});
+
+it('never writes the WiFi password into the change log', function () {
+    fakeDevice($this, ['status' => 'OK', 'cmd' => 'SET', 'op' => 'set_wifi', 'msg' => 'mencoba WiFi baru']);
+    $this->postJson(route('loggers.security.command', $this->hash), ['op' => 'set_wifi', 'ssid' => 'Kantor 2', 'wifi_password' => 'rahasia-wifi'])
+        ->assertOk();
+
+    $log = SecurityConfigLog::sole();
+    expect($log->description)->toBe('Ganti WiFi ke Kantor 2')
+        ->and(json_encode($log->toArray()))->not->toContain('rahasia-wifi');
+});
+
+it('shows the change log on the device status page data', function () {
+    SecurityConfigLog::record($this->device, 'sirine_nyala', 'Nyalakan sirine', true, 'sirine menyala');
+
+    $this->getJson(route('production.security-devices.data', 'SS0001'))
+        ->assertOk()
+        ->assertJsonPath('configLogs.0.description', 'Nyalakan sirine')
+        ->assertJsonPath('configLogs.0.user', $this->user->name)
+        ->assertJsonPath('configLogs.0.ok', true);
+});
+
+it('signs a challenge relayed from a device on a cable and logs it as pending', function () {
+    $this->postJson(route('loggers.security.sign', $this->hash), [
+        'op' => 'set_flash', 'flash' => 'ON', 'salt' => SALT, 'nonce' => NONCE, 'via' => 'usb',
+    ])
+        ->assertOk()
+        ->assertJson(SecurityAturSigner::sign(SALT, NONCE, 'sandi-uji', 'set_flash', 'ON'))
+        ->assertJsonStructure(['logId', 'afterEventId']);
+
+    expect(SecurityConfigLog::sole()->only(['action', 'description', 'ok', 'message', 'via']))->toBe([
+        'action' => 'set_flash', 'description' => 'Mode flash selalu nyala', 'ok' => false,
+        'message' => 'Menunggu balasan alat', 'via' => 'usb',
+    ]);
+});
+
+it('records the reply the browser reports for a cable command, once', function () {
+    $logId = $this->postJson(route('loggers.security.sign', $this->hash), [
+        'op' => 'kartu_tambah', 'salt' => SALT, 'nonce' => NONCE, 'via' => 'bluetooth',
+    ])->json('logId');
+
+    $result = fn () => $this->putJson(route('loggers.security.serial-result', [$this->hash, $logId]), [
+        'ok' => true, 'message' => 'kartu ditambahkan', 'uid' => 'aa bb cc dd',
+    ]);
+    $result()->assertOk();
+
+    expect(SecurityConfigLog::sole()->only(['description', 'ok', 'message']))->toBe([
+        'description' => 'Tambah kartu AA:BB:CC:DD (tap)', 'ok' => true, 'message' => 'kartu ditambahkan',
+    ]);
+    // Settled: the browser cannot rewrite it later.
+    $result()->assertNotFound();
+});
+
+it('refuses to sign for a board whose salt is not this device', function () {
+    Cache::forever("security:salt:{$this->device->id}", 'ffffffffffffffff');
+
+    $this->postJson(route('loggers.security.sign', $this->hash), [
+        'op' => 'restart', 'salt' => SALT, 'nonce' => NONCE, 'via' => 'usb',
+    ])
+        ->assertUnprocessable()
+        ->assertJsonPath('message', fn ($m) => str_contains($m, 'bukan SS0001'));
+    expect(SecurityConfigLog::count())->toBe(0);
+});
+
+it('remembers the device salt from a challenge over MQTT', function () {
+    fakeDevice($this, ['status' => 'OK', 'cmd' => 'SET', 'op' => 'restart', 'msg' => 'papan restart dalam 2 detik']);
+    $this->postJson(route('loggers.security.command', $this->hash), ['op' => 'restart'])->assertOk();
+
+    expect(Cache::get("security:salt:{$this->device->id}"))->toBe(SALT);
+});
+
+it('logs a siren silenced over a cable and gives the card holder names', function () {
+    $this->postJson(route('loggers.security.serial-log', $this->hash), [
+        'action' => 'sirine_mati', 'ok' => true, 'message' => 'sirine dimatikan', 'via' => 'usb',
+    ])->assertOk();
+    expect(SecurityConfigLog::sole()->only(['description', 'ok', 'via']))
+        ->toBe(['description' => 'Matikan sirine', 'ok' => true, 'via' => 'usb']);
+
+    $this->device->cards()->create(['uid' => 'FC:E1:4F:07', 'holder_name' => 'Dian']);
+    $this->getJson(route('loggers.security.cards.holders', $this->hash))
+        ->assertOk()
+        ->assertJson(['holders' => ['FC:E1:4F:07' => 'Dian']]);
 });

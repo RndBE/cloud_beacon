@@ -8,9 +8,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
-import { postJson } from '@/lib/csrf-fetch';
-import { sendAtur } from './security-atur-client';
-import { errorMessage } from './security-pairing-panel';
+import { useSecurityChannel } from './security-channel';
 
 interface SnapPhoto {
     id: number;
@@ -27,24 +25,23 @@ export type FlashMode = 'AUTO' | 'ON' | 'OFF';
 
 // `short` fits beside the photo button; the list shows the full label.
 const FLASH_MODES: { mode: FlashMode; short: string; label: string }[] = [
-    { mode: 'AUTO', short: 'Otomatis', label: 'Otomatis (hanya malam)' },
+    { mode: 'AUTO', short: 'Otomatis', label: 'Otomatis (saat gelap)' },
     { mode: 'ON', short: 'Nyala', label: 'Selalu nyala' },
     { mode: 'OFF', short: 'Mati', label: 'Mati' },
 ];
 
 // The camera's flash for every photo (signed set_flash op). AUTO, the device's
-// default, flashes only at night so breach photos after dark are not black.
+// default, flashes when it is dark so breach photos after dark are not black.
 function FlashModeSelect({
-    loggerId,
     flash,
     onDone,
     onError,
 }: {
-    loggerId: string;
     flash: FlashMode | null;
     onDone: () => void;
     onError: (message: string | null) => void;
 }) {
+    const channel = useSecurityChannel();
     const [busy, setBusy] = useState<FlashMode | null>(null);
     // Telemetry only arrives once a minute, so after a change the control follows
     // the camera's confirmation until `until`, then falls back to the reported mode.
@@ -68,7 +65,7 @@ function FlashModeSelect({
         setBusy(next);
         onError(null);
         try {
-            await sendAtur(loggerId, 'set_flash', { flash: next });
+            await channel.atur('set_flash', { flash: next });
             setOverride({ flash: next, until: Date.now() + 60_000 });
             onDone();
         } catch (e) {
@@ -128,6 +125,7 @@ export function CameraControl({
         id: number;
         until: number;
     } | null>(null);
+    const channel = useSecurityChannel();
     const [photo, setPhoto] = useState<SnapPhoto | null>(null);
     const [message, setMessage] = useState<string | null>(null);
     const [failed, setFailed] = useState(false);
@@ -175,18 +173,22 @@ export function CameraControl({
         setBusy(true);
         setMessage(null);
         try {
-            const response = await postJson(
-                `/loggers/${loggerId}/security/snap`,
-                {},
-            );
-            if (!response.ok) {
-                setFailed(true);
-                setMessage(await errorMessage(response));
-                return;
-            }
-            const data = (await response.json()) as { afterId: number };
+            const result = await channel.ctrl('SNAP');
             setFailed(false);
-            setWaitAfter({ id: data.afterId, until: Date.now() + WAIT_MS });
+            if (result.afterId !== undefined) {
+                setWaitAfter({
+                    id: result.afterId,
+                    until: Date.now() + WAIT_MS,
+                });
+            } else {
+                // Over a cable the photo still travels by MQTT, once the device is online.
+                setMessage(
+                    `${result.message} Foto masuk ke halaman status saat alat online.`,
+                );
+            }
+        } catch (e) {
+            setFailed(true);
+            setMessage(e instanceof Error ? e.message : String(e));
         } finally {
             setBusy(false);
         }
@@ -216,7 +218,6 @@ export function CameraControl({
                     {waiting ? 'Menunggu foto…' : 'Ambil foto sekarang'}
                 </Button>
                 <FlashModeSelect
-                    loggerId={loggerId}
                     flash={flash}
                     onDone={onDone}
                     onError={(text) => {

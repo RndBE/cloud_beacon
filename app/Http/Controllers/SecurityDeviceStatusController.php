@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\SecurityCommandException;
 use App\Models\Logger;
+use App\Models\SecurityConfigLog;
 use App\Models\SecurityDevice;
 use App\Models\SecurityEvent;
 use App\Models\SecurityPhoto;
@@ -31,6 +32,8 @@ class SecurityDeviceStatusController extends Controller
     // The page reuses a signed URL for 8 minutes (URL_REUSE_MS in security-device-view.tsx),
     // so this must stay longer than that.
     private const PHOTO_URL_MINUTES = 10;
+
+    private const CONFIG_LOG_LIMIT = 50;
 
     // Kamera memotret sesudah pembobolan terdeteksi; foto dalam jendela ini dianggap fotonya.
     // Jendela dimulai sedikit sebelum kejadian karena jam papan dan jam kamera bisa selisih.
@@ -110,6 +113,21 @@ class SecurityDeviceStatusController extends Controller
                 ] : null,
             ]),
             'latestPhoto' => $latestPhoto ? $this->photoJson($device, $latestPhoto) : null,
+            // Who changed what from the website; the device's own ATUR_* events cannot tell.
+            'configLogs' => SecurityConfigLog::with('user:id,name')
+                ->where('security_device_id', $device->id)
+                ->latest('id')
+                ->limit(self::CONFIG_LOG_LIMIT)
+                ->get()
+                ->map(fn (SecurityConfigLog $log) => [
+                    'id' => $log->id,
+                    'at' => $log->created_at->toIso8601String(),
+                    'user' => $log->user?->name,
+                    'description' => $log->description,
+                    'ok' => $log->ok,
+                    'message' => $log->message,
+                    'via' => $log->via,
+                ]),
         ]);
     }
 

@@ -4,7 +4,7 @@ import type { FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { sendAtur } from './security-atur-client';
+import { useSecurityChannel } from './security-channel';
 
 // The device tries the new network for up to a minute and reports back once it is
 // online again, on the new network or the old one.
@@ -14,6 +14,7 @@ const WAIT_MS = 180_000;
 // Moves the device to another WiFi network (signed set_wifi op). The device only keeps
 // a network it reached the broker through, so a typo cannot cut it off.
 export function WifiControl({ loggerId }: { loggerId: string }) {
+    const channel = useSecurityChannel();
     const [open, setOpen] = useState(false);
     const [current, setCurrent] = useState<string | null>(null);
     const [ssid, setSsid] = useState('');
@@ -41,13 +42,8 @@ export function WifiControl({ loggerId }: { loggerId: string }) {
         setCurrent(null);
         void (async () => {
             try {
-                const response = await fetch(
-                    `/loggers/${loggerId}/security/wifi`,
-                    { headers: { Accept: 'application/json' } },
-                );
-                if (!response.ok) throw new Error();
-                const data = (await response.json()) as { ssid: string | null };
-                if (!stopped) setCurrent(data.ssid || '-');
+                const current = await channel.ssid();
+                if (!stopped) setCurrent(current || '-');
             } catch {
                 if (!stopped)
                     setCurrent('tidak diketahui (alat tidak menjawab)');
@@ -56,7 +52,7 @@ export function WifiControl({ loggerId }: { loggerId: string }) {
         return () => {
             stopped = true;
         };
-    }, [loggerId, open]);
+    }, [channel, open]);
 
     useEffect(() => {
         if (!waitAfter) return;
@@ -110,7 +106,7 @@ export function WifiControl({ loggerId }: { loggerId: string }) {
         setBusy(true);
         setMessage(null);
         try {
-            const result = await sendAtur(loggerId, 'set_wifi', {
+            const result = await channel.atur('set_wifi', {
                 ssid: name,
                 wifi_password: wifiPassword,
             });

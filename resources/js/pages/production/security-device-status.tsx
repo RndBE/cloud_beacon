@@ -65,11 +65,24 @@ interface CardRow {
     name: string | null;
 }
 
+interface ConfigLog {
+    id: number;
+    at: string;
+    // null once the user account is deleted.
+    user: string | null;
+    description: string;
+    ok: boolean;
+    message: string | null;
+    // How the command reached the device.
+    via: 'internet' | 'usb' | 'bluetooth';
+}
+
 interface SecurityResponse {
     device: SecurityDevice;
     events: SecurityEvent[];
     // Older photos are reached through their FOTO / PEMBOBOLAN event rows.
     latestPhoto: SecurityPhoto | null;
+    configLogs: ConfigLog[];
 }
 
 type Tone = 'red' | 'amber' | 'green';
@@ -388,6 +401,75 @@ function EventsTable({ events }: { events: SecurityEvent[] }) {
     );
 }
 
+// Changes made from the website's configurator, newest first.
+function ConfigLogTable({ logs }: { logs: ConfigLog[] }) {
+    if (logs.length === 0) {
+        return (
+            <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
+                Belum ada pengaturan dari website.
+            </p>
+        );
+    }
+
+    return (
+        <div className="overflow-hidden rounded-md border border-border/60 [&_[data-slot=table-container]]:max-h-[20rem] [&_[data-slot=table-container]]:overflow-y-auto">
+            <Table>
+                <TableHeader className="[&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-card">
+                    <TableRow>
+                        <TableHead>Waktu</TableHead>
+                        <TableHead>Oleh</TableHead>
+                        <TableHead>Pengaturan</TableHead>
+                        <TableHead>Hasil</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {logs.map((log) => (
+                        <TableRow key={log.id}>
+                            <TableCell className="whitespace-nowrap">
+                                {formatTime(log.at)}
+                            </TableCell>
+                            <TableCell>
+                                {log.user ?? (
+                                    <span className="text-muted-foreground">
+                                        Pengguna dihapus
+                                    </span>
+                                )}
+                            </TableCell>
+                            <TableCell>
+                                {log.description}
+                                {log.via !== 'internet' && (
+                                    <span className="ml-1.5 text-xs text-muted-foreground">
+                                        (lewat{' '}
+                                        {log.via === 'usb'
+                                            ? 'USB'
+                                            : 'Bluetooth'}
+                                        )
+                                    </span>
+                                )}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                                <Badge
+                                    variant="outline"
+                                    className={
+                                        BADGE_TONE[log.ok ? 'green' : 'red']
+                                    }
+                                >
+                                    {log.ok ? 'Berhasil' : 'Gagal'}
+                                </Badge>
+                                {!log.ok && log.message && (
+                                    <span className="ml-2 text-muted-foreground">
+                                        {log.message}
+                                    </span>
+                                )}
+                            </TableCell>
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+        </div>
+    );
+}
+
 // "Budi Santoso (97:6F:BD:62)", or just the UID for a card nobody named.
 function CardHolder({ uid, name }: { uid: string; name: string | null }) {
     return name ? (
@@ -619,6 +701,9 @@ export function SecurityDeviceStatus({ deviceId }: { deviceId: string }) {
                         </Section>
                         <Section title="Kejadian terbaru">
                             <EventsTable events={data.events} />
+                        </Section>
+                        <Section title="Riwayat pengaturan">
+                            <ConfigLogTable logs={data.configLogs} />
                         </Section>
                     </>
                 )}

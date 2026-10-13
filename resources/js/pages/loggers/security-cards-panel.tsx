@@ -11,8 +11,8 @@ import type { FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { postJson } from '@/lib/csrf-fetch';
-import { sendAtur } from './security-atur-client';
 import type { AturResult } from './security-atur-client';
+import { useSecurityChannel } from './security-channel';
 import { errorMessage } from './security-pairing-panel';
 
 interface Card {
@@ -39,6 +39,7 @@ export function SecurityCardsPanel({
     loggerId: string;
     deviceId: string;
 }) {
+    const channel = useSecurityChannel();
     const [cards, setCards] = useState<Card[] | null>(null);
     const [maxCards, setMaxCards] = useState<number | null>(null);
     const [holder, setHolder] = useState('');
@@ -66,19 +67,11 @@ export function SecurityCardsPanel({
         setBusy('load');
         setError(null);
         try {
-            const response = await fetch(base, {
-                headers: { Accept: 'application/json' },
-            });
-            if (!response.ok) {
-                setError(await errorMessage(response));
-                return;
-            }
-            const data = (await response.json()) as {
-                cards: Card[];
-                maxCards: number | null;
-            };
+            const data = await channel.cards();
             setCards(data.cards);
             setMaxCards(data.maxCards);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
         } finally {
             setBusy(null);
         }
@@ -105,7 +98,7 @@ export function SecurityCardsPanel({
         setError(null);
         setNotice(null);
         try {
-            return await sendAtur(loggerId, op, { uid: a });
+            return await channel.atur(op, { uid: a });
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
             return null;

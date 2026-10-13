@@ -2,7 +2,7 @@ import { DoorClosed, DoorOpen, LoaderCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { sendAtur } from './security-atur-client';
+import { useSecurityChannel } from './security-channel';
 
 type SensorMode = 'NO' | 'NC';
 
@@ -15,16 +15,15 @@ const MODES: { mode: SensorMode; label: string }[] = [
 // door as open, so the device answers with how it now reads the door, and the
 // installer can check it on the spot.
 export function DoorSensorControl({
-    loggerId,
     sensor,
     doorOpen,
     onDone,
 }: {
-    loggerId: string;
     sensor: SensorMode | null;
     doorOpen: boolean | null;
     onDone: () => void;
 }) {
+    const channel = useSecurityChannel();
     const [busy, setBusy] = useState<SensorMode | null>(null);
     const [message, setMessage] = useState<string | null>(null);
     const [failed, setFailed] = useState(false);
@@ -52,7 +51,7 @@ export function DoorSensorControl({
         setBusy(next);
         setMessage(null);
         try {
-            const result = await sendAtur(loggerId, 'set_sensor', {
+            const result = await channel.atur('set_sensor', {
                 mode: next,
             });
             // "mode sensor NC, pintu terbaca TERTUTUP"
