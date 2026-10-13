@@ -4,12 +4,12 @@ import {
     Pencil,
     Plus,
     RefreshCw,
+    Trash2,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { postJson } from '@/lib/csrf-fetch';
 import { sendAtur } from './security-atur-client';
 import type { AturResult } from './security-atur-client';
@@ -51,6 +51,14 @@ export function SecurityCardsPanel({
     const [busy, setBusy] = useState<Busy>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    // The add form stays hidden until asked for; by tap unless the UID is typed.
+    const [adding, setAdding] = useState<null | 'tap' | 'uid'>(null);
+
+    useEffect(() => {
+        if (!notice) return;
+        const timeout = setTimeout(() => setNotice(null), 6_000);
+        return () => clearTimeout(timeout);
+    }, [notice]);
 
     const base = `/loggers/${loggerId}/security/cards`;
 
@@ -130,13 +138,14 @@ export function SecurityCardsPanel({
             setNotice(`Kartu ${added} milik ${name} ditambahkan.`);
             setHolder('');
             setUid('');
+            setAdding(null);
         }
         await load();
     }
 
-    function addByUid(e: FormEvent) {
+    function submitAdd(e: FormEvent) {
         e.preventDefault();
-        if (uid.trim() !== '') void add(uid.trim());
+        void add(adding === 'uid' ? uid.trim() : '');
     }
 
     async function rename(e: FormEvent) {
@@ -165,144 +174,157 @@ export function SecurityCardsPanel({
         }
     }
 
+    const spinner = <LoaderCircle className="size-4 animate-spin" />;
+
     if (cards === null) {
         return (
-            <div className="flex flex-col items-start gap-2 rounded-md border border-border/60 p-4">
-                <p className="flex items-center gap-2 text-sm font-semibold">
-                    <CreditCard className="size-4" /> Kartu akses
-                </p>
-                <p className="text-xs text-muted-foreground">
-                    Daftar kartu dibaca langsung dari alat {deviceId}.
-                </p>
-                <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1.5"
-                    disabled={busy !== null}
-                    onClick={() => void load()}
-                >
-                    {busy === 'load' ? (
-                        <LoaderCircle className="size-4 animate-spin" />
-                    ) : (
-                        <CreditCard className="size-4" />
-                    )}
-                    Tampilkan kartu
-                </Button>
+            <div className="space-y-2 rounded-md border border-border/60 p-4">
+                <div className="flex items-center justify-between gap-3">
+                    <p className="flex items-center gap-2 text-sm font-semibold">
+                        <CreditCard className="size-4" /> Kartu akses
+                    </p>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        disabled={busy !== null}
+                        onClick={() => void load()}
+                    >
+                        {busy === 'load' ? (
+                            spinner
+                        ) : (
+                            <CreditCard className="size-4" />
+                        )}
+                        Tampilkan kartu
+                    </Button>
+                </div>
                 {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
         );
     }
 
     return (
-        <div className="space-y-4 rounded-md border border-border/60 p-4">
-            <div className="flex items-start justify-between gap-3">
-                <div>
-                    <p className="flex items-center gap-2 text-sm font-semibold">
-                        <CreditCard className="size-4" /> Kartu akses
-                        <span className="font-normal text-muted-foreground">
-                            {cards.length}
-                            {maxCards ? ` / ${maxCards}` : ''}
-                        </span>
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                        Kartu terdaftar bisa menonaktifkan alarm dan membuka
-                        pintu tanpa memicu sirine.
-                    </p>
-                </div>
-                <Button
-                    size="sm"
-                    variant="ghost"
-                    className="gap-1.5"
-                    disabled={busy !== null}
-                    onClick={() => void load()}
-                >
-                    {busy === 'load' ? (
-                        <LoaderCircle className="size-4 animate-spin" />
-                    ) : (
-                        <RefreshCw className="size-4" />
+        <div className="space-y-3 rounded-md border border-border/60 p-4">
+            <div className="flex items-center justify-between gap-3">
+                <p className="flex items-center gap-2 text-sm font-semibold">
+                    <CreditCard className="size-4" /> Kartu akses
+                    <span className="font-normal text-muted-foreground">
+                        {cards.length}
+                        {maxCards ? ` / ${maxCards}` : ''}
+                    </span>
+                </p>
+                <div className="flex items-center gap-1">
+                    {adding === null && (
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1.5"
+                            disabled={busy !== null}
+                            onClick={() => {
+                                setError(null);
+                                setAdding('tap');
+                            }}
+                        >
+                            <Plus className="size-4" /> Tambah kartu
+                        </Button>
                     )}
-                    Muat ulang
-                </Button>
+                    <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-8"
+                        aria-label="Muat ulang kartu"
+                        title="Muat ulang kartu"
+                        disabled={busy !== null}
+                        onClick={() => void load()}
+                    >
+                        {busy === 'load' ? (
+                            spinner
+                        ) : (
+                            <RefreshCw className="size-4" />
+                        )}
+                    </Button>
+                </div>
             </div>
 
             {busy === 'tap' ? (
-                <div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-3 text-sm">
+                <p className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">
                     <LoaderCircle className="size-4 animate-spin text-primary" />
-                    Tempelkan kartu BARU milik {holder.trim()} ke pembaca alat{' '}
+                    Tempelkan kartu baru milik {holder.trim()} ke alat{' '}
                     {deviceId} dalam {TAP_SECONDS} detik…
-                </div>
+                </p>
             ) : (
-                <div className="space-y-2 rounded-md bg-muted/40 p-3">
-                    <div className="space-y-1.5">
-                        <Label htmlFor="security-card-holder">
-                            Nama pemegang kartu baru
-                        </Label>
+                adding !== null && (
+                    <form
+                        onSubmit={submitAdd}
+                        className="flex flex-wrap items-center gap-2 rounded-md bg-muted/40 p-2"
+                    >
                         <Input
-                            id="security-card-holder"
+                            aria-label="Nama pemegang kartu"
                             value={holder}
                             onChange={(e) => setHolder(e.target.value)}
-                            placeholder="mis. Budi Santoso"
+                            placeholder="Nama pemegang"
                             maxLength={100}
-                            className="h-8 max-w-sm"
+                            className="h-8 w-48"
                             autoComplete="off"
+                            autoFocus
                         />
-                    </div>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                        <Button
-                            size="sm"
-                            className="gap-1.5"
-                            disabled={busy !== null || holder.trim() === ''}
-                            onClick={() => void add('')}
-                        >
-                            <CreditCard className="size-4" /> Tambah lewat tap
-                        </Button>
-                        <span className="text-xs text-muted-foreground">
-                            atau
-                        </span>
-                        <form
-                            onSubmit={addByUid}
-                            className="flex flex-1 gap-2 sm:max-w-sm"
-                        >
+                        {adding === 'uid' && (
                             <Input
+                                aria-label="UID kartu"
                                 value={uid}
                                 onChange={(e) => setUid(e.target.value)}
                                 placeholder="UID, mis. 04:A1:B2:C3"
-                                className="h-8 font-mono"
+                                className="h-8 w-48 font-mono"
                                 autoComplete="off"
                             />
-                            <Button
-                                type="submit"
-                                size="sm"
-                                variant="outline"
-                                className="gap-1.5"
-                                disabled={
-                                    busy !== null ||
-                                    holder.trim() === '' ||
-                                    uid.trim() === ''
-                                }
-                            >
-                                {busy === 'add' ? (
-                                    <LoaderCircle className="size-4 animate-spin" />
-                                ) : (
-                                    <Plus className="size-4" />
-                                )}
-                                Tambah UID
-                            </Button>
-                        </form>
-                    </div>
-                </div>
+                        )}
+                        <Button
+                            type="submit"
+                            size="sm"
+                            className="gap-1.5"
+                            disabled={
+                                busy !== null ||
+                                holder.trim() === '' ||
+                                (adding === 'uid' && uid.trim() === '')
+                            }
+                        >
+                            {busy === 'add' ? (
+                                spinner
+                            ) : (
+                                <CreditCard className="size-4" />
+                            )}
+                            {adding === 'tap' ? 'Tempel kartu' : 'Simpan'}
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                                setAdding(null);
+                                setError(null);
+                            }}
+                        >
+                            Batal
+                        </Button>
+                        <button
+                            type="button"
+                            className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                            onClick={() =>
+                                setAdding(adding === 'tap' ? 'uid' : 'tap')
+                            }
+                        >
+                            {adding === 'tap' ? 'Ketik UID' : 'Pakai tap'}
+                        </button>
+                    </form>
+                )
             )}
 
             {notice && (
-                <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+                <p className="text-sm text-emerald-700 dark:text-emerald-300">
                     {notice}
                 </p>
             )}
-            {error && (
-                <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
-                    {error}
-                </p>
-            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
 
             {cards.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
@@ -313,14 +335,15 @@ export function SecurityCardsPanel({
                     {cards.map((card) => (
                         <li
                             key={card.uid}
-                            className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5"
+                            className="flex flex-wrap items-center justify-between gap-2 px-3 py-1"
                         >
                             {editing?.uid === card.uid ? (
                                 <form
                                     onSubmit={rename}
-                                    className="flex flex-1 items-center gap-2"
+                                    className="flex flex-1 items-center gap-2 py-0.5"
                                 >
                                     <Input
+                                        aria-label="Nama pemegang kartu"
                                         value={editing.name}
                                         onChange={(e) =>
                                             setEditing({
@@ -391,11 +414,21 @@ export function SecurityCardsPanel({
                                         </Button>
                                     </span>
                                 ) : (
-                                    <span className="flex items-center gap-1">
+                                    <span className="flex items-center">
                                         <Button
-                                            size="sm"
+                                            size="icon"
                                             variant="ghost"
-                                            className="gap-1.5 text-muted-foreground"
+                                            className="size-8 text-muted-foreground"
+                                            aria-label={
+                                                card.name
+                                                    ? 'Ubah nama'
+                                                    : 'Beri nama'
+                                            }
+                                            title={
+                                                card.name
+                                                    ? 'Ubah nama'
+                                                    : 'Beri nama'
+                                            }
                                             disabled={busy !== null}
                                             onClick={() =>
                                                 setEditing({
@@ -405,23 +438,22 @@ export function SecurityCardsPanel({
                                             }
                                         >
                                             <Pencil className="size-3.5" />
-                                            {card.name
-                                                ? 'Ubah nama'
-                                                : 'Beri nama'}
                                         </Button>
                                         <Button
-                                            size="sm"
+                                            size="icon"
                                             variant="ghost"
-                                            className="text-muted-foreground"
+                                            className="size-8 text-muted-foreground hover:text-destructive"
+                                            aria-label="Hapus kartu"
+                                            title="Hapus kartu"
                                             disabled={busy !== null}
                                             onClick={() =>
                                                 setConfirmUid(card.uid)
                                             }
                                         >
                                             {busy === card.uid ? (
-                                                <LoaderCircle className="size-4 animate-spin" />
+                                                spinner
                                             ) : (
-                                                'Hapus'
+                                                <Trash2 className="size-3.5" />
                                             )}
                                         </Button>
                                     </span>

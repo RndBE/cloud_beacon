@@ -15,16 +15,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { postJson } from '@/lib/csrf-fetch';
 import { CameraControl } from './camera-control';
 import type { FlashMode } from './camera-control';
+import { DeviceActionsMenu } from './device-actions-menu';
 import { DoorSensorControl } from './door-sensor-control';
-import { PingButton } from './ping-button';
-import { RestartButton } from './restart-button';
 import { sendAtur } from './security-atur-client';
 import { SecurityCardsPanel } from './security-cards-panel';
-import {
-    errorMessage,
-    SecurityPairingPanel,
-    UnpairButton,
-} from './security-pairing-panel';
+import { errorMessage, SecurityPairingPanel } from './security-pairing-panel';
 import type { PairingState, StockDevice } from './security-pairing-panel';
 import { WifiControl } from './wifi-control';
 
@@ -250,6 +245,8 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
+    // A failed action from the device menu (connection test, restart, unpair).
+    const [actionError, setActionError] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -315,25 +312,6 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     } else {
         body = (
             <>
-                <div className="flex flex-col gap-2 rounded-md border border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-sm text-muted-foreground">
-                        Keadaan alat, foto terakhir dan log kejadian ada di
-                        halaman Security System.
-                    </p>
-                    <Button
-                        asChild
-                        size="sm"
-                        variant="outline"
-                        className="gap-1.5"
-                    >
-                        <Link
-                            href={`/production/security-devices/${device.deviceId}`}
-                        >
-                            <Activity className="size-4" /> Lihat status &amp;
-                            log
-                        </Link>
-                    </Button>
-                </div>
                 {data.canManage ? (
                     <>
                         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -398,43 +376,28 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                             )}
                         </CardTitle>
                     </div>
-                    <div className="flex items-start gap-1">
-                        {device && data?.canManage && (
-                            <PingButton
-                                loggerId={loggerId}
-                                deviceId={device.deviceId}
-                                onDone={(message) => {
-                                    setNotice(message);
-                                    void load();
-                                }}
-                            />
-                        )}
-                        {device && data?.canManage && (
-                            <RestartButton
-                                loggerId={loggerId}
-                                deviceId={device.deviceId}
-                                onDone={(message) => {
-                                    setNotice(message);
-                                    void load();
-                                }}
-                            />
-                        )}
-                        {device && data?.canManage && (
-                            <UnpairButton
-                                loggerId={loggerId}
-                                deviceId={device.deviceId}
-                                onDone={() => {
-                                    setNotice(
-                                        `Alat ${device.deviceId} dilepas dan kembali menjadi stok.`,
-                                    );
-                                    void load();
-                                }}
-                            />
+                    <div className="flex items-center gap-1">
+                        {device && (
+                            <Button
+                                asChild
+                                size="sm"
+                                variant="outline"
+                                className="gap-1.5"
+                            >
+                                <Link
+                                    href={`/production/security-devices/${device.deviceId}`}
+                                >
+                                    <Activity className="size-4" /> Lihat status
+                                    &amp; log
+                                </Link>
+                            </Button>
                         )}
                         <Button
-                            size="sm"
-                            variant="outline"
-                            className="gap-1.5"
+                            size="icon"
+                            variant="ghost"
+                            className="size-8"
+                            aria-label="Muat ulang"
+                            title="Muat ulang"
                             disabled={loading}
                             onClick={() => void load()}
                         >
@@ -443,8 +406,16 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                             ) : (
                                 <RefreshCw className="size-4" />
                             )}
-                            Muat ulang
                         </Button>
+                        {device && data?.canManage && (
+                            <DeviceActionsMenu
+                                loggerId={loggerId}
+                                deviceId={device.deviceId}
+                                onNotice={setNotice}
+                                onError={setActionError}
+                                onChanged={() => void load()}
+                            />
+                        )}
                     </div>
                 </div>
             </CardHeader>
@@ -453,6 +424,9 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                     <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
                         {notice}
                     </p>
+                )}
+                {actionError && (
+                    <p className="text-sm text-destructive">{actionError}</p>
                 )}
                 {error && (
                     <p className="text-sm text-destructive">

@@ -1,17 +1,6 @@
-import { CreditCard, LoaderCircle, Plug, Unplug } from 'lucide-react';
+import { CreditCard, LoaderCircle, Plug } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-    AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -335,77 +324,6 @@ export function SecurityPairingPanel({
                     </p>
                 )}
             </div>
-        </div>
-    );
-}
-
-export function UnpairButton({
-    loggerId,
-    deviceId,
-    onDone,
-}: {
-    loggerId: string;
-    deviceId: string;
-    onDone: () => void;
-}) {
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-
-    async function unpair() {
-        setBusy(true);
-        setError(null);
-        try {
-            const response = await deleteJson(
-                `/loggers/${loggerId}/security/device`,
-            );
-            if (!response.ok) {
-                setError(await errorMessage(response));
-                return;
-            }
-            onDone();
-        } finally {
-            setBusy(false);
-        }
-    }
-
-    return (
-        <div className="flex flex-col items-end gap-1">
-            <AlertDialog>
-                <AlertDialogTrigger asChild>
-                    <Button
-                        size="sm"
-                        variant="ghost"
-                        className="gap-1.5 text-muted-foreground"
-                        disabled={busy}
-                    >
-                        {busy ? (
-                            <LoaderCircle className="size-4 animate-spin" />
-                        ) : (
-                            <Unplug className="size-4" />
-                        )}
-                        Lepas alat
-                    </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>
-                            Lepas alat {deviceId}?
-                        </AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Alat dilepas dari logger ini dan kembali menjadi
-                            stok. Untuk memasangnya lagi, teknisi harus
-                            menempelkan kartu ke pembacanya.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel>Batal</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => void unpair()}>
-                            Lepas alat
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-            {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
     );
 }
