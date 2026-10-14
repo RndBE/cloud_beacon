@@ -1,6 +1,7 @@
 import {
     Bluetooth,
     CheckCircle2,
+    Cpu,
     Circle,
     Eye,
     EyeOff,
@@ -20,6 +21,9 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
+import { flashFactoryImage } from '@/lib/security-flasher';
+import type { FlashProgress, FlashTarget } from '@/lib/security-flasher';
 import {
     bluetoothSupported,
     openBluetoothLink,
@@ -27,6 +31,7 @@ import {
     usbSupported,
 } from '@/lib/security-setup-link';
 import type { SetupLink, SetupReply } from '@/lib/security-setup-link';
+import type { ModuleFirmware } from './production-modules';
 
 // What the board reports (info), or its live status after a setup.
 interface BoardState {
@@ -43,7 +48,18 @@ interface BoardState {
     terkunci?: number;
 }
 
-type Phase = 'connect' | 'waiting' | 'form' | 'sending' | 'status';
+type Phase = 'connect' | 'flashing' | 'waiting' | 'form' | 'sending' | 'status';
+
+// Firmware per board, from Production › Models › Model Modul.
+const FIRMWARE_MODEL: Record<FlashTarget, string> = {
+    main: 'Security System',
+    camera: 'Security System Kamera',
+};
+
+const BOARD_LABEL: Record<FlashTarget, string> = {
+    main: 'papan utama',
+    camera: 'kamera',
+};
 
 // After a restart the board reads input only after ~10 s: ask until it answers.
 const INFO_RETRY_MS = 2_000;
@@ -81,11 +97,14 @@ function Step({
 export function SecuritySetupDialog({
     deviceId,
     serialNumber,
+    firmwares,
     onClose,
 }: {
     // null = closed.
     deviceId: string | null;
     serialNumber: string;
+    // Model Modul firmware; the factory images are flashed over USB here.
+    firmwares: Record<string, ModuleFirmware>;
     onClose: () => void;
 }) {
     const [link, setLink] = useState<SetupLink | null>(null);
@@ -94,10 +113,53 @@ export function SecuritySetupDialog({
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [log, setLog] = useState<string[]>([]);
+    const [flash, setFlash] = useState<
+        (FlashProgress & { target: FlashTarget }) | null
+    >(null);
+    const [notice, setNotice] = useState<string | null>(null);
+
+    const appendLog = (line: string) =>
+        setLog((prev) => [...prev.slice(-(LOG_LINES - 1)), line]);
+
+    // Factory image onto the board on the cable; the port is released afterwards so
+    // the setup below can open it again.
+    async function flashBoard(target: FlashTarget) {
+        const firmware = firmwares[FIRMWARE_MODEL[target]];
+        if (!firmware?.factoryUrl) return;
+        setError(null);
+        setNotice(null);
+        setPhase('flashing');
+        setFlash({ target, stage: 'download' });
+        try {
+            const done = await flashFactoryImage(
+                target,
+                firmware.factoryUrl,
+                (progress) => setFlash({ target, ...progress }),
+                appendLog,
+            );
+            if (done) {
+                setNotice(
+                    target === 'main'
+                        ? `Firmware ${firmware.version} terpasang di papan utama. Tunggu sekitar 10 detik, lalu sambungkan lewat Kabel USB untuk setup.`
+                        : `Firmware ${firmware.version} terpasang di kamera.`,
+                );
+            }
+        } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setFlash(null);
+            setPhase('connect');
+        }
+    }
 
     const [password, setPassword] = useState('');
     const [ssid, setSsid] = useState('');
     const [wifiPassword, setWifiPassword] = useState('');
+    // Optional: the production console password, the same one the server signs
+    // website commands with. A board fresh from the factory still has the default.
+    const [newPassword, setNewPassword] = useState('');
+    const [newPasswordAgain, setNewPasswordAgain] = useState('');
+    const [passwordChanged, setPasswordChanged] = useState(false);
     const [showSecrets, setShowSecrets] = useState(false);
 
     const linkRef = useRef<SetupLink | null>(null);
@@ -116,8 +178,14 @@ export function SecuritySetupDialog({
         if (reply.cmd === 'setup') {
             if (reply.ok) {
                 setError(null);
+                setPasswordChanged(
+                    Array.isArray(reply.diubah) &&
+                        (reply.diubah as string[]).includes('pass_baru'),
+                );
                 setPassword('');
                 setWifiPassword('');
+                setNewPassword('');
+                setNewPasswordAgain('');
                 setPhase('status');
             } else {
                 setError(
@@ -137,8 +205,7 @@ export function SecuritySetupDialog({
         setError(null);
         const handlers = {
             onReply,
-            onLine: (line: string) =>
-                setLog((prev) => [...prev.slice(-(LOG_LINES - 1)), line]),
+            onLine: appendLog,
             onClosed: () => {
                 linkRef.current = null;
                 setLink(null);
@@ -186,9 +253,13 @@ export function SecuritySetupDialog({
         setBoard(null);
         setError(null);
         setLog([]);
+        setNotice(null);
         setPassword('');
         setSsid('');
         setWifiPassword('');
+        setNewPassword('');
+        setNewPasswordAgain('');
+        setPasswordChanged(false);
     }, [deviceId]);
 
     useEffect(() => () => void linkRef.current?.close(), []);
@@ -201,6 +272,14 @@ export function SecuritySetupDialog({
             wifiPassword.length < 8
         ) {
             return 'Password WiFi minimal 8 karakter, atau kosongkan untuk WiFi terbuka.';
+        }
+        if (newPassword !== '') {
+            if (newPassword.length < 4 || newPassword.length > 32) {
+                return 'Password konsol baru harus 4-32 karakter.';
+            }
+            if (newPassword !== newPasswordAgain) {
+                return 'Ulangi password konsol baru dengan sama persis.';
+            }
         }
         return null;
     }
@@ -226,6 +305,7 @@ export function SecuritySetupDialog({
             command.ssid = ssid.trim();
             command.wifi_pass = wifiPassword;
         }
+        if (newPassword !== '') command.pass_baru = newPassword;
         try {
             await link.send(command);
         } catch {
@@ -237,6 +317,8 @@ export function SecuritySetupDialog({
     }
 
     const online = board?.wifi === 'tersambung' && board?.mqtt === 'tersambung';
+    // Set up without WiFi: it can be given later, e.g. from the Security Cam tab over a cable.
+    const noWifi = board?.wifi === 'belum diatur';
     const wifiStep =
         board?.wifi === 'tersambung'
             ? 'done'
@@ -292,6 +374,73 @@ export function SecuritySetupDialog({
                                 Bluetooth. Pakai Chrome atau Edge.
                             </p>
                         )}
+                        {notice && (
+                            <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+                                {notice}
+                            </p>
+                        )}
+                        <div className="space-y-2 rounded-md border border-border/60 p-3">
+                            <p className="text-sm font-medium">
+                                Pasang firmware{' '}
+                                <span className="font-normal text-muted-foreground">
+                                    (papan kosong atau update lewat USB)
+                                </span>
+                            </p>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                                {(['main', 'camera'] as const).map((target) => {
+                                    const firmware =
+                                        firmwares[FIRMWARE_MODEL[target]];
+                                    return (
+                                        <Button
+                                            key={target}
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-auto flex-col gap-0.5 py-2"
+                                            disabled={
+                                                busy ||
+                                                !usbSupported() ||
+                                                !firmware?.factoryUrl
+                                            }
+                                            onClick={() =>
+                                                void flashBoard(target)
+                                            }
+                                        >
+                                            <span className="flex items-center gap-1.5">
+                                                <Cpu className="size-4" />
+                                                Firmware {BOARD_LABEL[target]}
+                                            </span>
+                                            <span className="text-xs font-normal text-muted-foreground">
+                                                {firmware?.factoryUrl
+                                                    ? firmware.version
+                                                    : 'belum ada file USB'}
+                                            </span>
+                                        </Button>
+                                    );
+                                })}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                File diambil dari Production › Models › Model
+                                Modul (file USB). Papan utama dan kamera punya
+                                port USB masing-masing.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                {phase === 'flashing' && flash && (
+                    <div className="space-y-2">
+                        <p className="flex items-center gap-2 text-sm">
+                            <LoaderCircle className="size-4 animate-spin text-primary" />
+                            {flash.stage === 'download'
+                                ? 'Mengunduh file firmware…'
+                                : flash.stage === 'connect'
+                                  ? `Menyambung ke ${BOARD_LABEL[flash.target]} (pilih port-nya)…`
+                                  : `Memasang firmware ke ${flash.chip ?? BOARD_LABEL[flash.target]}… ${Math.round((flash.fraction ?? 0) * 100)}%`}
+                        </p>
+                        <Progress value={(flash.fraction ?? 0) * 100} />
+                        <p className="text-xs text-muted-foreground">
+                            Jangan cabut kabel sampai selesai.
+                        </p>
                     </div>
                 )}
 
@@ -335,7 +484,12 @@ export function SecuritySetupDialog({
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
                             <div className="space-y-1.5">
-                                <Label htmlFor="setup-ssid">Nama WiFi</Label>
+                                <Label htmlFor="setup-ssid">
+                                    Nama WiFi{' '}
+                                    <span className="font-normal text-muted-foreground">
+                                        (opsional)
+                                    </span>
+                                </Label>
                                 <Input
                                     id="setup-ssid"
                                     value={ssid}
@@ -356,6 +510,43 @@ export function SecuritySetupDialog({
                                     autoComplete="new-password"
                                     onChange={(e) =>
                                         setWifiPassword(e.target.value)
+                                    }
+                                />
+                            </div>
+                        </div>
+                        <div className="space-y-1.5 rounded-md border border-border/60 p-3">
+                            <p className="text-sm font-medium">
+                                Password konsol baru{' '}
+                                <span className="font-normal text-muted-foreground">
+                                    (opsional)
+                                </span>
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                                Isi dengan password standar produksi, supaya
+                                alat bisa diatur dari website. Wajib untuk alat
+                                yang masih memakai password bawaan.
+                            </p>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                                <Input
+                                    aria-label="Password konsol baru"
+                                    placeholder="Password baru"
+                                    type={showSecrets ? 'text' : 'password'}
+                                    value={newPassword}
+                                    maxLength={32}
+                                    autoComplete="new-password"
+                                    onChange={(e) =>
+                                        setNewPassword(e.target.value)
+                                    }
+                                />
+                                <Input
+                                    aria-label="Ulangi password konsol baru"
+                                    placeholder="Ulangi password baru"
+                                    type={showSecrets ? 'text' : 'password'}
+                                    value={newPasswordAgain}
+                                    maxLength={32}
+                                    autoComplete="new-password"
+                                    onChange={(e) =>
+                                        setNewPasswordAgain(e.target.value)
                                     }
                                 />
                             </div>
@@ -399,31 +590,44 @@ export function SecuritySetupDialog({
                 {phase === 'status' && (
                     <div className="space-y-3">
                         <ul className="space-y-2">
-                            <Step state="done">Setelan tersimpan di alat</Step>
-                            <Step state={wifiStep}>
+                            <Step state="done">
+                                Setelan tersimpan di alat
+                                {passwordChanged && ', password konsol diganti'}
+                            </Step>
+                            <Step state={noWifi ? 'todo' : wifiStep}>
                                 WiFi{' '}
-                                {board?.wifi === 'tersambung'
-                                    ? `tersambung (${board.ip ?? '-'}, sinyal ${board.rssi ?? '-'} dBm)`
-                                    : board?.wifi === 'putus'
-                                      ? `gagal: ${board.alasan ?? 'putus'}`
-                                      : 'sedang menyambung…'}
+                                {noWifi
+                                    ? 'belum diatur'
+                                    : board?.wifi === 'tersambung'
+                                      ? `tersambung (${board.ip ?? '-'}, sinyal ${board.rssi ?? '-'} dBm)`
+                                      : board?.wifi === 'putus'
+                                        ? `gagal: ${board.alasan ?? 'putus'}`
+                                        : 'sedang menyambung…'}
                             </Step>
-                            <Step
-                                state={
-                                    board?.mqtt === 'tersambung'
-                                        ? 'done'
-                                        : board?.wifi === 'tersambung'
-                                          ? 'busy'
-                                          : 'todo'
-                                }
-                            >
-                                Server{' '}
-                                {board?.mqtt === 'tersambung'
-                                    ? 'tersambung'
-                                    : 'menunggu WiFi'}
-                            </Step>
+                            {!noWifi && (
+                                <Step
+                                    state={
+                                        board?.mqtt === 'tersambung'
+                                            ? 'done'
+                                            : board?.wifi === 'tersambung'
+                                              ? 'busy'
+                                              : 'todo'
+                                    }
+                                >
+                                    Server{' '}
+                                    {board?.mqtt === 'tersambung'
+                                        ? 'tersambung'
+                                        : 'menunggu WiFi'}
+                                </Step>
+                            )}
                         </ul>
-                        {online ? (
+                        {noWifi ? (
+                            <p className="text-sm text-muted-foreground">
+                                ID dan password alat sudah diatur. WiFi bisa
+                                diisi nanti di sini, atau lewat tab Security Cam
+                                logger dengan kabel USB.
+                            </p>
+                        ) : online ? (
                             <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
                                 Alat online. Kabel boleh dicabut; alat siap
                                 dipasang ke logger.

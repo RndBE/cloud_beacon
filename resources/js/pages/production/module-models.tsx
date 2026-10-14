@@ -16,8 +16,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { ModuleFirmware } from './production-modules';
 
-// The module models that take OTA updates (ModuleFirmware::MODELS); EWS and GCM have none.
-const MODULE_MODELS = ['Security System'];
+// The module models that take firmware from the website (ModuleFirmware::MODELS);
+// EWS and GCM have none. The Security System is two boards with their own firmware.
+const MODULE_MODELS: { model: string; label: string }[] = [
+    { model: 'Security System', label: 'Security System (papan utama)' },
+    { model: 'Security System Kamera', label: 'Security System (kamera)' },
+];
 
 function formatBytes(bytes: number | null): string {
     if (!bytes) return '—';
@@ -41,7 +45,14 @@ export function ModuleModelsSection({
         model: string;
         firmware_version: string;
         firmware_file: File | null;
-    }>({ model: '', firmware_version: '', firmware_file: null });
+        factory_file: File | null;
+    }>({
+        model: '',
+        firmware_version: '',
+        firmware_file: null,
+        factory_file: null,
+    });
+    const factoryInput = useRef<HTMLInputElement>(null);
 
     function open(model: string) {
         form.reset();
@@ -57,6 +68,7 @@ export function ModuleModelsSection({
             preserveScroll: true,
             onSuccess: () => {
                 if (fileInput.current) fileInput.current.value = '';
+                if (factoryInput.current) factoryInput.current.value = '';
                 setTarget(null);
             },
         });
@@ -71,19 +83,20 @@ export function ModuleModelsSection({
                     Model Modul
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                    Firmware OTA per model modul, diunduh dari tampilan Modul di
-                    halaman Production.
+                    Firmware per model modul: file OTA untuk update lewat
+                    jaringan, dan file USB (factory) yang dipasang ke papan
+                    kosong dari dialog Setup alat di Production › Modul.
                 </p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {MODULE_MODELS.map((model) => {
+                {MODULE_MODELS.map(({ model, label }) => {
                     const fw = firmwares[model];
                     return (
                         <Card key={model} className="overflow-hidden">
                             <CardContent className="p-4">
                                 <div className="flex items-center gap-2">
                                     <Boxes className="size-4 text-muted-foreground" />
-                                    <h3 className="font-semibold">{model}</h3>
+                                    <h3 className="font-semibold">{label}</h3>
                                 </div>
                                 <div className="mt-3 rounded-lg border p-3 text-xs">
                                     <div className="flex items-center justify-between gap-2">
@@ -95,7 +108,10 @@ export function ModuleModelsSection({
                                         </span>
                                     </div>
                                     <div className="mt-1 truncate font-mono text-muted-foreground">
-                                        {fw?.fileName || 'No firmware file'}
+                                        OTA: {fw?.fileName || '—'}
+                                    </div>
+                                    <div className="mt-1 truncate font-mono text-muted-foreground">
+                                        USB: {fw?.factoryName || '—'}
                                     </div>
                                 </div>
                                 <div className="mt-3 flex gap-2">
@@ -106,9 +122,9 @@ export function ModuleModelsSection({
                                         onClick={() => open(model)}
                                     >
                                         <UploadCloud className="size-3.5" />
-                                        Upload OTA
+                                        Upload firmware
                                     </Button>
-                                    {fw && (
+                                    {fw?.fileUrl && (
                                         <Button
                                             variant="outline"
                                             size="icon-sm"
@@ -139,7 +155,7 @@ export function ModuleModelsSection({
             >
                 <DialogContent className="sm:max-w-md">
                     <DialogHeader>
-                        <DialogTitle>Upload OTA Firmware</DialogTitle>
+                        <DialogTitle>Upload firmware</DialogTitle>
                         <DialogDescription>
                             {target} · current {current?.version || '—'}
                         </DialogDescription>
@@ -186,7 +202,7 @@ export function ModuleModelsSection({
                         </div>
                         <div className="grid gap-2">
                             <Label htmlFor="module_ota_file">
-                                Firmware File (.bin) *
+                                File OTA (.bin) — firmware.bin
                             </Label>
                             <Input
                                 id="module_ota_file"
@@ -206,6 +222,33 @@ export function ModuleModelsSection({
                                 </p>
                             )}
                         </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="module_factory_file">
+                                File USB (.bin) — firmware.factory.bin
+                            </Label>
+                            <Input
+                                id="module_factory_file"
+                                type="file"
+                                accept=".bin,application/octet-stream"
+                                ref={factoryInput}
+                                onChange={(e) =>
+                                    form.setData(
+                                        'factory_file',
+                                        e.target.files?.[0] ?? null,
+                                    )
+                                }
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Gabungan bootloader, partisi dan aplikasi dari
+                                alamat 0, untuk papan kosong. Isi salah satu
+                                atau keduanya.
+                            </p>
+                            {form.errors.factory_file && (
+                                <p className="text-xs text-red-500">
+                                    {form.errors.factory_file}
+                                </p>
+                            )}
+                        </div>
                         <DialogFooter>
                             <Button
                                 type="button"
@@ -219,7 +262,8 @@ export function ModuleModelsSection({
                                 disabled={
                                     form.processing ||
                                     !form.data.firmware_version ||
-                                    !form.data.firmware_file
+                                    (!form.data.firmware_file &&
+                                        !form.data.factory_file)
                                 }
                             >
                                 {form.processing

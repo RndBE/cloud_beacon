@@ -24,11 +24,16 @@ class SecurityPairingController extends Controller
 
     public function start(Request $request, string $hash): JsonResponse
     {
-        $data = $request->validate(['device_id' => ['required', 'string', 'max:31']]);
+        $data = $request->validate([
+            'device_id' => ['required', 'string', 'max:31'],
+            // Installed over a USB cable / Bluetooth by proof (SecurityCableController)
+            // instead of a card tap: the device may be offline.
+            'cable' => ['sometimes', 'boolean'],
+        ]);
         $logger = $this->manageableLogger($hash);
 
         try {
-            $pairing = $this->pairing->start($logger, $data['device_id'], $request->user());
+            $pairing = $this->pairing->start($logger, $data['device_id'], $request->user(), lewatKabel: (bool) ($data['cable'] ?? false));
         } catch (SecurityPairingException $e) {
             return response()->json(['reason' => $e->reason(), 'message' => $e->getMessage()], 422);
         }

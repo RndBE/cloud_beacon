@@ -93,12 +93,19 @@ function refusal(reply: Reply): string {
     return `Alat menolak perintah: ${reason || 'autentikasi gagal'}.`;
 }
 
+export interface CableProof {
+    deviceId: string;
+    // With a pairing: its state after the proof (installed).
+    pairing?: { id: number; deviceId: string; status: string };
+}
+
 export interface CableChannel extends SecurityChannel {
     // Feed every {"SECURITY":...} reply from the link here.
     handle(reply: Reply | string): void;
-    // The board's MQTT ID, to check it is this logger's device. Retried while the
-    // board is still booting (it reads input ~10 s after a reset).
-    identify(): Promise<string>;
+    // "Bukti kabel": the board proves to the server that it is this logger's device
+    // (or, with a pairing, the device being installed, which installs it). Retried
+    // while the board is still booting (it reads input ~10 s after a reset).
+    prove(pairingId?: number): Promise<CableProof>;
     close(): Promise<void>;
 }
 
@@ -236,20 +243,40 @@ export function cableChannel(loggerId: string, link: SetupLink): CableChannel {
             }
         },
         close: () => link.close(),
-        identify: () =>
+        prove: (pairingId) =>
             serial(async () => {
-                for (let attempt = 0; ; attempt++) {
+                const { nonce } = await json<{ nonce: string }>(
+                    await postJson(`${base}/cable/nonce`, {
+                        pairing: pairingId ?? null,
+                    }),
+                );
+                let reply: Reply | null = null;
+                for (let attempt = 0; reply === null; attempt++) {
                     try {
-                        const reply = await request(
-                            { cmd: 'GET' },
-                            (r) => r.cmd === 'GET',
+                        reply = await request(
+                            { cmd: 'BUKTI', nonce },
+                            (r) => r.cmd === 'BUKTI',
                             2_500,
                         );
-                        return String(reply.id_alat ?? '');
                     } catch (e) {
                         if (attempt >= 7) throw e;
                     }
                 }
+                if (reply.status !== 'OK') {
+                    const reason = String(reply.msg ?? 'alat menolak');
+                    throw new Error(
+                        reason.includes('ID alat belum diatur')
+                            ? 'ID alat belum diatur. Isi dulu lewat Setup alat di Production › Modul.'
+                            : `Alat menolak dibuktikan: ${reason}.`,
+                    );
+                }
+                return json<CableProof>(
+                    await postJson(`${base}/cable/proof`, {
+                        salt: String(reply.salt ?? ''),
+                        mac: String(reply.mac ?? ''),
+                        via,
+                    }),
+                );
             }),
         atur: (op, params = {}) =>
             serial(async () => {

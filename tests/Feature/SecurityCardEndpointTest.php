@@ -7,11 +7,13 @@ use App\Models\Role;
 use App\Models\SecurityConfigLog;
 use App\Models\SecurityDevice;
 use App\Models\SecurityEvent;
+use App\Models\SecurityPairing;
 use App\Models\SecurityPhoto;
 use App\Models\User;
 use App\Services\IdHasher;
 use App\Services\SecurityAturSigner;
 use App\Services\SecurityCommandService;
+use App\Services\SecurityPairingService;
 use Illuminate\Support\Facades\Cache;
 
 function cardUser(array $permissions = ['loggers.view', 'loggers.create']): User
@@ -547,4 +549,62 @@ it('logs a siren silenced over a cable and gives the card holder names', functio
     $this->getJson(route('loggers.security.cards.holders', $this->hash))
         ->assertOk()
         ->assertJson(['holders' => ['FC:E1:4F:07' => 'Dian']]);
+});
+
+// What the board answers to BUKTI, holding the server's password.
+function boardProof(string $nonce, string $deviceId = 'SS0001', string $password = 'sandi-uji'): array
+{
+    return ['salt' => SALT, 'mac' => SecurityPairingService::buktiMac(SALT, $password, $nonce, $deviceId), 'via' => 'usb'];
+}
+
+it('accepts proof from the genuine device on a cable and pins its salt', function () {
+    $nonce = $this->postJson(route('loggers.security.cable.nonce', $this->hash))->assertOk()->json('nonce');
+
+    $this->postJson(route('loggers.security.cable.proof', $this->hash), boardProof($nonce))
+        ->assertOk()
+        ->assertJson(['verified' => true, 'deviceId' => 'SS0001']);
+    expect(Cache::get("security:salt:{$this->device->id}"))->toBe(SALT);
+});
+
+it('refuses a proof made with another password or for another device, and a nonce twice', function () {
+    $nonce = $this->postJson(route('loggers.security.cable.nonce', $this->hash))->json('nonce');
+    $this->postJson(route('loggers.security.cable.proof', $this->hash), boardProof($nonce, password: '12345678'))
+        ->assertUnprocessable()
+        ->assertJsonPath('message', fn ($m) => str_contains($m, 'password alat belum sama'));
+    // Single use: the same nonce, even with a correct answer, is gone.
+    $this->postJson(route('loggers.security.cable.proof', $this->hash), boardProof($nonce))
+        ->assertUnprocessable()
+        ->assertJsonPath('message', 'Bukti kedaluwarsa. Ulangi sambungannya.');
+
+    $nonce = $this->postJson(route('loggers.security.cable.nonce', $this->hash))->json('nonce');
+    $this->postJson(route('loggers.security.cable.proof', $this->hash), boardProof($nonce, 'SS0002'))
+        ->assertUnprocessable();
+    expect(Cache::has("security:salt:{$this->device->id}"))->toBeFalse();
+});
+
+it('installs an offline device over a cable without a card tap', function () {
+    $logger = Logger::factory()->create(['user_id' => $this->user->id]);
+    $hash = IdHasher::encode($logger->id);
+    SecurityDevice::create(['device_id' => 'SS0002']);
+
+    $pairing = $this->postJson(route('loggers.security.pairings.start', $hash), ['device_id' => 'SS0002', 'cable' => true])
+        ->assertCreated()
+        ->json('id');
+    $nonce = $this->postJson(route('loggers.security.cable.nonce', $hash), ['pairing' => $pairing])->json('nonce');
+
+    $this->postJson(route('loggers.security.cable.proof', $hash), boardProof($nonce, 'SS0002'))
+        ->assertOk()
+        ->assertJsonPath('pairing.status', 'terpasang');
+
+    expect(SecurityDevice::where('device_id', 'SS0002')->value('logger_id'))->toBe($logger->id)
+        ->and(SecurityPairing::find($pairing)->confirm_via)->toBe('usb')
+        ->and(SecurityConfigLog::where('action', 'pasang')->sole()->via)->toBe('usb');
+});
+
+it('still refuses an offline device for a card-tap installation', function () {
+    $logger = Logger::factory()->create(['user_id' => $this->user->id]);
+    SecurityDevice::create(['device_id' => 'SS0002']);
+
+    $this->postJson(route('loggers.security.pairings.start', IdHasher::encode($logger->id)), ['device_id' => 'SS0002'])
+        ->assertUnprocessable();
 });

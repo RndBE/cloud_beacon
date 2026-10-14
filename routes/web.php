@@ -17,6 +17,7 @@ use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\ProductionModuleController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
+use App\Http\Controllers\SecurityCableController;
 use App\Http\Controllers\SecurityCardController;
 use App\Http\Controllers\SecurityDeviceController;
 use App\Http\Controllers\SecurityDeviceStatusController;
@@ -94,6 +95,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('loggers/{id}/security/command', [SecurityCardController::class, 'command'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.command');
+    Route::post('loggers/{id}/security/cable/nonce', [SecurityCableController::class, 'nonce'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cable.nonce');
+    Route::post('loggers/{id}/security/cable/proof', [SecurityCableController::class, 'proof'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cable.proof');
     Route::post('loggers/{id}/security/sign', [SecurityCardController::class, 'sign'])
         ->middleware('permission:loggers.create')
         ->name('loggers.security.sign');

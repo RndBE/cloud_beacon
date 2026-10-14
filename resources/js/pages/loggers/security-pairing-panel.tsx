@@ -1,11 +1,25 @@
-import { CreditCard, LoaderCircle, Plug } from 'lucide-react';
+import {
+    Bluetooth,
+    Cable,
+    CreditCard,
+    LoaderCircle,
+    Plug,
+    Usb,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { deleteJson, postJson } from '@/lib/csrf-fetch';
+import { bluetoothSupported, usbSupported } from '@/lib/security-setup-link';
 
 export interface StockDevice {
     deviceId: string;
@@ -43,11 +57,16 @@ export function SecurityPairingPanel({
     stock,
     initialPairing,
     onPaired,
+    cableBusy,
+    onCablePair,
 }: {
     loggerId: string;
     stock: StockDevice[];
     initialPairing: PairingState | null;
     onPaired: (deviceId: string) => void;
+    // Install over a USB cable / Bluetooth instead of a card tap (no WiFi needed).
+    cableBusy: boolean;
+    onCablePair: (kind: 'usb' | 'bluetooth', deviceId: string) => void;
 }) {
     const [deviceId, setDeviceId] = useState(initialPairing?.deviceId ?? '');
     const [pairing, setPairing] = useState<PairingState | null>(initialPairing);
@@ -242,7 +261,8 @@ export function SecurityPairingPanel({
                 </p>
                 <p className="text-xs text-muted-foreground">
                     Logger ini belum punya alat. Pilih alat, lalu tempelkan
-                    kartu ke pembacanya untuk konfirmasi.
+                    kartu ke pembacanya untuk konfirmasi, atau pasang lewat
+                    kabel USB / Bluetooth (alat tidak perlu WiFi).
                 </p>
             </div>
 
@@ -276,6 +296,39 @@ export function SecurityPairingPanel({
                     )}
                     Pasang alat
                 </Button>
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            className="gap-1.5"
+                            disabled={
+                                busy || cableBusy || deviceId.trim() === ''
+                            }
+                        >
+                            {cableBusy ? (
+                                <LoaderCircle className="size-4 animate-spin" />
+                            ) : (
+                                <Cable className="size-4" />
+                            )}
+                            Lewat kabel
+                        </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                            disabled={!usbSupported()}
+                            onSelect={() => onCablePair('usb', deviceId)}
+                        >
+                            <Usb /> Kabel USB
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            disabled={!bluetoothSupported()}
+                            onSelect={() => onCablePair('bluetooth', deviceId)}
+                        >
+                            <Bluetooth /> Bluetooth
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             </form>
 
             {error && (
@@ -286,17 +339,16 @@ export function SecurityPairingPanel({
 
             <div className="space-y-2">
                 <p className="text-xs font-semibold text-muted-foreground uppercase">
-                    Alat stok yang online
+                    Alat stok
                 </p>
-                {online.length === 0 ? (
+                {stock.length === 0 ? (
                     <p className="text-xs text-muted-foreground">
-                        Tidak ada alat stok yang online. Nyalakan alat dan
-                        pastikan tersambung WiFi, atau daftarkan unit baru di
-                        Production › Modul.
+                        Tidak ada alat stok. Daftarkan unit baru di Production ›
+                        Modul.
                     </p>
                 ) : (
                     <div className="flex flex-wrap gap-2">
-                        {online.map((d) => (
+                        {stock.map((d) => (
                             <Button
                                 key={d.deviceId}
                                 type="button"
@@ -308,6 +360,10 @@ export function SecurityPairingPanel({
                                 }
                                 onClick={() => setDeviceId(d.deviceId)}
                             >
+                                <span
+                                    className={`size-1.5 rounded-full ${d.online ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`}
+                                    title={d.online ? 'Online' : 'Offline'}
+                                />
                                 <span className="font-mono">{d.deviceId}</span>
                                 {d.name && (
                                     <span className="text-xs opacity-70">
@@ -320,7 +376,7 @@ export function SecurityPairingPanel({
                 )}
                 {offlineCount > 0 && (
                     <p className="text-xs text-muted-foreground">
-                        {offlineCount} unit stok lain sedang offline.
+                        Alat offline hanya bisa dipasang lewat kabel.
                     </p>
                 )}
             </div>

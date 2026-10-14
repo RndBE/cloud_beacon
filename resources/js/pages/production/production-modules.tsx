@@ -511,9 +511,14 @@ function EditModuleDialog({
 export interface ModuleFirmware {
     model: string;
     version: string;
-    fileName: string;
-    fileUrl: string;
+    // OTA image (app only), for boards already running firmware.
+    fileName: string | null;
+    fileUrl: string | null;
     fileSize: number | null;
+    // Factory image (from address 0), flashed over USB onto a blank board.
+    factoryName: string | null;
+    factoryUrl: string | null;
+    factorySize: number | null;
     uploadedAt: string | null;
 }
 
@@ -825,7 +830,8 @@ export function ProductionModules({
                                                         ?.version) ||
                                                     '—'}
                                             </span>
-                                            {m.model && firmwares[m.model] ? (
+                                            {m.model &&
+                                            firmwares[m.model]?.fileName ? (
                                                 <span className="max-w-[170px] truncate text-xs text-muted-foreground">
                                                     {
                                                         firmwares[m.model]
@@ -874,25 +880,28 @@ export function ProductionModules({
                                     </TableCell>
                                     <TableCell>
                                         <div className="flex items-center justify-end gap-1">
-                                            {m.model && firmwares[m.model] && (
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon-sm"
-                                                    asChild
-                                                >
-                                                    <a
-                                                        href={
-                                                            firmwares[m.model]
-                                                                .fileUrl
-                                                        }
-                                                        target="_blank"
-                                                        rel="noreferrer"
-                                                        aria-label={`Download firmware ${m.serialNumber}`}
+                                            {m.model &&
+                                                firmwares[m.model]?.fileUrl && (
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon-sm"
+                                                        asChild
                                                     >
-                                                        <Download className="size-4" />
-                                                    </a>
-                                                </Button>
-                                            )}
+                                                        <a
+                                                            href={
+                                                                firmwares[
+                                                                    m.model
+                                                                ].fileUrl ??
+                                                                undefined
+                                                            }
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            aria-label={`Download firmware ${m.serialNumber}`}
+                                                        >
+                                                            <Download className="size-4" />
+                                                        </a>
+                                                    </Button>
+                                                )}
                                             {m.kind === 'security' && (
                                                 <Button
                                                     variant="ghost"
@@ -954,6 +963,7 @@ export function ProductionModules({
             <SecuritySetupDialog
                 deviceId={setupTarget?.deviceId ?? null}
                 serialNumber={setupTarget?.serialNumber ?? ''}
+                firmwares={firmwares}
                 onClose={() => setSetupTarget(null)}
             />
             {/* Keyed so the form starts from the chosen module each time. */}

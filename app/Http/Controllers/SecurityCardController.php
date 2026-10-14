@@ -244,7 +244,8 @@ class SecurityCardController extends Controller
         ];
     }
 
-    private static function saltKey(SecurityDevice $device): string
+    /** Cache key of the device's known salt (random per device, new on each password write). */
+    public static function saltKey(SecurityDevice $device): string
     {
         return "security:salt:{$device->id}";
     }

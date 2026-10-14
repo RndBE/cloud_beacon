@@ -148,3 +148,23 @@ it('shows module models with their OTA firmware on the Models page', function ()
             ->where('moduleFirmwares.Security System.version', 'v3')
             ->where('moduleFirmwares.Security System.fileName', 'Security-System-g.bin'));
 });
+
+it('keeps a factory image for USB flashing next to the OTA image', function () {
+    $user = productionModuleUser(['production.view', 'production.create']);
+    $upload = fn (array $files) => $this->actingAs($user)->post(route('production.module-firmware.update'), [
+        'model' => 'Security System Kamera', 'firmware_version' => 'v2',
+    ] + $files);
+
+    $upload([])->assertSessionHasErrors('firmware_file');
+    $upload(['factory_file' => \Illuminate\Http\UploadedFile::fake()->create('cam.factory.bin', 10)])
+        ->assertSessionHas('success');
+
+    $this->get(route('production.index'))
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('moduleFirmwares.Security System Kamera.factoryName', 'Security-System-Kamera-factory-cam.factory.bin')
+            ->where('moduleFirmwares.Security System Kamera.fileUrl', null));
+
+    $firmware = \App\Models\ModuleFirmware::sole();
+    expect(file_exists(public_path($firmware->factory_path)))->toBeTrue();
+    @unlink(public_path($firmware->factory_path));
+});

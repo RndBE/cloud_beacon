@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { deleteJson, postJson } from '@/lib/csrf-fetch';
 import { openBluetoothLink, openUsbLink } from '@/lib/security-setup-link';
 import { CableConnect } from './cable-connect';
 import { CameraControl } from './camera-control';
@@ -26,7 +27,7 @@ import {
     useSecurityChannel,
 } from './security-channel';
 import type { CableChannel } from './security-channel';
-import { SecurityPairingPanel } from './security-pairing-panel';
+import { errorMessage, SecurityPairingPanel } from './security-pairing-panel';
 import type { PairingState, StockDevice } from './security-pairing-panel';
 import { WifiControl } from './wifi-control';
 
@@ -262,49 +263,94 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
         setCable(null);
     }
 
+    // Opens a USB / Bluetooth link to the board; null when the picker was closed.
+    async function openCable(
+        kind: 'usb' | 'bluetooth',
+    ): Promise<CableChannel | null> {
+        const handlers = {
+            onReply: () => undefined,
+            onSecurity: (reply: Record<string, unknown> | string) =>
+                cableRef.current?.handle(reply),
+            onLine: () => undefined,
+            onClosed: () => {
+                cableRef.current = null;
+                setCable(null);
+                setActionError('Sambungan kabel/Bluetooth ke alat terputus.');
+            },
+        };
+        const link =
+            kind === 'usb'
+                ? await openUsbLink(handlers)
+                : await openBluetoothLink(handlers);
+        if (!link) return null;
+        const opened = cableChannel(loggerId, link);
+        cableRef.current = opened;
+        return opened;
+    }
+
+    const viaLabel = (kind: 'usb' | 'bluetooth') =>
+        kind === 'usb' ? 'USB' : 'Bluetooth';
+
+    // Configure the installed device over a cable. The board proves it is this
+    // logger's device before anything is sent; the server checks the proof.
     async function connectCable(kind: 'usb' | 'bluetooth', deviceId: string) {
         setCableBusy(true);
         setActionError(null);
         try {
-            const handlers = {
-                onReply: () => undefined,
-                onSecurity: (reply: Record<string, unknown> | string) =>
-                    cableRef.current?.handle(reply),
-                onLine: () => undefined,
-                onClosed: () => {
-                    cableRef.current = null;
-                    setCable(null);
-                    setActionError(
-                        'Sambungan kabel/Bluetooth ke alat terputus.',
-                    );
-                },
-            };
-            const link =
-                kind === 'usb'
-                    ? await openUsbLink(handlers)
-                    : await openBluetoothLink(handlers);
-            if (!link) return;
-            const opened = cableChannel(loggerId, link);
-            cableRef.current = opened;
-            // Only this logger's device: another board on the cable is refused here,
-            // and the server refuses to sign for it as well.
-            const id = await opened.identify().catch(async (e) => {
+            const opened = await openCable(kind);
+            if (!opened) return;
+            await opened.prove().catch((e) => {
                 dropCable();
                 throw e;
             });
-            if (id !== deviceId) {
-                dropCable();
-                throw new Error(
-                    `Alat yang tersambung adalah ${id || 'alat tanpa ID'}, bukan ${deviceId}.`,
-                );
-            }
             setCable(opened);
             setNotice(
-                `Tersambung ke ${deviceId} lewat ${kind === 'usb' ? 'USB' : 'Bluetooth'}. Pengaturan dikirim lewat sambungan ini.`,
+                `Tersambung ke ${deviceId} lewat ${viaLabel(kind)}. Pengaturan dikirim lewat sambungan ini.`,
             );
         } catch (e) {
             setActionError(e instanceof Error ? e.message : String(e));
         } finally {
+            setCableBusy(false);
+        }
+    }
+
+    // Install a device over a cable instead of a card tap: works without WiFi. The
+    // board's proof confirms the installation, and the link stays open to set it up.
+    async function pairByCable(kind: 'usb' | 'bluetooth', deviceId: string) {
+        setCableBusy(true);
+        setActionError(null);
+        let pairingId: number | null = null;
+        try {
+            const started = await postJson(
+                `/loggers/${loggerId}/security/pairings`,
+                { device_id: deviceId.trim(), cable: true },
+            );
+            if (!started.ok) throw new Error(await errorMessage(started));
+            pairingId = ((await started.json()) as { id: number }).id;
+
+            const opened = await openCable(kind);
+            if (!opened) {
+                throw new Error('Tidak ada port yang dipilih.');
+            }
+            await opened.prove(pairingId).catch((e) => {
+                dropCable();
+                throw e;
+            });
+            pairingId = null;
+            setCable(opened);
+            setNotice(
+                `Alat ${deviceId.trim()} terpasang lewat ${viaLabel(kind)}. Atur WiFi dan lainnya lewat sambungan ini.`,
+            );
+            await load();
+        } catch (e) {
+            setActionError(e instanceof Error ? e.message : String(e));
+        } finally {
+            // A pairing left waiting would block the next attempt.
+            if (pairingId !== null) {
+                await deleteJson(
+                    `/loggers/${loggerId}/security/pairings/${pairingId}`,
+                ).catch(() => undefined);
+            }
             setCableBusy(false);
         }
     }
@@ -355,6 +401,10 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                     setNotice(`Alat ${deviceId} berhasil dipasang.`);
                     void load();
                 }}
+                cableBusy={cableBusy}
+                onCablePair={(kind, deviceId) =>
+                    void pairByCable(kind, deviceId)
+                }
             />
         );
     } else if (device === null) {
