@@ -24,6 +24,7 @@ class SecurityPairing extends Model
         'expires_at',
         'confirmed_at',
         'confirm_event_id',
+        'confirm_via',
     ];
 
     protected function casts(): array

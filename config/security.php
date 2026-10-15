@@ -33,6 +33,11 @@ return [
     // Lama teknisi boleh menempelkan kartu setelah menekan "Pasang alat".
     'pairing_seconds' => (int) env('SECURITY_PAIRING_SECONDS', 30),
 
+    // Pemasangan lewat BUKTI KABEL (USB): teknisi masih harus memilih port di
+    // pemilih browser, jadi sedikit lebih lama dari tap kartu. 60 detik = umur
+    // nonce BUKTI di website.
+    'pairing_cable_seconds' => (int) env('SECURITY_PAIRING_CABLE_SECONDS', 60),
+
     // Alat mengirim telemetri tiap 60 detik. Tiga kali terlewat = offline.
     'offline_after_seconds' => (int) env('SECURITY_OFFLINE_AFTER', 180),
 ];

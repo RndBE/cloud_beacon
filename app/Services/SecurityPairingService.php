@@ -19,6 +19,15 @@ use Illuminate\Support\Facades\Log;
  * kartu ke pembaca alat; security:listen meneruskan kejadian tap itu ke
  * konfirmasi(), yang mengisi security_devices.logger_id. Halaman memantau
  * hasilnya lewat SecurityPairing::refreshStatus().
+ *
+ * Alur pasang lewat kabel (alat belum punya WiFi): start(..., lewatKabel:
+ * true) tanpa syarat online; website membuat nonce sekali pakai, browser
+ * meneruskannya ke alat lewat Web Serial (kabel USB) sebagai
+ * {"SECURITY":{"cmd":"BUKTI","nonce":..}}, server memverifikasi mac-nya
+ * (buktiMac), lalu konfirmasiKabel(). Alat hanya menjawab BUKTI lewat kabel
+ * USB, jadi mac yang sah membuktikan ada orang yang memegang alat yang benar -
+ * fungsi yang sama dengan tap kartu. Bluetooth sengaja tidak ada: BLE bisa
+ * dijangkau dari luar gedung, sehingga tidak membuktikan kehadiran fisik.
  */
 class SecurityPairingService
 {
@@ -28,6 +37,9 @@ class SecurityPairingService
     // Toleransi jam papan terhadap jam server saat mencocokkan tap. 30, bukan 10:
     // diukur 2026-10-12, jam alat 7 detik lebih cepat dari jam server.
     private const SELISIH_JAM_DETIK = 30;
+
+    /** Nilai konfirmasiKabel($jalur), sama dengan detail kejadian BUKTI_KABEL dari alat. */
+    public const JALUR_KABEL = ['usb'];
 
     public function register(string $deviceId, ?string $name = null): SecurityDevice
     {
@@ -52,7 +64,11 @@ class SecurityPairingService
         return SecurityDevice::whereNull('logger_id')->orderBy('device_id')->get();
     }
 
-    public function start(Logger $logger, string $deviceId, User $user): SecurityPairing
+    /**
+     * @param  bool  $lewatKabel  pemasangan akan dibuktikan lewat BUKTI KABEL:
+     *                            alat boleh offline, jendela waktunya lebih lama
+     */
+    public function start(Logger $logger, string $deviceId, User $user, bool $lewatKabel = false): SecurityPairing
     {
         $device = SecurityDevice::where('device_id', trim($deviceId))->first();
         if ($device === null) {
@@ -67,7 +83,7 @@ class SecurityPairingService
             throw new Gagal(Gagal::SUDAH_DIPASANG,
                 "Alat {$device->device_id} sudah dipasang di logger lain. Lepas dari logger itu dulu.");
         }
-        if (! $device->isOnline()) {
+        if (! $lewatKabel && ! $device->isOnline()) {
             throw new Gagal(Gagal::OFFLINE,
                 "Alat {$device->device_id} tidak online. Pastikan alat menyala dan tersambung WiFi.");
         }
@@ -84,7 +100,9 @@ class SecurityPairingService
             'logger_id' => $logger->id,
             'user_id' => $user->id,
             'status' => SecurityPairing::MENUNGGU,
-            'expires_at' => now()->addSeconds(config('security.pairing_seconds', 30)),
+            'expires_at' => now()->addSeconds($lewatKabel
+                ? config('security.pairing_cable_seconds', 120)
+                : config('security.pairing_seconds', 30)),
         ]);
     }
 
@@ -148,6 +166,7 @@ class SecurityPairingService
                 'status' => SecurityPairing::TERPASANG,
                 'confirmed_at' => now(),
                 'confirm_event_id' => $event->id,
+                'confirm_via' => 'tap',
             ]);
             Log::info('[Security] alat dipasang ke logger', [
                 'alat' => $device->device_id, 'logger_id' => $pairing->logger_id, 'oleh' => $pairing->user_id,
@@ -155,5 +174,81 @@ class SecurityPairingService
 
             return "alat {$device->device_id} DIPASANG ke logger #{$pairing->logger_id}";
         });
+    }
+
+    /**
+     * Menyelesaikan pemasangan yang dibuktikan lewat BUKTI KABEL, TANPA
+     * kejadian dari alat. Pemanggil WAJIB sudah memverifikasi mac balasan
+     * BUKTI terhadap nonce milik pemasangan ini (buktiMac); method ini tidak
+     * melihat mac sama sekali.
+     *
+     * Pemeriksaannya sama dengan konfirmasi(), di dalam transaksi dengan
+     * baris pemasangan dan alat dikunci, supaya dua konfirmasi serentak
+     * (tap dan kabel, atau dua tab) tidak sama-sama lolos.
+     *
+     * @param  string  $jalur  'usb'
+     * @return string|null keterangan hasil; null kalau pemasangan tidak aktif lagi
+     *                     (kedaluwarsa, dibatalkan, atau sudah terpasang). $pairing
+     *                     dimuat ulang, jadi statusnya bisa langsung dibaca.
+     */
+    public function konfirmasiKabel(SecurityPairing $pairing, string $jalur): ?string
+    {
+        if (! in_array($jalur, self::JALUR_KABEL, true)) {
+            throw new \InvalidArgumentException("Jalur kabel harus usb, bukan '{$jalur}'.");
+        }
+
+        $hasil = DB::transaction(function () use ($pairing, $jalur) {
+            $p = SecurityPairing::whereKey($pairing->id)->lockForUpdate()->first();
+            if ($p === null || $p->status !== SecurityPairing::MENUNGGU) {
+                return null;
+            }
+            if ($p->expires_at->lte(now())) {
+                $p->update(['status' => SecurityPairing::KEDALUWARSA]);
+
+                return null;
+            }
+            $device = SecurityDevice::whereKey($p->security_device_id)->lockForUpdate()->first();
+            if (SecurityDevice::where('logger_id', $p->logger_id)->whereKeyNot($device->id)->exists()
+                || ($device->logger_id !== null && $device->logger_id !== $p->logger_id)) {
+                $p->update(['status' => SecurityPairing::DIBATALKAN]);
+
+                return 'pemasangan dibatalkan: logger atau alat sudah terpasang di tempat lain';
+            }
+            $device->update(['logger_id' => $p->logger_id]);
+            $p->update([
+                'status' => SecurityPairing::TERPASANG,
+                'confirmed_at' => now(),
+                'confirm_event_id' => null,
+                'confirm_via' => $jalur,
+            ]);
+            Log::info('[Security] alat dipasang ke logger lewat kabel', [
+                'alat' => $device->device_id, 'logger_id' => $p->logger_id, 'oleh' => $p->user_id, 'jalur' => $jalur,
+            ]);
+
+            return "alat {$device->device_id} DIPASANG ke logger #{$p->logger_id} lewat kabel ({$jalur})";
+        });
+        $pairing->refresh();
+
+        return $hasil;
+    }
+
+    /**
+     * mac yang HARUS dibalas alat untuk {"SECURITY":{"cmd":"BUKTI","nonce":..}}:
+     *   HMAC-SHA256(K, "SSB1" || nonce 16 byte || id_alat ASCII), K = SHA256(salt || password)
+     * K sama dengan kunci protokol "atur" (pwHash di firmware). Bandingkan
+     * dengan hash_equals(), jangan ===.
+     *
+     * Vektor uji: salt 0001020304050607, password 12345678,
+     * nonce 00112233445566778899aabbccddeeff, id SS0001 ->
+     * e3883e096bcac686422d398f4d8b6f1c042f9a87337a0b3ba2d1f7753c7a56e2
+     */
+    public static function buktiMac(string $saltHex, string $password, string $nonceHex, string $deviceId): string
+    {
+        if (! preg_match('/^[0-9a-fA-F]{16}$/', $saltHex) || ! preg_match('/^[0-9a-fA-F]{32}$/', $nonceHex)) {
+            throw new \InvalidArgumentException('salt harus 16 hex dan nonce 32 hex.');
+        }
+        $k = hash('sha256', hex2bin($saltHex).$password, true);
+
+        return hash_hmac('sha256', 'SSB1'.hex2bin($nonceHex).$deviceId, $k);
     }
 }
