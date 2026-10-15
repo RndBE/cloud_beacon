@@ -17,13 +17,12 @@ import {
     CardTitle,
 } from '@/components/ui/card';
 import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from '@/components/ui/table';
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
 
 // Last telemetry/status message from the device, stored as-is (see SecurityMessageHandler).
 type SecurityStatus = Record<string, string | number | boolean | null>;
@@ -301,172 +300,398 @@ function LatestPhoto({ photo }: { photo: SecurityPhoto | null }) {
                     <PhotoActions photo={photo} />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                    Foto sebelumnya bisa dibuka atau diunduh dari baris FOTO dan
-                    PEMBOBOLAN di tabel kejadian.
+                    Foto sebelumnya ada di daftar kejadian.
                 </p>
             </div>
         </div>
     );
 }
 
-function EventsTable({ events }: { events: SecurityEvent[] }) {
-    if (events.length === 0) {
+// Plain-language names for the firmware's event types; unlisted ones fall back to the
+// type itself ("WIFI_GAGAL" -> "Wifi gagal").
+const EVENT_LABEL: Record<string, string> = {
+    PEMBOBOLAN: 'Pembobolan',
+    PINTU_BUKA_SAH: 'Pintu dibuka',
+    PINTU_TUTUP: 'Pintu ditutup',
+    KARTU_SAH: 'Kartu diterima',
+    KARTU_DITOLAK: 'Kartu ditolak',
+    KARTU_SIRINE_MATI: 'Sirine dimatikan dengan kartu',
+    KARTU_DIDAFTARKAN: 'Kartu didaftarkan',
+    KARTU_DIHAPUS: 'Kartu dihapus',
+    FOTO: 'Foto diambil',
+    FOTO_GAGAL: 'Foto gagal terkirim',
+    FOTO_ULANG: 'Foto dikirim ulang',
+    FOTO_ULANG_GAGAL: 'Kirim ulang foto gagal',
+    KAMERA_HILANG: 'Kamera terputus',
+    KAMERA_KEMBALI: 'Kamera tersambung lagi',
+    KAMERA_ULANG: 'Kamera dimulai ulang',
+    PEMBACA_PULIH: 'Pembaca kartu pulih',
+    LISTRIK_PADAM: 'Listrik padam',
+    LISTRIK_PULIH: 'Listrik pulih',
+    BATERAI_LEMAH: 'Baterai lemah',
+    BATERAI_NORMAL: 'Baterai normal',
+    TAMPER_BUKA: 'Casing dibuka',
+    TAMPER_TUTUP: 'Casing ditutup',
+    ALARM_RESET_MQTT: 'Sirine dimatikan dari website',
+    SIRINE_NYALA: 'Sirine dinyalakan dari website',
+    SIRINE_UJI: 'Uji sirine',
+    ATUR_DITOLAK: 'Pengaturan ditolak',
+    ATUR_PASSWORD: 'Password alat diganti',
+    ATUR_ID: 'ID alat diganti',
+    ATUR_SN: 'Nomor seri diganti',
+    ATUR_SENSOR: 'Mode sensor pintu diganti',
+    ATUR_FLASH: 'Mode flash kamera diganti',
+    ATUR_SERIAL: 'Diatur lewat kabel',
+    SETUP_SERIAL: 'Setup lewat kabel',
+    SETUP_DITOLAK: 'Setup ditolak',
+    BUKTI_KABEL: 'Dipasang lewat kabel',
+    WIFI_DIGANTI: 'WiFi diganti',
+    WIFI_GAGAL: 'WiFi gagal tersambung',
+};
+
+const DOT_TONE: Record<Tone, string> = {
+    red: 'bg-red-500',
+    amber: 'bg-amber-500',
+    green: 'bg-emerald-500',
+};
+
+function eventLabel(type: string): string {
+    const label = EVENT_LABEL[type];
+    if (label) return label;
+    const words = type.replaceAll('_', ' ').toLowerCase();
+    return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+// Before the device clock syncs its event time is near 1970, so use when it arrived.
+function eventTime(event: SecurityEvent): Date {
+    return new Date(
+        (event.timeValid ? event.occurredAt : null) ?? event.receivedAt,
+    );
+}
+
+function dayLabel(date: Date): string {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (date.toDateString() === new Date().toDateString()) return 'Hari ini';
+    if (date.toDateString() === yesterday.toDateString()) return 'Kemarin';
+    return date.toLocaleDateString('id-ID', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+    });
+}
+
+// The second line of an event: who opened the door, whose card, or the raw detail.
+function eventDetail(event: SecurityEvent): ReactNode {
+    if (event.openedBy) {
+        return (
+            <>
+                oleh{' '}
+                <CardHolder
+                    uid={event.openedBy.uid}
+                    name={event.openedBy.name}
+                />
+            </>
+        );
+    }
+    if (event.type.startsWith('KARTU_') && event.detail) {
+        return <CardHolder uid={event.detail} name={event.holderName} />;
+    }
+    // A photo's detail is its file name; the thumbnail already stands for it.
+    if (event.photo?.url || !event.detail) return null;
+    return <span className="font-mono">{event.detail}</span>;
+}
+
+interface ListFilter<T> {
+    key: string;
+    label: string;
+    test: (item: T) => boolean;
+}
+
+// Items shown at first and added per "Tampilkan lagi", so a busy device does not
+// turn a section into a long scroll.
+const LIST_PAGE = 10;
+
+/**
+ * A newest-first list grouped by day, with a category dropdown and "show more"
+ * paging. Used for both the device's events and the configurator's change log.
+ */
+function DayList<T>({
+    items,
+    filters,
+    at,
+    itemKey,
+    renderItem,
+    noun,
+    empty,
+}: {
+    items: T[];
+    // The first filter is the default and should pass everything.
+    filters: ListFilter<T>[];
+    at: (item: T) => Date;
+    itemKey: (item: T) => number;
+    renderItem: (item: T) => ReactNode;
+    noun: string;
+    empty: string;
+}) {
+    const [filterKey, setFilterKey] = useState(filters[0].key);
+    const [shown, setShown] = useState(LIST_PAGE);
+
+    if (items.length === 0) {
         return (
             <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
-                Belum ada kejadian tercatat.
+                {empty}
             </p>
         );
     }
 
-    // Up to 50 rows: scroll inside the card instead of stretching the page. The height
-    // goes on the Table's own scroll container so the sticky header sticks to it.
+    const filter = filters.find((f) => f.key === filterKey) ?? filters[0];
+    const matching = items.filter(filter.test);
+    const visible = matching.slice(0, shown);
+
+    const days: { label: string; items: T[] }[] = [];
+    for (const item of visible) {
+        const label = dayLabel(at(item));
+        const last = days[days.length - 1];
+        if (last?.label === label) last.items.push(item);
+        else days.push({ label, items: [item] });
+    }
+
     return (
-        <div className="overflow-hidden rounded-md border border-border/60 [&_[data-slot=table-container]]:max-h-[26rem] [&_[data-slot=table-container]]:overflow-y-auto">
-            <Table>
-                <TableHeader className="[&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-card">
-                    <TableRow>
-                        <TableHead>Waktu</TableHead>
-                        <TableHead>Jenis</TableHead>
-                        <TableHead>Detail</TableHead>
-                        <TableHead className="text-right">Foto</TableHead>
-                    </TableRow>
-                </TableHeader>
-                <TableBody>
-                    {events.map((event) => {
-                        const tone = EVENT_TONE[event.type];
-                        return (
-                            <TableRow key={event.id}>
-                                {/* Before the device clock syncs its event time is near 1970, so show when it arrived. */}
-                                <TableCell className="whitespace-nowrap">
-                                    {formatTime(
-                                        event.timeValid
-                                            ? event.occurredAt
-                                            : event.receivedAt,
-                                    )}
-                                    {!event.timeValid && (
-                                        <span className="ml-1 text-xs text-muted-foreground">
-                                            (jam diterima)
-                                        </span>
-                                    )}
-                                </TableCell>
-                                <TableCell>
-                                    <Badge
-                                        variant="outline"
-                                        className={tone && BADGE_TONE[tone]}
+        <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                    {visible.length} dari {matching.length} {noun}
+                </p>
+                <Select
+                    value={filter.key}
+                    onValueChange={(value) => {
+                        setFilterKey(value);
+                        setShown(LIST_PAGE);
+                    }}
+                >
+                    <SelectTrigger
+                        size="sm"
+                        className="w-[180px]"
+                        aria-label={`Kategori ${noun}`}
+                    >
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        {filters.map((f) => (
+                            <SelectItem key={f.key} value={f.key}>
+                                {f.label} ({items.filter(f.test).length})
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </div>
+            {visible.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
+                    Tidak ada {noun} di kategori ini.
+                </p>
+            ) : (
+                <div className="overflow-hidden rounded-md border border-border/60">
+                    {days.map((day) => (
+                        <div key={day.label}>
+                            <p className="border-b border-border/60 bg-muted px-4 py-1.5 text-xs font-medium text-muted-foreground">
+                                {day.label}
+                            </p>
+                            <ul className="divide-y divide-border/60">
+                                {day.items.map((item) => (
+                                    <li
+                                        key={itemKey(item)}
+                                        className="flex items-center gap-3 px-4 py-2.5"
                                     >
-                                        {event.type.replaceAll('_', ' ')}
-                                    </Badge>
-                                </TableCell>
-                                <TableCell className="text-xs text-muted-foreground">
-                                    {event.openedBy ? (
-                                        <span>
-                                            Dibuka oleh{' '}
-                                            <CardHolder
-                                                uid={event.openedBy.uid}
-                                                name={event.openedBy.name}
-                                            />{' '}
-                                            (tap{' '}
-                                            {new Date(
-                                                event.openedBy.tappedAt,
-                                            ).toLocaleTimeString('id-ID')}
-                                            )
-                                        </span>
-                                    ) : event.type.startsWith('KARTU_') &&
-                                      event.detail ? (
-                                        <CardHolder
-                                            uid={event.detail}
-                                            name={event.holderName}
-                                        />
-                                    ) : (
-                                        <span className="font-mono">
-                                            {event.detail || '—'}
-                                        </span>
-                                    )}
-                                </TableCell>
-                                <TableCell className="py-1 text-right">
-                                    {event.photo?.url ? (
-                                        <PhotoActions photo={event.photo} />
-                                    ) : (
-                                        <span className="text-muted-foreground">
-                                            —
-                                        </span>
-                                    )}
-                                </TableCell>
-                            </TableRow>
-                        );
-                    })}
-                </TableBody>
-            </Table>
+                                        {renderItem(item)}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    ))}
+                    {matching.length > shown && (
+                        <button
+                            type="button"
+                            className="w-full border-t border-border/60 px-4 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                            onClick={() => setShown((n) => n + LIST_PAGE)}
+                        >
+                            Tampilkan{' '}
+                            {Math.min(LIST_PAGE, matching.length - shown)} lagi
+                            ({matching.length - shown} tersisa)
+                        </button>
+                    )}
+                </div>
+            )}
         </div>
     );
 }
 
+// One list row: a colored dot, a title with an optional second line, and the time.
+function ListRow({
+    tone,
+    title,
+    detail,
+    time,
+    timeTitle,
+    children,
+}: {
+    tone: Tone | undefined;
+    title: ReactNode;
+    detail?: ReactNode;
+    time: Date;
+    timeTitle?: string;
+    // Shown between the text and the time (an event's photo).
+    children?: ReactNode;
+}) {
+    return (
+        <>
+            <span
+                className={`size-2 shrink-0 rounded-full ${tone ? DOT_TONE[tone] : 'bg-muted-foreground/40'}`}
+            />
+            <div className="min-w-0 flex-1">
+                <p
+                    className={`text-sm font-medium ${tone === 'red' ? TEXT_TONE.red : ''}`}
+                >
+                    {title}
+                </p>
+                {detail && (
+                    <p className="truncate text-xs text-muted-foreground">
+                        {detail}
+                    </p>
+                )}
+            </div>
+            {children}
+            <time
+                className="w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums"
+                title={timeTitle}
+            >
+                {time.toLocaleTimeString('id-ID', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                })}
+            </time>
+        </>
+    );
+}
+
+function isAccess(event: SecurityEvent): boolean {
+    return event.type.startsWith('KARTU_') || event.type.startsWith('PINTU_');
+}
+
+function isCamera(event: SecurityEvent): boolean {
+    return event.type.startsWith('FOTO') || event.type.startsWith('KAMERA_');
+}
+
+const EVENT_FILTERS: ListFilter<SecurityEvent>[] = [
+    { key: 'semua', label: 'Semua', test: () => true },
+    {
+        key: 'penting',
+        label: 'Penting',
+        test: (e) => e.type in EVENT_TONE && EVENT_TONE[e.type] !== 'green',
+    },
+    { key: 'akses', label: 'Pintu & kartu', test: isAccess },
+    { key: 'kamera', label: 'Kamera & foto', test: isCamera },
+    {
+        key: 'sistem',
+        label: 'Sistem',
+        test: (e) => !isAccess(e) && !isCamera(e),
+    },
+];
+
+function EventsTable({ events }: { events: SecurityEvent[] }) {
+    return (
+        <DayList
+            items={events}
+            filters={EVENT_FILTERS}
+            at={eventTime}
+            itemKey={(event) => event.id}
+            noun="kejadian"
+            empty="Belum ada kejadian tercatat."
+            renderItem={(event) => (
+                <ListRow
+                    tone={EVENT_TONE[event.type]}
+                    title={eventLabel(event.type)}
+                    detail={eventDetail(event)}
+                    time={eventTime(event)}
+                    timeTitle={
+                        event.timeValid
+                            ? undefined
+                            : 'Jam alat belum sinkron; ini jam diterima server'
+                    }
+                >
+                    {event.photo?.url && (
+                        <a
+                            href={event.photo.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Buka foto"
+                            className="shrink-0"
+                        >
+                            <img
+                                src={event.photo.url}
+                                alt={event.photo.name}
+                                loading="lazy"
+                                className="h-10 w-14 rounded bg-muted object-cover ring-1 ring-border/60 hover:opacity-80"
+                            />
+                        </a>
+                    )}
+                </ListRow>
+            )}
+        />
+    );
+}
+
+const CONFIG_FILTERS: ListFilter<ConfigLog>[] = [
+    { key: 'semua', label: 'Semua', test: () => true },
+    { key: 'berhasil', label: 'Berhasil', test: (log) => log.ok },
+    { key: 'gagal', label: 'Gagal', test: (log) => !log.ok },
+    {
+        key: 'kabel',
+        label: 'Lewat USB/Bluetooth',
+        test: (log) => log.via !== 'internet',
+    },
+];
+
 // Changes made from the website's configurator, newest first.
 function ConfigLogTable({ logs }: { logs: ConfigLog[] }) {
-    if (logs.length === 0) {
-        return (
-            <p className="rounded-md border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
-                Belum ada pengaturan dari website.
-            </p>
-        );
-    }
-
     return (
-        <div className="overflow-hidden rounded-md border border-border/60 [&_[data-slot=table-container]]:max-h-[20rem] [&_[data-slot=table-container]]:overflow-y-auto">
-            <Table>
-                <TableHeader className="[&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-card">
-                    <TableRow>
-                        <TableHead>Waktu</TableHead>
-                        <TableHead>Oleh</TableHead>
-                        <TableHead>Pengaturan</TableHead>
-                        <TableHead>Hasil</TableHead>
-                    </TableRow>
-                </TableHeader>
-                <TableBody>
-                    {logs.map((log) => (
-                        <TableRow key={log.id}>
-                            <TableCell className="whitespace-nowrap">
-                                {formatTime(log.at)}
-                            </TableCell>
-                            <TableCell>
-                                {log.user ?? (
-                                    <span className="text-muted-foreground">
-                                        Pengguna dihapus
-                                    </span>
-                                )}
-                            </TableCell>
-                            <TableCell>
-                                {log.description}
-                                {log.via !== 'internet' && (
-                                    <span className="ml-1.5 text-xs text-muted-foreground">
-                                        (lewat{' '}
-                                        {log.via === 'usb'
-                                            ? 'USB'
-                                            : 'Bluetooth'}
-                                        )
-                                    </span>
-                                )}
-                            </TableCell>
-                            <TableCell className="text-xs">
-                                <Badge
-                                    variant="outline"
-                                    className={
-                                        BADGE_TONE[log.ok ? 'green' : 'red']
-                                    }
-                                >
-                                    {log.ok ? 'Berhasil' : 'Gagal'}
-                                </Badge>
-                                {!log.ok && log.message && (
-                                    <span className="ml-2 text-muted-foreground">
-                                        {log.message}
-                                    </span>
-                                )}
-                            </TableCell>
-                        </TableRow>
-                    ))}
-                </TableBody>
-            </Table>
-        </div>
+        <DayList
+            items={logs}
+            filters={CONFIG_FILTERS}
+            at={(log) => new Date(log.at)}
+            itemKey={(log) => log.id}
+            noun="pengaturan"
+            empty="Belum ada pengaturan dari website."
+            renderItem={(log) => (
+                <ListRow
+                    tone={log.ok ? 'green' : 'red'}
+                    title={log.description}
+                    time={new Date(log.at)}
+                    detail={
+                        <>
+                            oleh{' '}
+                            {log.user ? (
+                                <span className="font-medium text-foreground">
+                                    {log.user}
+                                </span>
+                            ) : (
+                                'pengguna yang sudah dihapus'
+                            )}
+                            {log.via !== 'internet' &&
+                                ` · lewat ${log.via === 'usb' ? 'USB' : 'Bluetooth'}`}
+                            {!log.ok && (
+                                <span className={TEXT_TONE.red}>
+                                    {' '}
+                                    · gagal
+                                    {log.message ? `: ${log.message}` : ''}
+                                </span>
+                            )}
+                        </>
+                    }
+                />
+            )}
+        />
     );
 }
 
@@ -584,7 +809,15 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     );
 }
 
-export function SecurityDeviceStatus({ deviceId }: { deviceId: string }) {
+// `embedded`: shown inside a dialog (the logger's Security Cam tab), so without the
+// card's own frame and with room on the right for the dialog's close button.
+export function SecurityDeviceStatus({
+    deviceId,
+    embedded = false,
+}: {
+    deviceId: string;
+    embedded?: boolean;
+}) {
     const [data, setData] = useState<SecurityResponse | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
@@ -621,8 +854,12 @@ export function SecurityDeviceStatus({ deviceId }: { deviceId: string }) {
     const device = data?.device ?? null;
 
     return (
-        <Card>
-            <CardHeader className="space-y-1">
+        <Card
+            className={
+                embedded ? 'bg-transparent py-0 shadow-none ring-0' : undefined
+            }
+        >
+            <CardHeader className={`space-y-1 ${embedded ? 'px-0 pr-8' : ''}`}>
                 <div className="flex items-start justify-between gap-3">
                     <div>
                         <CardTitle className="flex flex-wrap items-center gap-2 text-base">
@@ -662,7 +899,7 @@ export function SecurityDeviceStatus({ deviceId }: { deviceId: string }) {
                     </Button>
                 </div>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className={`space-y-5 ${embedded ? 'px-0' : ''}`}>
                 {error && (
                     <p className="text-sm text-destructive">
                         Gagal memuat data alat: {error}

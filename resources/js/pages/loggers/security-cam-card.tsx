@@ -1,4 +1,3 @@
-import { Link } from '@inertiajs/react';
 import {
     Activity,
     BellOff,
@@ -12,8 +11,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogTitle,
+    DialogTrigger,
+} from '@/components/ui/dialog';
 import { deleteJson, postJson } from '@/lib/csrf-fetch';
 import { openBluetoothLink, openUsbLink } from '@/lib/security-setup-link';
+import { SecurityDeviceStatus } from '../production/security-device-status';
 import { CableConnect } from './cable-connect';
 import { CameraControl } from './camera-control';
 import type { FlashMode } from './camera-control';
@@ -511,19 +518,32 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                         </div>
                         <div className="flex items-center gap-1">
                             {device && (
-                                <Button
-                                    asChild
-                                    size="sm"
-                                    variant="outline"
-                                    className="gap-1.5"
-                                >
-                                    <Link
-                                        href={`/production/security-devices/${device.deviceId}`}
-                                    >
-                                        <Activity className="size-4" /> Lihat
-                                        status &amp; log
-                                    </Link>
-                                </Button>
+                                <Dialog>
+                                    <DialogTrigger asChild>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="gap-1.5"
+                                        >
+                                            <Activity className="size-4" />{' '}
+                                            Lihat status &amp; log
+                                        </Button>
+                                    </DialogTrigger>
+                                    {/* Content unmounts when closed, so the status only polls while open. */}
+                                    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
+                                        <DialogTitle className="sr-only">
+                                            Status dan log {device.deviceId}
+                                        </DialogTitle>
+                                        <DialogDescription className="sr-only">
+                                            Keadaan alat, kartu terdaftar, foto
+                                            terbaru dan log kejadian.
+                                        </DialogDescription>
+                                        <SecurityDeviceStatus
+                                            deviceId={device.deviceId}
+                                            embedded
+                                        />
+                                    </DialogContent>
+                                </Dialog>
                             )}
                             <Button
                                 size="icon"
