@@ -1,25 +1,12 @@
-import {
-    Bluetooth,
-    Cable,
-    CreditCard,
-    LoaderCircle,
-    Plug,
-    Usb,
-} from 'lucide-react';
+import { CreditCard, LoaderCircle, Plug, Usb } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { deleteJson, postJson } from '@/lib/csrf-fetch';
-import { bluetoothSupported, usbSupported } from '@/lib/security-setup-link';
+import { usbSupported } from '@/lib/security-setup-link';
 
 export interface StockDevice {
     deviceId: string;
@@ -64,9 +51,9 @@ export function SecurityPairingPanel({
     stock: StockDevice[];
     initialPairing: PairingState | null;
     onPaired: (deviceId: string) => void;
-    // Install over a USB cable / Bluetooth instead of a card tap (no WiFi needed).
+    // Install over a USB cable instead of a card tap (no WiFi needed).
     cableBusy: boolean;
-    onCablePair: (kind: 'usb' | 'bluetooth', deviceId: string) => void;
+    onCablePair: (deviceId: string) => void;
 }) {
     const [deviceId, setDeviceId] = useState(initialPairing?.deviceId ?? '');
     const [pairing, setPairing] = useState<PairingState | null>(initialPairing);
@@ -262,7 +249,7 @@ export function SecurityPairingPanel({
                 <p className="text-xs text-muted-foreground">
                     Logger ini belum punya alat. Pilih alat, lalu tempelkan
                     kartu ke pembacanya untuk konfirmasi, atau pasang lewat
-                    kabel USB / Bluetooth (alat tidak perlu WiFi).
+                    kabel USB (alat tidak perlu WiFi).
                 </p>
             </div>
 
@@ -296,39 +283,30 @@ export function SecurityPairingPanel({
                     )}
                     Pasang alat
                 </Button>
-                <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                        <Button
-                            type="button"
-                            variant="outline"
-                            className="gap-1.5"
-                            disabled={
-                                busy || cableBusy || deviceId.trim() === ''
-                            }
-                        >
-                            {cableBusy ? (
-                                <LoaderCircle className="size-4 animate-spin" />
-                            ) : (
-                                <Cable className="size-4" />
-                            )}
-                            Lewat kabel
-                        </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                            disabled={!usbSupported()}
-                            onSelect={() => onCablePair('usb', deviceId)}
-                        >
-                            <Usb /> Kabel USB
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                            disabled={!bluetoothSupported()}
-                            onSelect={() => onCablePair('bluetooth', deviceId)}
-                        >
-                            <Bluetooth /> Bluetooth
-                        </DropdownMenuItem>
-                    </DropdownMenuContent>
-                </DropdownMenu>
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="gap-1.5"
+                    title={
+                        usbSupported()
+                            ? 'Pasang lewat kabel USB, tanpa tap kartu'
+                            : 'Kabel USB butuh Chrome atau Edge di komputer'
+                    }
+                    disabled={
+                        busy ||
+                        cableBusy ||
+                        deviceId.trim() === '' ||
+                        !usbSupported()
+                    }
+                    onClick={() => onCablePair(deviceId)}
+                >
+                    {cableBusy ? (
+                        <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                        <Usb className="size-4" />
+                    )}
+                    Lewat kabel USB
+                </Button>
             </form>
 
             {error && (

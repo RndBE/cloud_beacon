@@ -16,12 +16,25 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { ModuleFirmware } from './production-modules';
 
-// The module models that take firmware from the website (ModuleFirmware::MODELS);
-// EWS and GCM have none. The Security System is two boards with their own firmware.
-const MODULE_MODELS: { model: string; label: string }[] = [
-    { model: 'Security System', label: 'Security System (papan utama)' },
-    { model: 'Security System Kamera', label: 'Security System (kamera)' },
-];
+// The modules that take firmware from the website; EWS and GCM have none. One module
+// can be several boards, each with its own firmware row (ModuleFirmware::MODELS): the
+// Security System is a main board and a camera, shown as one card.
+const MODULES: { name: string; boards: { model: string; label: string }[] }[] =
+    [
+        {
+            name: 'Security System',
+            boards: [
+                { model: 'Security System', label: 'Papan utama' },
+                { model: 'Security System Kamera', label: 'Kamera' },
+            ],
+        },
+    ];
+
+const BOARD_LABEL: Record<string, string> = Object.fromEntries(
+    MODULES.flatMap((m) =>
+        m.boards.map((b) => [b.model, `${m.name} · ${b.label.toLowerCase()}`]),
+    ),
+);
 
 function formatBytes(bytes: number | null): string {
     if (!bytes) return '—';
@@ -85,66 +98,72 @@ export function ModuleModelsSection({
                 <p className="text-sm text-muted-foreground">
                     Firmware per model modul: file OTA untuk update lewat
                     jaringan, dan file USB (factory) yang dipasang ke papan
-                    kosong dari dialog Setup alat di Production › Modul.
+                    kosong dari Setup USB › Modul. Satu modul bisa berisi
+                    beberapa papan, masing-masing dengan firmware sendiri.
                 </p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {MODULE_MODELS.map(({ model, label }) => {
-                    const fw = firmwares[model];
-                    return (
-                        <Card key={model} className="overflow-hidden">
-                            <CardContent className="p-4">
-                                <div className="flex items-center gap-2">
-                                    <Boxes className="size-4 text-muted-foreground" />
-                                    <h3 className="font-semibold">{label}</h3>
-                                </div>
-                                <div className="mt-3 rounded-lg border p-3 text-xs">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <span className="text-muted-foreground">
-                                            OTA
-                                        </span>
-                                        <span className="font-mono font-medium">
-                                            {fw?.version || '—'}
-                                        </span>
-                                    </div>
-                                    <div className="mt-1 truncate font-mono text-muted-foreground">
-                                        OTA: {fw?.fileName || '—'}
-                                    </div>
-                                    <div className="mt-1 truncate font-mono text-muted-foreground">
-                                        USB: {fw?.factoryName || '—'}
-                                    </div>
-                                </div>
-                                <div className="mt-3 flex gap-2">
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="flex-1 gap-1.5"
-                                        onClick={() => open(model)}
+                {MODULES.map(({ name, boards }) => (
+                    <Card key={name} className="overflow-hidden">
+                        <CardContent className="space-y-3 p-4">
+                            <div className="flex items-center gap-2">
+                                <Boxes className="size-4 text-muted-foreground" />
+                                <h3 className="font-semibold">{name}</h3>
+                            </div>
+                            {boards.map(({ model, label }) => {
+                                const fw = firmwares[model];
+                                return (
+                                    <div
+                                        key={model}
+                                        className="rounded-lg border p-3 text-xs"
                                     >
-                                        <UploadCloud className="size-3.5" />
-                                        Upload firmware
-                                    </Button>
-                                    {fw?.fileUrl && (
-                                        <Button
-                                            variant="outline"
-                                            size="icon-sm"
-                                            asChild
-                                        >
-                                            <a
-                                                href={fw.fileUrl}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                aria-label={`Download firmware ${model}`}
+                                        <div className="flex items-center justify-between gap-2">
+                                            <span className="font-medium">
+                                                {label}
+                                            </span>
+                                            <span className="font-mono font-medium">
+                                                {fw?.version || '—'}
+                                            </span>
+                                        </div>
+                                        <div className="mt-1 truncate font-mono text-muted-foreground">
+                                            OTA: {fw?.fileName || '—'}
+                                        </div>
+                                        <div className="mt-1 truncate font-mono text-muted-foreground">
+                                            USB: {fw?.factoryName || '—'}
+                                        </div>
+                                        <div className="mt-2 flex gap-2">
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                className="flex-1 gap-1.5"
+                                                onClick={() => open(model)}
                                             >
-                                                <Download className="size-3.5" />
-                                            </a>
-                                        </Button>
-                                    )}
-                                </div>
-                            </CardContent>
-                        </Card>
-                    );
-                })}
+                                                <UploadCloud className="size-3.5" />
+                                                Upload firmware
+                                            </Button>
+                                            {fw?.fileUrl && (
+                                                <Button
+                                                    variant="outline"
+                                                    size="icon-sm"
+                                                    asChild
+                                                >
+                                                    <a
+                                                        href={fw.fileUrl}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        aria-label={`Download firmware ${BOARD_LABEL[model]}`}
+                                                    >
+                                                        <Download className="size-3.5" />
+                                                    </a>
+                                                </Button>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </CardContent>
+                    </Card>
+                ))}
             </div>
 
             <Dialog
@@ -157,7 +176,8 @@ export function ModuleModelsSection({
                     <DialogHeader>
                         <DialogTitle>Upload firmware</DialogTitle>
                         <DialogDescription>
-                            {target} · current {current?.version || '—'}
+                            {target ? (BOARD_LABEL[target] ?? target) : ''} ·
+                            current {current?.version || '—'}
                         </DialogDescription>
                     </DialogHeader>
                     <form onSubmit={submit} className="grid gap-4 py-2">

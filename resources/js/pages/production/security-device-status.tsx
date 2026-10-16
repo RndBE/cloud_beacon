@@ -72,7 +72,7 @@ interface ConfigLog {
     description: string;
     ok: boolean;
     message: string | null;
-    // How the command reached the device.
+    // How the command reached the device ('bluetooth' only on rows from before it was dropped).
     via: 'internet' | 'usb' | 'bluetooth';
 }
 
@@ -648,7 +648,7 @@ const CONFIG_FILTERS: ListFilter<ConfigLog>[] = [
     { key: 'gagal', label: 'Gagal', test: (log) => !log.ok },
     {
         key: 'kabel',
-        label: 'Lewat USB/Bluetooth',
+        label: 'Lewat kabel',
         test: (log) => log.via !== 'internet',
     },
 ];

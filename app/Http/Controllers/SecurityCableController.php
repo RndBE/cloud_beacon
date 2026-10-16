@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
 
 /**
- * "Bukti kabel": proof that the board on this browser's USB cable / Bluetooth link is
+ * "Bukti kabel": proof that the board on this browser's USB cable is
  * the genuine device, without WiFi. The server hands out a single-use nonce, the
  * browser relays it to the board (BUKTI), and the board answers with
  * HMAC(K, "SSB1" || nonce || device id), K derived from the device password, which
@@ -63,7 +63,7 @@ class SecurityCableController extends Controller
         $data = $request->validate([
             'salt' => ['required', 'string', 'regex:/^[0-9a-fA-F]{16}$/'],
             'mac' => ['required', 'string', 'regex:/^[0-9a-fA-F]{64}$/'],
-            'via' => ['required', Rule::in(['usb', 'bluetooth'])],
+            'via' => ['required', Rule::in(['usb'])],
         ]);
         $logger = $this->manageableLogger($hash);
 

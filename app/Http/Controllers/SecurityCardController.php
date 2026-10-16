@@ -126,7 +126,7 @@ class SecurityCardController extends Controller
     }
 
     /**
-     * Sign a command for a device reached over a USB cable or Bluetooth instead of
+     * Sign a command for a device reached over a USB cable instead of
      * MQTT: the browser relays the device's CHALLENGE here and the signed SET back, so
      * the password still never leaves the server. The change is logged as pending until
      * the browser reports the device's reply (serialResult()).
@@ -136,7 +136,7 @@ class SecurityCardController extends Controller
         $data = $request->validate(self::commandRules() + [
             'salt' => ['required', 'string', 'regex:/^[0-9a-fA-F]{16}$/'],
             'nonce' => ['required', 'string', 'regex:/^[0-9a-fA-F]{32}$/'],
-            'via' => ['required', Rule::in(['usb', 'bluetooth'])],
+            'via' => ['required', Rule::in(['usb'])],
         ], self::COMMAND_MESSAGES);
         $device = $this->device($hash);
 
@@ -202,7 +202,7 @@ class SecurityCardController extends Controller
             'action' => ['required', Rule::in(['sirine_mati', 'foto'])],
             'ok' => ['required', 'boolean'],
             'message' => ['nullable', 'string', 'max:250'],
-            'via' => ['required', Rule::in(['usb', 'bluetooth'])],
+            'via' => ['required', Rule::in(['usb'])],
         ]);
         $device = $this->device($hash);
         $description = ['sirine_mati' => 'Matikan sirine', 'foto' => 'Ambil foto'][$data['action']];

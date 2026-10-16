@@ -2,6 +2,7 @@
 
 use App\Models\Logger;
 use App\Models\Permission;
+use App\Models\ProductionModule;
 use App\Models\Role;
 use App\Models\SecurityDevice;
 use App\Models\User;
@@ -37,6 +38,20 @@ it('lists every module unit on the Production page with its online state and log
         ->and($modules['SS0002']['online'])->toBeTrue()
         ->and($modules['SS0002']['logger']['id'])->toBe(IdHasher::encode($logger->id))
         ->and($modules['SS0002']['logger']['name'])->toBe('BL110 RND');
+});
+
+it('offers Security System units on the Setup USB page, not EWS or GCM', function () {
+    SecurityDevice::create(['device_id' => 'SS0001']);
+    ProductionModule::create(['type' => 'ews', 'serial_number' => 'EWS-01']);
+
+    $this->actingAs(stockPageUser(['production.provision']))
+        ->get(route('production.provision'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('production/provision')
+            ->has('modules', 1)
+            ->where('modules.0.deviceId', 'SS0001')
+            ->has('moduleFirmwares'));
 });
 
 it('registers a new stock unit', function () {

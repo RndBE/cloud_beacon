@@ -119,7 +119,7 @@ export function AppSidebar() {
             permission: 'production.view',
         },
         {
-            title: 'Setup Logger (USB)',
+            title: 'Setup USB',
             href: '/production/provision',
             icon: Usb,
             permission: 'production.provision',

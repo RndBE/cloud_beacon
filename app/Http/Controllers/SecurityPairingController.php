@@ -26,7 +26,7 @@ class SecurityPairingController extends Controller
     {
         $data = $request->validate([
             'device_id' => ['required', 'string', 'max:31'],
-            // Installed over a USB cable / Bluetooth by proof (SecurityCableController)
+            // Installed over a USB cable by proof (SecurityCableController)
             // instead of a card tap: the device may be offline.
             'cable' => ['sometimes', 'boolean'],
         ]);

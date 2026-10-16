@@ -1,8 +1,8 @@
 import { describeSerialError } from '@/hooks/use-logger-serial';
 
 /**
- * Talks to a Security System board's console for first-time setup, over USB (Web
- * Serial) or Bluetooth LE (Web Bluetooth, Nordic UART). Commands are one JSON line;
+ * Talks to a Security System board's console over a USB cable (Web Serial), for
+ * first-time setup and configuring a device on site. Commands are one JSON line;
  * replies are the lines carrying {"SETUP":...} among the console's own log and menu
  * output, which is ignored (but handed to onLine for the raw log view).
  */
@@ -15,7 +15,7 @@ export type SetupReply = {
 };
 
 export interface SetupLink {
-    kind: 'usb' | 'bluetooth';
+    kind: 'usb';
     send(command: Record<string, unknown>): Promise<void>;
     close(): Promise<void>;
 }
@@ -27,7 +27,7 @@ export interface SetupLinkHandlers {
     onSecurity?: (reply: Record<string, unknown> | string) => void;
     // Every console line, for the raw log.
     onLine: (line: string) => void;
-    // The link dropped (cable pulled, board out of range).
+    // The link dropped (cable pulled).
     onClosed: () => void;
 }
 
@@ -35,20 +35,11 @@ export interface SetupLinkHandlers {
 const WCH_VENDOR_ID = 0x1a86;
 const BAUD_RATE = 115200;
 
-const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const NUS_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // browser -> board
-const NUS_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // board -> browser
-const BLE_CHUNK = 20;
-
 const MARKER = '{"SETUP":';
 const SECURITY_MARKER = '{"SECURITY":';
 
 export function usbSupported(): boolean {
     return typeof navigator !== 'undefined' && 'serial' in navigator;
-}
-
-export function bluetoothSupported(): boolean {
-    return typeof navigator !== 'undefined' && 'bluetooth' in navigator;
 }
 
 // Splits the console stream into lines and picks out the setup replies.
@@ -174,64 +165,6 @@ export async function openUsbLink(
             } catch {
                 /* noop */
             }
-        },
-    };
-}
-
-/** Resolves to null when the user closes the device picker. */
-export async function openBluetoothLink(
-    handlers: SetupLinkHandlers,
-): Promise<SetupLink | null> {
-    let device: BluetoothDevice;
-    try {
-        device = await navigator.bluetooth.requestDevice({
-            filters: [{ services: [NUS_SERVICE] }],
-        });
-    } catch (error) {
-        if (cancelled(error)) return null;
-        throw new Error(
-            'Bluetooth tidak bisa dipakai. Pastikan Bluetooth laptop/HP menyala dan halaman dibuka lewat HTTPS.',
-        );
-    }
-
-    const feed = lineReader(handlers);
-    const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
-    let closing = false;
-
-    let rx: BluetoothRemoteGATTCharacteristic;
-    try {
-        // The characteristics are encrypted: the OS asks for the pairing PIN here.
-        const server = await device.gatt!.connect();
-        const service = await server.getPrimaryService(NUS_SERVICE);
-        rx = await service.getCharacteristic(NUS_RX);
-        const tx = await service.getCharacteristic(NUS_TX);
-        tx.addEventListener('characteristicvaluechanged', () => {
-            if (tx.value) feed(decoder.decode(tx.value, { stream: true }));
-        });
-        await tx.startNotifications();
-    } catch {
-        device.gatt?.disconnect();
-        throw new Error(
-            'Gagal tersambung ke alat lewat Bluetooth. Dekatkan laptop/HP ke alat, lalu coba lagi. Saat pertama tersambung, isi PIN pairing alat.',
-        );
-    }
-
-    device.addEventListener('gattserverdisconnected', () => {
-        if (!closing) handlers.onClosed();
-    });
-
-    return {
-        kind: 'bluetooth',
-        async send(command) {
-            const bytes = encoder.encode(`${JSON.stringify(command)}\n`);
-            for (let i = 0; i < bytes.length; i += BLE_CHUNK) {
-                await rx.writeValueWithResponse(bytes.slice(i, i + BLE_CHUNK));
-            }
-        },
-        async close() {
-            closing = true;
-            device.gatt?.disconnect();
         },
     };
 }

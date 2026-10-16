@@ -505,7 +505,7 @@ it('signs a challenge relayed from a device on a cable and logs it as pending', 
 
 it('records the reply the browser reports for a cable command, once', function () {
     $logId = $this->postJson(route('loggers.security.sign', $this->hash), [
-        'op' => 'kartu_tambah', 'salt' => SALT, 'nonce' => NONCE, 'via' => 'bluetooth',
+        'op' => 'kartu_tambah', 'salt' => SALT, 'nonce' => NONCE, 'via' => 'usb',
     ])->json('logId');
 
     $result = fn () => $this->putJson(route('loggers.security.serial-result', [$this->hash, $logId]), [
@@ -518,6 +518,13 @@ it('records the reply the browser reports for a cable command, once', function (
     ]);
     // Settled: the browser cannot rewrite it later.
     $result()->assertNotFound();
+});
+
+it('no longer signs for a board reached over Bluetooth', function () {
+    $this->postJson(route('loggers.security.sign', $this->hash), [
+        'op' => 'kartu_tambah', 'salt' => SALT, 'nonce' => NONCE, 'via' => 'bluetooth',
+    ])->assertUnprocessable()->assertJsonValidationErrors('via');
+    expect(SecurityConfigLog::count())->toBe(0);
 });
 
 it('refuses to sign for a board whose salt is not this device', function () {

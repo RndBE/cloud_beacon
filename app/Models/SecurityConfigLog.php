@@ -29,7 +29,7 @@ class SecurityConfigLog extends Model
         return $this->belongsTo(User::class);
     }
 
-    /** Record a change by the signed-in user; via = internet (MQTT), usb or bluetooth. */
+    /** Record a change by the signed-in user; via = internet (MQTT) or usb ('bluetooth' on rows from before it was dropped). */
     public static function record(SecurityDevice $device, string $action, string $description, bool $ok, ?string $message = null, string $via = 'internet'): self
     {
         return self::create([

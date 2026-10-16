@@ -123,6 +123,9 @@ class ProductionController extends Controller
         return Inertia::render('production/provision', [
             'deviceModels' => DeviceModel::orderBy('name')->pluck('name'),
             'usbProvisionedLoggers' => $usbProvisionedLoggers,
+            // The Modul view sets up Security System units registered in Production › Modul.
+            'modules' => SecurityStockController::rows()->values(),
+            'moduleFirmwares' => ModuleFirmwareController::rows(),
         ]);
     }
 

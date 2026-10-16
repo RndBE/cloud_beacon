@@ -7,13 +7,13 @@ import { errorMessage } from './security-pairing-panel';
 
 /**
  * How the Security Cam configurator reaches the device: over the internet (MQTT,
- * through the server) or over a USB cable / Bluetooth from this browser, for a device
+ * through the server) or over a USB cable from this browser, for a device
  * without WiFi. Over a cable the server still signs every change (sign endpoint), so
  * the device password never reaches the browser, and the outcome is still logged.
  */
 
 export type AturOp = Parameters<typeof sendAtur>[1];
-export type Via = 'internet' | 'usb' | 'bluetooth';
+export type Via = 'internet' | 'usb';
 
 export interface ChannelCard {
     uid: string;

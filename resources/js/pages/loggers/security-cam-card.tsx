@@ -19,7 +19,7 @@ import {
     DialogTrigger,
 } from '@/components/ui/dialog';
 import { deleteJson, postJson } from '@/lib/csrf-fetch';
-import { openBluetoothLink, openUsbLink } from '@/lib/security-setup-link';
+import { openUsbLink } from '@/lib/security-setup-link';
 import { SecurityDeviceStatus } from '../production/security-device-status';
 import { CableConnect } from './cable-connect';
 import { CameraControl } from './camera-control';
@@ -255,7 +255,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
     const [notice, setNotice] = useState<string | null>(null);
     // A failed action from the device menu (connection test, restart, unpair).
     const [actionError, setActionError] = useState<string | null>(null);
-    // Set while the configurator talks to the device over a USB cable / Bluetooth.
+    // Set while the configurator talks to the device over a USB cable.
     const [cable, setCable] = useState<CableChannel | null>(null);
     const [cableBusy, setCableBusy] = useState(false);
     const cableRef = useRef<CableChannel | null>(null);
@@ -270,10 +270,8 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
         setCable(null);
     }
 
-    // Opens a USB / Bluetooth link to the board; null when the picker was closed.
-    async function openCable(
-        kind: 'usb' | 'bluetooth',
-    ): Promise<CableChannel | null> {
+    // Opens a USB link to the board; null when the port picker was closed.
+    async function openCable(): Promise<CableChannel | null> {
         const handlers = {
             onReply: () => undefined,
             onSecurity: (reply: Record<string, unknown> | string) =>
@@ -282,29 +280,23 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
             onClosed: () => {
                 cableRef.current = null;
                 setCable(null);
-                setActionError('Sambungan kabel/Bluetooth ke alat terputus.');
+                setActionError('Sambungan kabel USB ke alat terputus.');
             },
         };
-        const link =
-            kind === 'usb'
-                ? await openUsbLink(handlers)
-                : await openBluetoothLink(handlers);
+        const link = await openUsbLink(handlers);
         if (!link) return null;
         const opened = cableChannel(loggerId, link);
         cableRef.current = opened;
         return opened;
     }
 
-    const viaLabel = (kind: 'usb' | 'bluetooth') =>
-        kind === 'usb' ? 'USB' : 'Bluetooth';
-
     // Configure the installed device over a cable. The board proves it is this
     // logger's device before anything is sent; the server checks the proof.
-    async function connectCable(kind: 'usb' | 'bluetooth', deviceId: string) {
+    async function connectCable(deviceId: string) {
         setCableBusy(true);
         setActionError(null);
         try {
-            const opened = await openCable(kind);
+            const opened = await openCable();
             if (!opened) return;
             await opened.prove().catch((e) => {
                 dropCable();
@@ -312,7 +304,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
             });
             setCable(opened);
             setNotice(
-                `Tersambung ke ${deviceId} lewat ${viaLabel(kind)}. Pengaturan dikirim lewat sambungan ini.`,
+                `Tersambung ke ${deviceId} lewat USB. Pengaturan dikirim lewat sambungan ini.`,
             );
         } catch (e) {
             setActionError(e instanceof Error ? e.message : String(e));
@@ -323,7 +315,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
 
     // Install a device over a cable instead of a card tap: works without WiFi. The
     // board's proof confirms the installation, and the link stays open to set it up.
-    async function pairByCable(kind: 'usb' | 'bluetooth', deviceId: string) {
+    async function pairByCable(deviceId: string) {
         setCableBusy(true);
         setActionError(null);
         let pairingId: number | null = null;
@@ -335,7 +327,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
             if (!started.ok) throw new Error(await errorMessage(started));
             pairingId = ((await started.json()) as { id: number }).id;
 
-            const opened = await openCable(kind);
+            const opened = await openCable();
             if (!opened) {
                 throw new Error('Tidak ada port yang dipilih.');
             }
@@ -346,7 +338,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
             pairingId = null;
             setCable(opened);
             setNotice(
-                `Alat ${deviceId.trim()} terpasang lewat ${viaLabel(kind)}. Atur WiFi dan lainnya lewat sambungan ini.`,
+                `Alat ${deviceId.trim()} terpasang lewat USB. Atur WiFi dan lainnya lewat sambungan ini.`,
             );
             await load();
         } catch (e) {
@@ -409,9 +401,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                     void load();
                 }}
                 cableBusy={cableBusy}
-                onCablePair={(kind, deviceId) =>
-                    void pairByCable(kind, deviceId)
-                }
+                onCablePair={(deviceId) => void pairByCable(deviceId)}
             />
         );
     } else if (device === null) {
@@ -439,8 +429,7 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                                     ? ` sejak ${new Date(device.lastSeenAt).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })}`
                                     : ''}
                                 . Pengaturan bisa dikirim lagi setelah alat
-                                tersambung, atau sambungkan lewat kabel USB /
-                                Bluetooth.
+                                tersambung, atau sambungkan lewat kabel USB.
                             </p>
                         )}
                         {/* A disabled fieldset disables every control inside: commands
@@ -564,8 +553,8 @@ export function SecurityCamCard({ loggerId }: { loggerId: string }) {
                                 <CableConnect
                                     via={channel.via}
                                     busy={cableBusy}
-                                    onConnect={(kind) =>
-                                        void connectCable(kind, device.deviceId)
+                                    onConnect={() =>
+                                        void connectCable(device.deviceId)
                                     }
                                     onDisconnect={() => {
                                         dropCable();

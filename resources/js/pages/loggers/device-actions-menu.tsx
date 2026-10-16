@@ -68,7 +68,7 @@ export function DeviceActionsMenu({
         run(async () => {
             const data = await channel.ctrl('PING');
             onChanged();
-            return `Alat ${deviceId} menjawab${channel.via === 'internet' ? '' : ` lewat ${channel.via === 'usb' ? 'USB' : 'Bluetooth'}`} dalam ${((data.milliseconds ?? 0) / 1000).toLocaleString('id-ID', { maximumFractionDigits: 1 })} detik.`;
+            return `Alat ${deviceId} menjawab${channel.via === 'internet' ? '' : ' lewat USB'} dalam ${((data.milliseconds ?? 0) / 1000).toLocaleString('id-ID', { maximumFractionDigits: 1 })} detik.`;
         });
 
     const restart = () =>
