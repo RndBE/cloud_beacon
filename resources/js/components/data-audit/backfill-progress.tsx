@@ -57,7 +57,7 @@ export function BackfillProgress({
     }, [current?.minute, current?.waiting_seconds]);
 
     const running = (counts.pending ?? 0) + (counts.requested ?? 0) > 0;
-    const failed = counts.failed ?? 0;
+    const retryable = (counts.failed ?? 0) + (counts.no_file ?? 0);
 
     const body = (
         <div className="flex flex-col gap-4">
@@ -134,14 +134,17 @@ export function BackfillProgress({
                 ))}
             </dl>
 
-            {!running && failed > 0 && onRetryFailed && (
+            {!running && retryable > 0 && onRetryFailed && (
                 <Button
                     variant="outline"
                     disabled={retrying}
                     onClick={onRetryFailed}
                 >
-                    {t('data_audit.retry_failed', 'Backfill failed minutes')} (
-                    {failed})
+                    {t(
+                        'data_audit.retry_failed',
+                        'Backfill failed / no-file minutes',
+                    )}{' '}
+                    ({retryable})
                 </Button>
             )}
         </div>

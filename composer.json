@@ -17,6 +17,7 @@
         "laravel/sanctum": "^4.3",
         "laravel/tinker": "^2.10.1",
         "laravel/wayfinder": "^0.1.9",
+        "openspout/openspout": "^5.3",
         "php-mqtt/client": "^2.3",
         "spatie/ssh": "^1.13"
     },
