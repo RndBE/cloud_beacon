@@ -6,6 +6,7 @@ import {
     Factory,
     FlaskConical,
     FolderKanban,
+    Inbox,
     Layers,
     LayoutGrid,
     Network,
@@ -98,6 +99,12 @@ export function AppSidebar() {
             permission: 'loggers.view',
         },
         {
+            title: t('nav.data_masuk'),
+            href: '/data-masuk',
+            icon: Inbox,
+            permission: 'loggers.view',
+        },
+        {
             title: 'Data Audit',
             href: '/data-audit',
             icon: ClipboardCheck,
@@ -119,7 +126,7 @@ export function AppSidebar() {
             permission: 'production.view',
         },
         {
-            title: 'Setup Logger (USB)',
+            title: 'Setup USB',
             href: '/production/provision',
             icon: Usb,
             permission: 'production.provision',

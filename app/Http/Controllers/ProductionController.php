@@ -60,6 +60,11 @@ class ProductionController extends Controller
         return Inertia::render('production/index', [
             'devices' => $devices,
             'deviceModels' => $deviceModels,
+            // Module units for the page's Modul view: Security System (an MQTT device)
+            // plus EWS / GCM production records, newest first within each kind.
+            'modules' => SecurityStockController::rows()->concat(ProductionModuleController::rows())->values(),
+            // Latest firmware per module model, keyed by model name.
+            'moduleFirmwares' => ModuleFirmwareController::rows(),
         ]);
     }
 
@@ -118,6 +123,9 @@ class ProductionController extends Controller
         return Inertia::render('production/provision', [
             'deviceModels' => DeviceModel::orderBy('name')->pluck('name'),
             'usbProvisionedLoggers' => $usbProvisionedLoggers,
+            // The Modul view sets up Security System units registered in Production › Modul.
+            'modules' => SecurityStockController::rows()->values(),
+            'moduleFirmwares' => ModuleFirmwareController::rows(),
         ]);
     }
 

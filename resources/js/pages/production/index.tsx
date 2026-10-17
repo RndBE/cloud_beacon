@@ -9,7 +9,6 @@ import {
     FileUp,
     Loader2,
     Pencil,
-    Plus,
     Search,
     Trash2,
     X,
@@ -72,6 +71,8 @@ import {
 } from '@/lib/page-size-preference';
 import type { BreadcrumbItem } from '@/types';
 import { paginateItems } from './pagination';
+import { AddDeviceMenu, ProductionModules } from './production-modules';
+import type { ModuleFirmware, ProductionModule } from './production-modules';
 
 interface ProductionDeviceItem {
     id: number;
@@ -96,6 +97,8 @@ interface ProductionDeviceItem {
 interface ProductionPageProps {
     devices: ProductionDeviceItem[];
     deviceModels: string[];
+    modules: ProductionModule[];
+    moduleFirmwares: Record<string, ModuleFirmware>;
 }
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -131,6 +134,8 @@ function getQcBadge(status: string) {
 export default function ProductionIndex({
     devices,
     deviceModels,
+    modules,
+    moduleFirmwares,
 }: ProductionPageProps) {
     const { flash } = usePage<{
         flash: { success?: string; error?: string };
@@ -158,6 +163,15 @@ export default function ProductionIndex({
         readStoredPageSize(PRODUCTION_PAGE_SIZE_STORAGE_KEY),
     );
     const [addOpen, setAddOpen] = useState(false);
+    // Production registers two kinds of hardware: loggers and their modules.
+    // ?view=modul opens the Modul view, e.g. when coming back from a module's status page.
+    const [kind, setKind] = useState<'logger' | 'module'>(() =>
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('view') === 'modul'
+            ? 'module'
+            : 'logger',
+    );
+    const [moduleAddOpen, setModuleAddOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const [editTarget, setEditTarget] = useState<ProductionDeviceItem | null>(
         null,
@@ -314,689 +328,793 @@ export default function ProductionIndex({
                     </div>
                 )}
 
-                {/* Summary Cards */}
-                <div className="grid gap-3 sm:grid-cols-4">
-                    <div className="flex items-center gap-3 rounded-xl border p-4">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
-                            <Factory className="size-5 text-blue-500" />
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold">
-                                {devices.length}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                                Total Devices
-                            </p>
-                        </div>
-                    </div>
-                    <button
-                        onClick={() =>
-                            updateQcFilter(
-                                qcFilter === 'passed' ? 'all' : 'passed',
-                            )
-                        }
-                        className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:bg-accent ${qcFilter === 'passed' ? 'border-emerald-500 bg-emerald-500/5' : ''}`}
-                    >
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10">
-                            <CheckCircle2 className="size-5 text-emerald-500" />
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold text-emerald-600">
-                                {passedCount}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                                QC Passed
-                            </p>
-                        </div>
-                    </button>
-                    <button
-                        onClick={() =>
-                            updateQcFilter(
-                                qcFilter === 'pending' ? 'all' : 'pending',
-                            )
-                        }
-                        className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:bg-accent ${qcFilter === 'pending' ? 'border-amber-500 bg-amber-500/5' : ''}`}
-                    >
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10">
-                            <Loader2 className="size-5 text-amber-500" />
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold text-amber-600">
-                                {pendingCount}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                                Pending QC
-                            </p>
-                        </div>
-                    </button>
-                    <button
-                        onClick={() =>
-                            updateQcFilter(
-                                qcFilter === 'failed' ? 'all' : 'failed',
-                            )
-                        }
-                        className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:bg-accent ${qcFilter === 'failed' ? 'border-red-500 bg-red-500/5' : ''}`}
-                    >
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-500/10">
-                            <XCircle className="size-5 text-red-500" />
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold text-red-600">
-                                {failedCount}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                                QC Failed
-                            </p>
-                        </div>
-                    </button>
+                <div
+                    role="tablist"
+                    aria-label="Jenis perangkat"
+                    className="inline-flex w-fit rounded-lg border bg-muted/40 p-1"
+                >
+                    {(
+                        [
+                            ['logger', 'Logger', devices.length],
+                            ['module', 'Modul', modules.length],
+                        ] as const
+                    ).map(([value, label, count]) => (
+                        <button
+                            key={value}
+                            type="button"
+                            role="tab"
+                            aria-selected={kind === value}
+                            onClick={() => setKind(value)}
+                            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+                                kind === value
+                                    ? 'bg-background shadow-sm'
+                                    : 'text-muted-foreground hover:text-foreground'
+                            }`}
+                        >
+                            {label}{' '}
+                            <span className="text-xs text-muted-foreground">
+                                {count}
+                            </span>
+                        </button>
+                    ))}
                 </div>
 
-                {/* Devices Table */}
-                <Card>
-                    <CardHeader>
-                        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                            <div>
-                                <CardTitle className="flex items-center gap-2">
-                                    <Factory className="size-5" />
-                                    Production Devices
-                                </CardTitle>
-                                <CardDescription>
-                                    {filtered.length} of {devices.length}{' '}
-                                    devices · {registeredCount} registered
-                                </CardDescription>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                                <div className="relative">
-                                    <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                                    <Input
-                                        placeholder="Search serial, model…"
-                                        value={search}
-                                        onChange={(e) =>
-                                            updateSearch(e.target.value)
-                                        }
-                                        className="w-full pl-9 sm:w-[240px]"
-                                    />
+                {kind === 'module' ? (
+                    <ProductionModules
+                        modules={modules}
+                        firmwares={moduleFirmwares}
+                        addOpen={moduleAddOpen}
+                        onAddOpenChange={setModuleAddOpen}
+                        onAddLogger={() => {
+                            setKind('logger');
+                            setAddOpen(true);
+                        }}
+                    />
+                ) : (
+                    <>
+                        {/* Summary Cards */}
+                        <div className="grid gap-3 sm:grid-cols-4">
+                            <div className="flex items-center gap-3 rounded-xl border p-4">
+                                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
+                                    <Factory className="size-5 text-blue-500" />
                                 </div>
-                                <Select
-                                    value={qcFilter}
-                                    onValueChange={updateQcFilter}
-                                >
-                                    <SelectTrigger className="w-[130px]">
-                                        <SelectValue placeholder="QC Status" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="all">
-                                            All Status
-                                        </SelectItem>
-                                        <SelectItem value="passed">
-                                            Passed
-                                        </SelectItem>
-                                        <SelectItem value="pending">
-                                            Pending
-                                        </SelectItem>
-                                        <SelectItem value="failed">
-                                            Failed
-                                        </SelectItem>
-                                    </SelectContent>
-                                </Select>
-
-                                {/* Import CSV */}
-                                <Dialog
-                                    open={importOpen}
-                                    onOpenChange={setImportOpen}
-                                >
-                                    <DialogTrigger asChild>
-                                        <Button
-                                            variant="outline"
-                                            className="gap-1.5"
-                                        >
-                                            <FileUp className="size-4" />
-                                            Import CSV
-                                        </Button>
-                                    </DialogTrigger>
-                                    <DialogContent className="sm:max-w-md">
-                                        <DialogHeader>
-                                            <DialogTitle>
-                                                Import Devices from CSV
-                                            </DialogTitle>
-                                            <DialogDescription>
-                                                Upload a CSV file with columns:
-                                                serial_number, device_id, model,
-                                                hardware_version,
-                                                production_date, tested_by,
-                                                qc_status, notes
-                                            </DialogDescription>
-                                        </DialogHeader>
-                                        <form
-                                            onSubmit={handleImportSubmit}
-                                            className="grid gap-4 py-2"
-                                        >
-                                            <div className="grid gap-2">
-                                                <Label htmlFor="csv_file">
-                                                    CSV File *
-                                                </Label>
-                                                <Input
-                                                    id="csv_file"
-                                                    type="file"
-                                                    accept=".csv,.txt"
-                                                    ref={fileInputRef}
-                                                    onChange={(e) => {
-                                                        const file =
-                                                            e.target.files?.[0];
-                                                        if (file)
-                                                            importForm.setData(
-                                                                'csv_file',
-                                                                file,
-                                                            );
-                                                    }}
-                                                />
-                                                {importForm.errors.csv_file && (
-                                                    <p className="text-xs text-red-500">
-                                                        {
-                                                            importForm.errors
-                                                                .csv_file
-                                                        }
-                                                    </p>
-                                                )}
-                                            </div>
-                                            <DialogFooter>
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    onClick={() =>
-                                                        setImportOpen(false)
-                                                    }
-                                                >
-                                                    Cancel
-                                                </Button>
-                                                <Button
-                                                    type="submit"
-                                                    disabled={
-                                                        importForm.processing ||
-                                                        !importForm.data
-                                                            .csv_file
-                                                    }
-                                                >
-                                                    {importForm.processing
-                                                        ? 'Importing…'
-                                                        : 'Import'}
-                                                </Button>
-                                            </DialogFooter>
-                                        </form>
-                                    </DialogContent>
-                                </Dialog>
-
-                                {/* Add Single Device */}
-                                <Dialog
-                                    open={addOpen}
-                                    onOpenChange={setAddOpen}
-                                >
-                                    <DialogTrigger asChild>
-                                        <Button className="gap-1.5">
-                                            <Plus className="size-4" />
-                                            Add Device
-                                        </Button>
-                                    </DialogTrigger>
-                                    <DialogContent className="sm:max-w-lg">
-                                        <DialogHeader>
-                                            <DialogTitle>
-                                                Register Production Device
-                                            </DialogTitle>
-                                            <DialogDescription>
-                                                Enter device details from the
-                                                production line.
-                                            </DialogDescription>
-                                        </DialogHeader>
-                                        <form
-                                            onSubmit={handleAddSubmit}
-                                            className="grid gap-4 py-2"
-                                        >
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="serial_number">
-                                                        Serial Number *
-                                                    </Label>
-                                                    <Input
-                                                        id="serial_number"
-                                                        value={
-                                                            form.data
-                                                                .serial_number
-                                                        }
-                                                        onChange={(e) =>
-                                                            form.setData(
-                                                                'serial_number',
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        placeholder="e.g. BLC-2025-00011"
-                                                    />
-                                                    {form.errors
-                                                        .serial_number && (
-                                                        <p className="text-xs text-red-500">
-                                                            {
-                                                                form.errors
-                                                                    .serial_number
-                                                            }
-                                                        </p>
-                                                    )}
-                                                </div>
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="device_id">
-                                                        Device ID
-                                                    </Label>
-                                                    <Input
-                                                        id="device_id"
-                                                        value={
-                                                            form.data.device_id
-                                                        }
-                                                        onChange={(e) =>
-                                                            form.setData(
-                                                                'device_id',
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        placeholder="e.g. DEV-011"
-                                                    />
-                                                </div>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="prod_model">
-                                                        Model
-                                                    </Label>
-                                                    <Select
-                                                        value={form.data.model}
-                                                        onValueChange={(v) =>
-                                                            form.setData(
-                                                                'model',
-                                                                v,
-                                                            )
-                                                        }
-                                                    >
-                                                        <SelectTrigger
-                                                            id="prod_model"
-                                                            className="w-full"
-                                                        >
-                                                            <SelectValue placeholder="Select model" />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {deviceModels.map(
-                                                                (m) => (
-                                                                    <SelectItem
-                                                                        key={m}
-                                                                        value={
-                                                                            m
-                                                                        }
-                                                                    >
-                                                                        {m}
-                                                                    </SelectItem>
-                                                                ),
-                                                            )}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </div>
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="qc_status">
-                                                        QC Status *
-                                                    </Label>
-                                                    <Select
-                                                        value={
-                                                            form.data.qc_status
-                                                        }
-                                                        onValueChange={(v) =>
-                                                            form.setData(
-                                                                'qc_status',
-                                                                v,
-                                                            )
-                                                        }
-                                                    >
-                                                        <SelectTrigger
-                                                            id="qc_status"
-                                                            className="w-full"
-                                                        >
-                                                            <SelectValue />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            <SelectItem value="pending">
-                                                                Pending
-                                                            </SelectItem>
-                                                            <SelectItem value="passed">
-                                                                Passed
-                                                            </SelectItem>
-                                                            <SelectItem value="failed">
-                                                                Failed
-                                                            </SelectItem>
-                                                        </SelectContent>
-                                                    </Select>
-                                                </div>
-                                            </div>
-                                            <div className="grid gap-2">
-                                                <Label htmlFor="hardware_version">
-                                                    Hardware Version
-                                                </Label>
-                                                <Input
-                                                    id="hardware_version"
-                                                    value={
-                                                        form.data
-                                                            .hardware_version
-                                                    }
-                                                    onChange={(e) =>
-                                                        form.setData(
-                                                            'hardware_version',
-                                                            e.target.value,
-                                                        )
-                                                    }
-                                                    placeholder="e.g. v4.0"
-                                                />
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="production_date">
-                                                        Production Date
-                                                    </Label>
-                                                    <Input
-                                                        id="production_date"
-                                                        type="date"
-                                                        value={
-                                                            form.data
-                                                                .production_date
-                                                        }
-                                                        onChange={(e) =>
-                                                            form.setData(
-                                                                'production_date',
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                    />
-                                                </div>
-                                                <div className="grid gap-2">
-                                                    <Label htmlFor="tested_by">
-                                                        Tested By
-                                                    </Label>
-                                                    <Input
-                                                        id="tested_by"
-                                                        value={
-                                                            form.data.tested_by
-                                                        }
-                                                        onChange={(e) =>
-                                                            form.setData(
-                                                                'tested_by',
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        placeholder="e.g. QC Team A"
-                                                    />
-                                                </div>
-                                            </div>
-                                            <div className="grid gap-2">
-                                                <Label htmlFor="notes">
-                                                    Notes
-                                                </Label>
-                                                <Textarea
-                                                    id="notes"
-                                                    value={form.data.notes}
-                                                    onChange={(e) =>
-                                                        form.setData(
-                                                            'notes',
-                                                            e.target.value,
-                                                        )
-                                                    }
-                                                    placeholder="Optional notes about the device…"
-                                                    rows={2}
-                                                />
-                                            </div>
-                                            <DialogFooter>
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    onClick={() =>
-                                                        setAddOpen(false)
-                                                    }
-                                                >
-                                                    Cancel
-                                                </Button>
-                                                <Button
-                                                    type="submit"
-                                                    disabled={form.processing}
-                                                >
-                                                    {form.processing
-                                                        ? 'Registering…'
-                                                        : 'Register Device'}
-                                                </Button>
-                                            </DialogFooter>
-                                        </form>
-                                    </DialogContent>
-                                </Dialog>
-                            </div>
-                        </div>
-                    </CardHeader>
-                    <Separator />
-                    <CardContent className="p-0">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Serial Number</TableHead>
-                                    <TableHead className="hidden md:table-cell">
-                                        Device ID
-                                    </TableHead>
-                                    <TableHead className="hidden lg:table-cell">
-                                        Model
-                                    </TableHead>
-                                    <TableHead>Firmware</TableHead>
-                                    <TableHead>QC Status</TableHead>
-                                    <TableHead>Registered</TableHead>
-                                    <TableHead className="hidden md:table-cell">
-                                        Production Date
-                                    </TableHead>
-                                    <TableHead className="w-[168px]"></TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {pagination.items.map((device) => (
-                                    <TableRow key={device.id}>
-                                        <TableCell className="font-mono text-sm font-medium">
-                                            {device.serialNumber}
-                                        </TableCell>
-                                        <TableCell className="hidden text-sm text-muted-foreground md:table-cell">
-                                            {device.deviceId || '—'}
-                                        </TableCell>
-                                        <TableCell className="hidden text-sm lg:table-cell">
-                                            {device.model || '—'}
-                                        </TableCell>
-                                        <TableCell>
-                                            <div className="flex flex-col gap-1">
-                                                <span className="font-mono text-xs">
-                                                    {device.firmwareVersion ||
-                                                        '—'}
-                                                </span>
-                                                {device.firmwareFileName ? (
-                                                    <span className="max-w-[170px] truncate text-xs text-muted-foreground">
-                                                        {
-                                                            device.firmwareFileName
-                                                        }
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-xs text-muted-foreground">
-                                                        No OTA file
-                                                    </span>
-                                                )}
-                                            </div>
-                                        </TableCell>
-                                        <TableCell>
-                                            {getQcBadge(device.qcStatus)}
-                                        </TableCell>
-                                        <TableCell>
-                                            {device.isRegistered ? (
-                                                <Badge
-                                                    variant="default"
-                                                    className="gap-1"
-                                                >
-                                                    <Check className="size-3" />{' '}
-                                                    Yes
-                                                </Badge>
-                                            ) : (
-                                                <Badge variant="secondary">
-                                                    No
-                                                </Badge>
-                                            )}
-                                        </TableCell>
-                                        <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
-                                            {device.productionDate || '—'}
-                                        </TableCell>
-                                        <TableCell>
-                                            <div className="flex items-center justify-end gap-1">
-                                                {device.firmwareFileUrl && (
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon-sm"
-                                                        asChild
-                                                    >
-                                                        <a
-                                                            href={
-                                                                device.firmwareFileUrl
-                                                            }
-                                                            target="_blank"
-                                                            rel="noreferrer"
-                                                            aria-label={`Download firmware ${device.serialNumber}`}
-                                                        >
-                                                            <Download className="size-4" />
-                                                        </a>
-                                                    </Button>
-                                                )}
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon-sm"
-                                                    onClick={() =>
-                                                        openEdit(device)
-                                                    }
-                                                    disabled={
-                                                        device.qcStatus !==
-                                                        'pending'
-                                                    }
-                                                    aria-label={`Edit ${device.serialNumber}`}
-                                                >
-                                                    <Pencil className="size-4" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon-sm"
-                                                    className="text-red-500 hover:bg-red-500/10 hover:text-red-600"
-                                                    onClick={() =>
-                                                        setDeleteTarget(device)
-                                                    }
-                                                    disabled={
-                                                        device.isRegistered
-                                                    }
-                                                    aria-label={`Delete ${device.serialNumber}`}
-                                                >
-                                                    <Trash2 className="size-4" />
-                                                </Button>
-                                            </div>
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                                {filtered.length === 0 && (
-                                    <TableRow>
-                                        <TableCell
-                                            colSpan={8}
-                                            className="py-12 text-center text-muted-foreground"
-                                        >
-                                            No production devices found.
-                                        </TableCell>
-                                    </TableRow>
-                                )}
-                            </TableBody>
-                        </Table>
-                        {pagination.total > 0 && (
-                            <div className="flex flex-col items-center justify-between gap-3 border-t px-4 py-3 sm:flex-row">
-                                <div className="flex flex-wrap items-center gap-3">
-                                    <p className="text-xs text-muted-foreground">
-                                        {pagination.from}&ndash;{pagination.to}{' '}
-                                        dari {pagination.total}
+                                <div>
+                                    <p className="text-2xl font-bold">
+                                        {devices.length}
                                     </p>
-                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                        <span>Tampilkan</span>
+                                    <p className="text-xs text-muted-foreground">
+                                        Total Devices
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() =>
+                                    updateQcFilter(
+                                        qcFilter === 'passed'
+                                            ? 'all'
+                                            : 'passed',
+                                    )
+                                }
+                                className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:bg-accent ${qcFilter === 'passed' ? 'border-emerald-500 bg-emerald-500/5' : ''}`}
+                            >
+                                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10">
+                                    <CheckCircle2 className="size-5 text-emerald-500" />
+                                </div>
+                                <div>
+                                    <p className="text-2xl font-bold text-emerald-600">
+                                        {passedCount}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                        QC Passed
+                                    </p>
+                                </div>
+                            </button>
+                            <button
+                                onClick={() =>
+                                    updateQcFilter(
+                                        qcFilter === 'pending'
+                                            ? 'all'
+                                            : 'pending',
+                                    )
+                                }
+                                className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:bg-accent ${qcFilter === 'pending' ? 'border-amber-500 bg-amber-500/5' : ''}`}
+                            >
+                                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10">
+                                    <Loader2 className="size-5 text-amber-500" />
+                                </div>
+                                <div>
+                                    <p className="text-2xl font-bold text-amber-600">
+                                        {pendingCount}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                        Pending QC
+                                    </p>
+                                </div>
+                            </button>
+                            <button
+                                onClick={() =>
+                                    updateQcFilter(
+                                        qcFilter === 'failed'
+                                            ? 'all'
+                                            : 'failed',
+                                    )
+                                }
+                                className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:bg-accent ${qcFilter === 'failed' ? 'border-red-500 bg-red-500/5' : ''}`}
+                            >
+                                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-500/10">
+                                    <XCircle className="size-5 text-red-500" />
+                                </div>
+                                <div>
+                                    <p className="text-2xl font-bold text-red-600">
+                                        {failedCount}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                        QC Failed
+                                    </p>
+                                </div>
+                            </button>
+                        </div>
+
+                        {/* Devices Table */}
+                        <Card>
+                            <CardHeader>
+                                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Factory className="size-5" />
+                                            Production Devices
+                                        </CardTitle>
+                                        <CardDescription>
+                                            {filtered.length} of{' '}
+                                            {devices.length} devices ·{' '}
+                                            {registeredCount} registered
+                                        </CardDescription>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        <div className="relative">
+                                            <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                                            <Input
+                                                placeholder="Search serial, model…"
+                                                value={search}
+                                                onChange={(e) =>
+                                                    updateSearch(e.target.value)
+                                                }
+                                                className="w-full pl-9 sm:w-[240px]"
+                                            />
+                                        </div>
                                         <Select
-                                            value={String(pageSize)}
-                                            onValueChange={updatePageSize}
+                                            value={qcFilter}
+                                            onValueChange={updateQcFilter}
                                         >
-                                            <SelectTrigger
-                                                className="h-8 w-[76px]"
-                                                aria-label="Jumlah production per halaman"
-                                            >
-                                                <SelectValue />
+                                            <SelectTrigger className="w-[130px]">
+                                                <SelectValue placeholder="QC Status" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {PAGE_SIZE_OPTIONS.map(
-                                                    (option) => (
-                                                        <SelectItem
-                                                            key={option}
-                                                            value={String(
-                                                                option,
-                                                            )}
-                                                        >
-                                                            {option}
-                                                        </SelectItem>
-                                                    ),
-                                                )}
+                                                <SelectItem value="all">
+                                                    All Status
+                                                </SelectItem>
+                                                <SelectItem value="passed">
+                                                    Passed
+                                                </SelectItem>
+                                                <SelectItem value="pending">
+                                                    Pending
+                                                </SelectItem>
+                                                <SelectItem value="failed">
+                                                    Failed
+                                                </SelectItem>
                                             </SelectContent>
                                         </Select>
-                                        <span>per halaman</span>
+
+                                        {/* Import CSV */}
+                                        <Dialog
+                                            open={importOpen}
+                                            onOpenChange={setImportOpen}
+                                        >
+                                            <DialogTrigger asChild>
+                                                <Button
+                                                    variant="outline"
+                                                    className="gap-1.5"
+                                                >
+                                                    <FileUp className="size-4" />
+                                                    Import CSV
+                                                </Button>
+                                            </DialogTrigger>
+                                            <DialogContent className="sm:max-w-md">
+                                                <DialogHeader>
+                                                    <DialogTitle>
+                                                        Import Devices from CSV
+                                                    </DialogTitle>
+                                                    <DialogDescription>
+                                                        Upload a CSV file with
+                                                        columns: serial_number,
+                                                        device_id, model,
+                                                        hardware_version,
+                                                        production_date,
+                                                        tested_by, qc_status,
+                                                        notes
+                                                    </DialogDescription>
+                                                </DialogHeader>
+                                                <form
+                                                    onSubmit={
+                                                        handleImportSubmit
+                                                    }
+                                                    className="grid gap-4 py-2"
+                                                >
+                                                    <div className="grid gap-2">
+                                                        <Label htmlFor="csv_file">
+                                                            CSV File *
+                                                        </Label>
+                                                        <Input
+                                                            id="csv_file"
+                                                            type="file"
+                                                            accept=".csv,.txt"
+                                                            ref={fileInputRef}
+                                                            onChange={(e) => {
+                                                                const file =
+                                                                    e.target
+                                                                        .files?.[0];
+                                                                if (file)
+                                                                    importForm.setData(
+                                                                        'csv_file',
+                                                                        file,
+                                                                    );
+                                                            }}
+                                                        />
+                                                        {importForm.errors
+                                                            .csv_file && (
+                                                            <p className="text-xs text-red-500">
+                                                                {
+                                                                    importForm
+                                                                        .errors
+                                                                        .csv_file
+                                                                }
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                    <DialogFooter>
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            onClick={() =>
+                                                                setImportOpen(
+                                                                    false,
+                                                                )
+                                                            }
+                                                        >
+                                                            Cancel
+                                                        </Button>
+                                                        <Button
+                                                            type="submit"
+                                                            disabled={
+                                                                importForm.processing ||
+                                                                !importForm.data
+                                                                    .csv_file
+                                                            }
+                                                        >
+                                                            {importForm.processing
+                                                                ? 'Importing…'
+                                                                : 'Import'}
+                                                        </Button>
+                                                    </DialogFooter>
+                                                </form>
+                                            </DialogContent>
+                                        </Dialog>
+
+                                        {/* Add Single Device: logger, or switch to the module form */}
+                                        <AddDeviceMenu
+                                            onLogger={() => setAddOpen(true)}
+                                            onModule={() => {
+                                                setKind('module');
+                                                setModuleAddOpen(true);
+                                            }}
+                                        />
+                                        <Dialog
+                                            open={addOpen}
+                                            onOpenChange={setAddOpen}
+                                        >
+                                            <DialogContent className="sm:max-w-lg">
+                                                <DialogHeader>
+                                                    <DialogTitle>
+                                                        Register Production
+                                                        Device
+                                                    </DialogTitle>
+                                                    <DialogDescription>
+                                                        Enter device details
+                                                        from the production
+                                                        line.
+                                                    </DialogDescription>
+                                                </DialogHeader>
+                                                <form
+                                                    onSubmit={handleAddSubmit}
+                                                    className="grid gap-4 py-2"
+                                                >
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div className="grid gap-2">
+                                                            <Label htmlFor="serial_number">
+                                                                Serial Number *
+                                                            </Label>
+                                                            <Input
+                                                                id="serial_number"
+                                                                value={
+                                                                    form.data
+                                                                        .serial_number
+                                                                }
+                                                                onChange={(e) =>
+                                                                    form.setData(
+                                                                        'serial_number',
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                placeholder="e.g. BLC-2025-00011"
+                                                            />
+                                                            {form.errors
+                                                                .serial_number && (
+                                                                <p className="text-xs text-red-500">
+                                                                    {
+                                                                        form
+                                                                            .errors
+                                                                            .serial_number
+                                                                    }
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                        <div className="grid gap-2">
+                                                            <Label htmlFor="device_id">
+                                                                Device ID
+                                                            </Label>
+                                                            <Input
+                                                                id="device_id"
+                                                                value={
+                                                                    form.data
+                                                                        .device_id
+                                                                }
+                                                                onChange={(e) =>
+                                                                    form.setData(
+                                                                        'device_id',
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                placeholder="e.g. DEV-011"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div className="grid gap-2">
+                                                            <Label htmlFor="prod_model">
+                                                                Model
+                                                            </Label>
+                                                            <Select
+                                                                value={
+                                                                    form.data
+                                                                        .model
+                                                                }
+                                                                onValueChange={(
+                                                                    v,
+                                                                ) =>
+                                                                    form.setData(
+                                                                        'model',
+                                                                        v,
+                                                                    )
+                                                                }
+                                                            >
+                                                                <SelectTrigger
+                                                                    id="prod_model"
+                                                                    className="w-full"
+                                                                >
+                                                                    <SelectValue placeholder="Select model" />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    {deviceModels.map(
+                                                                        (m) => (
+                                                                            <SelectItem
+                                                                                key={
+                                                                                    m
+                                                                                }
+                                                                                value={
+                                                                                    m
+                                                                                }
+                                                                            >
+                                                                                {
+                                                                                    m
+                                                                                }
+                                                                            </SelectItem>
+                                                                        ),
+                                                                    )}
+                                                                </SelectContent>
+                                                            </Select>
+                                                        </div>
+                                                        <div className="grid gap-2">
+                                                            <Label htmlFor="qc_status">
+                                                                QC Status *
+                                                            </Label>
+                                                            <Select
+                                                                value={
+                                                                    form.data
+                                                                        .qc_status
+                                                                }
+                                                                onValueChange={(
+                                                                    v,
+                                                                ) =>
+                                                                    form.setData(
+                                                                        'qc_status',
+                                                                        v,
+                                                                    )
+                                                                }
+                                                            >
+                                                                <SelectTrigger
+                                                                    id="qc_status"
+                                                                    className="w-full"
+                                                                >
+                                                                    <SelectValue />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    <SelectItem value="pending">
+                                                                        Pending
+                                                                    </SelectItem>
+                                                                    <SelectItem value="passed">
+                                                                        Passed
+                                                                    </SelectItem>
+                                                                    <SelectItem value="failed">
+                                                                        Failed
+                                                                    </SelectItem>
+                                                                </SelectContent>
+                                                            </Select>
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label htmlFor="hardware_version">
+                                                            Hardware Version
+                                                        </Label>
+                                                        <Input
+                                                            id="hardware_version"
+                                                            value={
+                                                                form.data
+                                                                    .hardware_version
+                                                            }
+                                                            onChange={(e) =>
+                                                                form.setData(
+                                                                    'hardware_version',
+                                                                    e.target
+                                                                        .value,
+                                                                )
+                                                            }
+                                                            placeholder="e.g. v4.0"
+                                                        />
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-4">
+                                                        <div className="grid gap-2">
+                                                            <Label htmlFor="production_date">
+                                                                Production Date
+                                                            </Label>
+                                                            <Input
+                                                                id="production_date"
+                                                                type="date"
+                                                                value={
+                                                                    form.data
+                                                                        .production_date
+                                                                }
+                                                                onChange={(e) =>
+                                                                    form.setData(
+                                                                        'production_date',
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                            />
+                                                        </div>
+                                                        <div className="grid gap-2">
+                                                            <Label htmlFor="tested_by">
+                                                                Tested By
+                                                            </Label>
+                                                            <Input
+                                                                id="tested_by"
+                                                                value={
+                                                                    form.data
+                                                                        .tested_by
+                                                                }
+                                                                onChange={(e) =>
+                                                                    form.setData(
+                                                                        'tested_by',
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                placeholder="e.g. QC Team A"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid gap-2">
+                                                        <Label htmlFor="notes">
+                                                            Notes
+                                                        </Label>
+                                                        <Textarea
+                                                            id="notes"
+                                                            value={
+                                                                form.data.notes
+                                                            }
+                                                            onChange={(e) =>
+                                                                form.setData(
+                                                                    'notes',
+                                                                    e.target
+                                                                        .value,
+                                                                )
+                                                            }
+                                                            placeholder="Optional notes about the device…"
+                                                            rows={2}
+                                                        />
+                                                    </div>
+                                                    <DialogFooter>
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            onClick={() =>
+                                                                setAddOpen(
+                                                                    false,
+                                                                )
+                                                            }
+                                                        >
+                                                            Cancel
+                                                        </Button>
+                                                        <Button
+                                                            type="submit"
+                                                            disabled={
+                                                                form.processing
+                                                            }
+                                                        >
+                                                            {form.processing
+                                                                ? 'Registering…'
+                                                                : 'Register Device'}
+                                                        </Button>
+                                                    </DialogFooter>
+                                                </form>
+                                            </DialogContent>
+                                        </Dialog>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        className="gap-1"
-                                        onClick={() =>
-                                            setCurrentPage(
-                                                Math.max(
-                                                    1,
-                                                    pagination.currentPage - 1,
-                                                ),
-                                            )
-                                        }
-                                        disabled={pagination.currentPage === 1}
-                                    >
-                                        <ChevronLeft className="size-4" />
-                                        <span className="hidden sm:inline">
-                                            Sebelumnya
-                                        </span>
-                                    </Button>
-                                    <span className="px-1 text-sm text-muted-foreground">
-                                        Halaman {pagination.currentPage} /{' '}
-                                        {pagination.totalPages}
-                                    </span>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        className="gap-1"
-                                        onClick={() =>
-                                            setCurrentPage(
-                                                Math.min(
-                                                    pagination.totalPages,
-                                                    pagination.currentPage + 1,
-                                                ),
-                                            )
-                                        }
-                                        disabled={
-                                            pagination.currentPage ===
-                                            pagination.totalPages
-                                        }
-                                    >
-                                        <span className="hidden sm:inline">
-                                            Berikutnya
-                                        </span>
-                                        <ChevronRight className="size-4" />
-                                    </Button>
-                                </div>
-                            </div>
-                        )}
-                    </CardContent>
-                </Card>
+                            </CardHeader>
+                            <Separator />
+                            <CardContent className="p-0">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Serial Number</TableHead>
+                                            <TableHead className="hidden md:table-cell">
+                                                Device ID
+                                            </TableHead>
+                                            <TableHead className="hidden lg:table-cell">
+                                                Model
+                                            </TableHead>
+                                            <TableHead>Firmware</TableHead>
+                                            <TableHead>QC Status</TableHead>
+                                            <TableHead>Registered</TableHead>
+                                            <TableHead className="hidden md:table-cell">
+                                                Production Date
+                                            </TableHead>
+                                            <TableHead className="w-[168px]"></TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {pagination.items.map((device) => (
+                                            <TableRow key={device.id}>
+                                                <TableCell className="font-mono text-sm font-medium">
+                                                    {device.serialNumber}
+                                                </TableCell>
+                                                <TableCell className="hidden text-sm text-muted-foreground md:table-cell">
+                                                    {device.deviceId || '—'}
+                                                </TableCell>
+                                                <TableCell className="hidden text-sm lg:table-cell">
+                                                    {device.model || '—'}
+                                                </TableCell>
+                                                <TableCell>
+                                                    <div className="flex flex-col gap-1">
+                                                        <span className="font-mono text-xs">
+                                                            {device.firmwareVersion ||
+                                                                '—'}
+                                                        </span>
+                                                        {device.firmwareFileName ? (
+                                                            <span className="max-w-[170px] truncate text-xs text-muted-foreground">
+                                                                {
+                                                                    device.firmwareFileName
+                                                                }
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-xs text-muted-foreground">
+                                                                No OTA file
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </TableCell>
+                                                <TableCell>
+                                                    {getQcBadge(
+                                                        device.qcStatus,
+                                                    )}
+                                                </TableCell>
+                                                <TableCell>
+                                                    {device.isRegistered ? (
+                                                        <Badge
+                                                            variant="default"
+                                                            className="gap-1"
+                                                        >
+                                                            <Check className="size-3" />{' '}
+                                                            Yes
+                                                        </Badge>
+                                                    ) : (
+                                                        <Badge variant="secondary">
+                                                            No
+                                                        </Badge>
+                                                    )}
+                                                </TableCell>
+                                                <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
+                                                    {device.productionDate ||
+                                                        '—'}
+                                                </TableCell>
+                                                <TableCell>
+                                                    <div className="flex items-center justify-end gap-1">
+                                                        {device.firmwareFileUrl && (
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon-sm"
+                                                                asChild
+                                                            >
+                                                                <a
+                                                                    href={
+                                                                        device.firmwareFileUrl
+                                                                    }
+                                                                    target="_blank"
+                                                                    rel="noreferrer"
+                                                                    aria-label={`Download firmware ${device.serialNumber}`}
+                                                                >
+                                                                    <Download className="size-4" />
+                                                                </a>
+                                                            </Button>
+                                                        )}
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon-sm"
+                                                            onClick={() =>
+                                                                openEdit(device)
+                                                            }
+                                                            disabled={
+                                                                device.qcStatus !==
+                                                                'pending'
+                                                            }
+                                                            aria-label={`Edit ${device.serialNumber}`}
+                                                        >
+                                                            <Pencil className="size-4" />
+                                                        </Button>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon-sm"
+                                                            className="text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                                                            onClick={() =>
+                                                                setDeleteTarget(
+                                                                    device,
+                                                                )
+                                                            }
+                                                            disabled={
+                                                                device.isRegistered
+                                                            }
+                                                            aria-label={`Delete ${device.serialNumber}`}
+                                                        >
+                                                            <Trash2 className="size-4" />
+                                                        </Button>
+                                                    </div>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                        {filtered.length === 0 && (
+                                            <TableRow>
+                                                <TableCell
+                                                    colSpan={8}
+                                                    className="py-12 text-center text-muted-foreground"
+                                                >
+                                                    No production devices found.
+                                                </TableCell>
+                                            </TableRow>
+                                        )}
+                                    </TableBody>
+                                </Table>
+                                {pagination.total > 0 && (
+                                    <div className="flex flex-col items-center justify-between gap-3 border-t px-4 py-3 sm:flex-row">
+                                        <div className="flex flex-wrap items-center gap-3">
+                                            <p className="text-xs text-muted-foreground">
+                                                {pagination.from}&ndash;
+                                                {pagination.to} dari{' '}
+                                                {pagination.total}
+                                            </p>
+                                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                                <span>Tampilkan</span>
+                                                <Select
+                                                    value={String(pageSize)}
+                                                    onValueChange={
+                                                        updatePageSize
+                                                    }
+                                                >
+                                                    <SelectTrigger
+                                                        className="h-8 w-[76px]"
+                                                        aria-label="Jumlah production per halaman"
+                                                    >
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {PAGE_SIZE_OPTIONS.map(
+                                                            (option) => (
+                                                                <SelectItem
+                                                                    key={option}
+                                                                    value={String(
+                                                                        option,
+                                                                    )}
+                                                                >
+                                                                    {option}
+                                                                </SelectItem>
+                                                            ),
+                                                        )}
+                                                    </SelectContent>
+                                                </Select>
+                                                <span>per halaman</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                className="gap-1"
+                                                onClick={() =>
+                                                    setCurrentPage(
+                                                        Math.max(
+                                                            1,
+                                                            pagination.currentPage -
+                                                                1,
+                                                        ),
+                                                    )
+                                                }
+                                                disabled={
+                                                    pagination.currentPage === 1
+                                                }
+                                            >
+                                                <ChevronLeft className="size-4" />
+                                                <span className="hidden sm:inline">
+                                                    Sebelumnya
+                                                </span>
+                                            </Button>
+                                            <span className="px-1 text-sm text-muted-foreground">
+                                                Halaman {pagination.currentPage}{' '}
+                                                / {pagination.totalPages}
+                                            </span>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                className="gap-1"
+                                                onClick={() =>
+                                                    setCurrentPage(
+                                                        Math.min(
+                                                            pagination.totalPages,
+                                                            pagination.currentPage +
+                                                                1,
+                                                        ),
+                                                    )
+                                                }
+                                                disabled={
+                                                    pagination.currentPage ===
+                                                    pagination.totalPages
+                                                }
+                                            >
+                                                <span className="hidden sm:inline">
+                                                    Berikutnya
+                                                </span>
+                                                <ChevronRight className="size-4" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    </>
+                )}
 
                 {/* Edit Dialog — hanya bisa dibuka selama QC masih pending */}
                 <Dialog

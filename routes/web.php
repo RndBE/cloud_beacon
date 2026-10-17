@@ -10,11 +10,19 @@ use App\Http\Controllers\LoggerModeController;
 use App\Http\Controllers\MaintenanceTicketController;
 use App\Http\Controllers\ModeProfileAdminController;
 use App\Http\Controllers\ModeProfileController;
+use App\Http\Controllers\ModuleFirmwareController;
 use App\Http\Controllers\MqttController;
 use App\Http\Controllers\OtaController;
 use App\Http\Controllers\ProductionController;
+use App\Http\Controllers\ProductionModuleController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\RoleController;
+use App\Http\Controllers\SecurityCableController;
+use App\Http\Controllers\SecurityCardController;
+use App\Http\Controllers\SecurityDeviceController;
+use App\Http\Controllers\SecurityDeviceStatusController;
+use App\Http\Controllers\SecurityPairingController;
+use App\Http\Controllers\SecurityStockController;
 use App\Http\Controllers\TopologyController;
 use App\Http\Controllers\UserManagementController;
 use Illuminate\Support\Facades\Route;
@@ -66,6 +74,66 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('loggers/{id}/protocol', [LoggerController::class, 'protocol'])
         ->middleware('permission:loggers.view')
         ->name('loggers.protocol');
+    Route::get('loggers/{id}/security', [SecurityDeviceController::class, 'show'])
+        ->middleware('permission:loggers.view')
+        ->name('loggers.security');
+    Route::post('loggers/{id}/security/pairings', [SecurityPairingController::class, 'start'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.pairings.start');
+    Route::get('loggers/{id}/security/pairings/{pairing}', [SecurityPairingController::class, 'status'])
+        ->middleware('permission:loggers.view')
+        ->name('loggers.security.pairings.status');
+    Route::delete('loggers/{id}/security/pairings/{pairing}', [SecurityPairingController::class, 'cancel'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.pairings.cancel');
+    Route::delete('loggers/{id}/security/device', [SecurityPairingController::class, 'unpair'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.unpair');
+    Route::get('loggers/{id}/security/cards', [SecurityCardController::class, 'index'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.index');
+    Route::post('loggers/{id}/security/command', [SecurityCardController::class, 'command'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.command');
+    Route::post('loggers/{id}/security/cable/nonce', [SecurityCableController::class, 'nonce'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cable.nonce');
+    Route::post('loggers/{id}/security/cable/proof', [SecurityCableController::class, 'proof'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cable.proof');
+    Route::post('loggers/{id}/security/sign', [SecurityCardController::class, 'sign'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.sign');
+    Route::put('loggers/{id}/security/serial-log/{log}', [SecurityCardController::class, 'serialResult'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.serial-result');
+    Route::post('loggers/{id}/security/serial-log', [SecurityCardController::class, 'serialLog'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.serial-log');
+    Route::get('loggers/{id}/security/cards/holders', [SecurityCardController::class, 'holders'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.holders');
+    Route::post('loggers/{id}/security/cards/holder', [SecurityCardController::class, 'holder'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.cards.holder');
+    Route::post('loggers/{id}/security/siren-off', [SecurityCardController::class, 'sirenOff'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.siren-off');
+    Route::post('loggers/{id}/security/snap', [SecurityCardController::class, 'snap'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.snap');
+    Route::post('loggers/{id}/security/ping', [SecurityCardController::class, 'ping'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.ping');
+    Route::get('loggers/{id}/security/wifi', [SecurityCardController::class, 'wifi'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.wifi');
+    Route::get('loggers/{id}/security/wifi/result', [SecurityCardController::class, 'wifiResult'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.wifi.result');
+    Route::get('loggers/{id}/security/photo', [SecurityCardController::class, 'photo'])
+        ->middleware('permission:loggers.create')
+        ->name('loggers.security.photo');
     Route::get('loggers/{id}', [LoggerController::class, 'show'])
         ->middleware('permission:loggers.view')
         ->name('loggers.show');
@@ -105,6 +173,45 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('production/{id}', [ProductionController::class, 'destroy'])
         ->middleware('permission:production.delete')
         ->name('production.destroy');
+
+    Route::post('production/security-devices', [SecurityStockController::class, 'store'])
+        ->middleware('permission:production.create')
+        ->name('production.security-devices.store');
+    Route::post('production/module-firmware', [ModuleFirmwareController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.module-firmware.update');
+    Route::post('production/modules', [ProductionModuleController::class, 'store'])
+        ->middleware('permission:production.create')
+        ->name('production.modules.store');
+    Route::put('production/modules/{module}', [ProductionModuleController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.modules.update');
+    Route::delete('production/modules/{module}', [ProductionModuleController::class, 'destroy'])
+        ->middleware('permission:production.delete')
+        ->name('production.modules.destroy');
+    Route::post('production/security-devices/import', [SecurityStockController::class, 'import'])
+        ->middleware('permission:production.import')
+        ->name('production.security-devices.import');
+    Route::put('production/security-devices/{deviceId}', [SecurityStockController::class, 'update'])
+        ->middleware('permission:production.create')
+        ->name('production.security-devices.update');
+    Route::delete('production/security-devices/{deviceId}', [SecurityStockController::class, 'destroy'])
+        ->middleware('permission:production.delete')
+        ->name('production.security-devices.destroy');
+    Route::put('production/security-devices/{deviceId}/qc', [SecurityStockController::class, 'updateQc'])
+        ->middleware('permission:production.create')
+        ->name('production.security-devices.qc');
+    // Device status pages: reachable from the list (production.view) and from the logger
+    // tab (loggers.view); the controller then checks the device's logger is visible.
+    Route::get('production/security-devices/{deviceId}', [SecurityDeviceStatusController::class, 'show'])
+        ->middleware('permission:loggers.view,production.view')
+        ->name('production.security-devices.show');
+    Route::get('production/security-devices/{deviceId}/data', [SecurityDeviceStatusController::class, 'data'])
+        ->middleware('permission:loggers.view,production.view')
+        ->name('production.security-devices.data');
+    Route::get('production/security-devices/{deviceId}/cards', [SecurityDeviceStatusController::class, 'cards'])
+        ->middleware('permission:loggers.view,production.view')
+        ->name('production.security-devices.cards');
 
     Route::get('production/models', [DeviceModelController::class, 'index'])
         ->middleware('permission:production.view')
@@ -297,6 +404,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('data-audit/{id}/replay-status', [\App\Http\Controllers\DataAuditController::class, 'replayStatus'])->name('data-audit.replay-status');
     Route::get('data-audit/{id}/resend-status', [\App\Http\Controllers\DataAuditController::class, 'resendStatus'])->name('data-audit.resend-status');
 
+    // Data Masuk — raw incoming readings per logger per day
+    Route::get('data-masuk', [\App\Http\Controllers\DataMasukController::class, 'index'])
+        ->middleware('permission:loggers.view')
+        ->name('data-masuk.index');
+    Route::get('data-masuk/{id}/export', [\App\Http\Controllers\DataMasukController::class, 'export'])
+        ->middleware('permission:loggers.view')
+        ->name('data-masuk.export');
+
     // Projects CRUD
     Route::get('projects', [ProjectController::class, 'index'])
         ->name('projects.index');
@@ -368,33 +483,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('integrations.destroy');
     Route::patch('loggers/{id}/integrations/{iid}/toggle', [IntegrationController::class, 'toggle'])
         ->name('integrations.toggle');
-});
-
-// API v1 Routes
-Route::prefix('api/v1')->group(function () {
-    Route::get('production/models/{modelName}/firmware', [DeviceModelController::class, 'firmware']);
-    Route::get('production/{serialNumber}/firmware', [ProductionController::class, 'firmware']);
-    Route::get('loggers/{id}', [\App\Http\Controllers\Api\LoggerApiController::class, 'show']);
-    Route::get('loggers/{id}/sensors', [\App\Http\Controllers\Api\LoggerApiController::class, 'sensors']);
-    Route::get('loggers/{id}/logs', [\App\Http\Controllers\Api\LoggerApiController::class, 'logs']);
-    Route::post('loggers/{id}/command', [\App\Http\Controllers\Api\LoggerApiController::class, 'sendCommand']);
-    Route::post('loggers/{id}/sensors/data', [\App\Http\Controllers\Api\LoggerApiController::class, 'pushSensorData']);
-
-    /*
-     * POST /api/v1/device/push
-     * Endpoint untuk perangkat logger mengirimkan data sensor secara langsung.
-     * Tidak memerlukan autentikasi — logger diidentifikasi via `id_alat` di body JSON.
-     * - Lookup logger via device_identifier = id_alat
-     * - Update status logger → online + last_data_received_at
-     * - Simpan histori ke sensor_logs
-     * - Update nilai terbaru di sensors (jika sensor sudah terdaftar)
-     */
-    Route::post('device/push', [\App\Http\Controllers\Api\DeviceDataController::class, 'push'])
-        ->name('api.v1.device.push');
-
-    // Mobile App — Production device lookup (QR scan)
-    Route::post('production/lookup', [ProductionController::class, 'lookupSerial'])
-        ->name('api.v1.production.lookup');
 });
 
 require __DIR__.'/settings.php';

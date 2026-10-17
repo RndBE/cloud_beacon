@@ -40,12 +40,14 @@ class DataAuditController extends Controller
             $date = Carbon::today();
         }
 
+        // One sensor_logs scan feeds both the completeness counts and the
+        // forwarding due-simulation; they used to query the same day twice.
         $expected = $this->audits->expectedFor($date);
-        $present = $this->audits->presentCountsForLoggers($loggerIds, $date);
-        $fwd = $forwarding->completenessForLoggers($loggers, $date);
+        $minutes = $this->audits->presentMinutesForLoggers($loggerIds, $date);
+        $fwd = $forwarding->completenessForLoggers($loggers, $date, $minutes);
 
-        $audits = $loggers->map(function (Logger $logger) use ($present, $expected, $date, $fwd) {
-            $p = (int) ($present[$logger->id] ?? 0);
+        $audits = $loggers->map(function (Logger $logger) use ($minutes, $expected, $date, $fwd) {
+            $p = $minutes->get($logger->id)?->count() ?? 0;
 
             return [
                 'id' => $logger->id,

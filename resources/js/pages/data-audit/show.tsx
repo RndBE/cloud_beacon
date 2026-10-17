@@ -10,7 +10,14 @@ import {
     Search,
     Send,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { BackfillProgress } from '@/components/data-audit/backfill-progress';
 import {
@@ -229,8 +236,23 @@ export default function DataAuditShow({
         return minuteKeys().map((key) => ({
             key,
             cls: loggerCellClass(key, missingSet, progress.updates),
+            // Still-missing minutes (or failed / no-file ones) can be asked for again.
+            clickable:
+                ['failed', 'no_file'].includes(progress.updates[key]) ||
+                (missingSet.has(key) && !progress.updates[key]),
         }));
     }, [missing, progress.updates]);
+
+    // One minute only: reuses the range support of the backfill endpoint.
+    const backfillMinute = useCallback(
+        (key: string) =>
+            router.post(
+                `/data-audit/${logger.id}/backfill`,
+                { date, from: key, to: key },
+                { preserveScroll: true },
+            ),
+        [logger.id, date],
+    );
 
     const backfillRunning =
         progress.total > 0 && progress.done < progress.total;
@@ -434,13 +456,16 @@ export default function DataAuditShow({
                         <CardDescription>
                             {t(
                                 'data_audit.heatmap_description',
-                                '1 440 sel — satu per menit. Klik backfill untuk meminta ulang menit yang kosong.',
+                                '1 440 sel — satu per menit. Klik sel merah untuk backfill menit itu saja, atau pakai tombol backfill untuk semua yang kosong.',
                             )}
                         </CardDescription>
                     </CardHeader>
                     <Separator />
                     <CardContent className="flex flex-col gap-4 px-4">
-                        <CoverageGrid cells={loggerCells} />
+                        <CoverageGrid
+                            cells={loggerCells}
+                            onCellClick={backfillMinute}
+                        />
                         <CoverageLegend items={loggerLegend} />
 
                         {progress.total > 0 && (

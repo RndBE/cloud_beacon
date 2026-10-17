@@ -12,10 +12,18 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
-use Throwable;
 
 class DeviceDataController extends Controller
 {
+    /**
+     * Batas kolom sensor_logs.value / sensors.value: decimal(12,4).
+     *
+     * Pembacaan Modbus 32-bit bertanda yang terbaca sebagai unsigned -- -1280
+     * menjadi 4294966016 -- ditolak di sini, bukan dibiarkan meledak sebagai
+     * QueryException 22003 di tengah penulisan batch.
+     */
+    private const MAX_VALUE = 99999999.9999;
+
     /**
      * POST /api/v1/device/push
      *
@@ -75,6 +83,8 @@ class DeviceDataController extends Controller
         // --- 4. Parse semua sensor1..sensor16 dari payload, skip yang kosong ---
         $payload    = $request->all();
         $sensorData = [];
+        $failed     = 0;
+        $failedKeys = [];
 
         foreach ($payload as $key => $item) {
             if (! preg_match('/^sensor\d+$/', $key)) {
@@ -83,6 +93,22 @@ class DeviceDataController extends Controller
 
             // Skip sensor kosong atau tidak punya field wajib
             if (empty($item) || ! isset($item['nama'], $item['nilai'])) {
+                continue;
+            }
+
+            // Tolak nilai yang tidak muat di kolom sebelum menyentuh DB.
+            if (! is_numeric($item['nilai']) || abs((float) $item['nilai']) > self::MAX_VALUE) {
+                $failed++;
+                $failedKeys[] = $key;
+
+                Log::warning('[DevicePush] Nilai sensor ditolak - bukan angka atau di luar rentang kolom', [
+                    'logger_id' => $logger->id,
+                    'id_alat'   => $idAlat,
+                    'key'       => $key,
+                    'nama'      => $item['nama'],
+                    'nilai'     => $item['nilai'],
+                ]);
+
                 continue;
             }
 
@@ -108,10 +134,9 @@ class DeviceDataController extends Controller
 
         // --- 7. Proses setiap sensor dari device ---
         $results  = [];
+        $logRows  = [];
         $matched  = 0;
         $unmatched = 0;
-        $failed    = 0;
-        $failedKeys = [];
 
         foreach ($sensorData as $item) {
             $incomingNameLower = strtolower($item['nama']);
@@ -132,50 +157,28 @@ class DeviceDataController extends Controller
                     ? 'exact'
                     : 'partial';
 
-                // Update nilai terbaru di tabel sensors.
-                //
-                // Dibungkus try/catch dengan sengaja. Satu nilai di luar rentang
-                // kolom -- misalnya pembacaan Modbus 32-bit bertanda yang terbaca
-                // sebagai unsigned, sehingga -1280 menjadi 4294966016 -- akan
-                // melempar QueryException 22003. Tanpa penjagaan ini exception
-                // lolos ke atas, loop berhenti di tengah, dan
-                // ForwardToIntegrations::dispatch() di langkah 8 tidak pernah
-                // tercapai: satu sensor rusak mematikan seluruh ingest dan
-                // forwarding logger tersebut.
-                try {
-                    $registeredSensor->update([
-                        'value'          => $item['nilai'],
-                        'last_reading_at' => $recordedAt,
-                        // Update unit jika sensor punya unit kosong atau null dan device mengirim unit
-                        'unit'           => (empty($registeredSensor->unit) && ! empty($item['satuan']))
-                            ? $item['satuan']
-                            : $registeredSensor->unit,
-                    ]);
+                // Update nilai terbaru di tabel sensors. Rentang nilai sudah
+                // disaring di langkah 4, jadi tidak ada lagi QueryException 22003
+                // yang perlu ditangkap per sensor di sini.
+                $registeredSensor->update([
+                    'value'          => $item['nilai'],
+                    'last_reading_at' => $recordedAt,
+                    // Update unit jika sensor punya unit kosong atau null dan device mengirim unit
+                    'unit'           => (empty($registeredSensor->unit) && ! empty($item['satuan']))
+                        ? $item['satuan']
+                        : $registeredSensor->unit,
+                ]);
 
-                    $matched++;
+                $matched++;
 
-                    Log::debug('[DevicePush] Sensor matched', [
-                        'key'          => $item['key'],
-                        'device_nama'  => $item['nama'],
-                        'db_name'      => $registeredSensor->name,
-                        'match_method' => $matchMethod,
-                        'nilai'        => $item['nilai'],
-                        'satuan'       => $item['satuan'],
-                    ]);
-                } catch (Throwable $e) {
-                    $failed++;
-                    $failedKeys[] = $item['key'];
-
-                    Log::warning('[DevicePush] Nilai sensor gagal disimpan - sensor dilewati', [
-                        'logger_id' => $logger->id,
-                        'id_alat'   => $idAlat,
-                        'key'       => $item['key'],
-                        'nama'      => $item['nama'],
-                        'db_name'   => $registeredSensor->name,
-                        'nilai'     => $item['nilai'],
-                        'error'     => $e->getMessage(),
-                    ]);
-                }
+                Log::debug('[DevicePush] Sensor matched', [
+                    'key'          => $item['key'],
+                    'device_nama'  => $item['nama'],
+                    'db_name'      => $registeredSensor->name,
+                    'match_method' => $matchMethod,
+                    'nilai'        => $item['nilai'],
+                    'satuan'       => $item['satuan'],
+                ]);
             } else {
                 $unmatched++;
 
@@ -185,38 +188,16 @@ class DeviceDataController extends Controller
                 ]);
             }
 
-            // Simpan ke histori sensor_logs (idempotent: upsert berdasarkan logger+key+waktu).
-            // Dijaga dengan alasan yang sama seperti update di atas: kolom value
-            // punya rentang yang sama, jadi nilai yang sama akan gagal di sini juga.
-            try {
-                SensorLog::updateOrCreate(
-                    [
-                        'logger_id'   => $logger->id,
-                        'sensor_key'  => $item['key'],
-                        'recorded_at' => $recordedAt,
-                    ],
-                    [
-                        'sensor_id'   => $sensorId,
-                        'sensor_name' => $item['nama'],
-                        'value'       => $item['nilai'],
-                        'unit'        => $item['satuan'],
-                    ]
-                );
-            } catch (Throwable $e) {
-                if (! in_array($item['key'], $failedKeys, true)) {
-                    $failed++;
-                    $failedKeys[] = $item['key'];
-                }
-
-                Log::warning('[DevicePush] Histori sensor gagal disimpan - dilewati', [
-                    'logger_id' => $logger->id,
-                    'id_alat'   => $idAlat,
-                    'key'       => $item['key'],
-                    'nama'      => $item['nama'],
-                    'nilai'     => $item['nilai'],
-                    'error'     => $e->getMessage(),
-                ]);
-            }
+            // Kumpulkan dulu; ditulis sekali sebagai satu upsert setelah loop.
+            $logRows[] = [
+                'logger_id'   => $logger->id,
+                'sensor_key'  => $item['key'],
+                'recorded_at' => $recordedAt->format('Y-m-d H:i:s'),
+                'sensor_id'   => $sensorId,
+                'sensor_name' => $item['nama'],
+                'value'       => $item['nilai'],
+                'unit'        => $item['satuan'],
+            ];
 
             $results[] = [
                 'key'          => $item['key'],
@@ -228,6 +209,17 @@ class DeviceDataController extends Controller
                 'sensor_id'    => $sensorId,
                 'db_name'      => $registeredSensor?->name,
             ];
+        }
+
+        // Satu upsert untuk seluruh menit ini, bukan satu per sensor. Idempoten
+        // lewat unique index sensor_logs_logger_key_time_unique, jadi resend
+        // menimpa baris yang sama seperti sebelumnya.
+        if ($logRows) {
+            SensorLog::upsert(
+                $logRows,
+                ['logger_id', 'sensor_key', 'recorded_at'],
+                ['sensor_id', 'sensor_name', 'value', 'unit']
+            );
         }
 
         Log::info('[DevicePush] Data berhasil diproses', [

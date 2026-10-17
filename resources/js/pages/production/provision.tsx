@@ -59,11 +59,13 @@ import type { JsonRecord } from '@/hooks/use-logger-serial';
 import AppLayout from '@/layouts/app-layout';
 import { postJson } from '@/lib/csrf-fetch';
 import type { BreadcrumbItem } from '@/types';
+import { ModuleUsbSetup } from './module-usb-setup';
+import type { ModuleFirmware, ProductionModule } from './production-modules';
 
 const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Dashboard', href: '/dashboard' },
     { title: 'Production', href: '/production' },
-    { title: 'Setup Logger (USB)', href: '/production/provision' },
+    { title: 'Setup USB', href: '/production/provision' },
 ];
 
 const AUTO_RECONNECT_KEY = 'provision:serial-auto-reconnect';
@@ -149,10 +151,25 @@ function loggerStatusClass(
 export default function ProductionProvision({
     deviceModels = [],
     usbProvisionedLoggers = [],
+    modules = [],
+    moduleFirmwares = {},
 }: {
     deviceModels?: string[];
     usbProvisionedLoggers?: UsbProvisionedItem[];
+    // Security System units from Production › Modul, set up in the Modul view.
+    modules?: ProductionModule[];
+    moduleFirmwares?: Record<string, ModuleFirmware>;
 }) {
+    // Logger or Modul, like the Production page; ?view=modul&device=SS0001 opens a
+    // module directly (the setup button in Production › Modul).
+    const [query] = useState(() =>
+        typeof window !== 'undefined'
+            ? new URLSearchParams(window.location.search)
+            : new URLSearchParams(),
+    );
+    const [view, setView] = useState<'logger' | 'module'>(
+        query.get('view') === 'modul' ? 'module' : 'logger',
+    );
     const [serialSupported, setSerialSupported] = useState<boolean | null>(
         null,
     );
@@ -481,900 +498,1038 @@ export default function ProductionProvision({
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
-            <Head title="Setup Logger (USB)" />
+            <Head title="Setup USB" />
             <div className="flex flex-col gap-6 p-4 md:p-6">
-                <div>
+                <div className="flex flex-col gap-3">
                     <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
                         <Usb className="size-6" />
-                        Setup Logger via USB
+                        Setup via USB
                     </h1>
+                    <div
+                        role="tablist"
+                        aria-label="Jenis perangkat"
+                        className="inline-flex w-fit rounded-lg border bg-muted/40 p-1"
+                    >
+                        {(
+                            [
+                                ['logger', 'Logger'],
+                                ['module', 'Modul'],
+                            ] as const
+                        ).map(([value, label]) => (
+                            <button
+                                key={value}
+                                type="button"
+                                role="tab"
+                                aria-selected={view === value}
+                                onClick={() => setView(value)}
+                                className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+                                    view === value
+                                        ? 'bg-background shadow-sm'
+                                        : 'text-muted-foreground hover:text-foreground'
+                                }`}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
-                {serialSupported === false && (
-                    <Card className="border-amber-500/30 bg-amber-500/5">
-                        <CardHeader>
-                            <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-300">
-                                <AlertTriangle className="size-5" />
-                                Browser ini belum mendukung Web Serial
-                            </CardTitle>
-                            <CardDescription>
-                                Fitur ini butuh Web Serial API (Chrome/Edge).
-                                API ini hanya aktif di HTTPS atau origin yang
-                                ditandai "secure" secara manual.
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-3 text-sm">
-                            <ol className="list-decimal space-y-2 pl-5 leading-6">
-                                <li>
-                                    Buka{' '}
-                                    <code className="rounded bg-muted px-1 py-0.5">
-                                        chrome://flags/#unsafely-treat-insecure-origin-as-secure
-                                    </code>{' '}
-                                    di tab baru pada browser yang sama.
-                                </li>
-                                <li>
-                                    Tempel origin berikut ke kolom yang muncul:
-                                    <div className="mt-1 flex items-center gap-2">
-                                        <code className="rounded bg-muted px-2 py-1 text-xs">
-                                            {currentOrigin}
-                                        </code>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            className="gap-1.5"
-                                            onClick={() => copy(currentOrigin)}
-                                        >
-                                            <Copy className="size-3.5" />
-                                            {copiedValue === currentOrigin
-                                                ? 'Tersalin'
-                                                : 'Salin'}
-                                        </Button>
-                                    </div>
-                                </li>
-                                <li>
-                                    Set dropdown di sebelahnya ke{' '}
-                                    <strong>Enabled</strong>, lalu klik{' '}
-                                    <strong>Relaunch</strong>.
-                                </li>
-                                <li>
-                                    Buka kembali halaman ini di komputer yang
-                                    kabel USB logger-nya tercolok.
-                                </li>
-                            </ol>
-                        </CardContent>
-                    </Card>
-                )}
+                {view === 'module' ? (
+                    <ModuleUsbSetup
+                        modules={modules}
+                        firmwares={moduleFirmwares}
+                        initialDeviceId={query.get('device')}
+                        loggerConnected={connected}
+                        onDisconnectLogger={() => void handleDisconnect()}
+                    />
+                ) : (
+                    <>
+                        {serialSupported === false && (
+                            <Card className="border-amber-500/30 bg-amber-500/5">
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-300">
+                                        <AlertTriangle className="size-5" />
+                                        Browser ini belum mendukung Web Serial
+                                    </CardTitle>
+                                    <CardDescription>
+                                        Fitur ini butuh Web Serial API
+                                        (Chrome/Edge). API ini hanya aktif di
+                                        HTTPS atau origin yang ditandai "secure"
+                                        secara manual.
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent className="space-y-3 text-sm">
+                                    <ol className="list-decimal space-y-2 pl-5 leading-6">
+                                        <li>
+                                            Buka{' '}
+                                            <code className="rounded bg-muted px-1 py-0.5">
+                                                chrome://flags/#unsafely-treat-insecure-origin-as-secure
+                                            </code>{' '}
+                                            di tab baru pada browser yang sama.
+                                        </li>
+                                        <li>
+                                            Tempel origin berikut ke kolom yang
+                                            muncul:
+                                            <div className="mt-1 flex items-center gap-2">
+                                                <code className="rounded bg-muted px-2 py-1 text-xs">
+                                                    {currentOrigin}
+                                                </code>
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="gap-1.5"
+                                                    onClick={() =>
+                                                        copy(currentOrigin)
+                                                    }
+                                                >
+                                                    <Copy className="size-3.5" />
+                                                    {copiedValue ===
+                                                    currentOrigin
+                                                        ? 'Tersalin'
+                                                        : 'Salin'}
+                                                </Button>
+                                            </div>
+                                        </li>
+                                        <li>
+                                            Set dropdown di sebelahnya ke{' '}
+                                            <strong>Enabled</strong>, lalu klik{' '}
+                                            <strong>Relaunch</strong>.
+                                        </li>
+                                        <li>
+                                            Buka kembali halaman ini di komputer
+                                            yang kabel USB logger-nya tercolok.
+                                        </li>
+                                    </ol>
+                                </CardContent>
+                            </Card>
+                        )}
 
-                <div
-                    className={
-                        serialSupported
-                            ? 'grid gap-4 lg:grid-cols-[minmax(340px,1fr)_minmax(260px,0.55fr)]'
-                            : undefined
-                    }
-                >
-                    {serialSupported && (
-                        <div className="space-y-4">
-                            <Card className="self-start py-0">
-                                <CardContent className="flex flex-col gap-3 px-5 pt-4 pb-3">
-                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                        <div className="flex min-w-0 items-center gap-3">
-                                            <div
-                                                className={`flex size-10 shrink-0 items-center justify-center rounded-lg border ${
-                                                    connected
-                                                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
-                                                        : 'border-slate-500/30 bg-slate-500/10 text-slate-600 dark:text-slate-300'
-                                                }`}
-                                            >
-                                                {connected ? (
-                                                    <Unplug className="size-5" />
-                                                ) : (
-                                                    <Plug className="size-5" />
+                        <div
+                            className={
+                                serialSupported
+                                    ? 'grid gap-4 lg:grid-cols-[minmax(340px,1fr)_minmax(260px,0.55fr)]'
+                                    : undefined
+                            }
+                        >
+                            {serialSupported && (
+                                <div className="space-y-4">
+                                    <Card className="self-start py-0">
+                                        <CardContent className="flex flex-col gap-3 px-5 pt-4 pb-3">
+                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                <div className="flex min-w-0 items-center gap-3">
+                                                    <div
+                                                        className={`flex size-10 shrink-0 items-center justify-center rounded-lg border ${
+                                                            connected
+                                                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
+                                                                : 'border-slate-500/30 bg-slate-500/10 text-slate-600 dark:text-slate-300'
+                                                        }`}
+                                                    >
+                                                        {connected ? (
+                                                            <Unplug className="size-5" />
+                                                        ) : (
+                                                            <Plug className="size-5" />
+                                                        )}
+                                                    </div>
+                                                    <div className="min-w-0 space-y-1">
+                                                        <Badge
+                                                            variant="outline"
+                                                            className={
+                                                                connected
+                                                                    ? 'h-8 border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-300'
+                                                                    : 'h-8 border-slate-500/30 bg-slate-500/10 px-3 py-2 text-slate-700 dark:text-slate-300'
+                                                            }
+                                                        >
+                                                            {connected
+                                                                ? 'Terhubung'
+                                                                : 'Belum terhubung'}
+                                                        </Badge>
+                                                        {connected &&
+                                                            portInfo?.usbVendorId !==
+                                                                undefined && (
+                                                                <p className="text-xs text-muted-foreground">
+                                                                    VID:
+                                                                    {portInfo.usbVendorId.toString(
+                                                                        16,
+                                                                    )}{' '}
+                                                                    PID:
+                                                                    {portInfo.usbProductId?.toString(
+                                                                        16,
+                                                                    ) ?? '-'}
+                                                                </p>
+                                                            )}
+                                                    </div>
+                                                </div>
+
+                                                {reconnecting && !connected && (
+                                                    <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                                        <RefreshCw className="size-4 animate-spin" />
+                                                        Menyambungkan ulang ke
+                                                        port sebelumnya…
+                                                    </p>
                                                 )}
-                                            </div>
-                                            <div className="min-w-0 space-y-1">
-                                                <Badge
-                                                    variant="outline"
-                                                    className={
-                                                        connected
-                                                            ? 'h-8 border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-300'
-                                                            : 'h-8 border-slate-500/30 bg-slate-500/10 px-3 py-2 text-slate-700 dark:text-slate-300'
-                                                    }
-                                                >
-                                                    {connected
-                                                        ? 'Terhubung'
-                                                        : 'Belum terhubung'}
-                                                </Badge>
-                                                {connected &&
-                                                    portInfo?.usbVendorId !==
-                                                        undefined && (
-                                                        <p className="text-xs text-muted-foreground">
-                                                            VID:
-                                                            {portInfo.usbVendorId.toString(
-                                                                16,
-                                                            )}{' '}
-                                                            PID:
-                                                            {portInfo.usbProductId?.toString(
-                                                                16,
-                                                            ) ?? '-'}
-                                                        </p>
-                                                    )}
-                                            </div>
-                                        </div>
 
-                                        {reconnecting && !connected && (
-                                            <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                                                <RefreshCw className="size-4 animate-spin" />
-                                                Menyambungkan ulang ke port
-                                                sebelumnya…
-                                            </p>
-                                        )}
-
-                                        <div className="flex w-full sm:w-auto">
-                                            {!connected ? (
-                                                <Button
-                                                    onClick={handleConnect}
-                                                    disabled={
-                                                        connecting ||
-                                                        reconnecting
-                                                    }
-                                                    size="lg"
-                                                    className="h-10 w-full gap-2 px-5 sm:min-w-56"
-                                                >
-                                                    {connecting ? (
-                                                        <>
-                                                            <RefreshCw className="size-4 animate-spin" />
-                                                            Menghubungkan
-                                                        </>
+                                                <div className="flex w-full sm:w-auto">
+                                                    {!connected ? (
+                                                        <Button
+                                                            onClick={
+                                                                handleConnect
+                                                            }
+                                                            disabled={
+                                                                connecting ||
+                                                                reconnecting
+                                                            }
+                                                            size="lg"
+                                                            className="h-10 w-full gap-2 px-5 sm:min-w-56"
+                                                        >
+                                                            {connecting ? (
+                                                                <>
+                                                                    <RefreshCw className="size-4 animate-spin" />
+                                                                    Menghubungkan
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Plug className="size-4" />
+                                                                    Hubungkan ke
+                                                                    Logger
+                                                                </>
+                                                            )}
+                                                        </Button>
                                                     ) : (
-                                                        <>
-                                                            <Plug className="size-4" />
-                                                            Hubungkan ke Logger
-                                                        </>
+                                                        <Button
+                                                            variant="outline"
+                                                            onClick={
+                                                                handleDisconnect
+                                                            }
+                                                            size="lg"
+                                                            className="h-10 w-full gap-2 px-5 sm:min-w-56"
+                                                        >
+                                                            <Unplug className="size-4" />
+                                                            Putuskan Koneksi
+                                                        </Button>
                                                     )}
-                                                </Button>
-                                            ) : (
-                                                <Button
-                                                    variant="outline"
-                                                    onClick={handleDisconnect}
-                                                    size="lg"
-                                                    className="h-10 w-full gap-2 px-5 sm:min-w-56"
-                                                >
-                                                    <Unplug className="size-4" />
-                                                    Putuskan Koneksi
-                                                </Button>
-                                            )}
-                                        </div>
-                                    </div>
+                                                </div>
+                                            </div>
 
-                                    {/* Baris sendiri di bawah, bukan diselipkan
+                                            {/* Baris sendiri di bawah, bukan diselipkan
                                         di antara badge dan tombol — pesan error
                                         serial bisa panjang dan dulu terpotong
                                         di kolom selebar dua kata. */}
-                                    {connectError && (
-                                        <p className="flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm wrap-break-word text-red-600 dark:text-red-400">
-                                            <XCircle className="mt-0.5 size-4 shrink-0" />
-                                            <span className="min-w-0">
-                                                {connectError}
-                                            </span>
-                                        </p>
-                                    )}
-                                </CardContent>
-                            </Card>
-
-                            {connected && (
-                                <>
-                                    <Card>
-                                        <CardHeader>
-                                            <CardTitle className="flex items-center gap-2">
-                                                {unlocked ? (
-                                                    <LockOpen className="size-5" />
-                                                ) : (
-                                                    <Lock className="size-5" />
-                                                )}
-                                                Buka Kunci (AUTH)
-                                            </CardTitle>
-                                        </CardHeader>
-                                        <CardContent>
-                                            <form
-                                                onSubmit={handleAuth}
-                                                className="flex flex-col gap-3 sm:flex-row sm:items-end"
-                                            >
-                                                <div className="flex-1 space-y-2">
-                                                    <Label>PIN</Label>
-                                                    <Input
-                                                        type="password"
-                                                        value={pin}
-                                                        onChange={(e) =>
-                                                            setPin(
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        disabled={!connected}
-                                                        required
-                                                        placeholder="Masukkan PIN akses"
-                                                    />
-                                                </div>
-                                                <Button
-                                                    type="submit"
-                                                    disabled={
-                                                        !connected ||
-                                                        authBusy ||
-                                                        pin.trim() === ''
-                                                    }
-                                                    className="gap-1.5"
-                                                >
-                                                    {authBusy ? (
-                                                        <>
-                                                            <RefreshCw className="size-4 animate-spin" />
-                                                            Memeriksa
-                                                        </>
-                                                    ) : (
-                                                        'Buka Kunci'
-                                                    )}
-                                                </Button>
-                                            </form>
-                                            {authResult && (
-                                                <p
-                                                    className={`mt-3 flex items-center gap-1.5 text-sm ${
-                                                        authResult.ok
-                                                            ? 'text-emerald-600 dark:text-emerald-400'
-                                                            : 'text-red-600 dark:text-red-400'
-                                                    }`}
-                                                >
-                                                    {authResult.ok ? (
-                                                        <CheckCircle2 className="size-4" />
-                                                    ) : (
-                                                        <XCircle className="size-4" />
-                                                    )}
-                                                    {authResult.ok
-                                                        ? 'Kunci terbuka. Silakan lanjut ke provisioning.'
-                                                        : authResult.message}
+                                            {connectError && (
+                                                <p className="flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm wrap-break-word text-red-600 dark:text-red-400">
+                                                    <XCircle className="mt-0.5 size-4 shrink-0" />
+                                                    <span className="min-w-0">
+                                                        {connectError}
+                                                    </span>
                                                 </p>
                                             )}
                                         </CardContent>
                                     </Card>
 
-                                    <Card
-                                        className={
-                                            !unlocked ? 'opacity-60' : undefined
-                                        }
-                                    >
-                                        <CardHeader>
-                                            <CardTitle>
-                                                Provisioning Logger
-                                            </CardTitle>
-                                        </CardHeader>
-                                        <CardContent>
-                                            <form
-                                                onSubmit={handleProvision}
-                                                className="grid gap-4 sm:grid-cols-3"
-                                            >
-                                                <div className="space-y-2">
-                                                    <Label>
-                                                        Serial Number{' '}
-                                                        <span className="text-red-500">
-                                                            *
-                                                        </span>
-                                                    </Label>
-                                                    <Input
-                                                        value={sn}
-                                                        onChange={(e) =>
-                                                            setSn(
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        disabled={!unlocked}
-                                                        required
-                                                        maxLength={31}
-                                                        placeholder="mis. 2604010601006006"
-                                                    />
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <Label>
-                                                        Device ID{' '}
-                                                        <span className="text-red-500">
-                                                            *
-                                                        </span>
-                                                    </Label>
-                                                    <Input
-                                                        value={deviceId}
-                                                        onChange={(e) =>
-                                                            setDeviceId(
-                                                                e.target.value.replace(
-                                                                    /[^0-9]/g,
-                                                                    '',
-                                                                ),
-                                                            )
-                                                        }
-                                                        disabled={!unlocked}
-                                                        required
-                                                        inputMode="numeric"
-                                                        placeholder="mis. 30001"
-                                                    />
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <Label>
-                                                        Nama Bluetooth
-                                                        (opsional)
-                                                    </Label>
-                                                    <Input
-                                                        value={btName}
-                                                        onChange={(e) =>
-                                                            setBtName(
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        disabled={!unlocked}
-                                                        maxLength={32}
-                                                        placeholder="mis. BL-1100-v2_016"
-                                                    />
-                                                    <p className="text-xs text-muted-foreground">
-                                                        Kosongkan untuk fallback
-                                                        otomatis ke{' '}
-                                                        <code>
-                                                            Logger_&#123;id&#125;
-                                                        </code>
-                                                        .
-                                                    </p>
-                                                </div>
-
-                                                <div className="sm:col-span-3">
-                                                    <p className="text-sm font-medium">
-                                                        Data Produksi (opsional)
-                                                    </p>
-                                                </div>
-
-                                                <div className="space-y-2">
-                                                    <Label>Model</Label>
-                                                    <Select
-                                                        value={model}
-                                                        onValueChange={setModel}
-                                                        disabled={!unlocked}
+                                    {connected && (
+                                        <>
+                                            <Card>
+                                                <CardHeader>
+                                                    <CardTitle className="flex items-center gap-2">
+                                                        {unlocked ? (
+                                                            <LockOpen className="size-5" />
+                                                        ) : (
+                                                            <Lock className="size-5" />
+                                                        )}
+                                                        Buka Kunci (AUTH)
+                                                    </CardTitle>
+                                                </CardHeader>
+                                                <CardContent>
+                                                    <form
+                                                        onSubmit={handleAuth}
+                                                        className="flex flex-col gap-3 sm:flex-row sm:items-end"
                                                     >
-                                                        <SelectTrigger className="w-full">
-                                                            <SelectValue placeholder="Select model" />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {deviceModels.map(
-                                                                (m) => (
-                                                                    <SelectItem
-                                                                        key={m}
-                                                                        value={
-                                                                            m
-                                                                        }
-                                                                    >
-                                                                        {m}
-                                                                    </SelectItem>
-                                                                ),
+                                                        <div className="flex-1 space-y-2">
+                                                            <Label>PIN</Label>
+                                                            <Input
+                                                                type="password"
+                                                                value={pin}
+                                                                onChange={(e) =>
+                                                                    setPin(
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !connected
+                                                                }
+                                                                required
+                                                                placeholder="Masukkan PIN akses"
+                                                            />
+                                                        </div>
+                                                        <Button
+                                                            type="submit"
+                                                            disabled={
+                                                                !connected ||
+                                                                authBusy ||
+                                                                pin.trim() ===
+                                                                    ''
+                                                            }
+                                                            className="gap-1.5"
+                                                        >
+                                                            {authBusy ? (
+                                                                <>
+                                                                    <RefreshCw className="size-4 animate-spin" />
+                                                                    Memeriksa
+                                                                </>
+                                                            ) : (
+                                                                'Buka Kunci'
                                                             )}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <Label>QC Status</Label>
-                                                    <Select
-                                                        value={qcStatus}
-                                                        onValueChange={
-                                                            setQcStatus
-                                                        }
-                                                        disabled={!unlocked}
-                                                    >
-                                                        <SelectTrigger className="w-full">
-                                                            <SelectValue />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            <SelectItem value="pending">
-                                                                Pending
-                                                            </SelectItem>
-                                                            <SelectItem value="passed">
-                                                                Passed
-                                                            </SelectItem>
-                                                            <SelectItem value="failed">
-                                                                Failed
-                                                            </SelectItem>
-                                                        </SelectContent>
-                                                    </Select>
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <Label>
-                                                        Hardware Version
-                                                    </Label>
-                                                    <Input
-                                                        value={hardwareVersion}
-                                                        onChange={(e) =>
-                                                            setHardwareVersion(
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        disabled={!unlocked}
-                                                        maxLength={50}
-                                                        placeholder="mis. v4.0"
-                                                    />
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <Label>
-                                                        Production Date
-                                                    </Label>
-                                                    <Input
-                                                        type="date"
-                                                        value={productionDate}
-                                                        onChange={(e) =>
-                                                            setProductionDate(
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        disabled={!unlocked}
-                                                    />
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <Label>Tested By</Label>
-                                                    <Input
-                                                        value={testedBy}
-                                                        onChange={(e) =>
-                                                            setTestedBy(
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        disabled={!unlocked}
-                                                        maxLength={255}
-                                                        placeholder="mis. QC Team A"
-                                                    />
-                                                </div>
-                                                <div className="space-y-2 sm:col-span-3">
-                                                    <Label>Notes</Label>
-                                                    <Textarea
-                                                        value={notes}
-                                                        onChange={(e) =>
-                                                            setNotes(
-                                                                e.target.value,
-                                                            )
-                                                        }
-                                                        disabled={!unlocked}
-                                                        rows={2}
-                                                        placeholder="Catatan opsional tentang unit ini…"
-                                                    />
-                                                </div>
+                                                        </Button>
+                                                    </form>
+                                                    {authResult && (
+                                                        <p
+                                                            className={`mt-3 flex items-center gap-1.5 text-sm ${
+                                                                authResult.ok
+                                                                    ? 'text-emerald-600 dark:text-emerald-400'
+                                                                    : 'text-red-600 dark:text-red-400'
+                                                            }`}
+                                                        >
+                                                            {authResult.ok ? (
+                                                                <CheckCircle2 className="size-4" />
+                                                            ) : (
+                                                                <XCircle className="size-4" />
+                                                            )}
+                                                            {authResult.ok
+                                                                ? 'Kunci terbuka. Silakan lanjut ke provisioning.'
+                                                                : authResult.message}
+                                                        </p>
+                                                    )}
+                                                </CardContent>
+                                            </Card>
 
-                                                <div className="sm:col-span-3">
+                                            <Card
+                                                className={
+                                                    !unlocked
+                                                        ? 'opacity-60'
+                                                        : undefined
+                                                }
+                                            >
+                                                <CardHeader>
+                                                    <CardTitle>
+                                                        Provisioning Logger
+                                                    </CardTitle>
+                                                </CardHeader>
+                                                <CardContent>
+                                                    <form
+                                                        onSubmit={
+                                                            handleProvision
+                                                        }
+                                                        className="grid gap-4 sm:grid-cols-3"
+                                                    >
+                                                        <div className="space-y-2">
+                                                            <Label>
+                                                                Serial Number{' '}
+                                                                <span className="text-red-500">
+                                                                    *
+                                                                </span>
+                                                            </Label>
+                                                            <Input
+                                                                value={sn}
+                                                                onChange={(e) =>
+                                                                    setSn(
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                                required
+                                                                maxLength={31}
+                                                                placeholder="mis. 2604010601006006"
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <Label>
+                                                                Device ID{' '}
+                                                                <span className="text-red-500">
+                                                                    *
+                                                                </span>
+                                                            </Label>
+                                                            <Input
+                                                                value={deviceId}
+                                                                onChange={(e) =>
+                                                                    setDeviceId(
+                                                                        e.target.value.replace(
+                                                                            /[^0-9]/g,
+                                                                            '',
+                                                                        ),
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                                required
+                                                                inputMode="numeric"
+                                                                placeholder="mis. 30001"
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <Label>
+                                                                Nama Bluetooth
+                                                                (opsional)
+                                                            </Label>
+                                                            <Input
+                                                                value={btName}
+                                                                onChange={(e) =>
+                                                                    setBtName(
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                                maxLength={32}
+                                                                placeholder="mis. BL-1100-v2_016"
+                                                            />
+                                                            <p className="text-xs text-muted-foreground">
+                                                                Kosongkan untuk
+                                                                fallback
+                                                                otomatis ke{' '}
+                                                                <code>
+                                                                    Logger_&#123;id&#125;
+                                                                </code>
+                                                                .
+                                                            </p>
+                                                        </div>
+
+                                                        <div className="sm:col-span-3">
+                                                            <p className="text-sm font-medium">
+                                                                Data Produksi
+                                                                (opsional)
+                                                            </p>
+                                                        </div>
+
+                                                        <div className="space-y-2">
+                                                            <Label>Model</Label>
+                                                            <Select
+                                                                value={model}
+                                                                onValueChange={
+                                                                    setModel
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                            >
+                                                                <SelectTrigger className="w-full">
+                                                                    <SelectValue placeholder="Select model" />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    {deviceModels.map(
+                                                                        (m) => (
+                                                                            <SelectItem
+                                                                                key={
+                                                                                    m
+                                                                                }
+                                                                                value={
+                                                                                    m
+                                                                                }
+                                                                            >
+                                                                                {
+                                                                                    m
+                                                                                }
+                                                                            </SelectItem>
+                                                                        ),
+                                                                    )}
+                                                                </SelectContent>
+                                                            </Select>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <Label>
+                                                                QC Status
+                                                            </Label>
+                                                            <Select
+                                                                value={qcStatus}
+                                                                onValueChange={
+                                                                    setQcStatus
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                            >
+                                                                <SelectTrigger className="w-full">
+                                                                    <SelectValue />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    <SelectItem value="pending">
+                                                                        Pending
+                                                                    </SelectItem>
+                                                                    <SelectItem value="passed">
+                                                                        Passed
+                                                                    </SelectItem>
+                                                                    <SelectItem value="failed">
+                                                                        Failed
+                                                                    </SelectItem>
+                                                                </SelectContent>
+                                                            </Select>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <Label>
+                                                                Hardware Version
+                                                            </Label>
+                                                            <Input
+                                                                value={
+                                                                    hardwareVersion
+                                                                }
+                                                                onChange={(e) =>
+                                                                    setHardwareVersion(
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                                maxLength={50}
+                                                                placeholder="mis. v4.0"
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <Label>
+                                                                Production Date
+                                                            </Label>
+                                                            <Input
+                                                                type="date"
+                                                                value={
+                                                                    productionDate
+                                                                }
+                                                                onChange={(e) =>
+                                                                    setProductionDate(
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <Label>
+                                                                Tested By
+                                                            </Label>
+                                                            <Input
+                                                                value={testedBy}
+                                                                onChange={(e) =>
+                                                                    setTestedBy(
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                                maxLength={255}
+                                                                placeholder="mis. QC Team A"
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-2 sm:col-span-3">
+                                                            <Label>Notes</Label>
+                                                            <Textarea
+                                                                value={notes}
+                                                                onChange={(e) =>
+                                                                    setNotes(
+                                                                        e.target
+                                                                            .value,
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    !unlocked
+                                                                }
+                                                                rows={2}
+                                                                placeholder="Catatan opsional tentang unit ini…"
+                                                            />
+                                                        </div>
+
+                                                        <div className="sm:col-span-3">
+                                                            <Button
+                                                                type="submit"
+                                                                disabled={
+                                                                    !unlocked ||
+                                                                    provisionBusy ||
+                                                                    sn.trim() ===
+                                                                        '' ||
+                                                                    deviceId.trim() ===
+                                                                        ''
+                                                                }
+                                                                className="gap-1.5"
+                                                            >
+                                                                {provisionBusy ? (
+                                                                    <>
+                                                                        <Loader2 className="size-4 animate-spin" />
+                                                                        Menulis…
+                                                                    </>
+                                                                ) : (
+                                                                    'Tulis ke Logger'
+                                                                )}
+                                                            </Button>
+                                                        </div>
+                                                    </form>
+                                                </CardContent>
+                                            </Card>
+
+                                            <Dialog
+                                                open={provisionModalOpen}
+                                                onOpenChange={(open) => {
+                                                    // Jangan tutup selagi proses berjalan.
+                                                    if (!provisionBusy)
+                                                        setProvisionModalOpen(
+                                                            open,
+                                                        );
+                                                }}
+                                            >
+                                                <DialogContent
+                                                    className="max-h-[85vh] overflow-y-auto sm:max-w-lg"
+                                                    onInteractOutside={(e) => {
+                                                        // Sama seperti dialog sync: jangan biarkan klik luar menutup
+                                                        // dialog selagi proses tulis berjalan.
+                                                        if (provisionBusy)
+                                                            e.preventDefault();
+                                                    }}
+                                                >
+                                                    <DialogHeader>
+                                                        <DialogTitle>
+                                                            Menulis ke Logger
+                                                        </DialogTitle>
+                                                        <DialogDescription>
+                                                            SN {sn || '-'} · ID{' '}
+                                                            {deviceId || '-'}
+                                                            {btName.trim() !==
+                                                            ''
+                                                                ? ` · ${btName.trim()}`
+                                                                : ''}
+                                                        </DialogDescription>
+                                                    </DialogHeader>
+
+                                                    <div className="py-4">
+                                                        <div className="mb-6 space-y-2">
+                                                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                                <span>
+                                                                    Overall
+                                                                    Progress
+                                                                </span>
+                                                                <span className="font-mono">
+                                                                    {
+                                                                        overallProgress
+                                                                    }
+                                                                    %
+                                                                </span>
+                                                            </div>
+                                                            <Progress
+                                                                value={
+                                                                    overallProgress
+                                                                }
+                                                                className={`h-2 [&>div]:transition-all [&>div]:duration-200 ${
+                                                                    provisionErrored
+                                                                        ? '[&>div]:bg-red-500'
+                                                                        : '[&>div]:bg-emerald-500'
+                                                                }`}
+                                                            />
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            {PROVISION_STEPS.map(
+                                                                (
+                                                                    step,
+                                                                    index,
+                                                                ) => {
+                                                                    const isDone =
+                                                                        index <
+                                                                            provisionDone ||
+                                                                        (provisionResult?.ok ??
+                                                                            false);
+                                                                    const isError =
+                                                                        provisionErrored &&
+                                                                        index ===
+                                                                            provisionDone;
+                                                                    const isActive =
+                                                                        provisionBusy &&
+                                                                        !provisionErrored &&
+                                                                        index ===
+                                                                            provisionDone;
+                                                                    const StepIcon =
+                                                                        step.icon;
+
+                                                                    return (
+                                                                        <div
+                                                                            key={
+                                                                                step.label
+                                                                            }
+                                                                            className={`flex items-center gap-4 rounded-lg border px-4 py-3 transition-all duration-300 ${
+                                                                                isError
+                                                                                    ? 'border-red-500/40 bg-red-500/5 shadow-sm'
+                                                                                    : isActive
+                                                                                      ? 'border-emerald-500/40 bg-emerald-500/5 shadow-sm'
+                                                                                      : isDone
+                                                                                        ? 'border-emerald-500/20 bg-emerald-500/5'
+                                                                                        : 'border-transparent'
+                                                                            }`}
+                                                                        >
+                                                                            <div
+                                                                                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-all duration-300 ${
+                                                                                    isError
+                                                                                        ? 'bg-red-500/10 text-red-500'
+                                                                                        : isDone
+                                                                                          ? 'bg-emerald-500/20 text-emerald-500'
+                                                                                          : isActive
+                                                                                            ? 'bg-emerald-500/10 text-emerald-500'
+                                                                                            : 'bg-muted text-muted-foreground'
+                                                                                }`}
+                                                                            >
+                                                                                {isError ? (
+                                                                                    <XCircle className="size-5" />
+                                                                                ) : isDone ? (
+                                                                                    <Check className="size-5 animate-in duration-300 fade-in zoom-in" />
+                                                                                ) : isActive ? (
+                                                                                    <Loader2 className="size-5 animate-spin" />
+                                                                                ) : (
+                                                                                    <StepIcon className="size-5" />
+                                                                                )}
+                                                                            </div>
+                                                                            <div className="min-w-0 flex-1">
+                                                                                <p
+                                                                                    className={`text-sm font-medium transition-colors duration-200 ${
+                                                                                        isError
+                                                                                            ? 'text-red-600 dark:text-red-400'
+                                                                                            : isDone
+                                                                                              ? 'text-emerald-600 dark:text-emerald-400'
+                                                                                              : isActive
+                                                                                                ? 'text-foreground'
+                                                                                                : 'text-muted-foreground'
+                                                                                    }`}
+                                                                                >
+                                                                                    {
+                                                                                        step.label
+                                                                                    }
+                                                                                </p>
+                                                                                {isActive && (
+                                                                                    <>
+                                                                                        <p className="mt-0.5 animate-in text-xs text-muted-foreground duration-200 fade-in slide-in-from-left-2">
+                                                                                            {
+                                                                                                step.description
+                                                                                            }
+                                                                                        </p>
+                                                                                        <div className="mt-2">
+                                                                                            <Progress
+                                                                                                value={
+                                                                                                    stepProgress
+                                                                                                }
+                                                                                                className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100"
+                                                                                            />
+                                                                                        </div>
+                                                                                    </>
+                                                                                )}
+                                                                            </div>
+                                                                            {isDone && (
+                                                                                <CheckCircle2 className="size-4 shrink-0 animate-in text-emerald-500 duration-300 fade-in zoom-in" />
+                                                                            )}
+                                                                        </div>
+                                                                    );
+                                                                },
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {provisionResult && (
+                                                        <div
+                                                            className={`flex items-center gap-2 rounded-md border p-3 text-sm ${
+                                                                provisionResult.ok
+                                                                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                                                    : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
+                                                            }`}
+                                                        >
+                                                            {provisionResult.ok ? (
+                                                                <CheckCircle2 className="size-4" />
+                                                            ) : (
+                                                                <XCircle className="size-4" />
+                                                            )}
+                                                            {provisionResult.ok
+                                                                ? 'Berhasil ditulis ke logger.'
+                                                                : provisionResult.message}
+                                                        </div>
+                                                    )}
+
+                                                    {registerState && (
+                                                        <div
+                                                            className={`flex items-center gap-2 rounded-md border p-3 text-sm ${
+                                                                registerState.status ===
+                                                                'error'
+                                                                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                                                    : registerState.status ===
+                                                                        'saving'
+                                                                      ? 'border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300'
+                                                                      : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                                            }`}
+                                                        >
+                                                            {registerState.status ===
+                                                            'saving' ? (
+                                                                <Loader2 className="size-4 shrink-0 animate-spin" />
+                                                            ) : registerState.status ===
+                                                              'error' ? (
+                                                                <AlertTriangle className="size-4 shrink-0" />
+                                                            ) : (
+                                                                <CheckCircle2 className="size-4 shrink-0" />
+                                                            )}
+                                                            {registerState.status ===
+                                                            'saving'
+                                                                ? 'Menyimpan ke daftar Production…'
+                                                                : registerState.status ===
+                                                                    'created'
+                                                                  ? `Otomatis tercatat di daftar Production (QC: ${qcStatus}).`
+                                                                  : registerState.status ===
+                                                                      'updated'
+                                                                    ? 'Data di daftar Production diperbarui (SN sudah terdaftar).'
+                                                                    : `Logger sudah ditulis, tapi gagal dicatat ke daftar Production: ${registerState.message}`}
+                                                        </div>
+                                                    )}
+
+                                                    <DialogFooter>
+                                                        {registerState?.status ===
+                                                            'error' &&
+                                                            provisionResult?.ok && (
+                                                                <Button
+                                                                    type="button"
+                                                                    variant="outline"
+                                                                    onClick={
+                                                                        registerToProduction
+                                                                    }
+                                                                >
+                                                                    <RefreshCw className="mr-2 size-4" />
+                                                                    Coba simpan
+                                                                    lagi
+                                                                </Button>
+                                                            )}
+                                                        <Button
+                                                            type="button"
+                                                            variant={
+                                                                provisionResult &&
+                                                                !provisionResult.ok
+                                                                    ? 'outline'
+                                                                    : 'default'
+                                                            }
+                                                            disabled={
+                                                                provisionBusy
+                                                            }
+                                                            onClick={() =>
+                                                                setProvisionModalOpen(
+                                                                    false,
+                                                                )
+                                                            }
+                                                        >
+                                                            {provisionBusy ? (
+                                                                <>
+                                                                    <Loader2 className="mr-2 size-4 animate-spin" />
+                                                                    Memproses…
+                                                                </>
+                                                            ) : (
+                                                                'Tutup'
+                                                            )}
+                                                        </Button>
+                                                    </DialogFooter>
+                                                </DialogContent>
+                                            </Dialog>
+
+                                            <Card
+                                                className={
+                                                    !connected
+                                                        ? 'opacity-60'
+                                                        : undefined
+                                                }
+                                            >
+                                                <CardHeader>
+                                                    <CardTitle>
+                                                        Verifikasi
+                                                    </CardTitle>
+                                                </CardHeader>
+                                                <CardContent className="space-y-3">
                                                     <Button
-                                                        type="submit"
+                                                        variant="outline"
+                                                        onClick={handleVerify}
                                                         disabled={
-                                                            !unlocked ||
-                                                            provisionBusy ||
-                                                            sn.trim() === '' ||
-                                                            deviceId.trim() ===
-                                                                ''
+                                                            !connected ||
+                                                            verifyBusy
                                                         }
                                                         className="gap-1.5"
                                                     >
-                                                        {provisionBusy ? (
+                                                        {verifyBusy ? (
                                                             <>
-                                                                <Loader2 className="size-4 animate-spin" />
-                                                                Menulis…
+                                                                <RefreshCw className="size-4 animate-spin" />
+                                                                Membaca
                                                             </>
                                                         ) : (
-                                                            'Tulis ke Logger'
+                                                            'Baca Info Logger'
                                                         )}
                                                     </Button>
-                                                </div>
-                                            </form>
-                                        </CardContent>
-                                    </Card>
-
-                                    <Dialog
-                                        open={provisionModalOpen}
-                                        onOpenChange={(open) => {
-                                            // Jangan tutup selagi proses berjalan.
-                                            if (!provisionBusy)
-                                                setProvisionModalOpen(open);
-                                        }}
-                                    >
-                                        <DialogContent
-                                            className="max-h-[85vh] overflow-y-auto sm:max-w-lg"
-                                            onInteractOutside={(e) => {
-                                                // Sama seperti dialog sync: jangan biarkan klik luar menutup
-                                                // dialog selagi proses tulis berjalan.
-                                                if (provisionBusy)
-                                                    e.preventDefault();
-                                            }}
-                                        >
-                                            <DialogHeader>
-                                                <DialogTitle>
-                                                    Menulis ke Logger
-                                                </DialogTitle>
-                                                <DialogDescription>
-                                                    SN {sn || '-'} · ID{' '}
-                                                    {deviceId || '-'}
-                                                    {btName.trim() !== ''
-                                                        ? ` · ${btName.trim()}`
-                                                        : ''}
-                                                </DialogDescription>
-                                            </DialogHeader>
-
-                                            <div className="py-4">
-                                                <div className="mb-6 space-y-2">
-                                                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                                        <span>
-                                                            Overall Progress
-                                                        </span>
-                                                        <span className="font-mono">
-                                                            {overallProgress}%
-                                                        </span>
-                                                    </div>
-                                                    <Progress
-                                                        value={overallProgress}
-                                                        className={`h-2 [&>div]:transition-all [&>div]:duration-200 ${
-                                                            provisionErrored
-                                                                ? '[&>div]:bg-red-500'
-                                                                : '[&>div]:bg-emerald-500'
-                                                        }`}
-                                                    />
-                                                </div>
-                                                <div className="space-y-1">
-                                                    {PROVISION_STEPS.map(
-                                                        (step, index) => {
-                                                            const isDone =
-                                                                index <
-                                                                    provisionDone ||
-                                                                (provisionResult?.ok ??
-                                                                    false);
-                                                            const isError =
-                                                                provisionErrored &&
-                                                                index ===
-                                                                    provisionDone;
-                                                            const isActive =
-                                                                provisionBusy &&
-                                                                !provisionErrored &&
-                                                                index ===
-                                                                    provisionDone;
-                                                            const StepIcon =
-                                                                step.icon;
-
-                                                            return (
-                                                                <div
-                                                                    key={
-                                                                        step.label
-                                                                    }
-                                                                    className={`flex items-center gap-4 rounded-lg border px-4 py-3 transition-all duration-300 ${
-                                                                        isError
-                                                                            ? 'border-red-500/40 bg-red-500/5 shadow-sm'
-                                                                            : isActive
-                                                                              ? 'border-emerald-500/40 bg-emerald-500/5 shadow-sm'
-                                                                              : isDone
-                                                                                ? 'border-emerald-500/20 bg-emerald-500/5'
-                                                                                : 'border-transparent'
-                                                                    }`}
-                                                                >
-                                                                    <div
-                                                                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-all duration-300 ${
-                                                                            isError
-                                                                                ? 'bg-red-500/10 text-red-500'
-                                                                                : isDone
-                                                                                  ? 'bg-emerald-500/20 text-emerald-500'
-                                                                                  : isActive
-                                                                                    ? 'bg-emerald-500/10 text-emerald-500'
-                                                                                    : 'bg-muted text-muted-foreground'
-                                                                        }`}
-                                                                    >
-                                                                        {isError ? (
-                                                                            <XCircle className="size-5" />
-                                                                        ) : isDone ? (
-                                                                            <Check className="size-5 animate-in duration-300 fade-in zoom-in" />
-                                                                        ) : isActive ? (
-                                                                            <Loader2 className="size-5 animate-spin" />
-                                                                        ) : (
-                                                                            <StepIcon className="size-5" />
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="min-w-0 flex-1">
-                                                                        <p
-                                                                            className={`text-sm font-medium transition-colors duration-200 ${
-                                                                                isError
-                                                                                    ? 'text-red-600 dark:text-red-400'
-                                                                                    : isDone
-                                                                                      ? 'text-emerald-600 dark:text-emerald-400'
-                                                                                      : isActive
-                                                                                        ? 'text-foreground'
-                                                                                        : 'text-muted-foreground'
-                                                                            }`}
-                                                                        >
-                                                                            {
-                                                                                step.label
-                                                                            }
-                                                                        </p>
-                                                                        {isActive && (
-                                                                            <>
-                                                                                <p className="mt-0.5 animate-in text-xs text-muted-foreground duration-200 fade-in slide-in-from-left-2">
-                                                                                    {
-                                                                                        step.description
-                                                                                    }
-                                                                                </p>
-                                                                                <div className="mt-2">
-                                                                                    <Progress
-                                                                                        value={
-                                                                                            stepProgress
-                                                                                        }
-                                                                                        className="h-1 [&>div]:bg-emerald-500 [&>div]:transition-all [&>div]:duration-100"
-                                                                                    />
-                                                                                </div>
-                                                                            </>
-                                                                        )}
-                                                                    </div>
-                                                                    {isDone && (
-                                                                        <CheckCircle2 className="size-4 shrink-0 animate-in text-emerald-500 duration-300 fade-in zoom-in" />
-                                                                    )}
+                                                    {verifyError && (
+                                                        <p className="flex items-center gap-1.5 text-sm text-red-600 dark:text-red-400">
+                                                            <XCircle className="size-4" />
+                                                            {verifyError}
+                                                        </p>
+                                                    )}
+                                                    {verifyResult && (
+                                                        <div className="grid gap-3 text-sm sm:grid-cols-3">
+                                                            <div>
+                                                                <div className="text-muted-foreground">
+                                                                    Serial
+                                                                    Number
                                                                 </div>
-                                                            );
-                                                        },
+                                                                <div
+                                                                    className={`font-medium ${snMismatch ? 'text-red-600 dark:text-red-400' : ''}`}
+                                                                >
+                                                                    {verifyResult.sn ||
+                                                                        '-'}
+                                                                </div>
+                                                            </div>
+                                                            <div>
+                                                                <div className="text-muted-foreground">
+                                                                    Device ID
+                                                                </div>
+                                                                <div
+                                                                    className={`font-medium ${idMismatch ? 'text-red-600 dark:text-red-400' : ''}`}
+                                                                >
+                                                                    {verifyResult.id ||
+                                                                        '-'}
+                                                                </div>
+                                                            </div>
+                                                            <div>
+                                                                <div className="text-muted-foreground">
+                                                                    Telemetry
+                                                                    Topic
+                                                                </div>
+                                                                <div className="font-medium">
+                                                                    {verifyResult.topic ||
+                                                                        '-'}
+                                                                </div>
+                                                            </div>
+                                                        </div>
                                                     )}
-                                                </div>
-                                            </div>
-
-                                            {provisionResult && (
-                                                <div
-                                                    className={`flex items-center gap-2 rounded-md border p-3 text-sm ${
-                                                        provisionResult.ok
-                                                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                                            : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
-                                                    }`}
-                                                >
-                                                    {provisionResult.ok ? (
-                                                        <CheckCircle2 className="size-4" />
-                                                    ) : (
-                                                        <XCircle className="size-4" />
-                                                    )}
-                                                    {provisionResult.ok
-                                                        ? 'Berhasil ditulis ke logger.'
-                                                        : provisionResult.message}
-                                                </div>
-                                            )}
-
-                                            {registerState && (
-                                                <div
-                                                    className={`flex items-center gap-2 rounded-md border p-3 text-sm ${
-                                                        registerState.status ===
-                                                        'error'
-                                                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                                                            : registerState.status ===
-                                                                'saving'
-                                                              ? 'border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300'
-                                                              : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                                    }`}
-                                                >
-                                                    {registerState.status ===
-                                                    'saving' ? (
-                                                        <Loader2 className="size-4 shrink-0 animate-spin" />
-                                                    ) : registerState.status ===
-                                                      'error' ? (
-                                                        <AlertTriangle className="size-4 shrink-0" />
-                                                    ) : (
-                                                        <CheckCircle2 className="size-4 shrink-0" />
-                                                    )}
-                                                    {registerState.status ===
-                                                    'saving'
-                                                        ? 'Menyimpan ke daftar Production…'
-                                                        : registerState.status ===
-                                                            'created'
-                                                          ? `Otomatis tercatat di daftar Production (QC: ${qcStatus}).`
-                                                          : registerState.status ===
-                                                              'updated'
-                                                            ? 'Data di daftar Production diperbarui (SN sudah terdaftar).'
-                                                            : `Logger sudah ditulis, tapi gagal dicatat ke daftar Production: ${registerState.message}`}
-                                                </div>
-                                            )}
-
-                                            <DialogFooter>
-                                                {registerState?.status ===
-                                                    'error' &&
-                                                    provisionResult?.ok && (
-                                                        <Button
-                                                            type="button"
-                                                            variant="outline"
-                                                            onClick={
-                                                                registerToProduction
-                                                            }
-                                                        >
-                                                            <RefreshCw className="mr-2 size-4" />
-                                                            Coba simpan lagi
-                                                        </Button>
-                                                    )}
-                                                <Button
-                                                    type="button"
-                                                    variant={
-                                                        provisionResult &&
-                                                        !provisionResult.ok
-                                                            ? 'outline'
-                                                            : 'default'
-                                                    }
-                                                    disabled={provisionBusy}
-                                                    onClick={() =>
-                                                        setProvisionModalOpen(
-                                                            false,
-                                                        )
-                                                    }
-                                                >
-                                                    {provisionBusy ? (
-                                                        <>
-                                                            <Loader2 className="mr-2 size-4 animate-spin" />
-                                                            Memproses…
-                                                        </>
-                                                    ) : (
-                                                        'Tutup'
-                                                    )}
-                                                </Button>
-                                            </DialogFooter>
-                                        </DialogContent>
-                                    </Dialog>
-
-                                    <Card
-                                        className={
-                                            !connected
-                                                ? 'opacity-60'
-                                                : undefined
-                                        }
-                                    >
-                                        <CardHeader>
-                                            <CardTitle>Verifikasi</CardTitle>
-                                        </CardHeader>
-                                        <CardContent className="space-y-3">
-                                            <Button
-                                                variant="outline"
-                                                onClick={handleVerify}
-                                                disabled={
-                                                    !connected || verifyBusy
-                                                }
-                                                className="gap-1.5"
-                                            >
-                                                {verifyBusy ? (
-                                                    <>
-                                                        <RefreshCw className="size-4 animate-spin" />
-                                                        Membaca
-                                                    </>
-                                                ) : (
-                                                    'Baca Info Logger'
-                                                )}
-                                            </Button>
-                                            {verifyError && (
-                                                <p className="flex items-center gap-1.5 text-sm text-red-600 dark:text-red-400">
-                                                    <XCircle className="size-4" />
-                                                    {verifyError}
-                                                </p>
-                                            )}
-                                            {verifyResult && (
-                                                <div className="grid gap-3 text-sm sm:grid-cols-3">
-                                                    <div>
-                                                        <div className="text-muted-foreground">
-                                                            Serial Number
-                                                        </div>
-                                                        <div
-                                                            className={`font-medium ${snMismatch ? 'text-red-600 dark:text-red-400' : ''}`}
-                                                        >
-                                                            {verifyResult.sn ||
-                                                                '-'}
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <div className="text-muted-foreground">
-                                                            Device ID
-                                                        </div>
-                                                        <div
-                                                            className={`font-medium ${idMismatch ? 'text-red-600 dark:text-red-400' : ''}`}
-                                                        >
-                                                            {verifyResult.id ||
-                                                                '-'}
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <div className="text-muted-foreground">
-                                                            Telemetry Topic
-                                                        </div>
-                                                        <div className="font-medium">
-                                                            {verifyResult.topic ||
-                                                                '-'}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </CardContent>
-                                    </Card>
-                                </>
+                                                </CardContent>
+                                            </Card>
+                                        </>
+                                    )}
+                                </div>
                             )}
-                        </div>
-                    )}
 
-                    <Card className="gap-2 self-start py-3">
-                        <CardHeader className="px-3 pb-0">
-                            <CardTitle className="text-base">
-                                Riwayat Setup
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent className="px-3">
-                            {usbProvisionedLoggers.length > 0 ? (
-                                <div className="grid gap-2">
-                                    {usbProvisionedLoggers.map((item) => (
-                                        <div
-                                            key={`${item.serialNumber}-${item.deviceId || ''}`}
-                                            className="flex items-start justify-between gap-2 rounded-lg border p-2.5"
-                                        >
-                                            <div className="min-w-0 flex-1">
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <p className="truncate text-sm font-semibold">
-                                                        {item.logger?.name ||
-                                                            item.serialNumber}
-                                                    </p>
-                                                    {item.logger ? (
-                                                        <Badge
-                                                            variant="outline"
-                                                            className={`capitalize ${loggerStatusClass(item.logger.status)}`}
-                                                        >
-                                                            {item.logger.status}
-                                                        </Badge>
-                                                    ) : (
-                                                        <Badge variant="secondary">
-                                                            Belum jadi logger
-                                                        </Badge>
-                                                    )}
-                                                </div>
-                                                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                                                    <span className="font-mono">
-                                                        {item.serialNumber}
-                                                    </span>
-                                                    {item.deviceId && (
-                                                        <span className="font-mono">
-                                                            ID {item.deviceId}
-                                                        </span>
-                                                    )}
-                                                    {item.model && (
-                                                        <span>
-                                                            {item.model}
-                                                        </span>
-                                                    )}
-                                                    {item.logger
-                                                        ?.projectName && (
-                                                        <span>
-                                                            {
-                                                                item.logger
-                                                                    .projectName
-                                                            }
-                                                        </span>
-                                                    )}
-                                                    {item.provisionedAt && (
-                                                        <span>
-                                                            {item.provisionedAt}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            {item.logger && (
-                                                <Button
-                                                    asChild
-                                                    variant="outline"
-                                                    size="sm"
-                                                    className="shrink-0 gap-1.5"
-                                                >
-                                                    <Link
-                                                        href={`/loggers/${item.logger.id}`}
+                            <Card className="gap-2 self-start py-3">
+                                <CardHeader className="px-3 pb-0">
+                                    <CardTitle className="text-base">
+                                        Riwayat Setup
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent className="px-3">
+                                    {usbProvisionedLoggers.length > 0 ? (
+                                        <div className="grid gap-2">
+                                            {usbProvisionedLoggers.map(
+                                                (item) => (
+                                                    <div
+                                                        key={`${item.serialNumber}-${item.deviceId || ''}`}
+                                                        className="flex items-start justify-between gap-2 rounded-lg border p-2.5"
                                                     >
-                                                        Detail
-                                                        <ExternalLink className="size-3.5" />
-                                                    </Link>
-                                                </Button>
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                <p className="truncate text-sm font-semibold">
+                                                                    {item.logger
+                                                                        ?.name ||
+                                                                        item.serialNumber}
+                                                                </p>
+                                                                {item.logger ? (
+                                                                    <Badge
+                                                                        variant="outline"
+                                                                        className={`capitalize ${loggerStatusClass(item.logger.status)}`}
+                                                                    >
+                                                                        {
+                                                                            item
+                                                                                .logger
+                                                                                .status
+                                                                        }
+                                                                    </Badge>
+                                                                ) : (
+                                                                    <Badge variant="secondary">
+                                                                        Belum
+                                                                        jadi
+                                                                        logger
+                                                                    </Badge>
+                                                                )}
+                                                            </div>
+                                                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                                                                <span className="font-mono">
+                                                                    {
+                                                                        item.serialNumber
+                                                                    }
+                                                                </span>
+                                                                {item.deviceId && (
+                                                                    <span className="font-mono">
+                                                                        ID{' '}
+                                                                        {
+                                                                            item.deviceId
+                                                                        }
+                                                                    </span>
+                                                                )}
+                                                                {item.model && (
+                                                                    <span>
+                                                                        {
+                                                                            item.model
+                                                                        }
+                                                                    </span>
+                                                                )}
+                                                                {item.logger
+                                                                    ?.projectName && (
+                                                                    <span>
+                                                                        {
+                                                                            item
+                                                                                .logger
+                                                                                .projectName
+                                                                        }
+                                                                    </span>
+                                                                )}
+                                                                {item.provisionedAt && (
+                                                                    <span>
+                                                                        {
+                                                                            item.provisionedAt
+                                                                        }
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        {item.logger && (
+                                                            <Button
+                                                                asChild
+                                                                variant="outline"
+                                                                size="sm"
+                                                                className="shrink-0 gap-1.5"
+                                                            >
+                                                                <Link
+                                                                    href={`/loggers/${item.logger.id}`}
+                                                                >
+                                                                    Detail
+                                                                    <ExternalLink className="size-3.5" />
+                                                                </Link>
+                                                            </Button>
+                                                        )}
+                                                    </div>
+                                                ),
                                             )}
                                         </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <div className="flex flex-col items-center justify-center rounded-lg border px-3 py-8 text-center">
-                                    <Usb className="mb-2 size-7 text-muted-foreground/40" />
-                                    <p className="text-sm font-medium">
-                                        Belum ada logger yang diset lewat USB
-                                    </p>
-                                </div>
-                            )}
-                        </CardContent>
-                    </Card>
-                </div>
+                                    ) : (
+                                        <div className="flex flex-col items-center justify-center rounded-lg border px-3 py-8 text-center">
+                                            <Usb className="mb-2 size-7 text-muted-foreground/40" />
+                                            <p className="text-sm font-medium">
+                                                Belum ada logger yang diset
+                                                lewat USB
+                                            </p>
+                                        </div>
+                                    )}
+                                </CardContent>
+                            </Card>
+                        </div>
+                    </>
+                )}
             </div>
         </AppLayout>
     );

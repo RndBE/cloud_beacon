@@ -89,3 +89,21 @@ test('postJson falls back to the Blade meta token when the XSRF cookie is unavai
     assert.equal(request.options.headers['X-CSRF-TOKEN'], 'meta-token');
     assert.equal(request.options.headers['X-XSRF-TOKEN'], undefined);
 });
+
+test('deleteJson sends a bodyless same-origin DELETE with the XSRF token', async () => {
+    const { deleteJson } = loadHelper();
+    const request = await captureRequest(
+        {
+            cookie: 'XSRF-TOKEN=fresh%3Dtoken',
+            querySelector: () => null,
+        },
+        () => deleteJson('/loggers/abc/security/device'),
+    );
+
+    assert.equal(request.url, '/loggers/abc/security/device');
+    assert.equal(request.options.method, 'DELETE');
+    assert.equal(request.options.credentials, 'same-origin');
+    assert.equal(request.options.headers['X-XSRF-TOKEN'], 'fresh=token');
+    assert.equal(request.options.headers.Accept, 'application/json');
+    assert.equal(request.options.body, undefined);
+});
