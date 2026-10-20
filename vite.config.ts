@@ -21,16 +21,10 @@ export default defineConfig({
             formVariants: true,
         }),
     ],
-    // server: {
-    //     host: '127.0.0.1',
-    //     hmr: {
-    //         host: '127.0.0.1',
-    //     },
-    // },
     server: {
-        host: '0.0.0.0',
+        host: '127.0.0.1',
         hmr: {
-            host: '192.168.12.76',
+            host: '127.0.0.1',
         },
     },
     esbuild: {
