@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+/* global __dirname, global, require */
+
 const assert = require('node:assert/strict');
 const { existsSync } = require('node:fs');
 const path = require('node:path');
