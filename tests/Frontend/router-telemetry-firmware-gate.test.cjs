@@ -16,7 +16,7 @@ const protocolSource = readFileSync(
 
 function loadGate() {
     const start = protocolSource.indexOf('const EWS_OUT_MIN_FIRMWARE');
-    const end = protocolSource.indexOf('function inferBoardVariant');
+    const end = protocolSource.indexOf('function maxDigitalChannel');
     assert.ok(
         start !== -1 && end > start,
         'firmware gate helpers not found in protocol.tsx — did they move or get renamed?',

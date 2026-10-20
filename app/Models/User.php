@@ -69,6 +69,11 @@ class User extends Authenticatable
         return $this->belongsToMany(Role::class, 'role_user');
     }
 
+    public function assistantConversations(): HasMany
+    {
+        return $this->hasMany(AssistantConversation::class);
+    }
+
     public function assignedLoggers(): BelongsToMany
     {
         return $this->belongsToMany(Logger::class, 'logger_user')
