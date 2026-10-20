@@ -130,5 +130,22 @@ test('module sections follow the saved binding, not the form', () => {
     assert.match(src, /\{boundGcmModules\.length > 0 &&\s+actionButton\(\s+'Reset binding'/);
     // A refused SET leaves the saved binding alone; a successful one drops failed slots.
     assert.match(src, /if \(!r\.success\) \{\s+\/\/ Refused[\s\S]*?return;\s+\}\s+const next = inner/);
-    assert.match(src, /setGcmSaved\(withoutGcmSlots\(next, failed\)\);/);
+    assert.match(src, /const saved = withoutGcmSlots\(next, failed\);\s+setGcmSaved\(saved\);/);
+    // The server records what the logger now holds, after SET and after RST.
+    assert.match(src, /setGcmSaved\(saved\);\s+void recordGcmBinding\(saved\);/);
+    assert.match(src, /setGcmSaved\(reset\);\s+void recordGcmBinding\(reset\);/);
+});
+
+test('bound modules sent to the server skip unbound and empty slots', () => {
+    const binding = form({ slave: '6', mode: '1', sn: ` ${SN} ` }, {
+        id3: { slave: '9', mode: '2', sn: 'GCM-2' },
+        id4: { slave: '4', mode: '1', sn: '' },
+    });
+    assert.deepEqual(b.gcmBoundModules(binding), [
+        { slot: 1, slave: 6, sn: SN },
+        { slot: 3, slave: 9, sn: 'GCM-2' },
+    ]);
+    // A slot whose serial-number check failed is not recorded.
+    assert.deepEqual(b.gcmBoundModules(b.withoutGcmSlots(binding, [1])), [{ slot: 3, slave: 9, sn: 'GCM-2' }]);
+    assert.deepEqual(b.gcmBoundModules(form({ ...empty })), []);
 });

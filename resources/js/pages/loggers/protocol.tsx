@@ -123,11 +123,12 @@ import type {
 import {
     buildGcmSet,
     gcmAuthFailures,
+    gcmBoundModules,
     gcmSnError,
     parseGcmBinding,
     withoutGcmSlots,
 } from '@/lib/gcm-binding';
-import type { GcmBindingModule } from '@/lib/gcm-binding';
+import type { GcmBinding, GcmBindingModule } from '@/lib/gcm-binding';
 import { decodeGcmFault, gcmFaultValue } from '@/lib/gcm-fault';
 import type { GcmFaultMode } from '@/lib/gcm-fault';
 import {
@@ -1966,6 +1967,25 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             );
         }
 
+        // Tell the server which GCM units this logger now holds, so Production › Modul shows
+        // them as Registered. The logger already saved the binding, so a failure here only warns.
+        async function recordGcmBinding(binding: GcmBinding) {
+            try {
+                const res = await postJson(
+                    `/loggers/${logger.id}/gcm-binding`,
+                    { modules: gcmBoundModules(binding) },
+                );
+                if (!res.ok) throw new Error(`Server merespons ${res.status}.`);
+            } catch (error) {
+                pushToast({
+                    title: 'Binding GCM belum tercatat di Production',
+                    description:
+                        error instanceof Error ? error.message : String(error),
+                    variant: 'error',
+                });
+            }
+        }
+
         // GCM SET: the logger contacts every bound module (slave + serial number) before it
         // answers, which takes a while — `gcmSetPending` keeps that wait visible. The reply has
         // no serial numbers, so the form keeps the ones it sent.
@@ -1993,7 +2013,9 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             setGcm(next);
             // Slots whose serial number the module did not confirm stay closed.
             const failed = inner ? gcmAuthFailures(inner, next) : [];
-            setGcmSaved(withoutGcmSlots(next, failed));
+            const saved = withoutGcmSlots(next, failed);
+            setGcmSaved(saved);
+            void recordGcmBinding(saved);
             if (failed.length > 0) {
                 pushToast({
                     title: 'Sebagian binding GCM gagal',
@@ -2032,6 +2054,7 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
                   };
             setGcm(reset);
             setGcmSaved(reset);
+            void recordGcmBinding(reset);
             setGcmGateStatus(null);
             setGcmPumpStatus(null);
             setGcmGateCal(null);

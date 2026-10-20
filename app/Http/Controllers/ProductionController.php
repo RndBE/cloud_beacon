@@ -126,6 +126,7 @@ class ProductionController extends Controller
             // The Modul view sets up Security System units registered in Production › Modul.
             'modules' => SecurityStockController::rows()->values(),
             'moduleFirmwares' => ModuleFirmwareController::rows(),
+            'gcmSetups' => ProductionModuleController::gcmSetupRows()->values(),
         ]);
     }
 

@@ -98,7 +98,7 @@ export function ModuleModelsSection({
                 <p className="text-sm text-muted-foreground">
                     Firmware per model modul: file OTA untuk update lewat
                     jaringan, dan file USB (factory) yang dipasang ke papan
-                    kosong dari Setup USB › Modul. Satu modul bisa berisi
+                    kosong dari Setup › Security System. Satu modul bisa berisi
                     beberapa papan, masing-masing dengan firmware sendiri.
                 </p>
             </div>

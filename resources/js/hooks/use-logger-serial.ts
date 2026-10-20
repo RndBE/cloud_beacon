@@ -380,6 +380,8 @@ export function useLoggerSerial() {
         disconnect,
         sendCommand,
         sendCommandUntil,
+        // For commands with no reply, e.g. REBOOT.
+        sendRaw,
         subscribe,
     };
 }

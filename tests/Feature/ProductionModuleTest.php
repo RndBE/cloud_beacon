@@ -168,3 +168,48 @@ it('keeps a factory image for USB flashing next to the OTA image', function () {
     expect(file_exists(public_path($firmware->factory_path)))->toBeTrue();
     @unlink(public_path($firmware->factory_path));
 });
+
+it('records a GCM set up over USB and lists it on the Setup page', function () {
+    $this->actingAs(productionModuleUser(['production.provision']))
+        ->postJson(route('production.provision.gcm'), [
+            'serial_number' => '2609010407002003', 'hardware_version' => 'v1', 'qc_status' => 'pending',
+        ])
+        ->assertOk()
+        ->assertJson(['success' => true, 'status' => 'created']);
+
+    $module = ProductionModule::sole();
+    expect($module)->type->toBe('gcm')->hardware_version->toBe('v1')->qc_status->toBe('pending');
+    expect($module->production_date->toDateString())->toBe(now()->toDateString());
+
+    // A second setup only writes what was filled in.
+    $this->postJson(route('production.provision.gcm'), ['serial_number' => '2609010407002003', 'tested_by' => 'QC B'])
+        ->assertJson(['status' => 'updated']);
+    expect($module->fresh())->hardware_version->toBe('v1')->tested_by->toBe('QC B');
+
+    $this->get(route('production.provision'))
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('gcmSetups', 1)
+            ->where('gcmSetups.0.serialNumber', '2609010407002003')
+            ->where('gcmSetups.0.qcStatus', 'pending'));
+});
+
+it('leaves a GCM with final QC or an EWS serial alone on USB setup', function () {
+    ProductionModule::create(['type' => 'gcm', 'serial_number' => 'GCM-QC', 'qc_status' => 'passed', 'tested_by' => 'QC A']);
+    ProductionModule::create(['type' => 'ews', 'serial_number' => 'EWS-1']);
+    $this->actingAs(productionModuleUser(['production.provision']));
+
+    $this->postJson(route('production.provision.gcm'), ['serial_number' => 'GCM-QC', 'tested_by' => 'QC B', 'qc_status' => 'failed'])
+        ->assertJson(['success' => true, 'status' => 'locked', 'qcStatus' => 'passed']);
+    expect(ProductionModule::where('serial_number', 'GCM-QC')->first())->tested_by->toBe('QC A')->qc_status->toBe('passed');
+
+    $this->postJson(route('production.provision.gcm'), ['serial_number' => 'EWS-1'])
+        ->assertStatus(422)
+        ->assertJson(['success' => false]);
+});
+
+it('needs the provision permission to record a GCM setup', function () {
+    $this->actingAs(productionModuleUser(['production.view', 'production.create']))
+        ->postJson(route('production.provision.gcm'), ['serial_number' => 'GCM-X'])
+        ->assertForbidden();
+    expect(ProductionModule::count())->toBe(0);
+});

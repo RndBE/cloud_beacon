@@ -843,25 +843,28 @@ export function ProductionModules({
                                         <QcBadge status={m.qcStatus} />
                                     </TableCell>
                                     <TableCell>
+                                        {/* The logger it is installed on, by name. */}
                                         {m.logger ? (
-                                            <div className="flex flex-col gap-1">
-                                                <Badge
-                                                    variant="default"
-                                                    className="gap-1"
-                                                >
-                                                    <Check className="size-3" />{' '}
-                                                    Yes
-                                                </Badge>
+                                            <Badge
+                                                asChild
+                                                variant="default"
+                                                className="max-w-[200px] gap-1"
+                                            >
                                                 <Link
                                                     href={`/loggers/${m.logger.id}`}
-                                                    className="max-w-[160px] truncate text-xs text-muted-foreground hover:underline"
+                                                    title={
+                                                        m.logger.serialNumber
+                                                    }
                                                 >
-                                                    {m.logger.name}
+                                                    <Check className="size-3 shrink-0" />
+                                                    <span className="truncate">
+                                                        {m.logger.name}
+                                                    </span>
                                                 </Link>
-                                            </div>
-                                        ) : m.kind === 'security' ? (
+                                            </Badge>
+                                        ) : m.kind !== 'ews' ? (
                                             <Badge variant="secondary">
-                                                No
+                                                Belum terpasang
                                             </Badge>
                                         ) : (
                                             <span className="text-muted-foreground">

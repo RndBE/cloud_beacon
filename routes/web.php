@@ -4,6 +4,7 @@ use App\Http\Controllers\CloudWebSessionController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeviceModelController;
 use App\Http\Controllers\ForwardingLogController;
+use App\Http\Controllers\GcmBindingController;
 use App\Http\Controllers\IntegrationController;
 use App\Http\Controllers\LoggerController;
 use App\Http\Controllers\LoggerModeController;
@@ -153,6 +154,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('production/provision/register', [ProductionController::class, 'storeProvisioned'])
         ->middleware('permission:production.provision')
         ->name('production.provision.register');
+    Route::post('production/provision/gcm', [ProductionModuleController::class, 'storeProvisioned'])
+        ->middleware('permission:production.provision')
+        ->name('production.provision.gcm');
     // Bench test unit QC 'pending' lewat USB — perintah protokolnya dikirim dari browser
     // (Web Serial), server hanya menyiapkan daftar unit dan menyimpan hasil ujinya.
     Route::get('production/testing', [ProductionController::class, 'testing'])
@@ -382,6 +386,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::put('loggers/{id}/config', [LoggerController::class, 'updateConfig'])
         ->name('loggers.updateConfig');
+    // After a GCM binding SET/RST succeeds on the logger page: which GCM units it holds.
+    Route::post('loggers/{id}/gcm-binding', [GcmBindingController::class, 'store'])
+        ->name('loggers.gcm-binding');
     Route::post('loggers/export-config', [LoggerController::class, 'exportConfig'])
         ->name('loggers.export-config');
     Route::put('loggers/{id}/project', [LoggerController::class, 'updateProject'])

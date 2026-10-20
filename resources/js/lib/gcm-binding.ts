@@ -161,3 +161,18 @@ export function withoutGcmSlots(
     for (const n of slots) next[GCM_SLOTS[n - 1]] = emptyGcmBindingModule();
     return next;
 }
+
+// The bound slots of a saved binding, as the server records them after a SET: which GCM serial
+// numbers this logger holds (POST /loggers/{id}/gcm-binding). Pass the binding with failed slots
+// already removed (withoutGcmSlots), so only modules that confirmed their serial number count.
+export function gcmBoundModules(
+    binding: GcmBinding,
+): { slot: number; slave: number; sn: string }[] {
+    return GCM_SLOTS.flatMap((key, i) => {
+        const mod = binding[key];
+        const sn = (mod.sn ?? '').trim();
+        return isBound(mod) && sn !== ''
+            ? [{ slot: i + 1, slave: Number(mod.slave), sn }]
+            : [];
+    });
+}

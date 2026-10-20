@@ -69,7 +69,7 @@ export function ModuleUsbSetup({
                 <CardContent className="space-y-4">
                     {loggerConnected && (
                         <div className="flex flex-col gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:text-amber-200">
-                            Port USB masih dipakai tab Logger.
+                            Port USB masih dipakai setup Logger atau GCM.
                             <Button
                                 size="sm"
                                 variant="outline"
