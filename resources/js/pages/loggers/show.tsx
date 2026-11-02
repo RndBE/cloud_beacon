@@ -248,6 +248,12 @@ interface LoggerDetail {
     firmwareVersion: string;
     lastSeen: string;
     ipAddress: string;
+    /** IANA zone the station's readings are written in. */
+    timezone: string;
+    /** WIB / WITA / WIT. */
+    timezoneAbbr: string;
+    /** UTC offset in hours, as the device RTC takes it. */
+    timezoneOffset: number;
     macAddress: string;
     model: string;
     // 'serial' untuk seri LEO — tidak ada jalur MQTT, jadi tidak ada pilihan
@@ -8294,6 +8300,8 @@ export default function LoggerShow({
             analogMode: s.analogMode,
             modbusSlaveId: s.modbusSlaveId,
             port: s.port,
+        timezone: liveLogger.timezone,
+        timezoneOffset: liveLogger.timezoneOffset,
             channel: s.channel,
         })),
     };

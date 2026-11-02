@@ -15,11 +15,17 @@ class ScanDataAudits extends Command
 
     public function handle(DataAuditService $audits): int
     {
-        $dates = $this->option('date')
-            ? [Carbon::parse($this->option('date'))]
-            : [Carbon::yesterday(), Carbon::today()];
+        $fixed = $this->option('date') ? Carbon::parse($this->option('date')) : null;
 
-        Logger::query()->each(function (Logger $logger) use ($dates, $audits) {
+        Logger::query()->each(function (Logger $logger) use ($fixed, $audits) {
+            // Yesterday and today are the station's own, not the server's: at
+            // 00:30 in Jayapura the server is still on the previous date, so a
+            // server-side "today" would never rescan the day that just started
+            // there and would keep re-scanning one that is already two days old.
+            $dates = $fixed
+                ? [$fixed]
+                : [$logger->today()->subDay(), $logger->today()];
+
             foreach ($dates as $date) {
                 $audits->rescan($logger, $date);
             }

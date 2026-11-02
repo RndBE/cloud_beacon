@@ -27,27 +27,34 @@ class DataAuditController extends Controller
         $scope = Logger::query()->with('project:id,name,color')->visibleTo(auth()->user());
         // ministesy_* columns are needed by the forwarding aggregate below.
         $loggers = $scope->get([
-            'id', 'name', 'device_identifier', 'project_id',
+            'id', 'name', 'device_identifier', 'project_id', 'timezone',
             'ministesy_enabled', 'ministesy_interval', 'ministesy_raw_forward',
         ]);
         $loggerIds = $loggers->pluck('id');
 
         // Completeness is computed live for the chosen date (default today), so
         // any day can be inspected regardless of whether the hourly scan stored
-        // a row for it. Future dates clamp to today.
-        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
-        if ($date->gt(Carbon::today())) {
-            $date = Carbon::today();
+        // a row for it. Future dates clamp to today -- but each station reckons
+        // its own day, so the clamp follows the furthest-ahead station. Clamping
+        // on the server clock would reject a Jayapura station's fresh day as a
+        // future date for the two hours before Jakarta catches up.
+        $today = $loggers->map(fn (Logger $logger) => $logger->today()->toDateString())->max()
+            ?: Carbon::today()->toDateString();
+        $date = Carbon::parse($request->query('date', $today));
+        if ($date->toDateString() > $today) {
+            $date = Carbon::parse($today);
         }
 
         // One sensor_logs scan feeds both the completeness counts and the
         // forwarding due-simulation; they used to query the same day twice.
-        $expected = $this->audits->expectedFor($date);
         $minutes = $this->audits->presentMinutesForLoggers($loggerIds, $date);
         $fwd = $forwarding->completenessForLoggers($loggers, $date, $minutes);
 
-        $audits = $loggers->map(function (Logger $logger) use ($minutes, $expected, $date, $fwd) {
+        $audits = $loggers->map(function (Logger $logger) use ($minutes, $date, $fwd) {
             $p = $minutes->get($logger->id)?->count() ?? 0;
+            // Per logger: at 01:00 in Jayapura only 60 minutes are due, while a
+            // Jakarta station on the same date is already 180 minutes in.
+            $expected = $this->audits->expectedFor($date, $logger->timezoneName());
 
             return [
                 'id' => $logger->id,
@@ -60,6 +67,8 @@ class DataAuditController extends Controller
                     'id' => $logger->id,
                     'name' => $logger->name,
                     'device_identifier' => $logger->device_identifier,
+                    'timezone' => $logger->timezoneName(),
+                    'timezone_abbr' => $logger->timezoneAbbr(),
                     'project' => $logger->project ? [
                         'id' => $logger->project->id,
                         'name' => $logger->project->name,
@@ -74,14 +83,14 @@ class DataAuditController extends Controller
         return Inertia::render('data-audit/index', [
             'audits' => $audits,
             'date' => $date->toDateString(),
-            'today' => Carbon::today()->toDateString(),
+            'today' => $today,
         ]);
     }
 
     public function show(Request $request, int $id, ForwardingAuditService $forwarding)
     {
         $logger = $this->resolveLogger($id);
-        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
+        $date = Carbon::parse($request->query('date', $logger->today()->toDateString()));
 
         // Computed once and passed down — presentMinutes and the integration
         // list used to be re-queried by every consumer below.
@@ -100,10 +109,14 @@ class DataAuditController extends Controller
             ->values();
 
         return Inertia::render('data-audit/show', [
-            'logger' => $logger->only('id', 'name', 'device_identifier'),
+            'logger' => $logger->only('id', 'name', 'device_identifier') + [
+                'timezone' => $logger->timezoneName(),
+                'timezone_abbr' => $logger->timezoneAbbr(),
+            ],
             'loggers' => $loggers,
             'date' => $date->toDateString(),
-            'expected' => $this->audits->expectedFor($date),
+            'today' => $logger->today()->toDateString(),
+            'expected' => $this->audits->expectedFor($date, $logger->timezoneName()),
             'present' => $present->count(),
             'missing' => $this->audits->missingMinutes($logger, $date, $present)->map->format('H:i')->values(),
             'progress' => $this->audits->backfillProgress($logger, $date),
@@ -140,7 +153,7 @@ class DataAuditController extends Controller
     public function status(Request $request, int $id)
     {
         $logger = $this->resolveLogger($id);
-        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
+        $date = Carbon::parse($request->query('date', $logger->today()->toDateString()));
 
         return response()->json($this->audits->backfillProgress($logger, $date));
     }
@@ -188,7 +201,7 @@ class DataAuditController extends Controller
     public function replayStatus(Request $request, int $id, ForwardingAuditService $forwarding)
     {
         $logger = $this->resolveLogger($id);
-        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
+        $date = Carbon::parse($request->query('date', $logger->today()->toDateString()));
 
         return response()->json($forwarding->replayProgress($logger, $date));
     }
@@ -196,7 +209,7 @@ class DataAuditController extends Controller
     public function resendStatus(Request $request, int $id, ForwardingAuditService $forwarding)
     {
         $logger = $this->resolveLogger($id);
-        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()));
+        $date = Carbon::parse($request->query('date', $logger->today()->toDateString()));
 
         return response()->json($forwarding->resendProgress($logger, $date));
     }

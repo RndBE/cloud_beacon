@@ -36,16 +36,21 @@ class DataMasukController extends Controller
             ->map->only('id', 'name', 'device_identifier')
             ->values();
 
-        $date = $this->resolveDate($request);
+        // The logger is resolved first: which day is "today", and which dates are
+        // still in the future, is read off that station's clock, not the server's.
         $logger = $request->filled('logger')
             ? $this->resolveLogger($request->integer('logger'))
             : null;
+        $date = $this->resolveDate($request, $logger);
 
         return Inertia::render('data-masuk/index', [
             'loggers' => $loggers,
             'date' => $date->toDateString(),
-            'today' => Carbon::today()->toDateString(),
-            'logger' => $logger?->only('id', 'name', 'device_identifier'),
+            'today' => ($logger?->today() ?? Carbon::today())->toDateString(),
+            'logger' => $logger ? $logger->only('id', 'name', 'device_identifier') + [
+                'timezone' => $logger->timezoneName(),
+                'timezone_abbr' => $logger->timezoneAbbr(),
+            ] : null,
             'result' => $logger ? $this->buildTable($logger, $date) : null,
         ]);
     }
@@ -53,7 +58,7 @@ class DataMasukController extends Controller
     public function export(Request $request, int $id): BinaryFileResponse
     {
         $logger = $this->resolveLogger($id);
-        $date = $this->resolveDate($request);
+        $date = $this->resolveDate($request, $logger);
         $table = $this->buildTable($logger, $date);
 
         $slug = preg_replace('/[^A-Za-z0-9_-]+/', '-', (string) ($logger->device_identifier ?: $logger->id));
@@ -121,9 +126,10 @@ class DataMasukController extends Controller
             ['Logger', (string) $logger->name],
             ['ID Logger', (string) $logger->device_identifier],
             ['Tanggal', $day],
+            ['Zona waktu', $logger->timezoneAbbr().' ('.$logger->timezoneName().')'],
             ['Total data', $table['total']],
             ['Kelengkapan', $completeness],
-            ['Diekspor', now()->format('Y-m-d H:i:s')],
+            ['Diekspor', $logger->now()->format('Y-m-d H:i:s').' '.$logger->timezoneAbbr()],
         ] as [$key, $value]) {
             $writer->addRow(new Row([
                 new StringCell($key, $label),
@@ -139,14 +145,21 @@ class DataMasukController extends Controller
         return Logger::query()->visibleTo(auth()->user())->findOrFail($id);
     }
 
-    /** Requested day, defaulting to today; future dates clamp to today. */
-    private function resolveDate(Request $request): Carbon
+    /**
+     * Requested day, defaulting to today; future dates clamp to today.
+     *
+     * "Today" is the logger's own date. A station in Jayapura rolls over two
+     * hours before the server does, and clamping on the server clock would
+     * reject its fresh day as a future date for those two hours.
+     */
+    private function resolveDate(Request $request, ?Logger $logger = null): Carbon
     {
         $request->validate(['date' => ['nullable', 'date_format:Y-m-d']]);
 
-        $date = Carbon::parse($request->query('date', Carbon::today()->toDateString()))->startOfDay();
+        $today = ($logger?->today() ?? Carbon::today())->toDateString();
+        $date = Carbon::parse($request->query('date', $today))->startOfDay();
 
-        return $date->gt(Carbon::today()) ? Carbon::today() : $date;
+        return $date->toDateString() > $today ? Carbon::parse($today) : $date;
     }
 
     /**
@@ -207,7 +220,7 @@ class DataMasukController extends Controller
             'rows' => $rows,
             'total' => count($rows),
             'present' => count($minutes),
-            'expected' => $this->audits->expectedFor($date),
+            'expected' => $this->audits->expectedFor($date, $logger->timezoneName()),
             'first' => $times ? substr($times[0], 11, 8) : null,
             'last' => $times ? substr(end($times), 11, 8) : null,
         ];
