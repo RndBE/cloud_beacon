@@ -9,6 +9,7 @@ import {
     ChevronDown,
     ChevronRight,
     Clock,
+    Code2,
     Cpu,
     Database,
     Download,
@@ -8728,20 +8729,20 @@ export default function LoggerShow({
                             <Cpu className="size-3.5" />
                             {t('loggerDetail.tab_system')}
                         </TabsTrigger>
-                        {/* <TabsTrigger
+                        <TabsTrigger
                             value="logs"
                             className="cursor-pointer gap-1.5"
                         >
                             <Terminal className="size-3.5" />
                             {t('loggerDetail.tab_logs')}
-                        </TabsTrigger> */}
-                        {/* <TabsTrigger
+                        </TabsTrigger>
+                        <TabsTrigger
                             value="api"
                             className="cursor-pointer gap-1.5"
                         >
                             <Code2 className="size-3.5" />
                             {t('loggerDetail.tab_api')}
-                        </TabsTrigger> */}
+                        </TabsTrigger>
                     </TabsList>
 
                     {/* ==================== OVERVIEW ==================== */}
