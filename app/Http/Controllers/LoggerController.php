@@ -20,6 +20,7 @@ use App\Support\BoardModel;
 use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -46,6 +47,10 @@ class LoggerController extends Controller
                 'location' => $logger->location,
                 'status' => $logger->status,
                 'connectionType' => $logger->connection_type,
+                // Raw column, so the edit dialog can tell "never set" (inherit
+                // the app zone) apart from "deliberately set to Asia/Jakarta".
+                'timezone' => $logger->timezone,
+                'timezoneAbbr' => $logger->timezoneAbbr(),
                 'firmwareVersion' => $logger->firmware_version,
                 'lastSeen' => $logger->last_seen_at?->format('Y-m-d H:i:s'),
                 'lastConnected' => $logger->last_connected_at?->format('Y-m-d H:i:s'),
@@ -102,9 +107,12 @@ class LoggerController extends Controller
             : null;
         $allowedConfiguratorModes = ['DEFAULT', 'AWR', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS'];
 
-        $today = Carbon::today();
+        // Data health covers the station's current day, read off its own clock:
+        // a Jayapura logger is already two hours into tomorrow while the server
+        // still calls it today.
+        $today = $logger->today();
         $presentMinutes = $audits->presentMinutes($logger, $today);
-        $expected = $audits->expectedFor($today);
+        $expected = $audits->expectedFor($today, $logger->timezoneName());
         $present = $presentMinutes->count();
         $missingMinutes = $audits->missingMinutes($logger, $today, $presentMinutes);
         $missing = $missingMinutes->count();
@@ -186,6 +194,9 @@ class LoggerController extends Controller
             'location' => $logger->location,
             'status' => $logger->status,
             'connectionType' => $logger->connection_type,
+            'timezone' => $logger->timezoneName(),
+            'timezoneAbbr' => $logger->timezoneAbbr(),
+            'timezoneOffset' => $logger->timezoneOffset(),
             'firmwareVersion' => $logger->firmware_version,
             'lastSeen' => $logger->last_seen_at?->format('Y-m-d H:i:s'),
             'ipAddress' => $logger->ip_address,
@@ -414,6 +425,8 @@ class LoggerController extends Controller
             'name' => 'required|string|max:255',
             'serial_number' => 'required|string|max:255|unique:loggers',
             'location' => 'nullable|string|max:255',
+            // Null is allowed and means "inherit config('app.timezone')".
+            'timezone' => ['nullable', 'string', Rule::in(array_keys(Logger::TIMEZONES))],
             'project_id' => 'nullable|integer|exists:projects,id',
             // MQTT data passed from frontend provisioning
             'mqtt_data' => 'nullable|array',
@@ -773,12 +786,17 @@ class LoggerController extends Controller
         $validated = $request->validate([
             'name'       => 'required|string|max:100',
             'location'   => 'nullable|string|max:255',
+            // Restricted to the known zones: the value also drives the numeric
+            // offset written to the device RTC, so a free-text zone would have
+            // nothing to map to.
+            'timezone'   => ['nullable', 'string', Rule::in(array_keys(Logger::TIMEZONES))],
             'project_id' => 'nullable|integer|exists:projects,id',
         ]);
 
         $logger->update([
             'name'       => $validated['name'],
             'location'   => $validated['location'] ?? null,
+            'timezone'   => $validated['timezone'] ?? null,
             'project_id' => $validated['project_id'] ?? null,
         ]);
 

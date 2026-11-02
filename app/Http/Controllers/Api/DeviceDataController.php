@@ -56,6 +56,17 @@ class DeviceDataController extends Controller
         $idAlat = $validated['id_alat'];
 
         // --- 2. Parse timestamp dari device ---
+        // Dibiarkan memakai timezone aplikasi dengan sengaja. Nilai ini hanya
+        // dipakai sebagai jam dinding: disimpan apa adanya ke sensor_logs
+        // .recorded_at dan dibandingkan dengan last_forwarded_data_at, yang
+        // dibaca balik lewat cast 'datetime' di timezone aplikasi juga.
+        //
+        // JANGAN tandai dengan timezone logger di sini. Perbandingan Carbon
+        // memakai instant, bukan jam dinding -- 10:05+09 versus 10:00+07 akan
+        // terbaca mundur dua jam, dan seluruh forwarding logger itu berhenti
+        // karena intervalnya dianggap belum tercapai. Zona waktu logger dipakai
+        // untuk batas hari dan label UI (lihat Logger::timezoneName()), bukan di
+        // jalur ingest ini.
         try {
             $recordedAt = Carbon::createFromFormat(
                 'Y-m-d H:i:s',
@@ -242,7 +253,14 @@ class DeviceDataController extends Controller
             'success'     => true,
             'message'     => 'Data berhasil diterima.',
             'logger_id'   => $logger->id,
-            'recorded_at' => $recordedAt->toIso8601String(),
+            // Jam dinding yang sama, tapi diberi offset zona logger supaya
+            // offset di respons tidak mengaku +07:00 untuk alat di Papua.
+            'recorded_at' => Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $recordedAt->format('Y-m-d H:i:s'),
+                $logger->timezoneName()
+            )->toIso8601String(),
+            'timezone' => $logger->timezoneName(),
             'summary'     => [
                 'total'     => count($sensorData),
                 'matched'   => $matched,

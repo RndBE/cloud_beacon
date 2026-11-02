@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -30,6 +31,7 @@ class Logger extends Model
         'name',
         'serial_number',
         'location',
+        'timezone',
         'status',
         'connection_type',
         'firmware_version',
@@ -126,6 +128,67 @@ class Logger extends Model
             'calibration_data' => 'array',
             'calibrated_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Indonesian time zones a station can sit in, keyed by IANA name.
+     *
+     * `offset` is the UTC offset the device RTC expects (the RTC protocol takes
+     * a plain number, not an IANA name); `abbr` is the label shown next to
+     * times in the UI. Indonesia observes no DST, so the offset never moves and
+     * this mapping stays lossless in both directions.
+     */
+    public const TIMEZONES = [
+        'Asia/Jakarta' => ['abbr' => 'WIB', 'offset' => 7],
+        'Asia/Makassar' => ['abbr' => 'WITA', 'offset' => 8],
+        'Asia/Jayapura' => ['abbr' => 'WIT', 'offset' => 9],
+    ];
+
+    /**
+     * The wall clock this logger's readings are written in.
+     *
+     * NULL on the column means the logger was never given one, so it falls back
+     * to the app timezone â€” which is what every logger used before the column
+     * existed.
+     */
+    public function timezoneName(): string
+    {
+        return $this->timezone ?: config('app.timezone');
+    }
+
+    /** WIB / WITA / WIT, or the raw IANA name for a zone outside the list. */
+    public function timezoneAbbr(): string
+    {
+        $name = $this->timezoneName();
+
+        return self::TIMEZONES[$name]['abbr'] ?? $name;
+    }
+
+    /** UTC offset in hours, for writing the device RTC. */
+    public function timezoneOffset(): int
+    {
+        $name = $this->timezoneName();
+
+        return self::TIMEZONES[$name]['offset']
+            ?? (int) (Carbon::now($name)->getOffset() / 3600);
+    }
+
+    /** Start of the logger's current day, on the logger's own clock. */
+    public function today(): Carbon
+    {
+        return Carbon::today($this->timezoneName());
+    }
+
+    /**
+     * The logger's wall-clock "now".
+     *
+     * sensor_logs.recorded_at holds the device's own wall clock, so anything
+     * comparing against it â€” elapsed minutes today, future-date clamping â€”
+     * has to read the clock in the same zone, not the server's.
+     */
+    public function now(): Carbon
+    {
+        return Carbon::now($this->timezoneName());
     }
 
     public function user(): BelongsTo

@@ -75,6 +75,7 @@ import {
     readStoredPageSize,
     storePageSize,
 } from '@/lib/page-size-preference';
+import { LOGGER_TIMEZONES } from '@/lib/timezones';
 import type { BreadcrumbItem } from '@/types';
 
 interface LoggerItem {
@@ -82,6 +83,9 @@ interface LoggerItem {
     name: string;
     serialNumber: string;
     location: string;
+    /** IANA name, or null when the logger inherits the app default. */
+    timezone: string | null;
+    timezoneAbbr: string;
     status: 'online' | 'offline' | 'warning';
     connectionType: string;
     firmwareVersion: string;
@@ -218,6 +222,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
         name: '',
         serial_number: '',
         location: '',
+        timezone: '' as string,
         project_id: '' as string,
     });
 
@@ -515,6 +520,7 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
             name: form.data.name,
             serial_number: form.data.serial_number,
             location: form.data.location,
+            timezone: form.data.timezone || null,
             project_id: form.data.project_id ? parseInt(form.data.project_id) : null,
             mqtt_data: mqttData || {},
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -600,6 +606,30 @@ function AddLoggerWizard({ open, onOpenChange, projects }: { open: boolean; onOp
                             <div className="grid gap-2">
                                 <Label htmlFor="location">{t('loggers.location')}</Label>
                                 <Input id="location" value={form.data.location} onChange={e => form.setData('location', e.target.value)} placeholder="e.g. Bogor, Jawa Barat" />
+                            </div>
+                            <div className="grid gap-2">
+                                <Label htmlFor="timezone">{t('loggers.timezone', 'Zona waktu')}</Label>
+                                <Select
+                                    value={form.data.timezone === '' ? 'default' : form.data.timezone}
+                                    onValueChange={v => form.setData('timezone', v === 'default' ? '' : v)}
+                                >
+                                    <SelectTrigger id="timezone">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="default">
+                                            <span className="text-muted-foreground">
+                                                {t('loggers.timezone_default', '— Ikut server (WIB) —')}
+                                            </span>
+                                        </SelectItem>
+                                        {LOGGER_TIMEZONES.map(tz => (
+                                            <SelectItem key={tz.value} value={tz.value}>{tz.label}</SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <p className="text-[10px] text-muted-foreground">
+                                    {t('loggers.timezone_hint', 'Jam yang dikirim alat dibaca pada zona ini. Menentukan batas hari di Data Masuk dan Data Audit.')}
+                                </p>
                             </div>
                             {projects.length > 0 && (
                                 <div className="grid gap-2">
@@ -872,6 +902,7 @@ function EditLoggerDialog({
     const form = useForm({
         name: logger.name,
         location: logger.location ?? '',
+        timezone: logger.timezone ?? '',
         project_id: logger.projectId ? String(logger.projectId) : '',
     });
 
@@ -918,6 +949,40 @@ function EditLoggerDialog({
                             placeholder="e.g. Bogor, Jawa Barat"
                         />
                         {form.errors.location && <p className="text-xs text-red-500">{form.errors.location}</p>}
+                    </div>
+                    <div className="grid gap-2">
+                        <Label htmlFor="edit-timezone">
+                            {t('loggers.timezone', 'Zona waktu')}
+                        </Label>
+                        <Select
+                            value={form.data.timezone === '' ? 'default' : form.data.timezone}
+                            onValueChange={(v) =>
+                                form.setData('timezone', v === 'default' ? '' : v)
+                            }
+                        >
+                            <SelectTrigger id="edit-timezone">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="default">
+                                    <span className="text-muted-foreground">
+                                        {t('loggers.timezone_default', '— Ikut server (WIB) —')}
+                                    </span>
+                                </SelectItem>
+                                {LOGGER_TIMEZONES.map((tz) => (
+                                    <SelectItem key={tz.value} value={tz.value}>
+                                        {tz.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                            {t(
+                                'loggers.timezone_hint',
+                                'Jam yang dikirim alat dibaca pada zona ini. Menentukan batas hari di Data Masuk dan Data Audit.',
+                            )}
+                        </p>
+                        {form.errors.timezone && <p className="text-xs text-red-500">{form.errors.timezone}</p>}
                     </div>
                     {projects.length > 0 && (
                         <div className="grid gap-2">

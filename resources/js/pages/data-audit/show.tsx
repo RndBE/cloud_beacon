@@ -82,10 +82,12 @@ type IntegrationAudit = {
 type LoggerOption = { id: number; name: string; device_identifier: string };
 
 type Props = {
-    logger: LoggerOption;
+    logger: LoggerOption & { timezone: string; timezone_abbr: string };
     /** All loggers visible to the user — feeds the station switcher. */
     loggers: LoggerOption[];
     date: string;
+    /** Today on the station's clock — not the browser's. */
+    today: string;
     expected: number;
     present: number;
     /** Array of 'H:i' strings for every missing minute of the day. */
@@ -178,6 +180,7 @@ export default function DataAuditShow({
     logger,
     loggers,
     date,
+    today,
     expected,
     present,
     missing,
@@ -212,8 +215,9 @@ export default function DataAuditShow({
     const resendProg = useResendStatus(logger.id, date, resendProgress);
     const replayProg = useReplayStatus(logger.id, date, replayProgress);
 
-    // Local "today" (browser timezone) — audits can't run into the future.
-    const today = new Date().toLocaleDateString('en-CA');
+    // "today" comes from the server, read off the station's own clock. The
+    // browser's date is the wrong one here: an operator in Jakarta looking at a
+    // Papua station would have its fresh day clamped away as a future date.
 
     function goToDate(next: string) {
         if (!next || next === date) return;
@@ -225,9 +229,9 @@ export default function DataAuditShow({
     }
 
     function shiftDate(days: number) {
-        const d = new Date(`${date}T00:00:00`);
-        d.setDate(d.getDate() + days);
-        goToDate(d.toLocaleDateString('en-CA'));
+        const d = new Date(`${date}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + days);
+        goToDate(d.toISOString().slice(0, 10));
     }
 
     // Live heatmap: overlay backfill `updates` on the initial missing set.

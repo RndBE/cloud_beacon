@@ -61,6 +61,8 @@ type AuditRow = {
         id: number;
         name: string;
         device_identifier: string;
+        timezone: string;
+        timezone_abbr: string;
         project: Project | null;
     };
 };
@@ -110,9 +112,9 @@ export default function DataAuditIndex({
     }
 
     function shiftDate(days: number) {
-        const d = new Date(`${date}T00:00:00`);
-        d.setDate(d.getDate() + days);
-        goToDate(d.toLocaleDateString('en-CA'));
+        const d = new Date(`${date}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + days);
+        goToDate(d.toISOString().slice(0, 10));
     }
 
     const [projectId, setProjectId] = useState('all');
@@ -405,11 +407,17 @@ export default function DataAuditIndex({
                                                     <div className="font-medium">
                                                         {row.logger.name}
                                                     </div>
-                                                    <div className="font-mono text-xs text-muted-foreground">
+                                                    <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
                                                         {
                                                             row.logger
                                                                 .device_identifier
                                                         }
+                                                        <span className="rounded bg-muted px-1 py-px text-[10px] font-medium">
+                                                            {
+                                                                row.logger
+                                                                    .timezone_abbr
+                                                            }
+                                                        </span>
                                                     </div>
                                                 </TableCell>
                                                 <TableCell>

@@ -253,6 +253,9 @@ export interface ProtocolLogger {
     channelCount: number | null;
     firmwareVersion: string | null;
     leoSendConfig?: LeoSendConfig | null;
+    /** IANA zone the station runs on; drives the RTC card's defaults. */
+    timezone?: string | null;
+    timezoneOffset?: number | null;
     sensors: ProtocolSensor[];
 }
 
@@ -1212,13 +1215,20 @@ export const ProtocolPanel = forwardRef<ProtocolPanelHandle, ProtocolPageProps>(
             shownTabs[0] ?? 'system',
         );
 
+        // Pre-filled on the station's clock, not the operator's: setting the RTC
+        // of a Papua logger from a desk in Jakarta otherwise writes a time two
+        // hours behind, and every reading that device sends inherits the error.
+        const rtcOffset = logger.timezoneOffset ?? 7;
+        const rtcNow = new Date(
+            now.getTime() + (rtcOffset * 60 + now.getTimezoneOffset()) * 60_000,
+        );
         const [rtc, setRtc] = useState(
             ioSnapshot?.rtc ??
                 blank(
                     {
-                        date: now.toISOString().slice(0, 10),
-                        time: now.toTimeString().slice(0, 8),
-                        timezone: '+7',
+                        date: rtcNow.toISOString().slice(0, 10),
+                        time: rtcNow.toISOString().slice(11, 19),
+                        timezone: `+${rtcOffset}`,
                     },
                     { date: '', time: '', timezone: '' },
                 ),

@@ -66,8 +66,9 @@ type Result = {
 interface DataMasukProps {
     loggers: LoggerOption[];
     date: string;
+    /** Today on the selected station's clock — not the browser's. */
     today: string;
-    logger: LoggerOption | null;
+    logger: (LoggerOption & { timezone: string; timezone_abbr: string }) | null;
     result: Result | null;
 }
 
@@ -130,9 +131,9 @@ export default function DataMasukIndex({
     }
 
     function shiftDate(days: number) {
-        const d = new Date(`${date}T00:00:00`);
-        d.setDate(d.getDate() + days);
-        goToDate(d.toLocaleDateString('en-CA'));
+        const d = new Date(`${date}T00:00:00Z`);
+        d.setUTCDate(d.getUTCDate() + days);
+        goToDate(d.toISOString().slice(0, 10));
     }
 
     const orderedRows = useMemo(() => {
@@ -447,6 +448,13 @@ export default function DataMasukIndex({
                                                         {t(
                                                             'data_masuk.time',
                                                             'Time',
+                                                        )}
+                                                        {logger?.timezone_abbr && (
+                                                            <span className="ml-1 text-[10px] font-normal">
+                                                                {
+                                                                    logger.timezone_abbr
+                                                                }
+                                                            </span>
                                                         )}
                                                     </th>
                                                     {result.columns.map((c) => (

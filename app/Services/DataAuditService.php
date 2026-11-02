@@ -12,20 +12,34 @@ use Illuminate\Support\Collection;
 
 class DataAuditService
 {
-    public function expectedFor(CarbonInterface $date): int
+    /**
+     * Minutes of data a day should hold, judged on the station's own clock.
+     *
+     * recorded_at stores the device's wall clock, so "is this day over yet"
+     * has to be asked in the same zone the device writes in. Passing no
+     * timezone keeps the app default, which is what every caller meant before
+     * loggers could sit in another zone.
+     */
+    public function expectedFor(CarbonInterface $date, ?string $timezone = null): int
     {
-        $day = Carbon::parse($date)->startOfDay();
-        $today = Carbon::today();
+        $timezone ??= config('app.timezone');
 
-        if ($day->lt($today)) {
+        // Compared as calendar dates, not instants: midnight in Jakarta and
+        // midnight in Jayapura are two hours apart, so comparing the Carbon
+        // objects would call the station's own today a future date.
+        $day = Carbon::parse($date)->toDateString();
+        $now = Carbon::now($timezone);
+        $today = $now->toDateString();
+
+        if ($day < $today) {
             return 1440;
         }
-        if ($day->gt($today)) {
+        if ($day > $today) {
             return 0;
         }
 
-        // Today: count complete minutes elapsed since 00:00 (e.g. at 02:00:00 → 120).
-        return (int) $day->diffInMinutes(Carbon::now());
+        // Today: count complete minutes elapsed since 00:00 (e.g. at 02:00:00 -> 120).
+        return (int) $now->copy()->startOfDay()->diffInMinutes($now);
     }
 
     /**
@@ -79,7 +93,7 @@ class DataAuditService
     {
         $present = ($present ?? $this->presentMinutes($logger, $date))->flip();
         $day = Carbon::parse($date)->startOfDay();
-        $expected = $this->expectedFor($date);
+        $expected = $this->expectedFor($date, $logger->timezoneName());
 
         $missing = collect();
         for ($i = 0; $i < $expected; $i++) {
@@ -194,7 +208,7 @@ class DataAuditService
 
     public function rescan(Logger $logger, CarbonInterface $date): LoggerDailyAudit
     {
-        $expected = $this->expectedFor($date);
+        $expected = $this->expectedFor($date, $logger->timezoneName());
         $present = $this->presentMinutes($logger, $date)->count();
 
         return LoggerDailyAudit::updateOrCreate(
