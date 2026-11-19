@@ -68,6 +68,22 @@ class LoggerModeSeeder extends Seeder
                 'description'        => 'Profil GNSS — memancarkan posisi/satelit dari receiver NMEA RS232. Pilih channel RS232 (ch2 hanya untuk BL1100).',
             ],
             [
+                'slug'               => 'ADR',
+                'label'              => 'ADR',
+                'group'              => 'ADR',
+                'has_calibration'    => true,
+                // The "setting" for ADR is the RS232 channel (SET_MODE ADR fails while EWS holds RS232
+                // port 1). SET → {"ADR":{"cmd":"SET","ch":1}}; `cast`=int keeps `ch` a JSON number.
+                // ch2 is BL1100-only — the configurator hides it on other boards.
+                'calibration_fields' => [
+                    ['key' => 'ch', 'label' => 'Channel', 'unit' => '', 'type' => 'select', 'cast' => 'int', 'options' => [
+                        ['value' => '1', 'label' => 'Channel 1'],
+                        ['value' => '2', 'label' => 'Channel 2 — BL1100'],
+                    ]],
+                ],
+                'description'        => 'Profil ADR — sensor AWLR lewat RS232. Pilih channel (channel 2 hanya untuk BL1100).',
+            ],
+            [
                 'slug'               => 'AWR',
                 'label'              => 'AWR (Automatic Weather Recorder)',
                 'group'              => 'AWR',

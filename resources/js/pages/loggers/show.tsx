@@ -531,6 +531,7 @@ const CONFIGURATOR_MODES = new Set([
     'ARR',
     'GNSS',
     'APMS',
+    'ADR',
 ]);
 
 // RS485 unified device form: one device cfg + a repeatable list of parameters (the `s` array).
@@ -6722,7 +6723,11 @@ function CalibrationCard({
     // GNSS's "calibration" is just the RS232 channel its NMEA receiver is wired to — sensor/setting
     // wording, and ch2 (RS232 port 2) is BL1100-only so it's hidden on BL110/BL11.
     const isGnss = logger.loggerMode === 'GNSS';
-    const gnssSupportsCh2 = inferBoardVariant(logger) === 'BL1100';
+    const supportsCh2 = inferBoardVariant(logger) === 'BL1100';
+    // ADR's only setting is an RS232 channel too ({"ADR":{"cmd":"SET","ch":1|2}}). Same rule as
+    // GNSS: ch2 (RS232 port 2) is BL1100-only, so BL110 gets channel 1 alone.
+    const isAdr = logger.loggerMode === 'ADR';
+    const hasChannelField = isGnss || isAdr;
 
     const [phase, setPhase] = useState<CalibPhase>('idle');
     const [message, setMessage] = useState('');
@@ -6961,11 +6966,15 @@ function CalibrationCard({
                                     ? `${activeMode.label} Sensor`
                                     : isGnss
                                       ? 'GNSS Channel'
-                                      : `Kalibrasi ${activeMode.label}`}
+                                      : isAdr
+                                        ? 'Sensor AWLR'
+                                        : `Kalibrasi ${activeMode.label}`}
                         </CardTitle>
                         <CardDescription>
                             {isGnss ? (
                                 'Channel RS232 untuk receiver GNSS'
+                            ) : isAdr ? (
+                                'Channel RS232 untuk sensor AWLR'
                             ) : logger.calibratedAt ? (
                                 <>Terakhir kalibrasi: {logger.calibratedAt}</>
                             ) : (
@@ -7142,9 +7151,9 @@ function CalibrationCard({
                                             />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {(isGnss &&
+                                            {(hasChannelField &&
                                             f.key === 'ch' &&
-                                            !gnssSupportsCh2
+                                            !supportsCh2
                                                 ? f.options.filter(
                                                       (opt) =>
                                                           opt.value !== '2',
@@ -7255,7 +7264,7 @@ function CalibrationCard({
                             <SlidersHorizontal className="size-4" />{' '}
                             {isArr || isAwr
                                 ? 'Apply Setting'
-                                : isGnss
+                                : hasChannelField
                                   ? 'Set Channel'
                                   : 'Kirim Kalibrasi'}
                         </Button>

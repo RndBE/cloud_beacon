@@ -330,7 +330,7 @@ class MqttService
         return match ($normalized) {
             'DEF' => 'DEFAULT',
             // Active modes per spec §3.14 / §3.4. WEATHER kept only for legacy stored values.
-            'DEFAULT', 'AWR', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS', 'WEATHER' => $normalized,
+            'DEFAULT', 'AWR', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS', 'ADR', 'WEATHER' => $normalized,
             default => null,
         };
     }

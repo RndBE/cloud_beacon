@@ -105,7 +105,7 @@ class LoggerController extends Controller
         $deviceModel = $logger->model
             ? DeviceModel::where('name', $logger->model)->first()
             : null;
-        $allowedConfiguratorModes = ['DEFAULT', 'AWR', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS'];
+        $allowedConfiguratorModes = ['DEFAULT', 'AWR', 'AWLR_TD', 'AWLR_US', 'ARR', 'GNSS', 'APMS', 'ADR'];
 
         // Data health covers the station's current day, read off its own clock:
         // a Jayapura logger is already two hours into tomorrow while the server

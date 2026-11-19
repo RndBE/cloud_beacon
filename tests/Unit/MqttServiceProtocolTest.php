@@ -368,6 +368,14 @@ it('normalizes the APMS system mode', function () {
     expect(MqttService::parseInfoResponse($apms)['logger_mode'])->toBe('APMS');
 });
 
+it('normalizes the ADR system mode', function () {
+    $adr = array_fill(0, 29, 0);
+    $adr[25] = 1;
+    $adr[27] = 'ADR';
+
+    expect(MqttService::parseInfoResponse($adr)['logger_mode'])->toBe('ADR');
+});
+
 it('normalizes the AWR system mode', function () {
     $awr = array_fill(0, 29, 0);
     $awr[25] = 1;
