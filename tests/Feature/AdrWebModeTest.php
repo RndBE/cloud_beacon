@@ -2,9 +2,12 @@
 
 use App\Models\Logger;
 use App\Models\LoggerMode;
+use App\Models\ModeProfile;
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\IdHasher;
+use App\Services\ModeProfiles\DbModeProfileCatalog;
 use App\Services\MqttService;
 use Database\Seeders\LoggerModeSeeder;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -104,4 +107,46 @@ it('rejects an ADR channel outside the offered options', function () {
     $this->actingAs($user)
         ->postJson(route('api.mqtt.calibration.set'), ['id_logger' => 'ADR-002', 'ch' => '3'])
         ->assertUnprocessable();
+});
+
+it('lists ADR on the Mode Profiles page as a direct mode with no sensor templates', function () {
+    $profile = (new DbModeProfileCatalog)->find('ADR');
+
+    expect($profile)->not->toBeNull()
+        ->and($profile['label'])->toBe('ADR (Automatic Deformation Recorder)')
+        ->and($profile['enabled'])->toBeTrue()
+        ->and($profile['roles'])->toBe([]);
+
+    $user = User::factory()->create();
+    $role = Role::create(['name' => 'mode_profile_admin_adr', 'display_name' => 'Mode profile admin']);
+    $role->permissions()->sync([Permission::firstOrCreate(
+        ['name' => 'production.mode-profiles'],
+        ['display_name' => 'production.mode-profiles', 'group' => 'Production'],
+    )->id]);
+    $user->roles()->attach($role);
+    $user->load('roles.permissions');
+
+    $this->actingAs($user)
+        ->get(route('production.mode-profiles.index'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('production/mode-profiles')
+            ->where('profiles', fn ($profiles) => collect($profiles)->contains(
+                fn ($row) => $row['mode'] === 'ADR' && $row['templateCount'] === 0,
+            ))
+        );
+});
+
+it('adds the ADR profile once even when the catalogue seed already has it', function () {
+    expect(ModeProfile::where('mode', 'ADR')->count())->toBe(1);
+
+    $migration = require database_path('migrations/2026_11_19_000003_add_adr_mode_profile.php');
+    $migration->up();
+
+    expect(ModeProfile::where('mode', 'ADR')->count())->toBe(1);
+
+    ModeProfile::where('mode', 'ADR')->delete();
+    $migration->up();
+
+    expect(ModeProfile::where('mode', 'ADR')->count())->toBe(1);
 });

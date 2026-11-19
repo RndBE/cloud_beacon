@@ -345,6 +345,20 @@ class HardcodedModeProfileCatalog implements ModeProfileCatalog
                 'calibration' => null,
                 'default_mapping' => [],
             ],
+            // ADR is set straight from the logger page (SET_MODE ADR), and its only setting is the
+            // RS232 channel on the Sensor AWLR card. It has no RS485 sensor to template, so it is not
+            // one of the wizard's GUIDED_MODES; the entry exists so the mode is listed here too.
+            'ADR' => [
+                'mode' => 'ADR',
+                'label' => 'ADR (Automatic Deformation Recorder)',
+                'description' => 'Mode ADR dipasang langsung dari halaman logger, lalu channel RS232 diatur di kartu Sensor AWLR (channel 2 hanya untuk BL1100). Tidak ada template sensor RS485.',
+                'enabled' => true,
+                'disabled_reason' => null,
+                'roles' => [],
+                'automatic_calibration' => null,
+                'calibration' => null,
+                'default_mapping' => [],
+            ],
             'APMS' => [
                 'mode' => 'APMS',
                 'label' => 'APMS (Automatic Peatland Monitoring System)',
