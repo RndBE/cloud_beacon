@@ -69,7 +69,7 @@ class LoggerModeSeeder extends Seeder
             ],
             [
                 'slug'               => 'ADR',
-                'label'              => 'ADR',
+                'label'              => 'ADR (Automatic Deformation Recorder)',
                 'group'              => 'ADR',
                 'has_calibration'    => true,
                 // The "setting" for ADR is the RS232 channel (SET_MODE ADR fails while EWS holds RS232
@@ -81,7 +81,7 @@ class LoggerModeSeeder extends Seeder
                         ['value' => '2', 'label' => 'Channel 2 — BL1100'],
                     ]],
                 ],
-                'description'        => 'Profil ADR — sensor AWLR lewat RS232. Pilih channel (channel 2 hanya untuk BL1100).',
+                'description'        => 'Automatic Deformation Recorder — data sensor lewat RS232. Pilih channel (channel 2 hanya untuk BL1100).',
             ],
             [
                 'slug'               => 'AWR',

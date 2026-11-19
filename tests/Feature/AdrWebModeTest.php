@@ -11,7 +11,7 @@ use Inertia\Testing\AssertableInertia as Assert;
 
 function expectAdrMode(LoggerMode $mode): void
 {
-    expect($mode->label)->toBe('ADR')
+    expect($mode->label)->toBe('ADR (Automatic Deformation Recorder)')
         ->and($mode->group)->toBe('ADR')
         ->and($mode->has_calibration)->toBeTrue()
         ->and($mode->calibration_fields)->toHaveCount(1)
