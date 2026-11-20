@@ -110,3 +110,15 @@ test('deleteJson sends a bodyless same-origin DELETE with the XSRF token', async
     assert.equal(request.options.headers.Accept, 'application/json');
     assert.equal(request.options.body, undefined);
 });
+
+test('the logger protocol page sends its POSTs through the shared XSRF-cookie helper', () => {
+    const src = require('node:fs').readFileSync(
+        path.resolve(__dirname, '../../resources/js/pages/loggers/protocol.tsx'),
+        'utf8',
+    );
+
+    // A page-local copy used the meta token only, which goes stale on a long-open tab and made
+    // POST /loggers/{id}/gcm-binding fail with 419.
+    assert.match(src, /import \{ postJson \} from '@\/lib\/csrf-fetch';/);
+    assert.doesNotMatch(src, /function postJson\(/);
+});

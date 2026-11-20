@@ -87,6 +87,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import AppLayout from '@/layouts/app-layout';
+import { postJson } from '@/lib/csrf-fetch';
 import {
     fetchMapSlots,
     fetchSensorNames as fetchSensorNamesViaMqtt,
@@ -528,26 +529,6 @@ export function boardSlotLimits(logger: {
 // Spec §3.2.9: digital channels 1–2 (BL11/BL110), 1–4 (BL1100).
 function maxDigitalChannel(logger: ProtocolLogger): number {
     return inferBoardVariant(logger) === 'BL1100' ? 4 : 2;
-}
-
-function csrfToken(): string {
-    return (
-        document
-            .querySelector('meta[name="csrf-token"]')
-            ?.getAttribute('content') ?? ''
-    );
-}
-
-async function postJson(url: string, body: unknown): Promise<Response> {
-    return fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            'X-CSRF-TOKEN': csrfToken(),
-        },
-        body: JSON.stringify(body),
-    });
 }
 
 function numberValue(value: string, fallback = 0): number {
