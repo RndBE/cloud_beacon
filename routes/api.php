@@ -45,7 +45,7 @@ Route::prefix('v1')->group(function () {
      * - Update nilai terbaru di sensors (jika sensor sudah terdaftar)
      */
     Route::post('device/push', [DeviceDataController::class, 'push'])
-        ->middleware('throttle:120,1')
+        ->middleware('throttle:device-push')
         ->name('api.v1.device.push');
 
     // Mobile App — Production device lookup (QR scan)
